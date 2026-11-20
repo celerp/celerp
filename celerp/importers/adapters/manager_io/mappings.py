@@ -44,6 +44,7 @@ from celerp.importers.schema import (
     CIFSettlement,
     CIFTaxCode,
 )
+from celerp.importers.tax_types import tax_fields
 from celerp.services.money import checked_exchange_rate, round_money
 
 SOURCE_SYSTEM = "manager_io"
@@ -94,8 +95,8 @@ def _accounts(book: Book) -> list[CIFAccount]:
 
 
 def _tax_codes(book: Book) -> list[CIFTaxCode]:
-    return [CIFTaxCode(**_src("TaxCode", t.key), name=t.name, rate_percent=t.rate, account_external_id=t.account)
-            for t in book.tax_codes.values()]
+    return [CIFTaxCode(**_src("TaxCode", t.key), name=t.name, rate_percent=t.rate, account_external_id=t.account,
+                       **tax_fields(SOURCE_SYSTEM, t.kind)) for t in book.tax_codes.values()]
 
 
 def _contacts(book: Book) -> list[CIFContact]:

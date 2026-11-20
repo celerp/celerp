@@ -83,9 +83,13 @@ class StockHolding:
 
 @dataclass
 class TaxCode:
+    """A source tax code. ``rate`` is below zero for a tax withheld, as the source keeps it;
+    ``source_type`` is the source's type of the code (celerp.importers.tax_types), None when its
+    name is its type."""
     name: str
     rate: Decimal
     account: str | None = None
+    source_type: str | None = None
 
 
 @dataclass

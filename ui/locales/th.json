@@ -4082,6 +4082,7 @@
   "migration.record.currency_decimals": "แหล่งข้อมูลจะเก็บค่า {code} ไว้ถึงทศนิยม {source} ตำแหน่ง ในขณะที่ Celerp จะเก็บค่า {code} ไว้ถึง {celerp} ตำแหน่ง",
   "migration.record.tax_inclusive": "รหัสภาษี {name} เป็นรหัสที่รวมภาษีแล้ว ซึ่งอัตราภาษีของ Celerp ไม่รองรับ",
   "migration.record.tax_rate_differs": "มีภาษีชื่อ {name} อยู่แล้ว แต่มีอัตราภาษีที่แตกต่างกัน",
+  "migration.record.tax_no_category": "รหัสภาษี {name} เป็นประเภท {type} ซึ่ง Celerp ไม่มีหมวดภาษีสำหรับประเภทนี้",
   "migration.record.location_exists": "มีสถานที่จัดเก็บชื่อ {name} อยู่แล้ว",
   "migration.record.parent_not_imported": "{label}: บัญชีหลัก {parent} ไม่ได้ถูกนำเข้า",
   "migration.record.journal_not_base": "{label} เป็นสกุลเงิน {currency} นำเข้าได้เฉพาะสมุดรายวันสกุล {base} เท่านั้น",

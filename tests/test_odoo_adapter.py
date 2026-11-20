@@ -1912,7 +1912,7 @@ def test_chart_taxes_contacts_and_products(tmp_path, version):
     }
     assert {(t.name, t.rate_percent, t.account_external_id) for t in bundle.tax_codes} == {
         ("15%", D(15), "251000"), ("15% [2]", D(15), "131000"), ("PST 7%", D(7), "251000"),
-        ("WHT 3%", D(-3), "115000"), ("WHT 3% [5]", D(-3), "215000")}
+        ("WHT 3%", D(3), "115000"), ("WHT 3% [5]", D(3), "215000")}
     contacts = {c.name: (sorted(c.roles), c.email) for c in bundle.contacts}
     # A contact person is its company; internal users and the company itself are not contacts;
     # a second contact of the same name is told apart by its id.
@@ -2043,7 +2043,7 @@ def test_each_tax_on_a_line_posts_to_its_own_account_as_odoo_split_it(tmp_path, 
     assert (bill.total, bill.tax_total, bill.amount_outstanding) == (D(112), D(12), D(112))
     assert all(x.tax_account_external_id for d in docs.values() for ln in d.line_items for x in ln.taxes)
     assert {(t.name, t.rate_percent, t.account_external_id) for t in bundle.tax_codes} >= {
-        ("PST 7%", D(7), "251000"), ("WHT 3%", D(-3), "115000"), ("WHT 3% [5]", D(-3), "215000")}
+        ("PST 7%", D(7), "251000"), ("WHT 3%", D(3), "115000"), ("WHT 3% [5]", D(3), "215000")}
 
 
 def test_odoo_rounding_a_tax_on_the_whole_document_lands_on_that_tax(tmp_path):

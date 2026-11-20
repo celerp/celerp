@@ -36,6 +36,7 @@ from celerp.importers.schema import (
     DEBIT_NOTE_NOTE,
     CoverageClass,
 )
+from celerp.importers.tax_types import tax_fields
 from celerp.services.money import checked_exchange_rate
 from ui.i18n import t
 
@@ -221,8 +222,9 @@ def build_bundle(ledger: Ledger, src: Source) -> CIFImportBundle:
         currencies=_currencies(book, src),
         accounts=_accounts(book, src),
         locations=[CIFLocation(**src("Location", name), name=name) for name in book.locations],
-        tax_codes=[CIFTaxCode(**src("Tax rate", tc.name), name=tc.name, rate_percent=tc.rate,
-                              account_external_id=tc.account) for tc in book.tax_codes.values()],
+        tax_codes=[CIFTaxCode(**src("Tax rate", tc.name), name=tc.name, rate_percent=abs(tc.rate),
+                              account_external_id=tc.account, **tax_fields(src.system, tc.source_type or tc.name))
+                   for tc in book.tax_codes.values()],
         contacts=_contacts(book, src),
         items=_items(book, src),
         documents=[_document(book, ledger, book.documents[k], src) for k in ledger.documents],

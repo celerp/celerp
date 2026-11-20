@@ -4082,6 +4082,7 @@
   "migration.record.currency_decimals": "Sumber tersebut menyimpan nilai {code} hingga {source} tempat desimal; Celerp menyimpan {code} hingga {celerp}.",
   "migration.record.tax_inclusive": "Kode pajak {name} sudah termasuk pajak, yang tidak didukung oleh tarif pajak Celerp.",
   "migration.record.tax_rate_differs": "Pajak bernama {name} sudah ada dengan tarif yang berbeda.",
+  "migration.record.tax_no_category": "Kode pajak {name} bertipe {type}, yang tidak memiliki kategori pajak di Celerp.",
   "migration.record.location_exists": "Lokasi bernama {name} sudah ada.",
   "migration.record.parent_not_imported": "{label}: akun induknya {parent} tidak diimpor.",
   "migration.record.journal_not_base": "{label} berada di {currency}; hanya jurnal {base} yang dapat diimpor.",

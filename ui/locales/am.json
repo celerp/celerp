@@ -4082,6 +4082,7 @@
   "migration.record.currency_decimals": "ምንጩ የ{code} መጠኖችን እስከ {source} የአስርዮሽ ቦታዎች ያስቀምጣል፤ Celerp የ{code} መጠኖችን እስከ {celerp} የአስርዮሽ ቦታዎች ያስቀምጣል።",
   "migration.record.tax_inclusive": "የግብር ኮድ {name} ግብርን ያካተተ ሲሆን የCelerp የግብር ተመኖች ይህንን አይደግፉም።",
   "migration.record.tax_rate_differs": "{name} የሚባል ግብር አስቀድሞ የተለየ ተመን አለው።",
+  "migration.record.tax_no_category": "የግብር ኮድ {name} ዓይነቱ {type} ነው፣ ለዚህም Celerp የግብር ምድብ የለውም።",
   "migration.record.location_exists": "{name} የሚባል ቦታ አስቀድሞ አለ።",
   "migration.record.parent_not_imported": "{label}: የወላጅ ሒሳቡ {parent} አልገባም።",
   "migration.record.journal_not_base": "{label} በ{currency} ውስጥ ነው፤ የ{base} ጆርናሎች ብቻ ከውጭ ሊገቡ ይችላሉ።",

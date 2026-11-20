@@ -652,7 +652,7 @@ class _Reader:
     def tax_code(self, agency: str, account: str, where: str) -> None:
         """The agency's tax rate, posting to the one account its tax distributions name: an agency
         whose tax posts to two accounts refuses the set."""
-        tax = self.book.tax_codes.setdefault(agency, TaxCode(agency, ZERO, account))
+        tax = self.book.tax_codes.setdefault(agency, TaxCode(agency, ZERO, account, "Sales Tax Agency"))
         if tax.account != account:
             raise ScanError(t("migration.err_sage50_agency_accounts", agency=agency, accounts=f"{tax.account}, {account}",
                               where=where))

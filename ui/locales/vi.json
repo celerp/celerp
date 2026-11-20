@@ -4082,6 +4082,7 @@
   "migration.record.currency_decimals": "Nguồn dữ liệu lưu các số tiền {code} với {source} chữ số thập phân; Celerp lưu các số tiền {code} với {celerp} chữ số thập phân.",
   "migration.record.tax_inclusive": "Mã thuế {name} đã bao gồm thuế, điều mà thuế suất của Celerp không hỗ trợ.",
   "migration.record.tax_rate_differs": "Đã tồn tại một loại thuế có tên {name} với mức thuế suất khác.",
+  "migration.record.tax_no_category": "Mã thuế {name} thuộc loại {type}, loại mà Celerp không có danh mục thuế tương ứng.",
   "migration.record.location_exists": "Vị trí có tên {name} đã tồn tại.",
   "migration.record.parent_not_imported": "{label}: Tài khoản cha của nó, {parent}, không được nhập.",
   "migration.record.journal_not_base": "{label} nằm trong {currency}; chỉ có thể nhập các tạp chí {base}.",

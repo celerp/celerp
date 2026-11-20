@@ -41,6 +41,8 @@ from pydantic import (
 )
 
 from celerp.compat import StrEnum
+from celerp.localization.taxcodes import TaxCategory
+from celerp.tax_regimes import TAX_TYPES
 
 
 CIF_VERSION = "1"
@@ -313,8 +315,15 @@ class CIFAccount(CIFSourceRecord):
 
 
 class CIFTaxCode(CIFSourceRecord):
+    """A source tax code. ``category`` is what it is (celerp.importers.tax_types), None when the
+    source's type ``source_tax_type`` has no mapping; ``tax_type`` is the side it applies to.
+    The rate is never below zero: a tax withheld is a withholding code."""
     name: NonEmptyStr
-    rate_percent: CIFDecimal                  # below zero for a tax withheld
+    rate_percent: Annotated[CIFDecimal, Field(ge=0)]
+    category: TaxCategory | None = None
+    component: str | None = None
+    tax_type: Literal[TAX_TYPES] = "both"
+    source_tax_type: str | None = None
     inclusive: bool = False
     account_external_id: str | None = None    # tax control account
 

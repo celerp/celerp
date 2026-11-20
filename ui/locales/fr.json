@@ -4082,6 +4082,7 @@
   "migration.record.currency_decimals": "La source conserve {code} à {source} décimales ; Celerp conserve {code} à {celerp}.",
   "migration.record.tax_inclusive": "Le code fiscal {name} inclut les taxes, ce que les taux d'imposition de Celerp ne prennent pas en charge.",
   "migration.record.tax_rate_differs": "Une taxe nommée {name} existe déjà avec un taux différent.",
+  "migration.record.tax_no_category": "Le code fiscal {name} est de type {type}, pour lequel Celerp n'a pas de catégorie fiscale.",
   "migration.record.location_exists": "Un emplacement nommé {name} existe déjà.",
   "migration.record.parent_not_imported": "{label}: son compte parent {parent} n'a pas été importé.",
   "migration.record.journal_not_base": "{label} est en {currency} ; seuls les journaux {base} peuvent être importés.",

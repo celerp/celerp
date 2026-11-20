@@ -208,6 +208,7 @@ class TaxCode:
     rate: Decimal
     account: str
     inactive: bool = False
+    kind: str = "rate"                          # its type as celerp.importers.tax_types names it
 
 
 @dataclass
@@ -1092,10 +1093,11 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
             for line in m.messages(3):
                 _held_elsewhere(book, name, key, _ref(line.guid(1)))
     elif name == "TaxCode":
-        if m.int(5, 0) == 1 or m.int(6, 0) == 1 or m.bool(11):
-            raise Blocked("unsupported feature", "A total-rate, multiple-rate or reverse-charge tax code.")
+        if m.int(5, 0) == 1 or m.int(6, 0) == 1:
+            raise Blocked("unsupported feature", "A total-rate or multiple-rate tax code.")
         rate = _money(m.decimal(4)) if m.int(5, 0) == 2 else Decimal(0)
-        book.tax_codes[key] = TaxCode(key, m.str(1) or "", rate, _ref(m.guid(7)) or TAX, m.bool(10))
+        kind = "reverse charge" if m.bool(11) else "rate" if rate else "no rate"
+        book.tax_codes[key] = TaxCode(key, m.str(1) or "", rate, _ref(m.guid(7)) or TAX, m.bool(10), kind)
     elif name == "Customer":
         book.contacts[key] = Contact(key, name, m.str(1) or "", m.str(13), _ref(m.guid(14)), m.str(3), m.str(2),
                                      m.bool(15), m.str(4), _ref(m.guid(19)))
@@ -1331,14 +1333,16 @@ def _place(book: Book, account: str | None, holder: Holder | None) -> str:
 
 
 def _price_lines(book: Book, currency: str | None, lines: list[Line], include_tax: bool) -> None:
-    """Net, discount and tax per line, rounded half up to the record currency's precision."""
+    """Net, discount and tax per line, rounded half up to the record currency's precision. A
+    reverse-charge code charges nothing on the record: the buyer accounts for that tax itself."""
     code = book.currency_code(currency)
     for line in lines:
         gross = round_money(line.quantity * line.unit_price, code) if line.net == 0 else line.net
         if line.discount_percent is not None:
             line.discount = round_money(gross * line.discount_percent / 100, code)
         amount = gross - line.discount
-        rate = book.tax_codes[line.tax_code].rate if line.tax_code else Decimal(0)
+        tax = book.tax_codes[line.tax_code] if line.tax_code else None
+        rate = tax.rate if tax and tax.kind != "reverse charge" else Decimal(0)
         if include_tax:
             line.tax = round_money(amount * rate / (100 + rate), code)
             line.net = amount - line.tax

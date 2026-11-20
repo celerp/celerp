@@ -4082,6 +4082,7 @@
   "migration.record.currency_decimals": "Die Quelle speichert {code}-Werte bis {source} Dezimalstellen; Celerp speichert {code} bis {celerp}.",
   "migration.record.tax_inclusive": "Der Steuercode {name} beinhaltet die Steuer, was von den Steuersätzen von Celerp nicht unterstützt wird.",
   "migration.record.tax_rate_differs": "Eine Steuer mit der Bezeichnung {name} existiert bereits, allerdings mit einem anderen Steuersatz.",
+  "migration.record.tax_no_category": "Der Steuercode {name} hat den Typ {type}, für den Celerp keine Steuerkategorie hat.",
   "migration.record.location_exists": "Ein Standort mit dem Namen {name} existiert bereits.",
   "migration.record.parent_not_imported": "{label}: Das übergeordnete Konto {parent} wurde nicht importiert.",
   "migration.record.journal_not_base": "{label} lautet auf {currency}; es können nur Journale in {base} importiert werden.",

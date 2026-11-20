@@ -312,19 +312,25 @@ def _apply_company_profile(company: Company, profile: CIFCompanyProfile) -> dict
 
 
 def _apply_tax_code(company: Company, tax: CIFTaxCode) -> dict | None:
+    """Add an imported tax code to the company's tax list with its category and side. A code
+    already there by name is the same code when its rate in force today matches."""
     if tax.inclusive:
         return catalog_refusal("migration.record.tax_inclusive", name=tax.name)
+    if tax.category is None:
+        return catalog_refusal("migration.record.tax_no_category", name=tax.name, type=tax.source_tax_type)
     rate = float(tax.rate_percent)
     settings = dict(company.settings or {})
     taxes = list(settings.get("taxes") or [])
     for existing in taxes_on(taxes, dt.date.today()):
         if tax_name_key(existing["name"]) == tax_name_key(tax.name):
-            if existing["rate"] != rate:
+            # taxes_on gives a withholding rate as a line carries it, below zero.
+            if abs(existing["rate"]) != rate:
                 return catalog_refusal("migration.record.tax_rate_differs", name=tax.name)
             return None
     taxes.append({
-        "name": tax.name, "rate": rate, "tax_type": "purchase" if rate < 0 else "both", "is_default": False,
-        "description": "", "is_compound": False, "default_order": 0,
+        "name": tax.name, "rate": rate, "tax_type": tax.tax_type, "category": tax.category,
+        "component": tax.component, "withholding_point": "document" if tax.category == "withholding" else None,
+        "is_default": False, "description": "", "is_compound": False, "default_order": 0,
     })
     try:
         company.settings = with_taxes(settings, "sales", taxes)

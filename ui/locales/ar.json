@@ -4082,6 +4082,7 @@
   "migration.record.currency_decimals": "يحتفظ المصدر بمبالغ {code} حتى {source} منزلة عشرية؛ ويحتفظ Celerp بمبالغ {code} حتى {celerp}.",
   "migration.record.tax_inclusive": "رمز الضريبة {name} شامل للضريبة، وهو ما لا تدعمه معدلات الضريبة في Celerp.",
   "migration.record.tax_rate_differs": "توجد بالفعل ضريبة باسم {name} بمعدل مختلف.",
+  "migration.record.tax_no_category": "رمز الضريبة {name} من النوع {type}، ولا توجد له فئة ضريبية في Celerp.",
   "migration.record.location_exists": "يوجد موقع باسم {name} بالفعل.",
   "migration.record.parent_not_imported": "{label}: لم يتم استيراد حسابه الرئيسي {parent}.",
   "migration.record.journal_not_base": "{label} بعملة {currency}؛ لا يمكن استيراد سوى دفاتر اليومية بعملة {base}.",

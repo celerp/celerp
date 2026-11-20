@@ -4149,6 +4149,7 @@
   "migration.record.currency_decimals": "The source keeps {code} amounts to {source} decimal places; Celerp keeps {code} to {celerp}.",
   "migration.record.tax_inclusive": "Tax code {name} is tax-inclusive, which Celerp tax rates do not support.",
   "migration.record.tax_rate_differs": "A tax named {name} already exists with a different rate.",
+  "migration.record.tax_no_category": "Tax code {name} has type {type}, which Celerp has no tax category for.",
   "migration.record.location_exists": "A location named {name} already exists.",
   "migration.record.parent_not_imported": "{label}: its parent account {parent} was not imported.",
   "migration.record.journal_not_base": "{label} is in {currency}; only {base} journals can be imported.",

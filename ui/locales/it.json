@@ -4082,6 +4082,7 @@
   "migration.record.currency_decimals": "Il sistema di origine memorizza gli importi in {code} con {source} cifre decimali; Celerp memorizza gli importi in {code} con {celerp} cifre decimali.",
   "migration.record.tax_inclusive": "Il codice imposta {name} è al lordo dell'imposta, cosa che le aliquote di Celerp non supportano.",
   "migration.record.tax_rate_differs": "Esiste già un'imposta denominata {name} con un'aliquota diversa.",
+  "migration.record.tax_no_category": "Il codice imposta {name} è di tipo {type}, per il quale Celerp non ha una categoria fiscale.",
   "migration.record.location_exists": "Esiste già una posizione denominata {name}.",
   "migration.record.parent_not_imported": "{label}: il suo conto padre {parent} non è stato importato.",
   "migration.record.journal_not_base": "{label} è in {currency}; è possibile importare solo i registri contabili in {base}.",

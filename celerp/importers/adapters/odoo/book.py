@@ -138,7 +138,8 @@ COLUMNS = frozenset({
     "price_subtotal", "price_total", "price_unit", "product_id", "product_qty", "product_tmpl_id", "product_uom_qty",
     "qty_done", "quantity", "ref",
     "reference", "repartition_type", "res_field", "res_id", "res_model", "sequence", "state", "stock_move_id",
-    "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
+    "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "type_tax_use", "usage",
+    "user_type_id",
     "url", "value", "vat", "zip", "factor", "rounding", "uom_id", "product_uom_id", "quantity_product_uom",
 })
 # Of those, the ones holding an id, a number, a date, a file's content or JSON with numbers. Backup.tables refuses
@@ -414,7 +415,10 @@ class _Reader:
                 accounts.setdefault(tax, self.accounts[r["account_id"]])
         for r in rows:
             rate = _dec(r["amount"]) if r["amount_type"] in ("percent", "division") else ZERO
-            self.book.tax_codes[names[r["id"]]] = TaxCode(names[r["id"]], rate, accounts.get(r["id"]))
+            # Its type as celerp.importers.tax_types names it: a tax for neither side has none.
+            use = {"sale": "sale", "purchase": "purchase"}.get(r["type_tax_use"], "none")
+            kind = f'{use}{" withholding" if rate < 0 else " zero" if not rate else ""}'
+            self.book.tax_codes[names[r["id"]]] = TaxCode(names[r["id"]], rate, accounts.get(r["id"]), kind)
             self.taxes[r["id"]], self.rates[r["id"]] = names[r["id"]], rate
 
     def read_analytics(self) -> None:

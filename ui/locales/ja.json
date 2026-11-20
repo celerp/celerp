@@ -4082,6 +4082,7 @@
   "migration.record.currency_decimals": "元データでは {code} の金額を小数点以下 {source} 桁で保持しますが、Celerp では {code} の金額を小数点以下 {celerp} 桁で保持します。",
   "migration.record.tax_inclusive": "税コード{name}は税込み価格ですが、Celerpの税率はこれをサポートしていません。",
   "migration.record.tax_rate_differs": "{name}という名前の税金が、異なる税率で既に存在します。",
+  "migration.record.tax_no_category": "税コード{name}の種類は{type}ですが、Celerpにはこれに対応する税区分がありません。",
   "migration.record.location_exists": "{name}という名前の場所は既に存在します。",
   "migration.record.parent_not_imported": "{label}: 親の勘定科目 {parent} はインポートされませんでした。",
   "migration.record.journal_not_base": "{label}は{currency}です。インポートできるのは{base}の仕訳帳のみです。",

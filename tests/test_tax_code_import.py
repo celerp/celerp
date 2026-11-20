@@ -11,6 +11,7 @@ from decimal import Decimal as D
 import pytest
 from pydantic import ValidationError
 
+from celerp.importers.results import message_text
 from celerp.importers.schema import CIFTaxCode
 from celerp.models.company import Company
 from celerp.services.migration_core_sink import _apply_tax_code
@@ -46,7 +47,7 @@ def test_importer_reimport_same_code_is_no_conflict():
     assert _all_taxes(company) == before
 
     assert _apply_tax_code(company, _cif("WHT 3%", 3, category="withholding", tax_type="purchase")) is None
-    [wht] = [row for row in _all_taxes(company) if row["name"] == "WHT 3%"]
+    [wht] = [row for row in sales_taxes(company.settings) if row["name"] == "WHT 3%"]
     assert wht["tax_type"] == "purchase" and wht["category"] == "withholding"
     assert "rate" not in wht and wht["versions"][0]["rate"] == 3.0
 
@@ -61,10 +62,13 @@ def _kinds(codes) -> dict[str, str | None]:
 def test_importer_maps_tax_types_to_categories(tmp_path):
     from celerp.importers.tax_types import tax_kind
 
+    (tmp_path / "x").mkdir()
+    (tmp_path / "q").mkdir()
     assert tax_kind("xero", "Tourism Levy") is None
     xero = _adapter().build_manifest(_set(tmp_path / "x", _xero()), FULL).bundle.tax_codes
     assert _kinds(xero) == {"20% (VAT on Income)": "standard", "20% (VAT on Expenses)": "standard",
-                            "Zero Rated Income": "zero", "No VAT": "out_of_scope"}
+                            "20% (VAT on Capital Purchases)": "standard", "Zero Rated Income": "zero",
+                            "No VAT": "out_of_scope"}
     sides = {code.name: code.tax_type for code in xero}
     assert sides["20% (VAT on Income)"] == "sales" and sides["20% (VAT on Expenses)"] == "purchase"
 
@@ -82,7 +86,7 @@ def test_importer_maps_tax_types_to_categories(tmp_path):
     errors = [_apply_tax_code(company, code) for code in (
         _cif("Levy 2%", 2, category=None, source_tax_type="Tourism Levy"),
         _cif("Zero", 0, category="zero", tax_type="sales"))]
-    assert errors[0] and "Levy 2%" in errors[0] and "Tourism Levy" in errors[0]
+    assert errors[0] and "Levy 2%" in message_text(errors[0]) and "Tourism Levy" in message_text(errors[0])
     assert errors[1] is None
     names = {row["name"] for row in _all_taxes(company)}
     assert "Zero" in names and "Levy 2%" not in names
