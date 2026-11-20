@@ -35,7 +35,7 @@ async def test_tax_cell_edit_sends_rendered_fingerprint(ui_client, prefix, gname
     from celerp.localization.taxcodes import TaxCode, list_fingerprint, rate_on
     from ui.routes.settings import _taxes_tab
 
-    rendered = to_xml(_taxes_tab(_rows(), prefix=prefix))
+    rendered = to_xml(_taxes_tab(_rows(), dt.date.today(), prefix=prefix))
     shown = list_fingerprint(_rows())
     assert 'name="fingerprint"' in rendered and f'value="{shown}"' in rendered
     today_rate = rate_on(TaxCode(**{k: v for k, v in _rows()[0].items() if k != "id"}), dt.date.today())
