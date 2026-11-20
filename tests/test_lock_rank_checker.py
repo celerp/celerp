@@ -753,6 +753,40 @@ def test_an_insert_under_the_company_lock_keyed_by_a_fresh_secret_is_gated(recor
     assert recorder.classes["row:doc_share_tokens"].get("gated") == 1
 
 
+def _token_insert(key: str = "t1") -> Lock:
+    return Lock("row:doc_share_tokens", "insert", "celerp/x.py:1 f", "test_x.py:1", key, company="c1")
+
+
+def _heartbeat_write(key: str = "t1") -> Lock:
+    """The one statement mutation_observer.LEASE_RENEWALS declares as ai_batch_jobs's own
+    lease renewal (jobs._heartbeat), built as an ungated row take directly."""
+    return Lock("row:ai_batch_jobs", "insert", "celerp/ai/jobs.py:1 _heartbeat", "test_x.py:1", key, company="c1")
+
+
+def test_a_declared_renewals_pending_leaf_survives_a_waitable_take_on_another_connection(recorder):
+    """jobs._heartbeat's own renewal, the one entry mutation_observer.LEASE_RENEWALS declares
+    for ai_batch_jobs, is the one leaf a lock on a connection outside its task cannot spoil:
+    Postgres never contends that single statement against a lock its own task never touches."""
+    recorder.acquire(1, _heartbeat_write(), 0.0)
+    recorder.acquire(2, _lock("adv:external-product", "xact exclusive wait", key="p"), 0.0)
+    assert recorder.classes["row:ai_batch_jobs"].get("company_ungated") is None
+
+
+def test_a_waitable_lock_on_the_declared_renewals_own_connection_still_spoils_its_leaf(recorder):
+    recorder.acquire(1, _heartbeat_write(), 0.0)
+    recorder.acquire(1, _lock("adv:external-product", "xact exclusive wait", key="p"), 0.0)
+    assert recorder.classes["row:ai_batch_jobs"].get("company_ungated") == 1
+
+
+def test_an_undeclared_pending_leaf_is_still_spoiled_by_a_waitable_take_on_another_connection(recorder):
+    """Only the one statement LEASE_RENEWALS declares is spared: every other table's leaf is
+    still spoiled by any lock that can wait anywhere, exactly as it always was - a leaf is the
+    gated-inversion/deadlock-order proof's evidence too, not just the AI race census."""
+    recorder.acquire(1, _token_insert(), 0.0)
+    recorder.acquire(2, _lock("adv:external-product", "xact exclusive wait", key="p"), 0.0)
+    assert recorder.classes["row:doc_share_tokens"].get("company_ungated") == 1
+
+
 @pytest.mark.parametrize("table", sorted(lock_rank.SECRET_KEYED))
 def test_every_insert_into_a_secret_keyed_table_draws_a_new_secret(table):
     """SECRET_KEYED holds: the table's unique keys are its primary key, keys holding the

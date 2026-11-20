@@ -47,6 +47,7 @@ from pathlib import Path
 # CI runs this file as a script (python tests/lock_rank.py ...), which puts tests/ on the path, not the
 # repository root that holds the shared source-root list.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from mutation_observer import LEASE_RENEWALS  # noqa: E402
 from shipped_sources import SHIPPED_ROOTS  # noqa: E402
 
 # ── The one map ────────────────────────────────────────────────────────────────
@@ -282,7 +283,7 @@ class Recorder:
     # retook it) after which no lock that can wait has been taken (on any connection). Its
     # transaction never waits holding that row, so at its end the take is proof-neutral; one
     # still open when the graph is read counts as ungated.
-    leaves: dict[int, list[tuple[dict, str, set[str]]]] = field(default_factory=lambda: defaultdict(list))
+    leaves: dict[int, list[tuple[dict, str, set[str], str]]] = field(default_factory=lambda: defaultdict(list))
     # Per transaction: the strengths it holds of each class, whatever the key (``taken`` by class).
     taken_classes: dict[int, dict[str, set[str]]] = field(default_factory=lambda: defaultdict(dict))
     # Per transaction: the thread its statements run on. A test boundary forgets only the
@@ -368,7 +369,7 @@ class Recorder:
     def _end(self, key) -> None:
         for state in (*self._transaction_state(), self.savepoints, self.flow_sessions, self.threads):
             state.pop(key, None)
-        for info, _, sites in self.leaves.pop(key, ()):
+        for info, _, sites, _table in self.leaves.pop(key, ()):
             info.setdefault("leaf_sites", set()).update(sites)
 
     def clear_transactions(self) -> None:
@@ -404,13 +405,25 @@ class Recorder:
                 count = "insert_holder_waits" if taken == {"insert"} else "holder_waits"
                 info[count] = info.get(count, 0) + 1
 
-    def _spoil_leaves(self, keys=None) -> None:
+    def _spoil_leaves(self, keys=None, own=None) -> None:
         """A lock that can wait was taken (or the transactions ``keys`` are no longer followed):
-        every pending leaf take's transaction may wait holding its row, so each counts as ungated."""
+        every pending leaf take's transaction may wait holding its row, so each counts as
+        ungated. ``own`` names the connections the waiting take's own task touches: a leaf on a
+        connection outside it is still spoiled, unless it is a declared lease renewal
+        (mutation_observer.LEASE_RENEWALS) - a lock no connection of its own task ever touches
+        proves nothing about a renewal's own single statement, so that one leaf alone is spared.
+        ``own`` is None for every other caller (dump, a transaction no longer followed), which
+        spoils every pending leaf regardless of connection, renewal or not."""
         for key in list(self.leaves) if keys is None else [k for k in keys if k in self.leaves]:
-            for info, take, sites in self.leaves.pop(key):
+            kept = []
+            for info, take, sites, table in self.leaves.pop(key):
+                if own is not None and key not in own and _declared_renewal(table, sites):
+                    kept.append((info, take, sites, table))
+                    continue
                 _ungated(info, take)
                 info.setdefault("counted_sites", set()).update(sites)
+            if kept:
+                self.leaves[key] = kept
 
     def _savepoint(self, conn_key: int, statement: str) -> bool:
         """SAVEPOINT, RELEASE SAVEPOINT and ROLLBACK TO SAVEPOINT; False for any other statement."""
@@ -597,7 +610,7 @@ class Recorder:
         take, site = f"{_strength(lock)}|{company}", f"{lock.site} [{_strength(lock)}|{company}]"
         info.setdefault("ungated_sites", set()).add(site)
         if not retake:
-            self.leaves[conn_key].append((info, take, {site}))
+            self.leaves[conn_key].append((info, take, {site}, table))
             return
         for leaf in self.leaves.get(conn_key, ()):
             if leaf[0] is info:
@@ -667,7 +680,7 @@ class Recorder:
         info["count"] += 1
         retake = self._retake(conn_key, lock)
         if lock.mode.split(" ")[-1] not in ("nowait", "try", "skip") and not retake:
-            self._spoil_leaves()
+            self._spoil_leaves(own={conn_key, *self._task_connections()})
             self._holders_wait({conn_key, *self._task_connections()})
         serial = self._serial_gates()
         # R5: the keys every take of the class was made under.
@@ -965,6 +978,18 @@ def _ungated(info: dict, take: str) -> None:
     may hold while it waits."""
     info["company_ungated"] = info.get("company_ungated", 0) + 1
     info.setdefault("ungated_takes", set()).add(take)
+
+
+def _declared_renewal(table: str, sites: set[str]) -> bool:
+    """Whether one of ``sites`` ("path:line function [...]") was made by a function
+    mutation_observer.LEASE_RENEWALS declares as ``table``'s own lease renewal: the one
+    statement that renews a lease row, never anything else a transaction on that table does."""
+    made = set()
+    for site in sites:
+        path, func = site.split(" [", 1)[0].rsplit(" ", 1)
+        made.add(f"{path.rsplit(':', 1)[0]} {func}")
+    return any(site in entry.sites for (renewed, _detail), entry in LEASE_RENEWALS.items()
+               if renewed == table for site in made)
 
 
 def _flow() -> tuple:
