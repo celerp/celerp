@@ -240,6 +240,6 @@ async def test_a_lock_wait_past_the_request_timeout_is_refused_as_busy_in_any_ro
     assert busy.status_code == 409
     assert json.loads(busy.body)["detail"]["message_key"] == "modules.company_busy"
     other = DBAPIError("UPDATE x", {}, _Pg("23505"))
-    with pytest.raises(DBAPIError) as raised:
-        await lock_timeout_handler(request, other)
-    assert raised.value is other
+    server_error = await lock_timeout_handler(request, other)
+    assert server_error.status_code == 500
+    assert json.loads(server_error.body)["detail"]["message_key"] == "error.server_error"

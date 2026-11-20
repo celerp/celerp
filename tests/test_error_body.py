@@ -71,6 +71,7 @@ def _examples() -> dict:
     boundary checks for every route (test_an_agent_route_refusal_without_a_key_is_recorded)."""
     from fastapi.exceptions import RequestValidationError
     from slowapi.errors import RateLimitExceeded
+    from sqlalchemy.exc import DBAPIError
 
     from celerp.accounting_roles import KeyedRefusal
     from celerp.inventory_codes import BarcodeConflictError
@@ -86,6 +87,7 @@ def _examples() -> dict:
         # The handler reads nothing from the exception; a Limit needs a live limiter to build.
         RateLimitExceeded: RateLimitExceeded.__new__(RateLimitExceeded),
         KeyedRefusal: BarcodeConflictError("1001"),
+        DBAPIError: DBAPIError("UPDATE x", {}, RuntimeError("boom")),
         InvalidTimezoneError: InvalidTimezoneError("error.company_timezone_unknown"),
         PostingRoleError: PostingRoleError([catalog_refusal("posting.problem.unset", role="sales")]),
         UnbalancedJournalEntry: UnbalancedJournalEntry("error.server_error"),

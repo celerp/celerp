@@ -799,9 +799,10 @@ async def lock_timeout_handler(request: Request, exc: DBAPIError):
     """A lock wait that gave up at the request lock timeout, in any route: other work for
     the company held the rows longer, and the transaction rolled back, so it is refused as
     busy, to try again. Any other database error stays a server error."""
-    if sqlstate(exc) != LOCK_TIMEOUT:
-        raise exc
-    return await http_exception_handler(request, CompanyBusy())
+    if sqlstate(exc) == LOCK_TIMEOUT:
+        return await http_exception_handler(request, CompanyBusy())
+    log_unhandled_exception(request, exc)
+    return error_response(request, 500, catalog_refusal("error.server_error"))
 
 
 @app.exception_handler(Exception)

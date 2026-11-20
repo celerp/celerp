@@ -311,6 +311,12 @@ _DYNAMIC_KEY_SITES = {
     "celerp/error_body.py": [],
     # celerp/services/document_lines.py: key, text = _PROTECTED_MESSAGES[why]
     "celerp/services/document_lines.py": ["line.protected_held", "line.protected_received"],
+    # default_modules/celerp-accounting/celerp_accounting/statement_lines.py: scoped(state_key=...)
+    # refuses a line's status under the caller's state_key; every caller either leaves the
+    # default or passes this one literal
+    "default_modules/celerp-accounting/celerp_accounting/statement_lines.py": [
+        "acct.err_recon_line_state", "acct.err_recon_already_unmatched",
+    ],
     # default_modules/celerp-inventory/celerp_inventory/services.py: each CostRefused
     # subclass passes its literal key to Refused through super().__init__
     "default_modules/celerp-inventory/celerp_inventory/services.py": [
