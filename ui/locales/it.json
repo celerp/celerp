@@ -8404,6 +8404,8 @@
   "acct.recon_asked_left_out": "{names} non rispondono più alle domande bancarie qui, quindi non hanno ricevuto l'email.",
   "acct.recon_asked_email_unconfirmed": "Sono state poste domande su {count} righe. L'e-mail a {name} potrebbe essere stata inviata, ma non è stata confermata. La persona vede le domande quando accede.",
   "acct.recon_asked_email_unconfirmed_one": "È stata posta una domanda su 1 riga. L'e-mail a {name} potrebbe essere stata inviata, ma non è stata confermata. La persona vede la domanda quando accede.",
+  "acct.recon_asked_email_sending": "Sono state poste domande su {count} righe. L'e-mail a {name} è ancora in fase di invio. Controlli di nuovo tra qualche minuto.",
+  "acct.recon_asked_email_sending_one": "È stata posta una domanda su 1 riga. L'e-mail a {name} è ancora in fase di invio. Controlli di nuovo tra qualche minuto.",
   "acct.recon_reason_client": "Il cliente ha detto: {answer}.",
   "ai.warn_credits": "Questo legge {count} file con crediti IA.",
   "ai.warn_credits_one": "Questo legge 1 file con crediti AI.",

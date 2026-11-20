@@ -8404,6 +8404,8 @@
   "acct.recon_asked_left_out": "{names} tidak lagi menjawab pertanyaan bank di sini, jadi tidak dikirimi email.",
   "acct.recon_asked_email_unconfirmed": "Ditanyakan tentang {count} baris. Email ke {name} mungkin sudah terkirim, tetapi belum dikonfirmasi. Mereka melihat pertanyaan-pertanyaan tersebut saat masuk.",
   "acct.recon_asked_email_unconfirmed_one": "Ditanyakan tentang 1 baris. Email ke {name} mungkin sudah terkirim, tetapi belum dikonfirmasi. Mereka melihat pertanyaan itu saat masuk.",
+  "acct.recon_asked_email_sending": "Ditanyakan tentang {count} baris. Email ke {name} masih dikirim. Periksa lagi dalam beberapa menit.",
+  "acct.recon_asked_email_sending_one": "Ditanyakan tentang 1 baris. Email ke {name} masih dikirim. Periksa lagi dalam beberapa menit.",
   "acct.recon_reason_client": "Klien mengatakan: {answer}.",
   "ai.warn_credits": "Ini membaca {count} berkas dengan kredit AI.",
   "ai.warn_credits_one": "Ini membaca 1 berkas dengan kredit AI.",

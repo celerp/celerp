@@ -8404,6 +8404,8 @@
   "acct.recon_asked_left_out": "{names} không còn trả lời câu hỏi ngân hàng ở đây nên không được gửi email.",
   "acct.recon_asked_email_unconfirmed": "Đã hỏi về {count} dòng. Email gửi đến {name} có thể đã được gửi đi nhưng chưa được xác nhận. Họ sẽ thấy các câu hỏi khi đăng nhập.",
   "acct.recon_asked_email_unconfirmed_one": "Đã hỏi về 1 dòng. Email gửi đến {name} có thể đã được gửi đi nhưng chưa được xác nhận. Họ sẽ thấy câu hỏi khi đăng nhập.",
+  "acct.recon_asked_email_sending": "Đã hỏi về {count} dòng. Email gửi đến {name} vẫn đang được gửi. Hãy kiểm tra lại sau vài phút.",
+  "acct.recon_asked_email_sending_one": "Đã hỏi về 1 dòng. Email gửi đến {name} vẫn đang được gửi. Hãy kiểm tra lại sau vài phút.",
   "acct.recon_reason_client": "Khách hàng nói: {answer}.",
   "ai.warn_credits": "Thao tác này đọc {count} tệp bằng tín dụng AI.",
   "ai.warn_credits_one": "Thao tác này đọc 1 tệp bằng tín dụng AI.",

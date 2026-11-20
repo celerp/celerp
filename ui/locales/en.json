@@ -8404,6 +8404,8 @@
   "acct.recon_asked_left_out": "{names} no longer answer bank questions here, so they were not emailed.",
   "acct.recon_asked_email_unconfirmed": "Asked about {count} lines. The email to {name} may have gone out, but it was not confirmed. They see the questions when they sign in.",
   "acct.recon_asked_email_unconfirmed_one": "Asked about 1 line. The email to {name} may have gone out, but it was not confirmed. They see the question when they sign in.",
+  "acct.recon_asked_email_sending": "Asked about {count} lines. The email to {name} is still being sent. Check again in a few minutes.",
+  "acct.recon_asked_email_sending_one": "Asked about 1 line. The email to {name} is still being sent. Check again in a few minutes.",
   "acct.recon_reason_client": "Client said: {answer}.",
   "ai.warn_credits": "This reads {count} files with AI credits.",
   "ai.warn_credits_one": "This reads 1 file with AI credits.",

@@ -15,6 +15,7 @@ from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.attrs import hx_vals
 from ui.components import bank_groups as BG
 from ui.components.bank_groups import bank_url
 from ui.components.encode import safe_url
@@ -459,11 +460,24 @@ def setup_routes(app):
         form = await request.form()
         line_id = str(form.get("line_id", ""))
         bank = await api.get_bank_account(token, bank_id)
+        sent = {"line_id": line_id, "note": str(form.get("note", "")),
+                "idempotency_key": str(form.get("idempotency_key"))}
+        payload = {"line_ids": [line_id], "note": sent["note"], "idempotency_key": sent["idempotency_key"]}
         try:
-            out = await api.bank_action(token, bank_id, "ask", {
-                "line_ids": [line_id], "note": str(form.get("note", "")),
-                "idempotency_key": str(form.get("idempotency_key"))})
-            notice = flash(out["outcome"], "success")
+            try:
+                out = await api.bank_action(token, bank_id, "ask", payload)
+            except APIError as e:
+                if (e.data or {}).get("code") != api.NO_RESPONSE:
+                    raise
+                # An email can take longer than this page waits. The same key answers as stored.
+                out = await api.bank_action(token, bank_id, "ask", payload)
+            if any(r["state"] == "sending" for r in out["email"]["recipients"]):
+                notice = Div(flash(out["outcome"], "info"), Button(
+                    t("btn.check_again"), type="button", cls="btn btn--ghost btn--sm",
+                    hx_post=bank_url(bank_id, "ask"), hx_vals=hx_vals(sent),
+                    hx_target="closest [data-line]", hx_swap="outerHTML"))
+            else:
+                notice = flash(out["outcome"], "success")
         except APIError as e:
             notice = error_flash(e)
         return _line_response(await _fresh_line(token, bank, line_id, notice), line_id)

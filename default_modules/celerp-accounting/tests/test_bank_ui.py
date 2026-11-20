@@ -461,6 +461,40 @@ async def test_a_refused_line_answer_shows_its_reason_on_the_form(ui_client):
     assert refusal_text(reason).split("'")[-1] in r.text, r.text[:600]  # the text after the apostrophe HTML escapes
 
 
+async def test_an_ask_whose_answer_did_not_come_back_shows_its_stored_state_not_an_error(ui_client):
+    """An Ask's email can take longer than the page waits for the API. When no answer comes
+    back, the page reads the Ask again under the same key, which answers as stored: it shows
+    that the email is still being sent, with Check again under that key, and then how it went."""
+    import ui.api_client as api
+    from ui.i18n import t
+
+    def stored(state, words):
+        return {"asked": ["l1"], "outcome": f"Asked about 1 line. {words}",
+                "email": {"state": state, "recipients": [{"name": "Ann", "state": state}]}}
+    pending, sent = stored("sending", "The email to Ann is still being sent."), stored("sent", "Ann got an email.")
+    form = {"line_id": "l1", "note": "What was this?", "idempotency_key": "k1"}
+    action = AsyncMock(side_effect=[api._no_response(504, api.timeout_message()), pending, sent])
+    _signed_in(ui_client)
+    patches = _api(_TABLE)
+    for p in patches:
+        p.start()
+    try:
+        with patch("ui.api_client.bank_action", action):
+            first = await ui_client.post("/accounting/reconcile/bank/b1/ask", data=form)
+            again = re.search(r"hx-vals='([^']*)'[^>]*>" + re.escape(t("btn.check_again")), first.text)
+            assert again, first.text[-900:]
+            assert json.loads(again.group(1).replace("&quot;", '"')) == form, again.group(1)
+            second = await ui_client.post("/accounting/reconcile/bank/b1/ask", data=form)
+    finally:
+        for p in patches:
+            p.stop()
+    assert [c.args[1:] for c in action.await_args_list] == [("b1", "ask", {
+        "line_ids": ["l1"], "note": "What was this?", "idempotency_key": "k1"})] * 3
+    assert pending["outcome"] in first.text and "flash--error" not in first.text, first.text[-900:]
+    assert api.timeout_message() not in first.text
+    assert sent["outcome"] in second.text and t("btn.check_again") not in second.text, second.text[-900:]
+
+
 async def test_a_stop_on_a_lookalike_entry_offers_match_it_and_post_anyway(ui_client):
     """A line stopped on an entry that only shares its money and date re-renders with the entry
     carried along: "Post anyway" sends it as separate_from, "Match it" matches it instead."""

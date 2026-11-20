@@ -8404,6 +8404,8 @@
   "acct.recon_asked_left_out": "{names} já não respondem a perguntas bancárias aqui, por isso não receberam o e-mail.",
   "acct.recon_asked_email_unconfirmed": "Perguntas feitas sobre {count} linhas. O e-mail para {name} pode ter sido enviado, mas não foi confirmado. A pessoa vê as perguntas ao entrar.",
   "acct.recon_asked_email_unconfirmed_one": "Pergunta feita sobre 1 linha. O e-mail para {name} pode ter sido enviado, mas não foi confirmado. A pessoa vê a pergunta ao entrar.",
+  "acct.recon_asked_email_sending": "Perguntas feitas sobre {count} linhas. O e-mail para {name} ainda está sendo enviado. Verifique novamente em alguns minutos.",
+  "acct.recon_asked_email_sending_one": "Pergunta feita sobre 1 linha. O e-mail para {name} ainda está sendo enviado. Verifique novamente em alguns minutos.",
   "acct.recon_reason_client": "O cliente disse: {answer}.",
   "ai.warn_credits": "Isto lê {count} arquivos com créditos de IA.",
   "ai.warn_credits_one": "Isto lê 1 arquivo com créditos de IA.",

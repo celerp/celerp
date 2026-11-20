@@ -8404,6 +8404,8 @@
   "acct.recon_asked_left_out": "{names} ne répondent plus aux questions bancaires ici et n'ont donc pas reçu d'e-mail.",
   "acct.recon_asked_email_unconfirmed": "Des questions ont été posées sur {count} lignes. Le courriel à {name} a peut-être été envoyé, mais cela n'a pas été confirmé. La personne verra les questions lors de sa connexion.",
   "acct.recon_asked_email_unconfirmed_one": "Une question a été posée sur 1 ligne. Le courriel à {name} a peut-être été envoyé, mais cela n'a pas été confirmé. La personne verra la question lors de sa connexion.",
+  "acct.recon_asked_email_sending": "Des questions ont été posées sur {count} lignes. Le courriel à {name} est encore en cours d'envoi. Vérifiez à nouveau dans quelques minutes.",
+  "acct.recon_asked_email_sending_one": "Une question a été posée sur 1 ligne. Le courriel à {name} est encore en cours d'envoi. Vérifiez à nouveau dans quelques minutes.",
   "acct.recon_reason_client": "Le client a dit : {answer}.",
   "ai.warn_credits": "Cela lit {count} fichiers avec des crédits d'IA.",
   "ai.warn_credits_one": "Ceci lit 1 fichier avec des crédits d'IA.",

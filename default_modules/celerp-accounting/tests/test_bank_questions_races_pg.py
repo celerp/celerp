@@ -86,8 +86,8 @@ async def test_the_same_ask_sent_twice_at_once_emails_once(committed_engine, own
     await asyncio.wait_for(entered.wait(), 20)
     second = await _ask(c, co, bk, lines["WITHDRAWAL"]["id"], idem)
     assert second.status_code == 200, second.text
-    # Still with the first run's transport: it may have gone out, so it is not sent again.
-    assert second.json()["email"]["state"] == "unconfirmed", second.json()
+    # Still with the first run's transport: it says so and is not sent again.
+    assert second.json()["email"]["state"] == "sending", second.json()
     done = await asyncio.wait_for(first, 30)
     assert done.status_code == 200 and done.json()["email"]["state"] == "sent", done.text
     assert len(calls) == 1

@@ -8404,6 +8404,8 @@
   "acct.recon_asked_left_out": "{names} はここで銀行に関する質問に回答しなくなったため、メールは送信されませんでした。",
   "acct.recon_asked_email_unconfirmed": "{count} 行について質問しました。{name} 宛てのメールは送信された可能性がありますが、確認できていません。サインインすると質問が表示されます。",
   "acct.recon_asked_email_unconfirmed_one": "1 行について質問しました。{name} 宛てのメールは送信された可能性がありますが、確認できていません。サインインすると質問が表示されます。",
+  "acct.recon_asked_email_sending": "{count} 行について質問しました。{name} 宛てのメールはまだ送信中です。数分後にもう一度確認してください。",
+  "acct.recon_asked_email_sending_one": "1 行について質問しました。{name} 宛てのメールはまだ送信中です。数分後にもう一度確認してください。",
   "acct.recon_reason_client": "クライアントは「{answer}」と言いました。",
   "ai.warn_credits": "AIクレジットを使って{count}個のファイルを読み取ります。",
   "ai.warn_credits_one": "AIクレジットを使って1個のファイルを読み取ります。",

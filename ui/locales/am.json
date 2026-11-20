@@ -8404,6 +8404,8 @@
   "acct.recon_asked_left_out": "{names} እዚህ የባንክ ጥያቄዎችን ከእንግዲህ ስለማይመልሱ ኢሜይል አልተላከላቸውም።",
   "acct.recon_asked_email_unconfirmed": "ስለ {count} መስመሮች ተጠይቋል። ወደ {name} የተላከው ኢሜይል ወጥቶ ሊሆን ይችላል፣ ግን አልተረጋገጠም። ሲገቡ ጥያቄዎቹን ያያሉ።",
   "acct.recon_asked_email_unconfirmed_one": "ስለ 1 መስመር ተጠይቋል። ወደ {name} የተላከው ኢሜይል ወጥቶ ሊሆን ይችላል፣ ግን አልተረጋገጠም። ሲገቡ ጥያቄውን ያያሉ።",
+  "acct.recon_asked_email_sending": "ስለ {count} መስመሮች ተጠይቋል። ወደ {name} የሚላከው ኢሜይል አሁንም እየተላከ ነው። ከጥቂት ደቂቃዎች በኋላ እንደገና ያረጋግጡ።",
+  "acct.recon_asked_email_sending_one": "ስለ 1 መስመር ተጠይቋል። ወደ {name} የሚላከው ኢሜይል አሁንም እየተላከ ነው። ከጥቂት ደቂቃዎች በኋላ እንደገና ያረጋግጡ።",
   "acct.recon_reason_client": "ደንበኛው እንዲህ ብሏል፦ {answer}።",
   "ai.warn_credits": "ይህ የ{count} ፋይሎችን ከAI ክሬዲቶች ጋር ያነባል",
   "ai.warn_credits_one": "ይህ 1 ፋይል ከAI ክሬዲቶች ጋር ያነባል.",

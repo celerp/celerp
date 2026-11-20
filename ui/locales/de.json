@@ -8404,6 +8404,8 @@
   "acct.recon_asked_left_out": "{names} beantworten hier keine Bankfragen mehr und haben daher keine E-Mail erhalten.",
   "acct.recon_asked_email_unconfirmed": "Zu {count} Zeilen wurde gefragt. Die E-Mail an {name} wurde möglicherweise versendet, wurde aber nicht bestätigt. Die Fragen werden beim Anmelden angezeigt.",
   "acct.recon_asked_email_unconfirmed_one": "Zu 1 Zeile wurde gefragt. Die E-Mail an {name} wurde möglicherweise versendet, wurde aber nicht bestätigt. Die Frage wird beim Anmelden angezeigt.",
+  "acct.recon_asked_email_sending": "Zu {count} Zeilen wurde gefragt. Die E-Mail an {name} wird noch gesendet. Prüfen Sie den Status in einigen Minuten erneut.",
+  "acct.recon_asked_email_sending_one": "Zu 1 Zeile wurde gefragt. Die E-Mail an {name} wird noch gesendet. Prüfen Sie den Status in einigen Minuten erneut.",
   "acct.recon_reason_client": "Der Mandant sagte: {answer}.",
   "ai.warn_credits": "Dabei werden {count} Dateien mit KI-Credits gelesen.",
   "ai.warn_credits_one": "Dabei wird 1 Datei mit KI-Credits gelesen.",

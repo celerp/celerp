@@ -547,7 +547,7 @@ BANK_CALLS = {
 QUESTIONS_URL = "/accounting/questions"
 _TITLE_KEY = "acct.recon_questions_title"
 # Worst first: the state an Ask reports for its emails is the worst one.
-_EMAIL_STATES = ("failed", "unconfirmed", "sent")
+_EMAIL_STATES = ("failed", "unconfirmed", "sending", "sent")
 
 
 async def client_users(db: AsyncSession, company_id: uuid.UUID) -> list:
@@ -721,8 +721,9 @@ async def _ask_message(db: AsyncSession, company_id: uuid.UUID, plan: dict) -> d
 
 
 async def _ask_outcome(db: AsyncSession, plan: dict, done: dict) -> dict:
-    """The Ask's answer, read from each recipient's stored attempt: one still sending reads as
-    unconfirmed, since it may have gone out."""
+    """The Ask's answer, read from each recipient's stored attempt (email.attempt_state): one
+    still with the transport reads as sending, so a run of the key while another run's email
+    is slow says so, and says how it went once that send is recorded."""
     from datetime import datetime, timezone
 
     from celerp.models.company import User
@@ -736,7 +737,7 @@ async def _ask_outcome(db: AsyncSession, plan: dict, done: dict) -> dict:
     for member in sorted(done["recipients"], key=lambda m: (names.get(m, ""), m)):
         record = done["recipients"][member]
         state = email_service.attempt_state(record, now)
-        rows.append({"name": names.get(member, ""), "state": "unconfirmed" if state == "sending" else state,
+        rows.append({"name": names.get(member, ""), "state": state,
                      "reason": record.get("reason"), "detail": record.get("detail")})
     worst = min((r["state"] for r in rows), key=_EMAIL_STATES.index, default="sent")
     failed = [r for r in rows if r["state"] != "sent"]
@@ -759,6 +760,7 @@ async def _ask_outcome(db: AsyncSession, plan: dict, done: dict) -> dict:
 _ASKED_NOT_SENT = {
     "failed": {False: "acct.recon_asked_email_failed", True: "acct.recon_asked_email_failed_one"},
     "unconfirmed": {False: "acct.recon_asked_email_unconfirmed", True: "acct.recon_asked_email_unconfirmed_one"},
+    "sending": {False: "acct.recon_asked_email_sending", True: "acct.recon_asked_email_sending_one"},
 }
 
 

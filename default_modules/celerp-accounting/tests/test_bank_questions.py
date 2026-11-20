@@ -492,6 +492,36 @@ async def test_a_recipient_who_changes_while_an_earlier_email_is_slow_is_not_mai
         assert again.json()["email"]["state"] == "sent" and calls[1:] == ["moved@test.test"], (calls, again.text)
 
 
+async def test_an_ask_read_while_its_email_is_slow_says_it_is_still_being_sent_then_how_it_went(
+        client, session, monkeypatch):
+    """A run of the Ask's key while its email is with the transport answers that the email is
+    still being sent, read from the stored attempt, never that it failed or went unconfirmed;
+    once the send settles, the same key says how it went."""
+    import asyncio
+
+    co, bk, client_h, lines = await _setup(client, session)
+    entered, release, calls = asyncio.Event(), asyncio.Event(), []
+
+    async def slow(to, subject, body_html, body_text="", **kw):
+        calls.append(to)
+        entered.set()
+        await asyncio.wait_for(release.wait(), 10)
+        return EmailResult(True, "sent")
+    monkeypatch.setattr("celerp.services.email.send_email", slow)
+    idem = B.key()
+    asking = asyncio.create_task(_ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem))
+    await asyncio.wait_for(entered.wait(), 10)
+    during = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)
+    assert during.status_code == 200, during.text
+    out = during.json()
+    assert out["email"]["state"] == "sending" and {r["state"] for r in out["email"]["recipients"]} == {"sending"}, out
+    assert "still being sent" in out["outcome"] and "not confirmed" not in out["outcome"], out
+    release.set()
+    assert (await asking).json()["email"]["state"] == "sent"
+    after = (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)).json()
+    assert after["email"]["state"] == "sent" and "got an email" in after["outcome"] and len(calls) == 1, (after, calls)
+
+
 @pytest.mark.parametrize("relay", [False, True], ids=["smtp", "relay"])
 async def test_an_email_taken_before_a_crash_is_never_sent_again_unless_the_relay_deduplicates(
         client, session, monkeypatch, relay):
@@ -506,11 +536,19 @@ async def test_an_email_taken_before_a_crash_is_never_sent_again_unless_the_rela
     idem = B.key()
     with pytest.raises(_Crash):
         await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)
-    _sent(monkeypatch)
+    later_calls = _sent(monkeypatch)
     again = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)
     assert again.status_code == 200, again.text
-    assert again.json()["email"] == {"state": "unconfirmed", "recipients": [{"name": "Viewer", "state": "unconfirmed"}]}
-    assert "may have gone out" in again.json()["outcome"] and len(calls) == 1
+    # Cut off a moment ago, it reads as one still with the transport: never sent again.
+    assert again.json()["email"]["state"] == "sending" and not later_calls, again.json()
+    from datetime import timedelta
+    monkeypatch.setattr("celerp.services.email.SEND_TIMEOUT", timedelta(0))  # past the longest a send takes
+    later = (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)).json()
+    if relay:
+        assert later["email"]["state"] == "sent" and [c["operation_id"] for c in later_calls] == calls, later
+    else:
+        assert later["email"] == {"state": "unconfirmed", "recipients": [{"name": "Viewer", "state": "unconfirmed"}]}
+        assert "may have gone out" in later["outcome"] and not later_calls, later
 
 
 @pytest.mark.parametrize("relay", [False, True], ids=["smtp", "relay"])
