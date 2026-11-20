@@ -133,17 +133,32 @@ def tax_day(doc: dict | None, timezone_name: str | None = None) -> dt.date:
 
 def taxes_on(taxes: list[dict], day: dt.date) -> list[dict]:
     """A stored tax list as it charges on ``day``: each code in force that day with its ``rate``
-    (rate_on), a withholding code's rate negative as a line carries it; a code with no version in
-    force that day is left out. Every reader of a list row's rate reads it here."""
-    from celerp.localization.taxcodes import NoRateInForce, TaxCode, rate_on
+    as a line carries it (_line_rate); a code with no version in force that day is left out.
+    Every reader of a list row's rate reads it here."""
+    from celerp.localization.taxcodes import NoRateInForce
     rows = []
     for row in taxes:
         try:
-            rate = rate_on(TaxCode.model_validate(row), day)
+            rate = _line_rate(_tax_code(row), day)
         except NoRateInForce:
             continue
-        rows.append({**row, "rate": -rate if row.get("category") == "withholding" else rate})
+        rows.append({**row, "rate": rate})
     return rows
+
+
+def _tax_code(row: dict):
+    """A stored tax list row as a TaxCode. A row of taxes_on also carries its ``rate`` on the day;
+    the rate is read from its versions, never from that copy."""
+    from celerp.localization.taxcodes import TaxCode
+    return TaxCode.model_validate({key: value for key, value in row.items() if key != "rate"})
+
+
+def _line_rate(code, day: dt.date) -> float:
+    """The rate of ``code`` on ``day`` (rate_on) as a line carries it: a withholding code's
+    negative."""
+    from celerp.localization.taxcodes import rate_on
+    rate = rate_on(code, day)
+    return -rate if code.category == "withholding" else rate
 
 
 def generic_taxes() -> list[dict]:
@@ -186,13 +201,16 @@ def taxes_for(taxes: list[dict], doc_type: str | None) -> list[dict]:
     return [x for x in taxes if (x.get("tax_type") or "both") in (side, "both")]
 
 
-def default_line_taxes(taxes: list[dict], doc_type: str | None, *, doc: dict | None) -> list[dict] | None:
+def default_line_taxes(taxes: list[dict], doc_type: str | None, day: dt.date, *,
+                       doc: dict | None) -> list[dict] | None:
     """The taxes list a new line starts with, whichever way it is added (scan, from items, append,
-    reorder, the editor). `doc` is the target document's stored state, None for a new one.
+    reorder, the editor). `doc` is the target document's stored state, None for a new one; `day`
+    is the day its taxes are charged on (tax_day).
 
     On a document with no document tax: every company default for the document's side with a
-    rate that is not zero, in list order (a company may hold two, such as CGST 9% and SGST 9%),
-    each as line_tax builds it. On a draft that already charges a tax as a whole, its taxation
+    rate in force on `day` that is not zero, in list order (a company may hold two, such as CGST
+    9% and SGST 9%), each as line_tax builds it on `day`; a default with no rate that day is left
+    out. On a draft that already charges a tax as a whole, its taxation
     stands: a new line takes the taxes its lines all carry (as line_tax_key), copied whole, never
     a company default; a line saved with only a rate carries what legacy_line_taxes reads. When
     they differ or there are none, None: the line carries no tax of its own until the user sets one
@@ -203,26 +221,28 @@ def default_line_taxes(taxes: list[dict], doc_type: str | None, *, doc: dict | N
     if doc and tax_entries(doc.get("doc_taxes")):
         lines = [line for line in doc.get("line_items") or [] if isinstance(line, dict)]
         carried = [None if line_tax_unset(line) else tax_entries(line.get("taxes"))
-                   or legacy_line_taxes(line, taxes, doc_type) for line in lines]
+                   or legacy_line_taxes(line, taxes, doc_type, day) for line in lines]
         if not carried or None in carried or len({line_tax_key(each) for each in carried}) != 1:
             return None
         return [{**tax, "amount": 0} for tax in carried[0]]
-    return [line_tax(tax) for tax in taxes_for(taxes, doc_type)
-            if tax.get("is_default") and float(tax.get("rate") or 0)]
+    side = doc_side(doc_type)
+    return [line_tax(tax, day, side) for tax in taxes_on(taxes_for(taxes, doc_type), day)
+            if tax.get("is_default") and tax["rate"]]
 
 
-def matching_tax(taxes: list[dict], code: str, rate: float) -> dict | None:
-    """The company tax a line charging *rate* under *code* is: the first in *taxes* at that rate
-    named *code*, or with no code the first at that rate when it is not zero."""
-    return next((tax for tax in taxes if float(tax.get("rate") or 0) == rate
+def matching_tax(taxes: list[dict], code: str, rate: float, day: dt.date) -> dict | None:
+    """The company tax a line charging *rate* under *code* is: the first in *taxes* whose rate in
+    force on *day* is *rate* named *code*, or with no code the first at that rate when it is not
+    zero."""
+    return next((tax for tax in taxes_on(taxes, day) if tax["rate"] == rate
                  and (tax.get("name", "") == code if code else rate != 0)), None)
 
 
-def legacy_line_taxes(line: dict, taxes: list[dict], doc_type: str | None) -> list[dict] | None:
+def legacy_line_taxes(line: dict, taxes: list[dict], doc_type: str | None, day: dt.date) -> list[dict] | None:
     """The taxes a line with no taxes list charges through its ``tax_rate`` (and ``tax_code``),
     as an older version and a CSV import with tax columns store them, and as the editor shows
-    them: the company tax it matches (matching_tax) as line_tax builds it, else its own code and
-    rate. No tax at a zero rate; None when the rate can't be read."""
+    them: the company tax it matches on ``day`` (matching_tax) as line_tax builds it on that
+    day, else its own code and rate. No tax at a zero rate; None when the rate can't be read."""
     try:
         rate = float(line.get("tax_rate") or 0)
     except (TypeError, ValueError):
@@ -230,9 +250,9 @@ def legacy_line_taxes(line: dict, taxes: list[dict], doc_type: str | None) -> li
     if not rate:
         return []
     code = line.get("tax_code") or ""
-    match = matching_tax(taxes_for(taxes, doc_type), code, rate)
+    match = matching_tax(taxes_for(taxes, doc_type), code, rate, day)
     if match is not None:
-        return [line_tax(match)]
+        return [line_tax(match, day, doc_side(doc_type))]
     return [{"code": code, "rate": rate, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
 
 
@@ -251,12 +271,22 @@ def line_tax_unset(line: dict) -> bool:
     return "taxes" in line and line["taxes"] is None
 
 
-def line_tax(tax: dict) -> dict:
-    """A company tax as a line carries it: its name, rate, saved calculation order and whether
-    it is compound, with no amount yet."""
-    return {"code": tax.get("name"), "rate": float(tax["rate"]), "amount": 0,
-            "order": int(tax.get("default_order") or 0), "is_compound": bool(tax.get("is_compound")),
-            "label": ""}
+def line_tax(code: dict, day: dt.date, side: str) -> dict:
+    """A company tax code as a line on a ``side`` ("sales" or "purchase") document carries it on
+    ``day`` (LineTaxSnapshot): its name as ``code``, its id, the version in force that day (its
+    rate as _line_rate gives it, start and base fraction), its category, component, report tags,
+    withholding point, cash basis and the account of that side (None posts to the role default),
+    its saved calculation order and compounding, with no amount yet. NoRateInForce when no
+    version is in force that day. Posting reads this copy, never the live code."""
+    from celerp.localization.taxcodes import LineTaxSnapshot, version_on
+    tax = _tax_code(code)
+    version = tax.versions[version_on(tax, day)]
+    return LineTaxSnapshot(
+        code=tax.name, rate=_line_rate(tax, day), order=tax.default_order, is_compound=tax.is_compound,
+        code_id=tax.id, base_fraction=version.base_fraction, category=tax.category, component=tax.component,
+        report_tags=tax.report_tags, version_from=version.valid_from, withholding_point=tax.withholding_point,
+        cash_basis=tax.cash_basis, account=tax.input_account if side == "purchase" else tax.output_account,
+    ).model_dump(mode="json")
 
 
 def line_tax_key(value) -> tuple:

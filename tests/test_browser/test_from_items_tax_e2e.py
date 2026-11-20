@@ -31,7 +31,7 @@ import httpx
 import psycopg2
 import pytest
 
-from celerp.tax_regimes import default_line_taxes, get_regime, line_tax, taxes_on
+from celerp.tax_regimes import default_line_taxes, get_regime, line_tax
 from celerp_docs.doc_money import draft_route
 from test_helpers import tax_list_body
 from ui.i18n import t
@@ -49,13 +49,13 @@ _INDIA_BEFORE = [
     {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": False},
     {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False},
 ]
-_VAT_WHOLE = line_tax(next(tax for tax in taxes_on(get_regime("TH")["taxes"], dt.date.today())
-                           if tax["name"] == "VAT 7%"))
+_VAT_WHOLE = line_tax(next(tax for tax in get_regime("TH")["taxes"] if tax["name"] == "VAT 7%"),
+                      dt.date.today(), "sales")
 
 
 def _default_factor(country: str) -> float:
     """What an invoice line of a company newly set up in ``country`` costs per unit of price."""
-    taxes = default_line_taxes(taxes_on(get_regime(country)["taxes"], dt.date.today()), "invoice", doc=None)
+    taxes = default_line_taxes(get_regime(country)["taxes"], "invoice", dt.date.today(), doc=None)
     return 1 + sum(tax["rate"] for tax in taxes) / 100
 
 

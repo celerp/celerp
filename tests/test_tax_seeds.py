@@ -5,6 +5,7 @@ clear default, a new line's tax is built one way everywhere, and an existing com
 on a code that has been replaced is found so it can be told."""
 from __future__ import annotations
 
+import datetime as dt
 import copy
 import inspect
 
@@ -13,6 +14,8 @@ import pytest
 from celerp import tax_regimes
 from celerp.localization import packs
 from celerp.tax_regimes import default_line_taxes, get_regime
+
+_DAY = dt.date(2026, 10, 1)  # the day a document charges its taxes on
 
 
 def _rows(country: str) -> dict[str, dict]:
@@ -88,8 +91,8 @@ def test_india_reduced_rate_follows_the_2025_slabs():
 @pytest.mark.real_packs
 def test_india_default_is_igst():
     taxes = get_regime("IN")["taxes"]
-    assert [t["code"] for t in default_line_taxes(taxes, "invoice", doc=None)] == ["IGST 18%"]
-    assert [t["code"] for t in default_line_taxes(taxes, "bill", doc=None)] == ["IGST 18%"]
+    assert [t["code"] for t in default_line_taxes(taxes, "invoice", _DAY, doc=None)] == ["IGST 18%"]
+    assert [t["code"] for t in default_line_taxes(taxes, "bill", _DAY, doc=None)] == ["IGST 18%"]
     rows = _rows("IN")
     assert not rows["CGST 9%"]["is_default"] and not rows["SGST 9%"]["is_default"]
     assert "CGST 9%" in rows["IGST 18%"]["description"] and "SGST 9%" in rows["IGST 18%"]["description"]
@@ -123,7 +126,7 @@ def test_quebec_qst_is_not_compound_and_charges_on_the_price():
 def test_malaysia_seeds_codes_in_force():
     rows = _rows("MY")
     assert "SST 6%" not in rows
-    assert [t["code"] for t in default_line_taxes(get_regime("MY")["taxes"], "invoice", doc=None)] == [
+    assert [t["code"] for t in default_line_taxes(get_regime("MY")["taxes"], "invoice", _DAY, doc=None)] == [
         "Sales Tax 10%"]
     assert rows["Sales Tax 10%"]["rate"] == 10.0 and rows["Sales Tax 10%"]["tax_type"] == "sales"
     assert rows["Sales Tax 5%"]["rate"] == 5.0 and not rows["Sales Tax 5%"]["is_default"]
@@ -168,12 +171,12 @@ def test_default_line_taxes_matches_the_scan_line():
     from celerp_docs import routes
 
     th = get_regime("TH")["taxes"]
-    assert default_line_taxes(th, "invoice", doc=None) == [
+    assert default_line_taxes(th, "invoice", _DAY, doc=None) == [
         {"code": "VAT 7%", "rate": 7.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
-    assert default_line_taxes(get_regime("IN")["taxes"], "bill", doc=None)[0]["code"] == "IGST 18%"
-    assert default_line_taxes(get_regime("ZZ")["taxes"], "invoice", doc=None) == []
-    assert default_line_taxes(get_regime("MY")["taxes"], "bill", doc=None) == []
-    assert default_line_taxes(get_regime("TH")["taxes"], None, doc={"doc_taxes": []})[0]["code"] == "VAT 7%"
+    assert default_line_taxes(get_regime("IN")["taxes"], "bill", _DAY, doc=None)[0]["code"] == "IGST 18%"
+    assert default_line_taxes(get_regime("ZZ")["taxes"], "invoice", _DAY, doc=None) == []
+    assert default_line_taxes(get_regime("MY")["taxes"], "bill", _DAY, doc=None) == []
+    assert default_line_taxes(get_regime("TH")["taxes"], None, _DAY, doc={"doc_taxes": []})[0]["code"] == "VAT 7%"
     assert "line_taxes" in inspect.signature(routes._scan_doc_line).parameters
     assert '"is_compound": bool(' not in inspect.getsource(routes._scan_doc_line)
 
@@ -188,9 +191,9 @@ def test_a_new_line_takes_every_default_tax():
         {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": True},
         {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": False},
     ]
-    assert [(t["code"], t["rate"]) for t in default_line_taxes(before, "invoice", doc=None)] == [
+    assert [(t["code"], t["rate"]) for t in default_line_taxes(before, "invoice", _DAY, doc=None)] == [
         ("CGST 9%", 9.0), ("SGST 9%", 9.0)]
-    assert [t["code"] for t in default_line_taxes(before, "bill", doc=None)] == ["CGST 9%", "SGST 9%"]
+    assert [t["code"] for t in default_line_taxes(before, "bill", _DAY, doc=None)] == ["CGST 9%", "SGST 9%"]
 
 
 _VAT = {"code": "VAT 7%", "rate": 7.0, "amount": 7.0, "order": 0, "is_compound": False, "label": ""}
@@ -215,12 +218,12 @@ def test_a_document_taxed_as_a_whole_keeps_its_taxation_on_a_new_line():
     differ or it has none. A stored value of another shape is no document tax."""
     th = get_regime("TH")["taxes"]
     compound = {**_LEVY, "order": 1, "is_compound": True, "amount": 5.25}
-    assert default_line_taxes(th, "invoice", doc=_draft([_VAT], [], [])) == []
-    assert default_line_taxes(th, "invoice", doc=_draft([_VAT], [compound], [compound])) == [{**compound, "amount": 0}]
-    assert default_line_taxes(th, "invoice", doc=_draft([_VAT])) is None
-    assert default_line_taxes(th, "invoice", doc=_draft([_LEVY], [_VAT], [])) is None
-    assert default_line_taxes(th, "invoice", doc=_draft([_LEVY], [_VAT], [{**_VAT, "is_compound": True}])) is None
-    assert default_line_taxes(th, "invoice", doc=_draft("7%", []))[0]["code"] == "VAT 7%"
+    assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_VAT], [], [])) == []
+    assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_VAT], [compound], [compound])) == [{**compound, "amount": 0}]
+    assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_VAT])) is None
+    assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_LEVY], [_VAT], [])) is None
+    assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_LEVY], [_VAT], [{**_VAT, "is_compound": True}])) is None
+    assert default_line_taxes(th, "invoice", _DAY, doc=_draft("7%", []))[0]["code"] == "VAT 7%"
     with pytest.raises(TypeError):
         default_line_taxes(th, "invoice")
 
@@ -229,16 +232,16 @@ def test_a_line_left_for_the_user_leaves_the_next_line_to_the_user():
     """A line stored with its tax still to be set (None) has decided nothing: on a draft taxed as a
     whole, a new line next to it is left for the user too, never given no tax as if decided."""
     th = get_regime("TH")["taxes"]
-    assert default_line_taxes(th, "invoice", doc=_draft([_LEVY], None)) is None
-    assert default_line_taxes(th, "invoice", doc=_draft([_LEVY], None, None)) is None
-    assert default_line_taxes(th, "invoice", doc=_draft([_LEVY], None, [])) is None
+    assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_LEVY], None)) is None
+    assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_LEVY], None, None)) is None
+    assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_LEVY], None, [])) is None
 
 
 def test_a_document_wide_levy_leaves_vat_on_a_line_added_next_to_it():
     """A draft with a $100 line taxed VAT 7% and a document-wide 5% levy: a $100 line added to it
     still takes VAT 7%, so VAT is $14, the levy $10 and the total $224 (not $217)."""
     th = get_regime("TH")["taxes"]
-    added = default_line_taxes(th, "invoice", doc=_draft([_LEVY], [_VAT]))
+    added = default_line_taxes(th, "invoice", _DAY, doc=_draft([_LEVY], [_VAT]))
     assert [t["code"] for t in added] == ["VAT 7%"]
     lines = [{"quantity": 1, "unit_price": 100.0, "taxes": [_VAT]}, {"quantity": 1, "unit_price": 100.0, "taxes": added}]
     assert _money([_LEVY], lines) == (24.0, 224.0)
@@ -252,7 +255,7 @@ def test_a_tax_changed_in_settings_is_never_added_to_a_draft_taxed_as_a_whole(ch
     its own: the document's VAT 7% covers it, $14, total $214 (not $222)."""
     th = [{**tax, **change} if tax["name"] == "VAT 7%" else tax for tax in get_regime("TH")["taxes"]]
     whole = [{**_VAT, "amount": 0}]
-    added = default_line_taxes(th, "invoice", doc=_draft(whole, []))
+    added = default_line_taxes(th, "invoice", _DAY, doc=_draft(whole, []))
     lines = [{"quantity": 1, "unit_price": 100.0, "taxes": []}, {"quantity": 1, "unit_price": 100.0, "taxes": added}]
     assert added == []
     assert _money(whole, lines) == (14.0, 214.0)
@@ -267,7 +270,7 @@ def test_a_new_line_takes_the_companys_calculation_order():
         {"name": "VAT 5%", "rate": 5.0, "tax_type": "both", "is_default": True, "is_compound": False,
          "default_order": 0},
     ]
-    line_taxes = default_line_taxes(taxes, "invoice", doc=None)
+    line_taxes = default_line_taxes(taxes, "invoice", _DAY, doc=None)
     assert [(t["code"], t["order"]) for t in line_taxes] == [("Levy 10%", 1), ("VAT 5%", 0)]
     assert _money([], [{"quantity": 1, "unit_price": 100.0, "taxes": line_taxes}]) == (15.5, 115.5)
 

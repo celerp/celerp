@@ -62,7 +62,7 @@ from celerp.services.ledger_sources import record_entry_ids
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import lock_recorded_unmatched, recorded_unmatched, return_unmatched
-from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes, tax_day, taxes_on
+from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes, tax_day
 from celerp.services.business_time import business_date_at, business_date_of, company_timezone, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, item_measure_meta, line_label, line_name, proposed_sell_qty,
@@ -14646,8 +14646,8 @@ async def scan_doc(
     priced = sb.priced and (not is_cost_list_name(price_list) or role_has_permission(settings, role, "view_inventory_costs"))
     legacy = await converted_from_memo(session, company_id, entity_id, state)
     currency = state.get("currency")
-    line_taxes = default_line_taxes(taxes_on(side_taxes(settings, doc_type), tax_day(state, settings.get("timezone"))),
-                                    doc_type, doc=state)
+    line_taxes = default_line_taxes(side_taxes(settings, doc_type), doc_type, tax_day(state, settings.get("timezone")),
+                                    doc=state)
     existing = [dict(l) for l in (state.get("line_items") or [])]
     known = line_id_counts(existing)
 

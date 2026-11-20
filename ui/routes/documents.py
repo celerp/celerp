@@ -45,7 +45,7 @@ from celerp.services.doc_balance import MEMO_DRAW_STATUSES, doc_tax, doc_value, 
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_STATUSES
 from celerp.services.money import document_line_amount, to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import (default_line_taxes, holds_tax, legacy_line_taxes, line_tax, line_tax_unset,
+from celerp.tax_regimes import (default_line_taxes, doc_side, holds_tax, legacy_line_taxes, line_tax, line_tax_unset,
                                 matching_tax, set_new_line_taxes, tax_day, tax_entries, tax_text, taxes_for,
                                 unreadable_tax)
 from celerp.services.payment_terms import due_date_for_terms
@@ -1578,7 +1578,8 @@ async def _new_line_taxes(token: str, doc_type: str | None, doc: dict | None) ->
     a list. A failed read raises, so no line is added without its tax."""
     if not doc_type or doc_type == "list":
         return []
-    return default_line_taxes(await api.get_document_taxes(token, doc_type, tax_day(doc)), doc_type, doc=doc)
+    day = tax_day(doc)
+    return default_line_taxes(await api.get_document_taxes(token, doc_type, day), doc_type, day, doc=doc)
 
 
 async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME,
@@ -8544,6 +8545,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
 
         _taxes_list = taxes_for(company_taxes or [], doc_type)
+        _tax_on = tax_day(doc)
 
         def _tax_select(li: dict | None = None) -> FT:
             """Build tax <select> + hidden custom-rate input + hidden label for a line item.
@@ -8578,11 +8580,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             selected_val = "|0"
             is_custom = False
             stored_option = None
-            match = None if len(stored) > 1 or unreadable else matching_tax(_taxes_list, current_code, current_rate)
+            match = None if len(stored) > 1 or unreadable else matching_tax(_taxes_list, current_code, current_rate, _tax_on)
             if match is None and not held and current_code:
                 # A line saved with only a rate, under a name no company tax has, shows by that
                 # name as the new-line rule reads it (legacy_line_taxes), never as a nameless rate.
-                held = legacy_line_taxes(li, _taxes_list, doc_type) or []
+                held = legacy_line_taxes(li, _taxes_list, doc_type, _tax_on) or []
             if match is not None:
                 selected_val = _tax_option_value(match)
             elif held:
@@ -8603,7 +8605,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             for tax in _taxes_list:
                 val = _tax_option_value(tax)
                 options.append(Option(_tax_label(tax), value=val, selected=(selected_val == val),
-                                      data_tax=_json.dumps(line_tax(tax))))
+                                      data_tax=_json.dumps(line_tax(tax, _tax_on, doc_side(doc_type)))))
             options.append(Option(t("doc.custom"), value="|custom", selected=is_custom))
 
             custom_input = Input(
@@ -8872,7 +8874,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         def _li_empty_row(target: dict | None) -> FT:
             """An empty line row starting with the taxes default_line_taxes gives a new line on
             `target` ("--" where the user sets them)."""
-            _new_taxes = default_line_taxes(_taxes_list, doc_type, doc=target)
+            _new_taxes = default_line_taxes(_taxes_list, doc_type, _tax_on, doc=target)
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
             _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
             _cats = item_categories or {}

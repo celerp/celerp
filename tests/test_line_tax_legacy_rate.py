@@ -10,6 +10,7 @@ else its own code and rate. A rate that can't be read leaves the new line's tax 
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -20,11 +21,13 @@ from celerp.tax_regimes import default_line_taxes, get_regime, line_tax
 from test_new_line_tax_ui import _post, _taxes
 from test_ui import _authed, _mock_get_company, _mock_get_modules, ui_client  # noqa: F401  (fixtures)
 
+_DAY = dt.date(2026, 10, 1)  # the day a document charges its taxes on
 _TH = get_regime("TH")["taxes"]
-_VAT = line_tax(next(tax for tax in _TH if tax["name"] == "VAT 7%"))
+_VAT = line_tax(next(tax for tax in _TH if tax["name"] == "VAT 7%"), _DAY, "sales")
 _LEVY = {"code": "Levy 5%", "rate": 5.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}
-_COMPOUND = {"name": "Levy 10%", "rate": 10.0, "tax_type": "both", "is_default": False, "is_compound": True,
+_COMPOUND = {"name": "Levy 10%", "versions": [{"rate": 10.0}], "tax_type": "both", "is_default": False, "is_compound": True,
              "default_order": 1}
+
 
 
 def _legacy(rate, code=None) -> dict:
@@ -50,7 +53,7 @@ def _doc(*lines, doc_taxes=(_LEVY,)) -> dict:
     ([_legacy(7, "Old VAT")], _TH,
      [{"code": "Old VAT", "rate": 7.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]),
     ([_legacy(6)], _TH, [{"code": "", "rate": 6.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]),
-    ([_legacy(10, "Levy 10%")], _TH + [_COMPOUND], [line_tax(_COMPOUND)]),
+    ([_legacy(10, "Levy 10%")], _TH + [_COMPOUND], [line_tax(_COMPOUND, _DAY, "sales")]),
     ([_legacy(0, "VAT 7%"), _modern([])], _TH, []),
     ([_legacy(7, "VAT 7%"), _modern([])], _TH, None),
     ([_legacy(7, "VAT 7%"), _legacy(10, "Levy 10%")], _TH + [_COMPOUND], None),
@@ -59,7 +62,7 @@ def _doc(*lines, doc_taxes=(_LEVY,)) -> dict:
 ], ids=["named", "rate-only", "next-to-same-tax", "empty-list", "unknown-name-kept", "custom-rate", "compound",
         "zero-next-to-none", "rate-next-to-none", "conflicting-rates", "unreadable", "next-to-unset"])
 def test_a_new_line_counts_a_line_saved_with_only_a_rate(lines, taxes, expected):
-    assert default_line_taxes(taxes, "invoice", doc=_doc(*lines)) == expected
+    assert default_line_taxes(taxes, "invoice", _DAY, doc=_doc(*lines)) == expected
 
 
 @pytest.mark.parametrize(("currency", "price"), [("USD", 100.0), ("JPY", 1999.0), ("BHD", 10.555)])
@@ -70,7 +73,7 @@ def test_the_new_line_charges_what_the_line_saved_with_a_rate_charges(currency, 
     from celerp_docs.doc_money import document_money
 
     old = {**_legacy(7, "VAT 7%"), "unit_price": price}
-    added = {**_modern(default_line_taxes(_TH, "invoice", doc=_doc(old))), "unit_price": price}
+    added = {**_modern(default_line_taxes(_TH, "invoice", _DAY, doc=_doc(old))), "unit_price": price}
     money = document_money({"doc_taxes": [_LEVY]}, [old, added], currency, keep_unrated_tax=True)
     uniform = document_money({"doc_taxes": [_LEVY]}, [old, dict(old)], currency, keep_unrated_tax=True)
     assert (money["tax"], money["total"]) == (uniform["tax"], uniform["total"])
@@ -132,7 +135,7 @@ async def test_the_editor_shows_a_line_saved_with_a_rate_as_the_new_line_reads_i
             assert chosen["value"] == "|custom"
             rate = float(sel.parent.select_one('[data-name="tax_rate_custom"]')["value"])
             shown.append([{"code": "", "rate": rate, "amount": 0, "order": 0, "is_compound": False, "label": ""}])
-    assert shown == [legacy_line_taxes(line, _TH, "invoice") for line in lines]
+    assert shown == [legacy_line_taxes(line, _TH, "invoice", _DAY) for line in lines]
 
 
 @pytest.mark.parametrize("line", [_legacy(7, "VAT 7%"), _modern([_VAT])], ids=["rate-only", "taxes-list"])

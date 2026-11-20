@@ -21,6 +21,8 @@ from ui.i18n import refusal_text
 _WHT = {"code": "WHT 3%", "rate": -3.0, "order": 1, "is_compound": False}
 _VAT = {"code": "VAT 7%", "rate": 7.0, "order": 0, "is_compound": False}
 
+_DAY = dt.date(2026, 10, 1)  # the day a document charges its taxes on
+
 
 async def _with_taxes(client, session, country: str) -> dict:
     auth = await _company(session, "THB")
@@ -156,5 +158,5 @@ def test_a_new_line_starts_with_the_default_tax_for_its_side():
     from celerp.tax_regimes import default_line_taxes
 
     th = get_regime("TH")["taxes"]
-    assert [t["code"] for t in default_line_taxes(th, "invoice", doc=None)] == ["VAT 7%"]
-    assert [t["code"] for t in default_line_taxes(th, "bill", doc=None)] == ["VAT 7%"]
+    assert [t["code"] for t in default_line_taxes(th, "invoice", _DAY, doc=None)] == ["VAT 7%"]
+    assert [t["code"] for t in default_line_taxes(th, "bill", _DAY, doc=None)] == ["VAT 7%"]
