@@ -601,3 +601,49 @@ async def test_shutdown_stops_migration_runs(monkeypatch):
         settings.gateway_token = saved_token
         settings.celerp_public_url = saved_public
     assert stopped == [run_id]
+
+
+async def test_shutdown_cancels_ai_job_tasks_and_lets_a_lease_renewal_in_flight_finish(monkeypatch):
+    """The app stops its AI jobs by the jobs' own rule (``jobs.shutdown``): a job's task is
+    cancelled, and a lease renewal whose job's task already ended is waited for, never
+    cancelled mid-statement."""
+    import asyncio
+    import uuid
+
+    import celerp.main as main_mod
+    from celerp.ai import jobs
+    from celerp.config import settings
+
+    seen = []
+
+    async def _job():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            seen.append("job cancelled")
+            raise
+
+    async def _renewal():
+        try:
+            await asyncio.sleep(0.2)
+            seen.append("renewal finished")
+        except asyncio.CancelledError:
+            seen.append("renewal cancelled")
+            raise
+
+    saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
+    settings.gateway_token = ""
+    settings.celerp_public_url = None
+    job_id = uuid.uuid4()
+    try:
+        async with main_mod.lifespan(MagicMock()):
+            jobs._tasks[job_id] = asyncio.create_task(_job())
+            renewal = asyncio.create_task(_renewal())
+            jobs._draining.add(renewal)
+            await asyncio.sleep(0)
+    finally:
+        jobs._draining.discard(renewal)
+        settings.gateway_token = saved_token
+        settings.celerp_public_url = saved_public
+    assert seen == ["job cancelled", "renewal finished"]
+    assert not jobs.running_tasks()

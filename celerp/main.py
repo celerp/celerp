@@ -346,14 +346,16 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
 _SHUTDOWN_GRACE_S = 10
 
 
-async def _stop_background_tasks(tasks: list[asyncio.Task | None]) -> None:
+async def _stop_background_tasks(tasks: list[asyncio.Task | None], finishing: list[asyncio.Task] = ()) -> None:
     """Cancel the background tasks boot started and wait for each to finish, so none
     is left with a connection open in a transaction (holding its table locks) after
-    shutdown. A task still running after _SHUTDOWN_GRACE_S ends the process there and
-    then: shutdown never returns with work of this process still able to write."""
+    shutdown. ``finishing`` tasks stop their own work and are waited for with the rest,
+    never cancelled. A task still running after _SHUTDOWN_GRACE_S ends the process there
+    and then: shutdown never returns with work of this process still able to write."""
     tasks = [t for t in tasks if t is not None]
     for task in tasks:
         task.cancel()
+    tasks += finishing
     if not tasks:
         return
     _done, pending = await asyncio.wait(tasks, timeout=_SHUTDOWN_GRACE_S)
@@ -666,12 +668,15 @@ async def _serve(_app: FastAPI, held):
     from celerp.notifications.sse import shutdown_all as _sse_shutdown
     _sse_shutdown()
 
-    # Stop background tasks, the backup scheduler, migration runs and AI jobs included, and wait for them
+    # Stop background tasks, the backup scheduler and migration runs included, and wait for
+    # them. AI jobs stop by their own rule in the same wait: their tasks are cancelled, a
+    # lease renewal already sent is left to finish.
     from celerp.ai import jobs as _ai_jobs
     from celerp.services import backup_scheduler
     from celerp.services import migrations as _migration_runs
     background.append(backup_scheduler.stop())
-    await _stop_background_tasks(background + _migration_runs.running_tasks() + _ai_jobs.running_tasks())
+    await _stop_background_tasks(background + _migration_runs.running_tasks(),
+                                 finishing=[asyncio.create_task(_ai_jobs.shutdown(), name="ai-jobs-shutdown")])
 
     # Close the tunnel and its run task, whoever started it (boot gate, auto-activate,
     # or a runtime share-create) - the gateway package owns that lifecycle now.
