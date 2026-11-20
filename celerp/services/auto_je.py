@@ -656,9 +656,10 @@ def refuse_negative_output_tax(doc: dict) -> None:
 def refuse_misplaced_tax(settings: dict, doc_type: str | None, state: dict, lines: list[dict]) -> None:
     """Refuse (422, naming the tax) a document carrying a tax for the other side: a
     withholding or other purchase tax on a sale, or a sales-only tax on a purchase. Every
-    tax line counts: each line's taxes (or its rate and code), the document taxes and the
-    header rate."""
-    applied = [*tax_entries(state.get("doc_taxes")), {"code": "", "rate": state.get("tax_rate")}]
+    tax line counts: each line's taxes (or its rate and code), the document taxes, the
+    shipping taxes and the header rate."""
+    applied = [*tax_entries(state.get("doc_taxes")), *tax_entries(state.get("shipping_taxes")),
+               {"code": "", "rate": state.get("tax_rate")}]
     for line in lines:
         if isinstance(line, dict):
             applied += tax_entries(line.get("taxes")) or [{"code": line.get("tax_code"), "rate": line.get("tax_rate")}]

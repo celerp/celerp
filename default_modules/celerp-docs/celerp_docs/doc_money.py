@@ -27,7 +27,7 @@ from celerp.accounting_roles import catalog_refusal
 # document_money reads, the currency, and the rate that values it in the base currency.
 # A document made from another (an agreement's bill) carries every one of them.
 HEADER_MONEY_FIELDS = ("currency", "conversion_rate", "discount", "discount_type", "shipping", "tax", "tax_rate",
-                       "doc_taxes")
+                       "doc_taxes", "shipping_taxes")
 
 
 class UnratedTaxError(ValueError):
@@ -181,6 +181,32 @@ def build_line_taxes(doc: dict, lines: list, stored_lines: list, settings: dict)
         line["taxes"] = built
 
 
+def main_supply_taxes(lines: list, currency: str | None) -> list[dict]:
+    """The taxes shipping takes by default: each tax code of the main supply, the line with the
+    largest amount (the first on a tie), as a ``code_id`` to build (build_line_taxes)."""
+    priced = [line for line in lines if isinstance(line, dict)]
+    if not priced:
+        return []
+    main = max(priced, key=lambda line: _line_amount(line, currency))
+    return [{"code_id": tax["code_id"]} for tax in tax_entries(main.get("taxes")) if tax.get("code_id")]
+
+
+def build_shipping_taxes(doc: dict, stored: dict | None, settings: dict) -> None:
+    """Build in place a draft's ``shipping_taxes`` by the rule a line's taxes follow
+    (build_line_taxes), against the shipping taxes the document held before this write
+    (*stored*). Left out on a document with shipping, they are the main supply's
+    (main_supply_taxes); an empty list leaves the shipping untaxed."""
+    taxes = doc.get("shipping_taxes")
+    if taxes is None and to_decimal(doc.get("shipping") or 0) > 0:
+        taxes = main_supply_taxes(doc.get("line_items") or [], doc.get("currency"))
+    if not isinstance(taxes, list):
+        return
+    charge = {"line_id": "shipping", "taxes": list(taxes)}
+    build_line_taxes(doc, [charge], [{"line_id": "shipping", "taxes": (stored or {}).get("shipping_taxes")}],
+                     settings)
+    doc["shipping_taxes"] = charge["taxes"]
+
+
 def computable_tax(entry) -> bool:
     """Whether a stored tax entry is a tax a total can be computed from."""
     return _definition(entry) is not None
@@ -226,7 +252,7 @@ def uncomputable_tax(values: dict) -> str | None:
     total can be computed from (computable_tax), as tax_text, or the whole value when it is not
     a list; None when every one is."""
     lines = values.get("line_items")
-    held = [values.get("doc_taxes")]
+    held = [values.get("doc_taxes"), values.get("shipping_taxes")]
     if isinstance(lines, list):
         held += [line.get("taxes") for line in lines if isinstance(line, dict)]
     for value in held:
@@ -258,8 +284,9 @@ def _line_amount(line: dict, currency: str) -> Decimal:
 
 def _has_rate(state: dict) -> bool:
     """Whether a document's tax comes from a rate: a line's ``taxes`` or ``tax_rate``, a
-    document tax or a header ``tax_rate``."""
-    if tax_entries(state.get("doc_taxes")) or to_decimal(state.get("tax_rate", 0) or 0):
+    document tax, a shipping tax or a header ``tax_rate``."""
+    if (tax_entries(state.get("doc_taxes")) or tax_entries(state.get("shipping_taxes"))
+            or to_decimal(state.get("tax_rate", 0) or 0)):
         return True
     return any(isinstance(line, dict) and line_has_tax(line) for line in state.get("line_items") or [])
 
@@ -389,7 +416,7 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     """Subtotal, discount, taxes and total of a document with these lines.
 
     Line ``taxes`` are recomputed from their rates, as are a line ``tax_rate``,
-    ``doc_taxes`` and a header ``tax_rate``. A document with none of those but a
+    ``doc_taxes``, ``shipping_taxes`` (on the shipping) and a header ``tax_rate``. A document with none of those but a
     ``tax`` amount has nothing to recompute it from: with *keep_unrated_tax* that
     amount stands as it is, otherwise UnratedTaxError is raised so the caller can
     refuse rather than change the amount. When *stored* (the document before this
@@ -398,7 +425,8 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     refused (refuse_malformed_taxes, by the status of *stored* when given), never left out of
     the total.
     """
-    refuse_malformed_taxes({"doc_taxes": state.get("doc_taxes"), "line_items": lines},
+    refuse_malformed_taxes({"doc_taxes": state.get("doc_taxes"), "shipping_taxes": state.get("shipping_taxes"),
+                            "line_items": lines},
                            stored if stored is not None else state)
     return _derived_money(state, lines, currency, keep_unrated_tax=keep_unrated_tax, stored=stored)
 
@@ -420,7 +448,8 @@ def list_money(state: dict, lines: list[dict], currency: str) -> dict:
 
 LIST_TOTAL_FIELDS = ("subtotal", "discount_amount", "tax_amount", "total")
 # What a document's money is worked out from, and the figures worked out (document_money).
-DOC_MONEY_INPUTS = frozenset({"line_items", "discount", "discount_type", "shipping", "doc_taxes", "tax_rate", "currency"})
+DOC_MONEY_INPUTS = frozenset({"line_items", "discount", "discount_type", "shipping", "doc_taxes", "shipping_taxes",
+                              "tax_rate", "currency"})
 DOC_TOTAL_FIELDS = ("subtotal", "discount_amount", "tax", "total")
 # What a conversion (a quotation to an invoice or memo, a consignment bought) keeps of its source beyond
 # a copy's parties and lines (record_copy.conversion_of): every key document_money reads of it (the money
@@ -490,13 +519,20 @@ def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
         "subtotal": to_stored_float(subtotal),
         "discount_amount": to_stored_float(discount_amount),
     }
+    # Shipping is taxed on its own amount by its own taxes (shipping_taxes); the header
+    # discount applies to the lines only.
+    shipping = round_money(state.get("shipping", 0) or 0, currency)
+    shipping_taxes = tax_entries(state.get("shipping_taxes"))
+    if shipping_taxes:
+        result["shipping_taxes"], shipping_tax = _recompute_tax_applications(shipping_taxes, shipping, currency)
+        line_tax_total += shipping_tax
     doc_taxes = tax_entries(state.get("doc_taxes"))
     if doc_taxes:
         resolved_doc_taxes, doc_tax_total = _recompute_tax_applications(
             doc_taxes, taxable, currency)
         result["doc_taxes"] = resolved_doc_taxes
         tax_total = line_tax_total + doc_tax_total
-    elif has_line_tax:
+    elif has_line_tax or shipping_taxes:
         tax_total = line_tax_total
     elif to_decimal(state.get("tax_rate", 0) or 0):
         tax_total = round_money(
@@ -511,7 +547,6 @@ def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
             raise UnratedTaxError("tax amount has no rate")
 
     tax_total = round_money(tax_total, currency)
-    shipping = round_money(state.get("shipping", 0) or 0, currency)
     result["tax"] = to_stored_float(tax_total)
     result["total"] = to_stored_float(round_money(taxable + tax_total + shipping, currency))
     return result

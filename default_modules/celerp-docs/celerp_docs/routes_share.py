@@ -253,9 +253,10 @@ def _public_bundle_doc(doc: dict) -> dict:
         lines.append(line)
     out["line_items"] = lines
 
-    doc_taxes = _public_taxes(doc.get("doc_taxes"))
-    if doc_taxes:
-        out["doc_taxes"] = doc_taxes
+    for key in ("doc_taxes", "shipping_taxes"):
+        taxes = _public_taxes(doc.get(key))
+        if taxes:
+            out[key] = taxes
     return out
 
 
@@ -280,7 +281,7 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     # Payment state and derived totals are local accounting facts. Never
     # accept them from an untrusted sender: totals are recomputed below, and a
     # received document carries no payment state at all.
-    derived = {"line_items", "doc_taxes", "subtotal", "tax", "total", "amount_paid", "amount_outstanding"}
+    derived = {"line_items", "doc_taxes", "shipping_taxes", "subtotal", "tax", "total", "amount_paid", "amount_outstanding"}
     out: dict = {k: v for k, v in public.items() if k not in derived}
     out["currency"] = currency
     out["discount_type"] = public.get("discount_type") or "flat"
@@ -305,9 +306,10 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     # recompute it from, the document is refused rather than imported with a
     # different amount.
     inputs = {**out, "tax": _num(public.get("tax"))}
-    doc_taxes = _sanitize_taxes(public.get("doc_taxes"))
-    if doc_taxes:
-        inputs["doc_taxes"] = [t.model_dump() for t in doc_taxes]
+    for key in ("doc_taxes", "shipping_taxes"):
+        taxes = _sanitize_taxes(public.get(key))
+        if taxes:
+            inputs[key] = [t.model_dump() for t in taxes]
     try:
         out.update(document_money(inputs, lines, currency, keep_unrated_tax=False))
     except UnratedTaxError as exc:

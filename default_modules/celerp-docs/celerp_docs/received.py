@@ -321,7 +321,7 @@ _DOC_LINE_FIELDS = ("name", "description", "quantity", "unit", "unit_price", "li
 _LIST_LINE_FIELDS = ("name", "description", "quantity", "unit", "unit_price", "discount_pct", "line_total", "pieces", "weight")
 # Amounts a document always holds, with the value an absent one has on create.
 _DOC_TOTALS = {
-    "subtotal": 0, "tax": 0, "total": 0, "doc_taxes": [], "discount": 0,
+    "subtotal": 0, "tax": 0, "total": 0, "doc_taxes": [], "shipping_taxes": [], "discount": 0,
     "discount_type": "flat", "discount_amount": 0, "shipping": 0, "tax_rate": 0,
 }
 _BILL_FIELDS = ("issue_date", "due_date", "payment_terms")

@@ -50,7 +50,7 @@ _LINE_MONEY_KEYS = ("item_id", "account", "quantity", "unit_price", "discount", 
 # What an outside revision changed, named in the reason it clears the choices with
 # (fund.choices_cleared_by_source.<change>): the lines, else the total, else the tax.
 _LINE_CHANGES = {"item_id": "lines", "account": "lines", "taxes": "tax"}
-_HEADER_CHANGES = {"doc_taxes": "tax", "tax_rate": "tax"}
+_HEADER_CHANGES = {"doc_taxes": "tax", "shipping_taxes": "tax", "tax_rate": "tax"}
 # Where an outside record came from, each with its label (fund.origin.<origin>).
 ORIGINS = frozenset({"file_import", "migration", "connected_company", "accountant", "client",
                      "shared_document", "accounting_system"})

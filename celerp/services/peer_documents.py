@@ -32,7 +32,7 @@ from ui.i18n import t
 _FIELDS = frozenset({
     "doc_type", "ref_id", "status", "contact_id", "contact_name",
     "line_items", "currency", "conversion_rate", "issue_date", "due_date",
-    "payment_terms", "notes", "reference", "doc_taxes", "discount",
+    "payment_terms", "notes", "reference", "doc_taxes", "shipping_taxes", "discount",
     "shipping", "subtotal", "total", "tax", "terms_text", "customer_note",
     "purchase_kind", "discount_type", "payments", "amount_paid", "payment_events",
     "fulfilled_items", "stock_receipts", "accounts",
@@ -388,7 +388,7 @@ async def _add_taxes(session: AsyncSession, company: Company, incoming: dict, *,
     from celerp.tax_regimes import TAX_LIST_PAGES, doc_side, side_taxes, tax_entries, with_taxes
 
     named = [tax for line in incoming.get("line_items") or [] for tax in tax_entries(line.get("taxes"))]
-    named += tax_entries(incoming.get("doc_taxes"))
+    named += tax_entries(incoming.get("doc_taxes")) + tax_entries(incoming.get("shipping_taxes"))
     if not named:
         return
     company = await locked_company(session, company.id)

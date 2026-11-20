@@ -38,14 +38,14 @@ from celerp.models.projections import (
 )
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import (DOC_MONEY_INPUTS, LIST_TOTAL_FIELDS, build_line_taxes, document_money, document_terms,
+from celerp_docs.doc_money import (DOC_MONEY_INPUTS, LIST_TOTAL_FIELDS, build_line_taxes, build_shipping_taxes, document_money, document_terms,
                                    drawn_line_money, fixed_discount, list_totals_differ, memo_draws, memo_fixed_amounts, memo_tax_rate_money,
                                    money_from_lines, refuse_malformed_taxes, refuse_unset_line_tax, released_header_money,
                                    unrated_tax)
 from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_lines_and_totals, payment_status
 from celerp_docs.line_bodies import LineItem, WriteoffLineBody
 from celerp_docs.record_copy import conversion_of, copy_of
-from celerp.localization.taxcodes import LineTaxSnapshot
+from celerp.localization.taxcodes import LineTaxEntry, LineTaxSnapshot
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, Refused, catalog_refusal, refusal, refusal_detail
@@ -427,6 +427,8 @@ class DocCreatePayload(BaseModel):
     doc_taxes: list[LineTaxSnapshot] = Field(default_factory=list)
     discount: FiniteFloat = 0
     shipping: FiniteFloat = 0
+    # Left out, shipping takes the main supply's taxes (build_shipping_taxes); [] leaves it untaxed.
+    shipping_taxes: list[LineTaxEntry] | None = None
     total: FiniteFloat = 0
     payment_terms: str | None = None
     due_date: str | None = None
@@ -2184,6 +2186,8 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
     # Its taxes are kept as sent, so build_line_taxes tells a field sent from one left out.
     for line, item in zip(data.get("line_items") or [], payload.line_items):
         line["taxes"] = None if item.taxes is None else [tax.model_dump(exclude_unset=True) for tax in item.taxes]
+    if payload.shipping_taxes is not None:
+        data["shipping_taxes"] = [tax.model_dump(exclude_unset=True) for tax in payload.shipping_taxes]
     _attach_drawn_from(data.get("line_items") or [], memo_draw)
     chosen = _chosen_terms(data)
     if memo_draw is not None:
@@ -2213,6 +2217,7 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
     # Default issue_date to the company's today so date filters and sorting work correctly on new docs
     data.setdefault("issue_date", business_date_of(None, company.settings.get("timezone")))
     build_line_taxes(data, data.get("line_items") or [], [], settings)
+    build_shipping_taxes(data, None, settings)
 
     # Compute the money from the lines and header inputs when no total is given, by the same rule
     # every later edit applies (header discount before tax, shipping in the total).
@@ -2513,9 +2518,15 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     if is_draft and isinstance(_incoming_lines, list):
         build_line_taxes({**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}},
                          _incoming_lines, row.state.get("line_items"), settings)
+    if is_draft and ("shipping_taxes" in fields_changed
+                     or ("shipping" in fields_changed and row.state.get("shipping_taxes") is None)):
+        _charged = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}
+        build_shipping_taxes(_charged, row.state, settings)
+        if _charged.get("shipping_taxes") is not None:
+            fields_changed["shipping_taxes"] = {"new": _charged["shipping_taxes"]}
     refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
     # Taxes change only on a draft; a finalized document's line edits leave them as posted.
-    if is_draft and {"doc_type", "doc_taxes", "line_items", "tax_rate"} & fields_changed.keys():
+    if is_draft and {"doc_type", "doc_taxes", "shipping_taxes", "line_items", "tax_rate"} & fields_changed.keys():
         _taxed = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}
         auto_je.refuse_misplaced_tax(settings, _taxed.get("doc_type"), _taxed, _taxed.get("line_items") or [])
     await free_patched_numbers(session, company_id, entity_id, fields_changed)
