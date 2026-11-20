@@ -54,11 +54,17 @@ def _gift_line(gift: dict, currency: str | None) -> FT:
 
 
 def _statement_cell(row: dict, period: tuple[str, str]) -> FT:
-    """Sent or not; Send again names the number of the send it asks for, so the same press arriving
-    twice sends once."""
+    """The statement as its last send is stored: still being sent (with Check again, which reads
+    the page again), not sent, sent, or possibly sent when the email service never confirmed it.
+    Send again names the number of the send it asks for, so the same press arriving twice sends once."""
+    if row.get("state") == "sending":
+        return Td(t("donors.statement_sending"), " ",
+                  A(t("btn.check_again"), href=_page_url(*period), cls="btn btn--ghost btn--sm"))
     if not row["sends"]:
         return Td(t("donors.statement_not_sent"))
-    return Td(Span(t("donors.statement_sent"), cls="badge badge--paid"), " ",
+    sent = (t("donors.statement_unconfirmed") if row.get("state") == "unconfirmed"
+            else Span(t("donors.statement_sent"), cls="badge badge--paid"))
+    return Td(sent, " ",
               Button(t("btn.send_again"), hx_post=SEND_URL, hx_swap="none",
                      hx_vals={**_period_vals(*period), "confirm": "on", "resend": row["contact_id"],
                               "seen": row["sends"]},
@@ -133,6 +139,20 @@ def _sent_message(results: list[dict], resend: list[str]) -> tuple[str, str]:
     return " ".join(parts or [sentence("donors.done_none")]), "success" if delivered else "warning"
 
 
+async def _pending_message(token: str, d_from: str, d_to: str) -> str:
+    """The toast for a send whose answer did not come back: it may still be running, and whose
+    statement reads as still being sent, from the stored sends. It never says the send failed."""
+    try:
+        rows = (await api.donor_statements_preview(token, {"from": d_from, "to": d_to})).get("donors") or []
+    except APIError as e:
+        api.raise_if_signed_out(e)
+        rows = []
+    parts = [sentence("donors.done_pending")]
+    if sending := [r["name"] for r in rows if r.get("state") == "sending"]:
+        parts.append(sentence("donors.done_sending", names=", ".join(sending)))
+    return " ".join(parts)
+
+
 async def _signed_in_with(request: Request) -> Response | None:
     """Sign-in, then both permissions the page reads with: contacts and payments."""
     if not _token(request):
@@ -198,7 +218,11 @@ def setup_routes(app):
         try:
             answer = await api.send_donor_statements(token, d_from, d_to, form.get("confirm") == "on", resend)
         except APIError as e:
-            return _refused(e)
+            if (e.data or {}).get("code") != api.NO_RESPONSE:
+                return _refused(e)
+            # A batch can take longer than this page waits and may still be running: each
+            # statement reads as stored, on the page and in what the toast names.
+            return _done(_page_url(d_from, d_to), await _pending_message(token, d_from, d_to), "info")
         return _done(_page_url(d_from, d_to), *_sent_message(answer.get("results") or [], resend))
 
     @app.put(WORDING_URL)

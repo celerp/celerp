@@ -169,7 +169,8 @@ def _send_key(statement: str, n: int) -> str:
 
 async def _taken(session: AsyncSession, company_id, statements: list[str]) -> dict[str, dict[int, str | None]]:
     """The sends recorded for each statement key, in order of their number (0 its first send, n
-    resend n), each with its email's recorded state."""
+    resend n), each with how its email reads now (email.attempt_state)."""
+    now = datetime.now(timezone.utc)
     taken: dict[str, dict[int, str | None]] = {key: {} for key in statements}
     for key, meta in (await session.execute(select(LedgerEntry.idempotency_key, LedgerEntry.metadata_).where(
             LedgerEntry.company_id == company_id,
@@ -177,7 +178,7 @@ async def _taken(session: AsyncSession, company_id, statements: list[str]) -> di
                 *(LedgerEntry.idempotency_key.startswith(f"{k}:resend:", autoescape=True) for k in statements))))).all():
         statement, _, n = key.rpartition(":resend:") if key not in taken else (key, "", "0")
         if statement in taken and n.isdecimal():
-            taken[statement][int(n)] = ((meta or {}).get("email") or {}).get("state")
+            taken[statement][int(n)] = email_service.attempt_state((meta or {}).get("email"), now)
     return {key: dict(sorted(sends.items())) for key, sends in taken.items()}
 
 
@@ -185,14 +186,16 @@ async def _with_sends(session: AsyncSession, company_id, rows: list[dict], date_
                       version: int) -> list[dict]:
     """``rows`` each with ``sends``, the number the next Send again of the period's statement under
     this wording names: 0 while it was never sent, one past the last send otherwise, or the last
-    send itself while its email failed, so sending again retries it."""
+    send itself while its email failed, so sending again retries it; and ``state``, how the email
+    of the last send reads now (sending, sent, failed or unconfirmed), None while it was never sent."""
     keys = {_statement_key(row["contact_id"], date_from, date_to, version): row for row in rows}
     taken = await _taken(session, company_id, list(keys))
 
     def sends(numbers: dict[int, str | None]) -> int:
         last = max(numbers, default=-1)
         return last if last >= 0 and numbers[last] == "failed" else last + 1
-    return [{**row, "sends": sends(taken[key])} for key, row in keys.items()]
+    return [{**row, "sends": sends(taken[key]), "state": next(reversed(taken[key].values()), None)}
+            for key, row in keys.items()]
 
 
 class SendIn(BaseModel):
@@ -325,7 +328,8 @@ async def preview_statements(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Who a send for the period reaches, each with their total and gifts and the number the next
-    Send again of their statement under the current wording names (0 while it was never sent); a donor with no email address is marked and
+    Send again of their statement under the current wording names (0 while it was never sent) and how
+    the email of its last send reads now (``state``: sending, sent, failed or unconfirmed); a donor with no email address is marked and
     would be skipped. An open end runs from the first entry or to today, and ``period`` names
     the dates the send and each statement then cover."""
     words = wording(await current_settings(session, company_id))

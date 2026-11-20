@@ -548,3 +548,80 @@ async def test_a_stop_on_a_lookalike_entry_offers_match_it_and_post_anyway(ui_cl
     finally:
         for p in patches:
             p.stop()
+
+
+async def _ask_unanswered(ui_client, unanswered):
+    """The bank page's Ask when the API's answer does not come back, then the stored Ask."""
+    stored = {"asked": ["l1"], "outcome": "Asked about 1 line. The email to Ann is still being sent.",
+              "email": {"state": "sending", "recipients": [{"name": "Ann", "state": "sending"}]}}
+    patches = [*_api(_TABLE), patch("ui.api_client.bank_action", AsyncMock(side_effect=[unanswered, stored]))]
+    for p in patches:
+        p.start()
+    try:
+        r = await ui_client.post("/accounting/reconcile/bank/b1/ask",
+                                 data={"line_id": "l1", "note": "", "idempotency_key": "k1"})
+    finally:
+        for p in patches:
+            p.stop()
+    return r.text, stored["outcome"]
+
+
+async def _statements_unanswered(ui_client, unanswered):
+    """The donors page's send when the API's answer does not come back, then the stored sends."""
+    from ui.i18n import sentence
+
+    stored = {"donors": [{"contact_id": "c1", "name": "Cy Donor", "sends": 1, "state": "sending"}]}
+    with patch("ui.api_client.send_donor_statements", AsyncMock(side_effect=unanswered)), \
+            patch("ui.api_client.donor_statements_preview", AsyncMock(return_value=stored)):
+        r = await ui_client.post("/donors/statements/send",
+                                 data={"from": "2026-03-01", "to": "2026-03-31", "confirm": "on"})
+    return r.headers.get("HX-Trigger") or r.text, json.dumps(sentence("donors.done_sending", names="Cy Donor"))[1:-1]
+
+
+# Each API module that sends email durably (email.send_durably): the UI call that reaches it,
+# whether one call sends a batch (one email after another, so no wait covers it), and its page.
+_DURABLE_SENDS = {
+    "default_modules/celerp-accounting/celerp_accounting/statement_lines.py":
+        ("bank_action", ("b1", "ask", {}), False, _ask_unanswered),
+    "default_modules/celerp-accounting/celerp_accounting/donors.py":
+        ("send_donor_statements", ("2026-03-01", "2026-03-31", True, {}), True, _statements_unanswered),
+}
+
+
+async def test_a_page_that_waits_less_than_its_emails_can_take_shows_the_stored_send(ui_client, monkeypatch):
+    """An email may be with the mail server for email.SEND_TIMEOUT, and a batch for that long per
+    email. A page whose API call waits less than its send can take must, when no answer comes
+    back, show the send as stored and never the timeout or a failure; every durable sender is
+    listed here with the UI call that reaches it."""
+    from contextlib import asynccontextmanager
+    from pathlib import Path
+
+    import httpx
+
+    import ui.api_client as api
+    from celerp.services import email
+
+    root = Path(__file__).resolve().parents[3]
+    senders = {str(p.relative_to(root)) for top in ("celerp", "default_modules", "ui") for p in (root / top).rglob("*.py")
+               if "tests" not in p.parts and "send_durably(" in p.read_text(encoding="utf-8")}
+    assert senders - {"celerp/services/email.py"} == set(_DURABLE_SENDS), "list each durable sender with its UI call"
+    waits: list[float] = []
+
+    @asynccontextmanager
+    async def recorded(token, timeout=10.0):
+        waits.append(timeout)
+        answer = httpx.Response(200, json={}, request=httpx.Request("POST", "http://api"))
+        yield AsyncMock(post=AsyncMock(return_value=answer))
+
+    _signed_in(ui_client)
+    unanswered = api._no_response(504, api.timeout_message())
+    for call, args, batch, page in _DURABLE_SENDS.values():
+        with monkeypatch.context() as m:
+            m.setattr(api, "_api_client", recorded)
+            await getattr(api, call)("token", *args)
+        if not batch and waits[-1] >= email.SEND_TIMEOUT.total_seconds():
+            continue  # the page waits as long as the one email can take
+        shown, stored = await page(ui_client, unanswered)
+        assert stored in shown, (call, shown[-600:])
+        assert api.timeout_message() not in shown and "error" not in shown, (call, shown[-600:])
+    assert len(waits) == len(_DURABLE_SENDS)
