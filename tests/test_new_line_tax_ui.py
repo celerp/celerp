@@ -359,4 +359,4 @@ async def test_every_rewrite_of_lines_read_from_the_server_names_the_version_it_
     root = Path(__file__).resolve().parent.parent / "ui"
     calls = [m.group(0) for p in root.rglob("*.py")
              for m in re.finditer(r'api\.patch_doc\(token, \w+, \{"line_items":(?:[^\n]|\n\s+(?=expected_version=))*', p.read_text())]
-    assert len(calls) == 6 and all("expected_version=" in call for call in calls), calls
+    assert len(calls) == 7 and all("expected_version=" in call for call in calls), calls

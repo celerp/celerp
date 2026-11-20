@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "เพิ่มเวอร์ชันอัตรา",
   "th.valid_from": "มีผลตั้งแต่",
   "th.valid_to": "มีผลถึง",
-  "settings.confirm_remove_version": "ลบเวอร์ชัน {rate}% ของ {name} หรือไม่?"
+  "settings.confirm_remove_version": "ลบเวอร์ชัน {rate}% ของ {name} หรือไม่?",
+  "documents.tax_version_notice": "วันที่ของเอกสารอยู่หลังการเปลี่ยนอัตราภาษีแล้ว รายการเหล่านี้ยังใช้อัตราเดิม: {lines}",
+  "documents.tax_version_use": "ใช้อัตราที่มีผลอยู่"
 }

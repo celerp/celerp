@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "Tambah versi tarif",
   "th.valid_from": "Berlaku dari",
   "th.valid_to": "Berlaku sampai",
-  "settings.confirm_remove_version": "Hapus versi {rate}% dari {name}?"
+  "settings.confirm_remove_version": "Hapus versi {rate}% dari {name}?",
+  "documents.tax_version_notice": "Tanggal dokumen kini setelah perubahan tarif pajak. Baris berikut masih memakai tarif sebelumnya: {lines}.",
+  "documents.tax_version_use": "Gunakan tarif yang berlaku"
 }

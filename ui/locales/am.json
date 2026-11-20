@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "የተመን ስሪት አክል",
   "th.valid_from": "የሚጸናበት ቀን",
   "th.valid_to": "የሚያበቃበት ቀን",
-  "settings.confirm_remove_version": "የ{name} የ{rate}% ስሪት ይወገድ?"
+  "settings.confirm_remove_version": "የ{name} የ{rate}% ስሪት ይወገድ?",
+  "documents.tax_version_notice": "የሰነዱ ቀን አሁን ከታክስ መጠን ለውጥ በኋላ ነው። እነዚህ መስመሮች አሁንም የቀድሞውን መጠን ይጠቀማሉ፦ {lines}።",
+  "documents.tax_version_use": "በሥራ ላይ ያለውን መጠን ተጠቀም"
 }

@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "Añadir versión del tipo",
   "th.valid_from": "Válido desde",
   "th.valid_to": "Válido hasta",
-  "settings.confirm_remove_version": "¿Quitar la versión del {rate}% de {name}?"
+  "settings.confirm_remove_version": "¿Quitar la versión del {rate}% de {name}?",
+  "documents.tax_version_notice": "La fecha del documento es ahora posterior a un cambio de tipo impositivo. Estas líneas siguen usando el tipo anterior: {lines}.",
+  "documents.tax_version_use": "Usar el tipo vigente"
 }

@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "إضافة إصدار سعر",
   "th.valid_from": "ساري من",
   "th.valid_to": "ساري حتى",
-  "settings.confirm_remove_version": "هل تريد إزالة إصدار {rate}% من {name}؟"
+  "settings.confirm_remove_version": "هل تريد إزالة إصدار {rate}% من {name}؟",
+  "documents.tax_version_notice": "أصبح تاريخ المستند بعد تغيير في نسبة الضريبة. لا تزال هذه البنود تستخدم النسبة السابقة: {lines}.",
+  "documents.tax_version_use": "استخدم النسبة السارية"
 }

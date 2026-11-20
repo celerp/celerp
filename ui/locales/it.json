@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "Aggiungi versione dell'aliquota",
   "th.valid_from": "Valido dal",
   "th.valid_to": "Valido fino al",
-  "settings.confirm_remove_version": "Rimuovere la versione al {rate}% di {name}?"
+  "settings.confirm_remove_version": "Rimuovere la versione al {rate}% di {name}?",
+  "documents.tax_version_notice": "La data del documento è ora successiva a una variazione dell'aliquota. Queste righe usano ancora l'aliquota precedente: {lines}.",
+  "documents.tax_version_use": "Usa l'aliquota in vigore"
 }

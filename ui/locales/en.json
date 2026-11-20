@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "Add rate version",
   "th.valid_from": "Valid from",
   "th.valid_to": "Valid to",
-  "settings.confirm_remove_version": "Remove the {rate}% version of {name}?"
+  "settings.confirm_remove_version": "Remove the {rate}% version of {name}?",
+  "documents.tax_version_notice": "The document date is now after a tax rate change. These lines still use the earlier rate: {lines}.",
+  "documents.tax_version_use": "Use the rate in force"
 }

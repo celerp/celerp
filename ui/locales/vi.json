@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "Thêm phiên bản thuế suất",
   "th.valid_from": "Hiệu lực từ",
   "th.valid_to": "Hiệu lực đến",
-  "settings.confirm_remove_version": "Xóa phiên bản {rate}% của {name}?"
+  "settings.confirm_remove_version": "Xóa phiên bản {rate}% của {name}?",
+  "documents.tax_version_notice": "Ngày chứng từ hiện đã sau một lần thay đổi thuế suất. Các dòng sau vẫn dùng thuế suất cũ: {lines}.",
+  "documents.tax_version_use": "Dùng thuế suất đang áp dụng"
 }

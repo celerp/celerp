@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "Satzversion hinzufügen",
   "th.valid_from": "Gültig ab",
   "th.valid_to": "Gültig bis",
-  "settings.confirm_remove_version": "Die Version mit {rate}% von {name} entfernen?"
+  "settings.confirm_remove_version": "Die Version mit {rate}% von {name} entfernen?",
+  "documents.tax_version_notice": "Das Belegdatum liegt jetzt nach einer Steuersatzänderung. Diese Positionen verwenden noch den früheren Satz: {lines}.",
+  "documents.tax_version_use": "Geltenden Satz verwenden"
 }

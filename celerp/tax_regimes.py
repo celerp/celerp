@@ -163,6 +163,23 @@ def _line_rate(code, day: dt.date) -> float:
     return -rate if code.category == "withholding" else rate
 
 
+def outdated_line_tax(tax: dict, codes: dict[str, dict], day: dt.date) -> bool:
+    """Whether a line tax built from a company code (``codes`` by id, rows of the document's
+    side) holds a version other than the one in force on ``day``: the document's date moved
+    past a rate change, or to a day the code has no rate. A tax with no code id, or whose code
+    is gone, is not."""
+    from celerp.localization.taxcodes import NoRateInForce, version_on
+    row = codes.get(tax.get("code_id") or "")
+    if row is None:
+        return False
+    code = _tax_code(row)
+    try:
+        start = code.versions[version_on(code, day)].valid_from
+    except NoRateInForce:
+        return True
+    return (start.isoformat() if start else None) != tax.get("version_from")
+
+
 def generic_taxes() -> list[dict]:
     """The neutral tax list a company starts from until it configures its own."""
     return copy.deepcopy(DEFAULT_REGIME["taxes"])

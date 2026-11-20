@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "税率バージョンを追加",
   "th.valid_from": "適用開始日",
   "th.valid_to": "適用終了日",
-  "settings.confirm_remove_version": "{name} の {rate}% のバージョンを削除しますか?"
+  "settings.confirm_remove_version": "{name} の {rate}% のバージョンを削除しますか?",
+  "documents.tax_version_notice": "書類の日付が税率変更日より後になりました。次の明細はまだ以前の税率を使用しています：{lines}。",
+  "documents.tax_version_use": "現在の税率を適用"
 }

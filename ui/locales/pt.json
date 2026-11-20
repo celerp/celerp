@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "Adicionar versão da taxa",
   "th.valid_from": "Válido de",
   "th.valid_to": "Válido até",
-  "settings.confirm_remove_version": "Remover a versão de {rate}% de {name}?"
+  "settings.confirm_remove_version": "Remover a versão de {rate}% de {name}?",
+  "documents.tax_version_notice": "A data do documento agora é posterior a uma alteração de taxa de imposto. Estas linhas ainda usam a taxa anterior: {lines}.",
+  "documents.tax_version_use": "Usar a taxa em vigor"
 }

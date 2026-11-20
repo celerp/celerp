@@ -9358,5 +9358,7 @@
   "btn.add_rate_version": "Ajouter une version de taux",
   "th.valid_from": "Valable du",
   "th.valid_to": "Valable au",
-  "settings.confirm_remove_version": "Supprimer la version à {rate}% de {name} ?"
+  "settings.confirm_remove_version": "Supprimer la version à {rate}% de {name} ?",
+  "documents.tax_version_notice": "La date du document est désormais postérieure à un changement de taux de taxe. Ces lignes utilisent encore l'ancien taux : {lines}.",
+  "documents.tax_version_use": "Utiliser le taux en vigueur"
 }

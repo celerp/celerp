@@ -13087,7 +13087,8 @@ class TestBulkActionsPhase6SendTo:
         "quantity": 1, "sell_by": "weight", "weight": 3.5, "weight_unit": "ct",
         "sale_price": 500, "attributes": {},
     }
-    _VAT7 = [{"name": "VAT", "rate": 7, "tax_type": "both", "is_default": True}]
+    # As get_document_taxes gives it (taxes_on): the stored row with its rate on the day.
+    _VAT7 = [{"name": "VAT", "rate": 7, "tax_type": "both", "is_default": True, "versions": [{"rate": 7}]}]
     _PIECE_ITEM = {
         "entity_id": "item:p1", "sku": "JWL-002", "name": "Gold Ring",
         "quantity": 2, "sell_by": "piece",
@@ -15758,6 +15759,31 @@ class TestPriceLists:
         assert r.json() == result
         args = mock_reprice.await_args.args
         assert args[1:] == ("doc:1", "Wholesale", 41)
+
+    @pytest.mark.asyncio
+    async def test_tax_versions_route_rebuilds_outdated_taxes(self, ui_client):
+        """Use the rate in force sends each outdated line tax back as its code id alone and
+        leaves every other tax as it is."""
+        vat = {"id": "tc-vat", "name": "VAT", "category": "standard", "versions": [
+            {"rate": 7.0, "valid_to": "2026-06-30"}, {"rate": 8.0, "valid_from": "2026-07-01"}]}
+        old = {"code": "VAT", "code_id": "tc-vat", "rate": 7.0, "version_from": None}
+        current = {"code": "VAT", "code_id": "tc-vat", "rate": 8.0, "version_from": "2026-07-01"}
+        manual = {"code": "Fee", "rate": 2.0}
+        doc = {**_BLANK_DOC, "doc_type": "invoice", "issue_date": "2026-07-15", "version": 9, "line_items": [
+            {"description": "Service", "taxes": [old, manual]}, {"description": "Goods", "taxes": [current]}]}
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
+            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[vat])),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"timezone": "UTC"})),
+            patch("ui.api_client.patch_doc", new=AsyncMock(return_value={})) as mock_patch,
+        ):
+            r = await ui_client.post("/docs/doc:1/tax-versions")
+        assert r.status_code == 204
+        assert r.headers["HX-Redirect"] == "/docs/doc:1"
+        args, kwargs = mock_patch.await_args
+        assert args[1] == "doc:1" and kwargs["expected_version"] == 9
+        assert [li["taxes"] for li in args[2]["line_items"]] == [[{"code_id": "tc-vat"}, manual], [current]]
 
     @pytest.mark.asyncio
     async def test_reprice_manual_line_result_is_passed_through(self, ui_client):

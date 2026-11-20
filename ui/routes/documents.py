@@ -46,7 +46,7 @@ from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_S
 from celerp.services.money import document_line_amount, to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
 from celerp.tax_regimes import (default_line_taxes, doc_side, holds_tax, item_line_taxes, legacy_line_taxes, line_tax,
-                                line_tax_unset, matching_tax, set_new_line_taxes, tax_day, tax_entries, tax_text, taxes_for, taxes_on,
+                                line_tax_unset, matching_tax, outdated_line_tax, set_new_line_taxes, tax_day, tax_entries, tax_text, taxes_for, taxes_on,
                                 unreadable_tax)
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
@@ -1192,6 +1192,33 @@ _DOC_TYPE_SEARCH_LABELS: dict[str, str] = {
 _DOC_TYPE_INTRO: dict[str, str] = {
     "production_order": "documents.intro_production_order",
 }
+
+
+def _outdated_tax_lines(doc: dict, taxes: list[dict], tz: str | None = None) -> list[int]:
+    """The indexes of a draft's lines holding a tax whose rate version is not the one in force
+    on the document's day (outdated_line_tax), ``taxes`` being the company codes of its side."""
+    if doc.get("status", "draft") != "draft":
+        return []
+    day = tax_day(doc, tz)
+    codes = {row["id"]: row for row in taxes if row.get("id")}
+    return [i for i, li in enumerate(doc.get("line_items") or [])
+            if any(outdated_line_tax(tax, codes, day) for tax in li.get("taxes") or [])]
+
+
+def _tax_version_notice(doc: dict, taxes: list[dict], tz: str | None = None) -> FT | None:
+    """The notice on a draft whose date moved past a tax rate change: it names the lines still
+    on the earlier rate, and Use the rate in force rebuilds their taxes on the document's day."""
+    outdated = _outdated_tax_lines(doc, taxes, tz)
+    if not outdated:
+        return None
+    lines = doc.get("line_items") or []
+    names = ", ".join(lines[i].get("description") or lines[i].get("sku") or str(i + 1) for i in outdated)
+    entity_id = doc.get("entity_id") or doc.get("id") or ""
+    return Div(Span(icon("info"), cls="info-banner-icon"),
+               Span(t("documents.tax_version_notice", lines=names), " ",
+                    Button(t("documents.tax_version_use"), type="button", cls="btn btn--secondary btn--sm",
+                           hx_post=f"/docs/{entity_id}/tax-versions", hx_swap="none")),
+               cls="info-banner", id="tax-version-notice")
 
 
 def _doc_type_intro(doc_type: str) -> FT:
@@ -3747,6 +3774,28 @@ def setup_routes(app):
     @app.post("/docs/{entity_id}/reprice")
     async def reprice_doc_lines(request: Request, entity_id: str):
         return await _proxy_reprice(request, entity_id, api.reprice_doc)
+
+    @app.post("/docs/{entity_id}/tax-versions")
+    async def doc_tax_versions(request: Request, entity_id: str):
+        """Use the rate in force: each tax of a line the version notice names is sent back as
+        its code id alone, so the server rebuilds it from the code on the document's day."""
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            doc = await api.get_doc(token, entity_id)
+            side = doc_side(doc.get("doc_type"))
+            taxes = await (api.get_purchasing_taxes(token) if side == "purchase" else api.get_taxes(token))
+            day = tax_day(doc, (await _get_company(token)).get("timezone"))
+            codes = {row["id"]: row for row in taxes if row.get("id")}
+            lines = [{**li, "taxes": [{"code_id": tax["code_id"]} if outdated_line_tax(tax, codes, day) else tax
+                                      for tax in li.get("taxes") or []]}
+                     for li in doc.get("line_items") or []]
+            await api.patch_doc(token, entity_id, {"line_items": lines}, expected_version=doc.get("version"))
+        except APIError as e:
+            return _action_error(e)
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/lists/{entity_id}/reprice")
     async def reprice_list_lines(request: Request, entity_id: str):
@@ -11690,6 +11739,7 @@ async function celerpCsvImport(input, entityId) {
             ),
             cls="doc-actions",
         ) if (action_btns_left or action_btns_right or action_btns_print) else "",
+        _tax_version_notice(doc, company_taxes or [], tz) or "",
         # Online-payment discovery: one muted line under the action row on an
         # unpaid, sendable invoice when payments are not connected. Dismissable
         # for good via localStorage (server state never sees the dismissal).
