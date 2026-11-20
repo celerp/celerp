@@ -18,12 +18,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from test_helpers import with_versions
 from test_ui import _authed, _mock_get_company, _mock_get_modules, ui_client  # noqa: F401  (fixtures)
 from ui.api_client import APIError
 
 _ENDED = APIError(401, "Token expired")
 _HX = {"HX-Request": "true", "HX-Current-URL": "http://ui/docs/doc%3AINV-1"}
-_TAX = {"name": "VAT 7%", "rate": 7.0, "tax_type": "both", "is_default": True, "description": ""}
+[_TAX] = with_versions([{"name": "VAT 7%", "rate": 7.0, "tax_type": "both", "is_default": True, "description": ""}])
 _DOC = {"id": "doc:INV-1", "doc_type": "invoice", "status": "draft", "currency": "USD", "version": 3,
         "line_items": [], "total": 0}
 
