@@ -53,6 +53,27 @@ async def test_inclusive_back_calculation_rounding(client, session):
     assert (await get(client, auth, on_list["id"]))["prices_include_tax"] is True
 
 
+async def test_inclusive_toggle_then_line_save(client, session):
+    """Turning a draft's Prices include tax off and saving a line with the taxes the reloaded
+    page holds is accepted, and the stored taxes follow the new flag."""
+    auth = await company(session)
+    vat = (await codes(client, auth, [code("VAT", 7)]))["VAT"]["id"]
+    doc_id = await doc(client, auth, "invoice", [line(107.0, vat)], prices_include_tax=True)
+    assert (await patch_doc(client, auth, doc_id, "prices_include_tax", False)).status_code == 200
+
+    reloaded = await get(client, auth, doc_id)
+    [snap] = reloaded["line_items"][0]["taxes"]
+    assert snap["inclusive"] is False
+    lines = [{**reloaded["line_items"][0], "description": "Consulting"}]
+    r = await patch_doc(client, auth, doc_id, "line_items", lines)
+    assert r.status_code == 200, r.text
+
+    saved = await get(client, auth, doc_id)
+    [snap] = saved["line_items"][0]["taxes"]
+    assert (snap["inclusive"], snap["base"], snap["amount"]) == (False, 107.0, 7.49)
+    assert (saved["subtotal"], saved["tax"], saved["total"]) == (107.0, 7.49, 114.49)
+
+
 async def test_shipping_taxed_main_supply_code(client, session):
     auth = await company(session)
     saved = await codes(client, auth, [code("VAT", 7), code("Zero", 0, category="zero")])

@@ -469,6 +469,35 @@ class TestProtectedPriceListDeletion:
         assert "celerpToast" in resp.headers.get("HX-Trigger", "")
         assert "base price list" in resp.headers.get("HX-Trigger", "")
 
+
+class TestPriceListIncludesTax:
+    @pytest.mark.asyncio
+    async def test_column_shows_the_flag_and_a_pick_saves_a_boolean(self, ui_client):
+        """The price lists table shows each list's Prices include tax as Yes or No; picking
+        one saves it as true or false, and the cell redraws from what the server holds."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings import _price_lists_tab
+        lists = [{"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail", "prices_include_tax": True}]
+        page = to_xml(_price_lists_tab(lists, "Retail", "Retail"))
+        assert "Prices include tax" in page
+        assert "/settings/price-lists/2/prices_include_tax/edit" in page
+
+        ui_client.cookies.update(_authed())
+        saved = AsyncMock(return_value=None)
+        with (
+            patch("ui.api_client.get_price_lists", new=AsyncMock(side_effect=[
+                [dict(pl) for pl in lists], [dict(pl) for pl in lists],
+                [{"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail", "prices_include_tax": False}],
+            ])),
+            patch("ui.api_client.patch_price_lists", new=saved),
+        ):
+            edit = await ui_client.get("/settings/price-lists/2/prices_include_tax/edit")
+            resp = await ui_client.patch("/settings/price-lists/2/prices_include_tax", data={"value": "false"})
+        assert 'value="true" selected' in edit.text
+        assert saved.await_args.args[1][2]["prices_include_tax"] is False
+        assert resp.status_code == 200
+        assert ">No<" in resp.text
+
 # ── Restore journey: post-restart notice ──────────────────────────────────────
 
 class TestRestoreJourneyNotice:

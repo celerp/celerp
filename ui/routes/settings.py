@@ -679,6 +679,21 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                     ),
                     cls="cell cell--editing",
                 )
+            if field == "prices_include_tax":
+                included = pl.get(field) is True
+                return Td(
+                    Select(
+                        Option(t("settings.yes"), value="true", selected=included),
+                        Option(t("settings.no"), value="false", selected=not included),
+                        name="value",
+                        title=t("settings.prices_include_tax_tooltip"),
+                        hx_patch=f"/settings/{pfx}/{idx}/{field}",
+                        hx_target="closest td", hx_swap="outerHTML", hx_include="this",
+                        hx_trigger="change",
+                        cls="cell-input cell-input--select", autofocus=True,
+                    ),
+                    cls="cell cell--editing",
+                )
             return Td(
                 Input(
                     type="text", name="value", value=val,
@@ -716,6 +731,8 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                             except ValueError:
                                 return _pl_cell_error(idx, field, price_lists[idx], pfx,
                                                       t("settings.enter_a_number_greater_than_0"))
+                    elif field == "prices_include_tax":
+                        price_lists[idx][field] = value == "true"
                     else:
                         if field == "name":
                             # Base and default are stored by name; a rename must carry them along
@@ -3123,7 +3140,10 @@ def _term_display_cell(idx: int, field: str, term: dict, prefix: str = "terms") 
 
 def _price_list_display_cell(idx: int, field: str, pl: dict, prefix: str = "price-lists") -> FT:
     val = pl.get(field, "")
-    display = str(val) if val and str(val).strip() else EMPTY
+    if field == "prices_include_tax":
+        display = t("settings.yes") if val is True else t("settings.no")
+    else:
+        display = str(val) if val and str(val).strip() else EMPTY
     return Td(
         Span(display, cls="cell-text"),
         title=t("settings.click_to_edit"),
@@ -4182,6 +4202,7 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, base_pric
             _price_list_display_cell(idx, "description", pl, prefix=prefix),
             _price_list_display_cell(idx, "multiplier", pl, prefix=prefix),
             _price_list_display_cell(idx, "rounding", pl, prefix=prefix),
+            _price_list_display_cell(idx, "prices_include_tax", pl, prefix=prefix),
             delete_cell,
             cls="data-row",
         )
@@ -4206,6 +4227,7 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, base_pric
             Thead(Tr(Th(t("th.name")), Th(t("th.description")),
                      Th(t("th.factor"), title=t("settings.factor_tooltip")),
                      Th(t("th.rounding"), title=t("settings.rounding_tooltip")),
+                     Th(t("th.prices_include_tax"), title=t("settings.prices_include_tax_tooltip")),
                      Th(""))),
             Tbody(*[_row(i, pl) for i, pl in visible_price_lists]),
             cls="data-table",
