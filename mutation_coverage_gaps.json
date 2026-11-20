@@ -820,11 +820,6 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE."
  },
  {
-  "route": "ui POST /settings/connectors/{platform}/frequency",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit, lock lock_company, write session.add, write session.delete."
- },
- {
   "route": "ui POST /settings/connectors/{platform}/oauth-redirect",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
