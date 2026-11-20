@@ -146,7 +146,7 @@ async def _pending_message(token: str, d_from: str, d_to: str) -> str:
         rows = (await api.donor_statements_preview(token, {"from": d_from, "to": d_to})).get("donors") or []
     except APIError as e:
         api.raise_if_signed_out(e)
-        rows = []
+        return " ".join([sentence("donors.done_pending"), error_message(e)])
     parts = [sentence("donors.done_pending")]
     if sending := [r["name"] for r in rows if r.get("state") == "sending"]:
         parts.append(sentence("donors.done_sending", names=", ".join(sending)))

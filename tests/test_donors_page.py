@@ -168,3 +168,27 @@ async def test_a_send_whose_answer_did_not_come_back_shows_each_statement_as_sto
     page = await owner_ui.get(PAGE)
     assert sent == ["cy@test.test"] and t("donors.statement_sent") in page.text
     assert t("donors.statement_sending") not in page.text
+
+
+async def test_a_pending_sends_status_check_failure_shows_as_pending_with_its_own_error(owner_ui, monkeypatch):
+    """When a send's answer does not come back and the follow-up read of who is still sending
+    also fails, the toast still says the send may be pending, with that read's own error
+    alongside it; it never reads as nobody still sending."""
+    import ui.api_client as api
+    from ui.api_client import APIError
+
+    await _statement_donors(owner_ui.api, AUTH)
+
+    async def unanswered(*args):
+        raise api._no_response(504, api.timeout_message())
+
+    async def broken_preview(*args):
+        raise APIError(500, "boom")
+
+    monkeypatch.setattr(api, "send_donor_statements", unanswered)
+    monkeypatch.setattr(api, "donor_statements_preview", broken_preview)
+    r = await _send(owner_ui, confirm="on")
+    toast = _toast(r)
+    assert r.headers.get("HX-Redirect") == PAGE and toast.get("type") == "info", (r.status_code, toast)
+    assert sentence("donors.done_pending") in toast["message"], toast
+    assert "boom" in toast["message"], toast
