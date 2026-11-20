@@ -440,7 +440,7 @@ async def test_a_statement_taken_before_a_crash_is_never_sent_again_unless_the_r
     person it may have gone out and sends nothing through SMTP; a deduplicating relay is asked
     again under the same operation id."""
     donors = await _statement_donors(client, auth)
-    monkeypatch.setattr("celerp.services.email.relay_send_is_idempotent", lambda: relay)
+    monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "account" if relay else None)
     first: list = []
 
     async def crash(to, subject, body_html, body_text="", **kw):
@@ -456,6 +456,28 @@ async def test_a_statement_taken_before_a_crash_is_never_sent_again_unless_the_r
         assert [c["operation_id"] for c in calls] == first and again["state"] == "sent"
     else:
         assert calls == [] and again["state"] == "unconfirmed" and again["repeat"] is True
+
+
+@pytest.mark.parametrize("change", ["past_the_window", "another_relay_account"])
+async def test_a_cut_off_statement_the_relay_may_no_longer_know_is_never_replayed(client, auth, monkeypatch, change):
+    """The relay answers for an operation id only for a while, and only to the account that sent
+    it: past the replay window, or through another account, the send stays unconfirmed."""
+    donors = await _statement_donors(client, auth)
+    monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "account")
+
+    async def crash(to, subject, body_html, body_text="", **kw):
+        raise _Crash()
+    monkeypatch.setattr("celerp.services.email.send_email", crash)
+    with pytest.raises(_Crash):
+        await _send_all(client, auth)
+    monkeypatch.setattr("celerp.services.email.SEND_TIMEOUT", timedelta(0))
+    if change == "past_the_window":
+        monkeypatch.setattr("celerp.services.email.REPLAY_WINDOW", timedelta(0))
+    else:
+        monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "another account")
+    calls = _transport(monkeypatch)
+    again = (await _send_all(client, auth))[donors["email"]]
+    assert calls == [] and again["state"] == "unconfirmed" and again["repeat"] is True
 
 
 async def test_an_unconfirmed_statement_is_reported_and_a_failed_one_is_retried_once(client, auth, monkeypatch):
@@ -482,7 +504,7 @@ async def test_a_replayed_statement_never_goes_to_an_address_the_donor_no_longer
     address changed after a send was cut off is not emailed at the old one by a deduplicating
     relay's replay; the send stays unconfirmed."""
     donors = await _statement_donors(client, auth)
-    monkeypatch.setattr("celerp.services.email.relay_send_is_idempotent", lambda: True)
+    monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "account")
 
     async def crash(to, subject, body_html, body_text="", **kw):
         raise _Crash()

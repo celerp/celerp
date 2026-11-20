@@ -33,10 +33,14 @@ class EmailResult(NamedTuple):
     reason: str | None = None
 
 
-def relay_send_is_idempotent() -> bool:
-    """The configured relay supports deduplicated retry with a stable operation id."""
+def relay_identity() -> str | None:
+    """A digest naming the relay account this installation sends through, never its token;
+    None with no relay. An operation id is deduplicated only by the account that took it."""
     from celerp.config import settings
-    return bool(settings.gateway_token)
+    if not settings.gateway_token:
+        return None
+    from celerp.gateway.state import relay_http_url
+    return hashlib.sha256(f"{relay_http_url()}\n{settings.gateway_token}".encode()).hexdigest()
 
 
 # The longest a send waits for its transport, and the longest a send can take with recording its
@@ -44,6 +48,9 @@ def relay_send_is_idempotent() -> bool:
 # transport (attempt_state).
 TRANSPORT_TIMEOUT = timedelta(minutes=4)
 SEND_TIMEOUT = TRANSPORT_TIMEOUT + timedelta(minutes=1)
+# How long after an attempt began the same operation id may be sent again: shorter than the
+# time the relay answers for an operation id, so a replay is never taken as a new email.
+REPLAY_WINDOW = timedelta(hours=12)
 
 
 class Attempt(NamedTuple):
@@ -67,14 +74,25 @@ def attempt_record(attempt: Attempt) -> dict:
     """The stored record of ``attempt`` before it goes out: kept and committed first, so a run
     stopped at any point after leaves the attempt sending, never forgotten."""
     return {"state": "sending", "at": datetime.now(timezone.utc).isoformat(), "operation_id": attempt.operation_id,
-            "digest": payload_digest(attempt.message), "deduplicated": relay_send_is_idempotent()}
+            "digest": payload_digest(attempt.message), "relay": relay_identity()}
 
 
 def settled_record(record: dict, result: EmailResult) -> dict:
-    """``record`` with the outcome of its send: sent, unconfirmed (it may have gone out) or failed."""
+    """``record`` with the outcome of its send: sent, unconfirmed (it may have gone out) or failed.
+    ``began`` keeps when the attempt first went out, which bounds its replay (next_step)."""
     state = "sent" if result.ok else "unconfirmed" if result.unconfirmed else "failed"
     return {**record, "state": state, "at": datetime.now(timezone.utc).isoformat(),
+            "began": record.get("began") or record.get("at"),
             **({"reason": result.reason, "detail": result.detail} if state == "failed" else {})}
+
+
+def _stamp(at) -> datetime | None:
+    """A record's stored time (one with no zone is read as UTC); None when unreadable."""
+    try:
+        when = datetime.fromisoformat(str(at))
+    except (ValueError, OverflowError):
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 def attempt_state(record: dict | None, now: datetime) -> str | None:
@@ -85,12 +103,8 @@ def attempt_state(record: dict | None, now: datetime) -> str | None:
         return None
     if record["state"] != "sending":
         return record["state"]
-    try:
-        began = datetime.fromisoformat(str(record.get("at")))
-    except (ValueError, OverflowError):
-        return "unconfirmed"
-    began = began if began.tzinfo else began.replace(tzinfo=timezone.utc)
-    return "sending" if began + SEND_TIMEOUT > now else "unconfirmed"
+    began = _stamp(record.get("at"))
+    return "sending" if began is not None and began + SEND_TIMEOUT > now else "unconfirmed"
 
 
 def next_step(record: dict | None, *, again: bool = False) -> str:
@@ -99,15 +113,21 @@ def next_step(record: dict | None, *, again: bool = False) -> str:
     relay that took it deduplicates, so it can never arrive twice), "stored" answers as stored
     (sent, or still with another run's transport) and "unverified" answers that it may have
     gone out: never sent again through a transport that could deliver it twice, unless the
-    person confirmed it may be sent again (``again``)."""
-    state = attempt_state(record, datetime.now(timezone.utc))
+    person confirmed it may be sent again (``again``). A replay is the same relay account
+    the attempt was recorded under, inside REPLAY_WINDOW of when it began; past either, the
+    relay may no longer know the operation id, so the attempt is unverified."""
+    now = datetime.now(timezone.utc)
+    state = attempt_state(record, now)
     if state in (None, "failed"):
         return "new"
     if state != "unconfirmed":
         return "stored"
     if again:
         return "new"
-    return "replay" if record.get("deduplicated") and relay_send_is_idempotent() else "unverified"
+    relay, began = relay_identity(), _stamp(record.get("began") or record.get("at"))
+    if relay is None or record.get("relay") != relay or began is None:
+        return "unverified"
+    return "replay" if abs(now - began) < REPLAY_WINDOW else "unverified"
 
 
 async def transmit(attempts: list[Attempt]) -> list[EmailResult]:

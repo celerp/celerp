@@ -66,7 +66,6 @@ CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods", *SCHEDULE_
 _WRITING: ContextVar[str | None] = ContextVar("agreement_write", default=None)
 MAX_EMAIL_PAYLOAD_BYTES = 2 * 1024 * 1024
 EMAIL_ATTEMPT_RETENTION = timedelta(days=2)
-RECOVERY_RETRY_AGE = timedelta(hours=12)
 
 
 def now() -> datetime:
@@ -89,12 +88,11 @@ def stamp_time(at) -> datetime | None:
         return None
 
 
-def retryable_attempt_time(created_at: datetime | None) -> bool:
-    """Refuse old unknown-outcome retries even after extended downtime."""
-    if created_at is None:
-        return False
-    when = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
-    return when > datetime.now(timezone.utc) - RECOVERY_RETRY_AGE
+def replays(send: dict | None, began: datetime | None) -> bool:
+    """A cut-off send whose attempt was stored at ``began`` goes out again as the same message
+    under its operation id (email.next_step decides, from the relay and the replay window)."""
+    return email.next_step({"state": "unconfirmed", "began": began.isoformat() if began else None,
+                            "relay": (send or {}).get("relay")}) == "replay"
 
 
 def doc_kind(state: dict) -> str:
@@ -1017,25 +1015,23 @@ def period_status(state: str | None, doc: dict | None, bill_date: date, today: d
     return "overdue" if bill_date < today else "due" if bill_date == today else "upcoming"
 
 
-async def replayable_operations(session, company_id) -> set[str]:
-    """The email attempts whose durable payload is still inside the transport's retry window."""
+async def attempt_times(session, company_id) -> dict[str, datetime]:
+    """When each stored email attempt of the company began, by operation id."""
     attempts = (await session.execute(select(
         SubscriptionEmailAttempt.operation_id, SubscriptionEmailAttempt.created_at).where(
             SubscriptionEmailAttempt.company_id == company_id))).all()
-    return {str(operation_id) for operation_id, created_at in attempts if retryable_attempt_time(created_at)}
+    return {str(operation_id): created_at for operation_id, created_at in attempts}
 
 
-def sends_again(status: str | None, send: dict | None, replayable: set[str]) -> bool:
+def sends_again(status: str | None, send: dict | None, began: dict[str, datetime]) -> bool:
     """A cut-off send (send_status "unconfirmed") is sent again as a new message, behind a confirm
     that it may already have arrived, unless the relay replays the same message (it cannot arrive
     twice)."""
-    send = send or {}
-    return status == "unconfirmed" and not (
-        send.get("deduplicated") and email.relay_send_is_idempotent() and send.get("operation_id") in replayable)
+    return status == "unconfirmed" and not replays(send, began.get((send or {}).get("operation_id")))
 
 
 async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: int, today: date,
-                      replayable: set[str]) -> dict:
+                      began: dict[str, datetime]) -> dict:
     """Period ``k`` as the Periods table lists it: dates, claim, status, document, the earlier
     documents it let go, send state, and whether sending it again is a new message."""
     entry = schedule.periods.get(k) or {}
@@ -1050,7 +1046,7 @@ async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: i
             "doc_id": doc_id, "ref_id": ((doc or {}).get("ref_id") or doc_id) if doc_id else None,
             "reason": entry.get("reason"), "history": bool(entry.get("history")), "released": released,
             "send": send, "attempt": int((entry.get("send") or {}).get("n") or 0),
-            "again": sends_again(send, entry.get("send"), replayable)}
+            "again": sends_again(send, entry.get("send"), began)}
 
 
 async def period_list(session: AsyncSession, company_id, state: dict, today: date, *,
@@ -1076,7 +1072,7 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
         ended = t("subscriptions.err_bill_ended")
     nxt = None if ended else schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()
-    replayable = await replayable_operations(session, company_id)
+    began = await attempt_times(session, company_id)
     rows = []
     if first is not None:
         top = max([schedule.current(today) + 1, *schedule.periods])
@@ -1088,14 +1084,14 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
         k = min(top, before - 1) if before is not None else top
         while k >= first and len(rows) < limit:
             if schedule.exists(k):
-                rows.append(await _listed_row(session, company_id, state, schedule, k, today, replayable))
+                rows.append(await _listed_row(session, company_id, state, schedule, k, today, began))
             k -= 1
     older_before = rows[-1]["period_index"] if rows and first is not None and k >= first else None
     oldest_open = schedule.oldest_open(floor=review_floor(state))
     oldest_due_row = None
     if (before is None and not ended and oldest_open is not None and oldest_open not in
             {r["period_index"] for r in rows} and schedule.bill_date(oldest_open) <= today):
-        oldest_due_row = await _listed_row(session, company_id, state, schedule, oldest_open, today, replayable)
+        oldest_due_row = await _listed_row(session, company_id, state, schedule, oldest_open, today, began)
     review = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id")),
                "candidates": [period_row(schedule, c) for c in r.get("candidates") or []]}
               for r in state.get("history_review") or []]
@@ -1445,7 +1441,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
     from celerp_docs.routes import DocSendBody, doc_email, mark_doc_sent
 
-    relay_idempotent = email.relay_send_is_idempotent()
+    relay = email.relay_identity()
     async with factory() as session:
         proj = await locked_agreement(session, company_id, template_id)
         company = await session.get(Company, company_id)
@@ -1469,8 +1465,6 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             return send
 
         uncertain = reads == "unconfirmed" and not again
-        if uncertain and not (relay_idempotent and send.get("deduplicated")):
-            raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         doc_id = entry["doc_id"]
         doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
         via = emailed(doc.state if doc is not None else None)
@@ -1495,7 +1489,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             except ValueError:
                 attempt = None
             if (attempt is None or attempt.doc_id != doc_id or attempt.attempt_number != n
-                    or not retryable_attempt_time(attempt.created_at)):
+                    or not replays(send, attempt.created_at)):
                 raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
             message = json.loads(attempt.payload_json)
             digest = email.payload_digest(message)
@@ -1535,7 +1529,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                 uuid.NAMESPACE_URL, f"subscription-email:{company_id}:{doc_id}:{n}"))
             digest = email.payload_digest(message)
             record_send(periods, k, retry_by, state="sending", n=n, operation_id=operation_id,
-                        deduplicated=relay_idempotent, payload_digest=digest)
+                        relay=relay, payload_digest=digest)
             await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
             session.add(SubscriptionEmailAttempt(
                 company_id=company_id, operation_id=uuid.UUID(operation_id), doc_id=doc_id,
@@ -1561,7 +1555,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
 
         outcome = "sent" if result.ok else ("unconfirmed" if uncertain or result.unconfirmed else "failed")
         send = record_send(periods, k, retry_by, state=outcome, n=n, operation_id=operation_id,
-                           deduplicated=relay_idempotent, payload_digest=digest,
+                           relay=relay, payload_digest=digest,
                            **({"error_key": result.reason} if outcome == "failed" else {}))
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
         if result.ok:

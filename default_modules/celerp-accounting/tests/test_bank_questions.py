@@ -449,7 +449,7 @@ async def test_an_email_taken_before_a_crash_is_never_sent_again_unless_the_rela
         client, session, monkeypatch, relay):
     co, bk, client_h, lines = await _setup(client, session)
     calls = []
-    monkeypatch.setattr("celerp.services.email.relay_send_is_idempotent", lambda: relay)
+    monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "account" if relay else None)
 
     async def crash(to, subject, body_html, body_text="", **kw):
         calls.append(kw["operation_id"])
@@ -469,7 +469,7 @@ async def test_an_email_taken_before_a_crash_is_never_sent_again_unless_the_rela
 async def test_an_unconfirmed_email_is_replayed_under_its_operation_id_only_through_a_deduplicating_relay(
         client, session, monkeypatch, relay):
     co, bk, client_h, lines = await _setup(client, session)
-    monkeypatch.setattr("celerp.services.email.relay_send_is_idempotent", lambda: relay)
+    monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "account" if relay else None)
     first_calls = _sent(monkeypatch, EmailResult(False, "timeout", unconfirmed=True))
     idem = B.key()
     first = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)
@@ -481,6 +481,26 @@ async def test_an_unconfirmed_email_is_replayed_under_its_operation_id_only_thro
         assert again["email"]["state"] == "sent"
     else:
         assert calls == [] and again == first.json()
+
+
+@pytest.mark.parametrize("change", ["past_the_window", "another_relay_account"])
+async def test_an_unconfirmed_email_the_relay_may_no_longer_know_is_never_replayed(client, session, monkeypatch, change):
+    """The relay answers for an operation id only for a while, and only to the account that sent
+    it: past the replay window, or through another account, the Ask answers as stored."""
+    from datetime import timedelta
+    co, bk, client_h, lines = await _setup(client, session)
+    monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "account")
+    _sent(monkeypatch, EmailResult(False, "timeout", unconfirmed=True))
+    idem = B.key()
+    first = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)
+    assert first.json()["email"]["state"] == "unconfirmed"
+    if change == "past_the_window":
+        monkeypatch.setattr("celerp.services.email.REPLAY_WINDOW", timedelta(0))
+    else:
+        monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "another account")
+    calls = _sent(monkeypatch)
+    again = (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)).json()
+    assert calls == [] and again == first.json()
 
 
 async def test_the_answer_names_each_recipients_outcome(client, session, monkeypatch):
@@ -512,7 +532,7 @@ async def test_a_replayed_ask_never_goes_to_an_address_the_member_no_longer_has(
 
     from celerp.models.company import User
     co, bk, client_h, lines = await _setup(client, session)
-    monkeypatch.setattr("celerp.services.email.relay_send_is_idempotent", lambda: True)
+    monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "account")
     first = _sent(monkeypatch, EmailResult(False, "timeout", unconfirmed=True))
     idem = B.key()
     assert (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)).json()["email"]["state"] == "unconfirmed"

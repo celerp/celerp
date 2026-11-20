@@ -19,10 +19,13 @@ def _company(*terms: dict) -> SimpleNamespace:
     return SimpleNamespace(settings={"payment_terms": list(terms)})
 
 
-def test_an_attempt_with_no_creation_time_is_never_retried():
-    assert billing.retryable_attempt_time(None) is False
-    assert billing.retryable_attempt_time(datetime.now(timezone.utc)) is True
-    assert billing.retryable_attempt_time(datetime.now(timezone.utc) - billing.RECOVERY_RETRY_AGE * 2) is False
+def test_an_attempt_with_no_creation_time_is_never_retried(monkeypatch):
+    from celerp.services import email
+    monkeypatch.setattr(email, "relay_identity", lambda: "account")
+    send = {"relay": "account"}
+    assert billing.replays(send, None) is False
+    assert billing.replays(send, datetime.now(timezone.utc)) is True
+    assert billing.replays(send, datetime.now(timezone.utc) - email.REPLAY_WINDOW * 2) is False
 
 
 def test_the_due_date_comes_from_the_named_payment_term_only():

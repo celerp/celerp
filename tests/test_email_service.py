@@ -309,3 +309,79 @@ async def test_an_email_is_refused_while_its_caller_holds_a_transaction_or_the_c
             assert stub.messages == []
             assert (await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")).ok
     assert len(stub.messages) == 1
+
+
+def _attempt_record(monkeypatch, *, age, state="unconfirmed", settled=True):
+    """A stored attempt that began ``age`` ago under relay account "account"."""
+    from datetime import datetime, timezone
+
+    from celerp.services import email
+    monkeypatch.setattr(email, "relay_identity", lambda: "account")
+    record = email.attempt_record(email.Attempt("op-1", {"to": "a@test.test", "subject": "s", "body_html": "b"}))
+    record = {**record, "at": (datetime.now(timezone.utc) - age).isoformat()}
+    if settled:
+        record = {**email.settled_record(record, email.EmailResult(False, "timeout", unconfirmed=True)), "state": state}
+    return record
+
+
+@pytest.mark.parametrize("settled", [True, False], ids=["answered_unconfirmed", "cut_off_while_sending"])
+def test_an_unconfirmed_attempt_is_replayed_only_inside_the_replay_window(monkeypatch, settled):
+    """The relay answers for an operation id for a limited time: every caller of next_step gets
+    "unverified", never "replay", for an attempt that began longer ago than REPLAY_WINDOW."""
+    from datetime import timedelta
+
+    from celerp.services import email
+    margin = timedelta(minutes=10)
+    assert email.next_step(_attempt_record(monkeypatch, age=email.REPLAY_WINDOW - margin, settled=settled)) == "replay"
+    assert email.next_step(_attempt_record(monkeypatch, age=email.REPLAY_WINDOW + margin, settled=settled)) == "unverified"
+    assert email.next_step(_attempt_record(monkeypatch, age=timedelta(days=30), settled=settled)) == "unverified"
+    unreadable = {**_attempt_record(monkeypatch, age=margin, settled=settled), "at": "never", "began": "never"}
+    assert email.next_step(unreadable) == "unverified"
+    assert email.next_step(unreadable, again=True) == "new"
+
+
+def test_the_replay_window_runs_from_when_the_attempt_began_not_from_its_answer(monkeypatch):
+    from datetime import datetime, timezone
+
+    from celerp.services import email
+    record = _attempt_record(monkeypatch, age=email.REPLAY_WINDOW * 2)
+    assert datetime.fromisoformat(record["at"]) > datetime.now(timezone.utc) - email.REPLAY_WINDOW
+    assert email.next_step(record) == "unverified"
+
+
+def test_an_unconfirmed_attempt_is_never_replayed_through_another_relay_account(monkeypatch):
+    from datetime import timedelta
+
+    from celerp.config import settings
+    from celerp.services import email
+    record = _attempt_record(monkeypatch, age=timedelta(minutes=10))
+    assert email.next_step(record) == "replay"
+    for other in ("another account", None):
+        monkeypatch.setattr(email, "relay_identity", lambda: other)
+        assert email.next_step(record) == "unverified"
+    monkeypatch.undo()
+    monkeypatch.setattr(settings, "gateway_token", "token-a")
+    one = email.relay_identity()
+    assert one and "token-a" not in one
+    monkeypatch.setattr(settings, "gateway_http_url", "https://other.example.test")
+    two = email.relay_identity()
+    monkeypatch.setattr(settings, "gateway_token", "token-b")
+    assert len({one, two, email.relay_identity()}) == 3
+    monkeypatch.setattr(settings, "gateway_token", "")
+    assert email.relay_identity() is None
+
+
+def test_only_the_email_primitive_decides_a_replay():
+    """The window and the relay account are read by next_step alone: every other shipped file
+    asks it, so a new caller cannot replay past either."""
+    import re
+
+    from shipped_sources import shipped_sources
+    owner = "celerp/services/email.py"
+    # A caller that keeps its own send record stores the identity there for next_step to read.
+    writers = {"default_modules/celerp-subscriptions/celerp_subscriptions/billing.py"}
+    found = {}
+    for rel, path in shipped_sources():
+        if rel != owner and (hits := set(re.findall(r"REPLAY_WINDOW|\brelay_identity\b|\"deduplicated\"", path.read_text()))):
+            found[rel] = hits
+    assert found == {w: {"relay_identity"} for w in writers}

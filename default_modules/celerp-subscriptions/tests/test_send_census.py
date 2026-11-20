@@ -149,7 +149,7 @@ def test_every_status_a_send_can_read_has_a_summary_kind_a_period_mark_and_a_his
 
 def test_only_a_cut_off_send_is_offered_as_a_new_message():
     from celerp_subscriptions import billing
-    assert {s for s in _statuses() if billing.sends_again(s, {}, set())} == {"unconfirmed"}
+    assert {s for s in _statuses() if billing.sends_again(s, {}, {})} == {"unconfirmed"}
 
 
 def test_only_send_state_reads_a_send_records_stored_state_or_time():

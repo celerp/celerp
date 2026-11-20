@@ -500,7 +500,7 @@ async def test_delayed_mail_completion_cannot_change_reopened_period(client, ses
 async def test_relay_retry_keeps_original_transport_identity(client, session, monkeypatch, mail):
     import asyncio
 
-    monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
+    monkeypatch.setattr(email, "relay_identity", lambda: "account")
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
@@ -563,7 +563,7 @@ async def test_uncertain_email_reuses_original_payload_without_recomposition(cli
     import asyncio
     from celerp_docs import routes as docs_routes
 
-    monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
+    monkeypatch.setattr(email, "relay_identity", lambda: "account")
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
@@ -627,7 +627,7 @@ async def test_missing_private_payload_refuses_uncertain_retry(client, session, 
     from sqlalchemy import delete
     from celerp.models.subscription_email import SubscriptionEmailAttempt
 
-    monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
+    monkeypatch.setattr(email, "relay_identity", lambda: "account")
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
@@ -652,14 +652,15 @@ async def test_missing_private_payload_refuses_uncertain_retry(client, session, 
     assert (await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})).status_code == 409
 
 
-async def test_uncertain_send_replay_window_enforced_at_api(client, session, monkeypatch, mail):
+@pytest.mark.parametrize("change", ["past_the_window", "another_relay_account"])
+async def test_uncertain_send_replay_window_enforced_at_api(client, session, monkeypatch, mail, change):
     import asyncio
     import uuid
     from datetime import datetime, timedelta, timezone
     from celerp.models.subscription_email import SubscriptionEmailAttempt
     from celerp_subscriptions import billing
 
-    monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
+    monkeypatch.setattr(email, "relay_identity", lambda: "account")
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
@@ -677,8 +678,11 @@ async def test_uncertain_send_replay_window_enforced_at_api(client, session, mon
     operation_id = uuid.UUID(state["periods"]["0"]["send"]["operation_id"])
     attempt = await session.get(
         SubscriptionEmailAttempt, {"company_id": uuid.UUID(cid), "operation_id": operation_id})
-    attempt.created_at = datetime.now(timezone.utc) - billing.RECOVERY_RETRY_AGE - timedelta(seconds=1)
-    await session.commit()
+    if change == "past_the_window":
+        attempt.created_at = datetime.now(timezone.utc) - email.REPLAY_WINDOW - timedelta(seconds=1)
+        await session.commit()
+    else:
+        monkeypatch.setattr(email, "relay_identity", lambda: "another account")
 
     row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
     assert row["again"] is True
@@ -763,7 +767,7 @@ async def _cut_off_send(client, session, monkeypatch) -> tuple[dict, str, str]:
     long enough ago that it reads as cut off: (headers, company id, agreement id)."""
     import asyncio
 
-    monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
+    monkeypatch.setattr(email, "relay_identity", lambda: "account")
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
