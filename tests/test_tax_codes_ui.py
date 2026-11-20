@@ -22,6 +22,14 @@ _PREFIXES = [("taxes", "get_taxes", "patch_taxes"),
 _STALE = "Taxes changed since this page loaded; reload the page"
 
 
+@pytest.fixture(autouse=True)
+def _company():
+    """A rate edit changes the version in force on the company's today, which the handler reads
+    from the company."""
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value={"current_role": "owner", "settings": {}})):
+        yield
+
+
 def _rows() -> list[dict]:
     return [{"id": "u-0123456789ab", "name": "VAT", "tax_type": "both", "category": "standard",
              "versions": [{"rate": 5.0, "valid_from": None, "valid_to": "2020-12-31"},

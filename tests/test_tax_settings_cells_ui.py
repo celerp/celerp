@@ -355,3 +355,40 @@ async def test_the_rate_column_shows_the_rate_in_force_on_the_company_day(ui_cli
             r = await ui_client.get(url)
         assert r.status_code == 200, r.text
         assert re.search(rf'(>{shown}%</span>|value="{shown}")', r.text), (tz, r.text[-2000:])
+
+
+@pytest.mark.parametrize("prefix, gname, pname", _PREFIXES)
+async def test_a_rate_edit_changes_the_version_in_force_and_never_another(ui_client, prefix, gname, pname):
+    today = dt.date.today()
+    scheduled = {"name": "VAT", "tax_type": "both",
+                 "versions": [{"rate": 7.0, "valid_to": today.isoformat()},
+                              {"rate": 9.0, "valid_from": (today + dt.timedelta(days=1)).isoformat()}]}
+    ended = {"name": "Old levy", "tax_type": "both",
+             "versions": [{"rate": 3.0, "valid_to": (today - dt.timedelta(days=1)).isoformat()}]}
+    saved = AsyncMock(return_value={})
+    ui_client.cookies.update(_authed())
+    with patch(f"ui.api_client.{gname}", new=AsyncMock(side_effect=lambda *_: [dict(scheduled), dict(ended)])), \
+         patch(f"ui.api_client.{pname}", new=saved):
+        r = await ui_client.patch(f"/settings/{prefix}/0/rate", data={"value": "8", "fingerprint": "f"})
+        assert [v["rate"] for v in saved.await_args.args[1][0]["versions"]] == [8.0, 9.0]
+        assert f'id="{prefix}-fingerprint"' in r.text and 'hx-swap-oob="true"' in r.text
+
+        saved.reset_mock()
+        r = await ui_client.patch(f"/settings/{prefix}/1/rate", data={"value": "4", "fingerprint": "f"})
+    assert "cell-error" in r.text
+    assert html.unescape(r.text).count(t("settings.no_rate_in_force", name="Old levy", date=today)) == 1
+    saved.assert_not_awaited()
+
+
+@pytest.mark.parametrize("prefix, gname, pname", _PREFIXES)
+async def test_deleting_a_tax_sends_the_fingerprint_the_table_rendered(ui_client, prefix, gname, pname):
+    from ui.routes.settings import _taxes_tab
+    rendered = str(_taxes_tab(_taxes(), dt.date.today(), prefix=prefix))
+    assert rendered.count(f'hx-include="#{prefix}-fingerprint"') == 2  # New and Delete
+    saved = AsyncMock(return_value={})
+    ui_client.cookies.update(_authed())
+    with patch(f"ui.api_client.{gname}", new=AsyncMock(return_value=_taxes())), \
+         patch(f"ui.api_client.{pname}", new=saved):
+        r = await ui_client.delete(f"/settings/{prefix}/0?fingerprint=shown")
+    assert r.status_code == 204, r.text
+    assert saved.await_args.args[1:] == ([], "shown")

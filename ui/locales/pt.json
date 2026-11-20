@@ -9350,5 +9350,6 @@
   "enum.scopes.journals": "Lançamentos contábeis",
   "enum.scopes.products": "Produtos",
   "ai.card_name_unavailable": "Nome não disponível",
-  "error.fix_ask_roles": "Sua função não pode realizar esta etapa na página {place}. Peça a alguém com uma destas funções: {roles}."
+  "error.fix_ask_roles": "Sua função não pode realizar esta etapa na página {place}. Peça a alguém com uma destas funções: {roles}.",
+  "settings.no_rate_in_force": "Não há taxa para {name} em {date}. Adicione uma versão da taxa que cubra este dia."
 }

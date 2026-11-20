@@ -98,14 +98,19 @@ class TaxCode(BaseModel):
         return self
 
 
-def rate_on(code: TaxCode, day: dt.date) -> float:
-    """The rate of ``code`` in force on ``day``; NoRateInForce before the first version, after
-    the last or in a gap between two."""
-    for version in code.versions:
+def version_on(code: TaxCode, day: dt.date) -> int:
+    """The index of the version of ``code`` in force on ``day``; NoRateInForce before the first
+    version, after the last or in a gap between two."""
+    for index, version in enumerate(code.versions):
         if (version.valid_from is None or version.valid_from <= day) and (
                 version.valid_to is None or day <= version.valid_to):
-            return version.rate
+            return index
     raise NoRateInForce(code, day)
+
+
+def rate_on(code: TaxCode, day: dt.date) -> float:
+    """The rate of ``code`` in force on ``day`` (version_on)."""
+    return code.versions[version_on(code, day)].rate
 
 
 class TaxListRefused(ValueError):

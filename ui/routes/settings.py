@@ -22,7 +22,7 @@ from ui.components.cards import section_card
 from ui.components.operation_key import operation_key_input
 from ui.components.preview_confirm import binding_input
 from ui.components.table import EMPTY, bulk_toolbar, editable_cell, searchable_select, select_all_th, unwrap_address
-from celerp.localization.taxcodes import list_fingerprint
+from celerp.localization.taxcodes import NoRateInForce, TaxCode, list_fingerprint, version_on
 from celerp.tax_regimes import TAX_TYPES, country_name, taxes_on
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.services.periods import FISCAL_YEAR_STARTS
@@ -232,6 +232,15 @@ _TAX_BOOL_FIELDS = frozenset({"is_default", "is_compound"})
 _TAX_SELECT_FIELDS = _TAX_BOOL_FIELDS | {"tax_type"}
 _YES_NO = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}
 
+
+def _tax_fingerprint(prefix: str, taxes: list[dict], oob: bool = False) -> FT:
+    """The fingerprint of the tax list a table rendered, sent with every edit of that table so
+    the server refuses an edit made on a list someone else changed since (a save swaps in the
+    fingerprint of the list it left)."""
+    return Input(type="hidden", id=f"{prefix}-fingerprint", name="fingerprint", value=list_fingerprint(taxes),
+                 **({"hx_swap_oob": "true"} if oob else {}))
+
+
 def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, redirect_url: str):
     """Register GET edit, PATCH, POST new, DELETE for tax CRUD at /settings/{prefix}/...
 
@@ -278,7 +287,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                         *[Option(t(label), value=v, selected=(v == val)) for v, label in choices],
                         name="value",
                         hx_patch=f"/settings/{pfx}/{idx}/{field}",
-                        hx_target="closest td", hx_swap="outerHTML", hx_include="this",
+                        hx_target="closest td", hx_swap="outerHTML", hx_include=f"this,#{pfx}-fingerprint",
                         hx_trigger="change",
                         cls="cell-input cell-input--select", autofocus=True,
                         onkeydown=esc_js,
@@ -292,7 +301,8 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                 val = plain_number(float(val))
             return editable_cell(str(idx), field, val, cell_type="rate" if field == "rate" else "text",
                                  patch_url=f"/settings/{pfx}/{idx}/{field}", restore_url=restore_url,
-                                 cls_extra="cell--number" if field == "rate" else "")
+                                 cls_extra="cell--number" if field == "rate" else "",
+                                 include=f"#{pfx}-fingerprint")
         return tax_field_edit
 
     def _make_display(pfx, gname):
@@ -322,24 +332,31 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                     float(value)
                 except (ValueError, TypeError):
                     return P(t("settings.rate_must_be_a_number"), cls="cell-error")
+            day = await _cell_day(request, field)
             try:
                 taxes = await getattr(api, gname)(token)
-                fingerprint = list_fingerprint(taxes)
                 if idx < len(taxes):
                     if field == "rate":
-                        taxes[idx]["versions"][-1]["rate"] = float(value)
+                        # The rate shown is the one in force today, so the edit changes that version.
+                        try:
+                            at = version_on(TaxCode.model_validate(taxes[idx]), day)
+                        except NoRateInForce:
+                            return P(t("settings.no_rate_in_force", name=taxes[idx].get("name", ""), date=day),
+                                     cls="cell-error")
+                        taxes[idx]["versions"][at]["rate"] = float(value)
                     elif field in _TAX_BOOL_FIELDS:
                         taxes[idx][field] = _YES_NO[value.strip().lower()]
                     else:
                         taxes[idx][field] = value
-                await getattr(api, pname)(token, taxes, fingerprint)
+                await getattr(api, pname)(token, taxes, str(form.get("fingerprint", "")))
                 taxes = await getattr(api, gname)(token)
             except APIError as e:
                 if e.status == 401:
                     raise
                 return P(str(e.detail), cls="cell-error")
             tax = taxes[idx] if idx < len(taxes) else {}
-            return _tax_display_cell(idx, field, tax, await _cell_day(request, field), prefix=pfx)
+            return (_tax_display_cell(idx, field, tax, day, prefix=pfx),
+                    _tax_fingerprint(pfx, taxes, oob=True))
         return tax_field_patch
 
     def _make_new(gname, pname, redir):
@@ -350,9 +367,8 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             try:
                 taxes = await getattr(api, gname)(token)
-                fingerprint = list_fingerprint(taxes)
                 taxes.append({"name": "New Tax", "tax_type": "sales", "versions": [{"rate": 0.0}]})
-                await getattr(api, pname)(token, taxes, fingerprint)
+                await getattr(api, pname)(token, taxes, str((await request.form()).get("fingerprint", "")))
             except APIError as e:
                 return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": redir})
@@ -367,9 +383,9 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
             try:
                 taxes = await getattr(api, gname)(token)
                 if 0 <= idx < len(taxes):
-                    fingerprint = list_fingerprint(taxes)
                     taxes.pop(idx)
-                    await getattr(api, pname)(token, taxes, fingerprint)
+                    # htmx sends a DELETE's values in the query string.
+                    await getattr(api, pname)(token, taxes, request.query_params.get("fingerprint", ""))
             except APIError as e:
                 return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": redir})
@@ -3556,7 +3572,7 @@ def _taxes_tab(taxes: list[dict], today: date, lang: str = "en", prefix: str = "
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/{prefix}/{idx}",
                        hx_confirm=t("settings.confirm_delete_tax", name=tax.get("name", "")),
-                       hx_swap="none"),
+                       hx_include=f"#{prefix}-fingerprint", hx_swap="none"),
                 cls="cell",
             ),
             cls="data-row",
@@ -3566,13 +3582,15 @@ def _taxes_tab(taxes: list[dict], today: date, lang: str = "en", prefix: str = "
         # Sent a moment after the click, behind the save an editor fires as it blurs (the card
         # queues its requests), so a rate typed just before the click is kept.
         Button(t("btn.new_tax"), cls="btn btn--primary",
-               hx_post=f"/settings/{prefix}/new", hx_swap="none", hx_trigger="click delay:250ms"),
+               hx_post=f"/settings/{prefix}/new", hx_include=f"#{prefix}-fingerprint", hx_swap="none",
+               hx_trigger="click delay:250ms"),
     ]
     if import_path:
         actions.append(A(import_icon(), t("btn.import_taxes_csv"), href=safe_url(import_path), cls="btn btn--secondary ml-sm"))
 
     return Div(
         Div(*actions, cls="page-actions mb-md"),
+        _tax_fingerprint(prefix, taxes),
         Table(
             Thead(Tr(Th(t("th.name")), Th(t("th.rate"), cls="cell--number"), Th(t("label.tax_type")), Th(t("th.default")), Th(t("th.compound")), Th(t("th.description")), Th(""))),
             Tbody(*[_row(i, tax) for i, tax in enumerate(taxes)]),

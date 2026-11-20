@@ -1071,6 +1071,7 @@ def editable_cell(
     searchable: bool = False,
     opened: str | None = None,
     opened_version: int | None = None,
+    include: str = "",
 ) -> FT:
     """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell.
     label_map: optional {slug: display_name} - if set, select renders option labels from map.
@@ -1086,7 +1087,9 @@ def editable_cell(
     opened:    the text the editor opened with, sent back beside the value (a cost cell's save is
                read against it).
     opened_version: the item version the editor opened on, sent back beside ``opened`` (a cost
-               cell's save is refused once the item has moved)."""
+               cell's save is refused once the item has moved).
+    include:   a selector of more inputs the save sends beside the value (a list cell sends the
+               fingerprint of the list its table rendered)."""
     # Grey hint for empty inputs (e.g. a reorder suggestion). Kept separate from `value`
     # so it can never be saved: HTML placeholder is shown only while the input is empty and
     # is never part of the submitted form data.
@@ -1101,7 +1104,8 @@ def editable_cell(
     # ESC restores from the same field route it saves to, so pointing the cell at another
     # REST surface moves both halves together instead of leaving the restore on core's.
     restore_url = restore_url or f"{patch_url}/display"
-    swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this",
+    swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML",
+                hx_include=f"this,{include}" if include else "this",
                 **({"hx_vals": json.dumps({"opened": opened, **({} if opened_version is None
                                                                  else {"opened_version": opened_version})})}
                    if opened is not None else {}))

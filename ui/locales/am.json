@@ -9350,5 +9350,6 @@
   "enum.scopes.journals": "ጆርናሎች",
   "enum.scopes.products": "ምርቶች",
   "ai.card_name_unavailable": "ስሙ አይገኝም",
-  "error.fix_ask_roles": "የእርስዎ ሚና ይህን እርምጃ በ{place} ገጽ ላይ መውሰድ አይችልም። ከእነዚህ ሚናዎች አንዱ ያለውን ሰው ይጠይቁ፦ {roles}።"
+  "error.fix_ask_roles": "የእርስዎ ሚና ይህን እርምጃ በ{place} ገጽ ላይ መውሰድ አይችልም። ከእነዚህ ሚናዎች አንዱ ያለውን ሰው ይጠይቁ፦ {roles}።",
+  "settings.no_rate_in_force": "ለ{name} በ{date} ምንም ተመን የለም። ይህን ቀን የሚሸፍን የተመን ስሪት ያክሉ።"
 }

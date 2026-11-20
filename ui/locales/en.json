@@ -9350,5 +9350,6 @@
   "enum.scopes.inventory": "Inventory",
   "enum.scopes.journals": "Journals",
   "enum.scopes.products": "Products",
-  "error.fix_ask_roles": "Your role cannot take this step on the {place} page. Ask someone with one of these roles: {roles}."
+  "error.fix_ask_roles": "Your role cannot take this step on the {place} page. Ask someone with one of these roles: {roles}.",
+  "settings.no_rate_in_force": "No rate for {name} on {date}. Add a rate version that covers this day."
 }
