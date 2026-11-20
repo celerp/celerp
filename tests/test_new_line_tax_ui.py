@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from celerp.tax_regimes import get_regime
+from test_helpers import line_snapshot
 from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
 from ui.api_client import APIError
 
@@ -22,8 +23,9 @@ _ITEM = {"entity_id": "item:p1", "sku": "JWL-002", "name": "Gold Ring", "quantit
          "sale_price": 1200, "cost_price": 10, "reorder_qty": 24, "attributes": {}}
 
 
-def _line_tax(name: str, rate: float) -> list[dict]:
-    return [{"code": name, "rate": rate, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
+def _line_tax(name: str, rate: float, code_id: str = "th-vat-7") -> list[dict]:
+    """The taxes a new line carries for the pack's standard code ``code_id``."""
+    return [line_snapshot(name, rate, code_id=code_id, category="standard")]
 
 
 def _taxes(country: str = "TH") -> AsyncMock:
@@ -45,8 +47,8 @@ async def _post(ui_client, url: str, body: bytes, *, taxes: AsyncMock, create=No
 
 @pytest.mark.parametrize("country, expected", [
     ("TH", _line_tax("VAT 7%", 7.0)),
-    ("IN", _line_tax("IGST 18%", 18.0)),
-    ("AU", _line_tax("GST 10%", 10.0)),
+    ("IN", _line_tax("IGST 18%", 18.0, "in-igst-18")),
+    ("AU", _line_tax("GST 10%", 10.0, "au-gst-10")),
     ("ZZ", None),  # no pack: the generic list, whose default rate is zero
 ])
 async def test_a_new_invoice_from_items_starts_with_the_default_line_tax(ui_client, country, expected):

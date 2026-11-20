@@ -13,6 +13,7 @@ import uuid
 import pytest
 from fasthtml.common import to_xml
 
+from test_helpers import with_versions
 from test_form_submitted_twice import _Request, routes  # noqa: F401  (routes is a fixture)
 
 
@@ -89,7 +90,7 @@ async def test_a_sales_only_default_tax_is_not_the_default_on_a_purchase_documen
     taxes = [{"name": "Sales tax", "rate": 8, "tax_type": "sales", "is_default": True},
              {"name": "VAT", "rate": 7, "tax_type": "both", "is_default": False}]
 
-    page = to_xml(documents._doc_detail(doc, company_taxes=taxes))
+    page = to_xml(documents._doc_detail(doc, company_taxes=with_versions(taxes)))
 
     assert _new_row_tax(page) == (default, codes)
 
@@ -106,7 +107,7 @@ async def test_a_row_added_in_the_editor_starts_with_every_default_tax(client, a
              {"name": "SGST 9%", "rate": 9, "tax_type": "both", "is_default": True},
              {"name": "IGST 18%", "rate": 18, "tax_type": "both", "is_default": False}]
 
-    page = to_xml(documents._doc_detail(doc, company_taxes=taxes))
+    page = to_xml(documents._doc_detail(doc, company_taxes=with_versions(taxes)))
 
     assert _new_row_tax(page) == ("|stored", ["CGST 9%", "SGST 9%"])
     assert "_CELERP_DEFAULT_TAX" not in page

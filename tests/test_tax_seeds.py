@@ -14,6 +14,7 @@ import pytest
 from celerp import tax_regimes
 from celerp.localization import packs
 from celerp.tax_regimes import default_line_taxes, get_regime
+from test_helpers import line_snapshot, with_versions
 
 _DAY = dt.date(2026, 10, 1)  # the day a document charges its taxes on
 
@@ -172,7 +173,7 @@ def test_default_line_taxes_matches_the_scan_line():
 
     th = get_regime("TH")["taxes"]
     assert default_line_taxes(th, "invoice", _DAY, doc=None) == [
-        {"code": "VAT 7%", "rate": 7.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
+        line_snapshot("VAT 7%", 7.0, code_id="th-vat-7", category="standard")]
     assert default_line_taxes(get_regime("IN")["taxes"], "bill", _DAY, doc=None)[0]["code"] == "IGST 18%"
     assert default_line_taxes(get_regime("ZZ")["taxes"], "invoice", _DAY, doc=None) == []
     assert default_line_taxes(get_regime("MY")["taxes"], "bill", _DAY, doc=None) == []
@@ -185,12 +186,12 @@ def test_a_new_line_takes_every_default_tax():
     """A company set up before IGST became the India default holds CGST 9% and SGST 9% both as
     defaults: a new line carries both (18%), never only the first. A zero-rate default adds
     nothing."""
-    before = [
+    before = with_versions([
         {"name": "CGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True},
         {"name": "SGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True},
         {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": True},
         {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": False},
-    ]
+    ])
     assert [(t["code"], t["rate"]) for t in default_line_taxes(before, "invoice", _DAY, doc=None)] == [
         ("CGST 9%", 9.0), ("SGST 9%", 9.0)]
     assert [t["code"] for t in default_line_taxes(before, "bill", _DAY, doc=None)] == ["CGST 9%", "SGST 9%"]
@@ -264,12 +265,12 @@ def test_a_tax_changed_in_settings_is_never_added_to_a_draft_taxed_as_a_whole(ch
 def test_a_new_line_takes_the_companys_calculation_order():
     """VAT 5% (order 0) and a compound 10% levy (order 1) listed levy first: a $100 line is taxed
     VAT $5 then levy $10.50, total $115.50 (not $115), whatever order the list is in."""
-    taxes = [
+    taxes = with_versions([
         {"name": "Levy 10%", "rate": 10.0, "tax_type": "both", "is_default": True, "is_compound": True,
          "default_order": 1},
         {"name": "VAT 5%", "rate": 5.0, "tax_type": "both", "is_default": True, "is_compound": False,
          "default_order": 0},
-    ]
+    ])
     line_taxes = default_line_taxes(taxes, "invoice", _DAY, doc=None)
     assert [(t["code"], t["order"]) for t in line_taxes] == [("Levy 10%", 1), ("VAT 5%", 0)]
     assert _money([], [{"quantity": 1, "unit_price": 100.0, "taxes": line_taxes}]) == (15.5, 115.5)

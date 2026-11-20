@@ -183,7 +183,7 @@ async def test_tax_code_identity_and_lifecycle(client):
 
     draft = await _draft_invoice(client, h, vat["id"])
     [line_tax] = draft["line_items"][0]["taxes"]
-    assert line_tax["code_id"] == vat["id"] and line_tax["name"] == "VAT"
+    assert line_tax["code_id"] == vat["id"] and line_tax["code"] == "VAT"
 
     [renamed] = await _saved(client, h, [{**vat, "name": "Output VAT", "output_account": "2130",
                                          "report_tags": ["box1"], "component": "VAT-A"}])
@@ -326,7 +326,7 @@ async def test_line_snapshot_fields_server_built(client):
     line = draft["line_items"][0]
     [snap] = line["taxes"]
     for field, value in (("rate", 9.0), ("category", "zero"), ("account", "2130"), ("inclusive", True),
-                         ("base", 1.0), ("amount", -1.0), ("name", "Other"), ("version_from", "2020-01-01")):
+                         ("base", 1.0), ("amount", -1.0), ("code", "Other"), ("version_from", "2020-01-01")):
         r = await _patch_doc(client, h, draft["id"], "line_items", [{**line, "taxes": [{**snap, field: value}]}])
         _refused(r, _FROM_CODE)
         assert (await _doc(client, h, draft["id"]))["line_items"][0]["taxes"] == [snap], field
@@ -341,7 +341,7 @@ async def test_line_snapshot_fields_server_built(client):
         return {"doc_type": "invoice", "issue_date": "2026-10-01", "line_items": [
             {"description": "Service", "quantity": 1, "unit_price": 100.0, "taxes": [tax]}]}
     _refused(await client.post("/docs", headers=h, json=_new({"code_id": vat["id"], "rate": 9})), _FROM_CODE)
-    r = await client.post("/docs", headers=h, json=_new({"code_id": vat["id"], "name": "VAT", "rate": 7.0}))
+    r = await client.post("/docs", headers=h, json=_new({"code_id": vat["id"], "code": "VAT", "rate": 7.0}))
     assert r.status_code == 200, r.text
 
 

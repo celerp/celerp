@@ -13,7 +13,7 @@ import pytest
 from fasthtml.common import to_xml
 
 from line_actions_support import h, state  # noqa: F401
-from test_helpers import doc_version
+from test_helpers import doc_version, with_versions
 
 _L0 = "11111111-1111-4111-8111-111111111111"
 
@@ -40,7 +40,7 @@ def _render(status: str, li: dict, company_taxes: list[dict] | None = None) -> s
     d = {"entity_id": "doc:inv-1", "doc_type": "invoice", "status": status, "ref_id": "I-1",
          "line_items": [{"line_id": _L0, "sku": "S-1", "quantity": 6, "unit_price": 29,
                          "line_total": 174, **li}]}
-    return to_xml(_doc_detail(d, company_taxes=company_taxes or []))
+    return to_xml(_doc_detail(d, company_taxes=with_versions(company_taxes or [])))
 
 
 def _selected_tax(html: str) -> str:

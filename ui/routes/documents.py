@@ -46,7 +46,7 @@ from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_S
 from celerp.services.money import document_line_amount, to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
 from celerp.tax_regimes import (default_line_taxes, doc_side, holds_tax, legacy_line_taxes, line_tax, line_tax_unset,
-                                matching_tax, set_new_line_taxes, tax_day, tax_entries, tax_text, taxes_for,
+                                matching_tax, set_new_line_taxes, tax_day, tax_entries, tax_text, taxes_for, taxes_on,
                                 unreadable_tax)
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
@@ -8546,6 +8546,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
         _taxes_list = taxes_for(company_taxes or [], doc_type)
         _tax_on = tax_day(doc)
+        _taxes_in_force = taxes_on(_taxes_list, _tax_on)
 
         def _tax_select(li: dict | None = None) -> FT:
             """Build tax <select> + hidden custom-rate input + hidden label for a line item.
@@ -8558,8 +8559,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             does a line holding an entry that is not a tax (sent back as it is, so the save
             is refused naming it until the line's tax is picked again).
 
-            Each configured tax's option carries the tax as a line holds it (line_tax), so a
-            pick saves its calculation order and compounding. The "--" choice (hidden otherwise)
+            Each configured tax in force on the document's day (taxes_on) is an option at its rate
+            that day and carries the tax as a line holds it (line_tax), so a pick saves its
+            calculation order and compounding. The "--" choice (hidden otherwise)
             shows a line whose tax the user sets (line_tax_unset, default_line_taxes).
             """
             li = li or {}
@@ -8602,7 +8604,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                               title=t("documents.line_tax_unset"))]
             if stored_option is not None:
                 options.append(stored_option)
-            for tax in _taxes_list:
+            for tax in _taxes_in_force:
                 val = _tax_option_value(tax)
                 options.append(Option(_tax_label(tax), value=val, selected=(selected_val == val),
                                       data_tax=_json.dumps(line_tax(tax, _tax_on, doc_side(doc_type)))))

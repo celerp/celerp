@@ -375,6 +375,13 @@ def with_versions(rows: list[dict]) -> list[dict]:
             if "rate" in row and "versions" not in row else row for row in rows]
 
 
+def line_snapshot(code: str, rate: float, **fields) -> dict:
+    """The tax a line carries (line_tax) for a code with no report tags, not cash basis and
+    otherwise only ``fields`` (``code_id``, ``category``, ``order``...) set."""
+    from celerp.localization.taxcodes import LineTaxSnapshot
+    return LineTaxSnapshot(code=code, rate=rate, report_tags=[], cash_basis=False, **fields).model_dump(mode="json")
+
+
 def rate_today(row: dict) -> float:
     """The rate of a stored tax list row in force today (the company's day is not needed: every
     test row has one open version unless the test dates it itself)."""
