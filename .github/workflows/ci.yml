@@ -16,6 +16,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+env:
+  # Pin a release-shaped placeholder so the package version is deterministic in every
+  # job's checkout (most use the default shallow, tagless fetch): the real release
+  # version is pinned from the tag only in the release workflow (build.yml).
+  SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CELERP: "0.0.0"
+
 jobs:
   shard:
     name: Test shard ${{ matrix.group }}

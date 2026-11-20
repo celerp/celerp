@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from celerp.help import assemble, ledger
-from celerp.help.bundle import bundle_problems
+from celerp.help.bundle import _VERSION, bundle_problems
 from celerp.help.registry import get_index
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -111,6 +111,17 @@ def test_check_build_yml_help_asset_export_step():
     assert names.index("Export the help bundle") == names.index("Export the importer list") + 1
     check = _step(job, "Verify the release version of the assets")["run"]
     assert 'open("help.json"' in check and '("Help", help_bundle["version"])' in check
+
+
+def test_check_ci_yml_pins_a_deterministic_version():
+    """Most CI jobs check out shallow and tagless, so setuptools-scm would otherwise
+    guess a non-release version (e.g. 0.1.dev1+gabc1234) from the commit distance alone,
+    and the exported help bundle would fail its own version check (bundle.py V2). The
+    workflow pins the same env var the release job uses, so every job's install sees a
+    release-shaped version without needing tags."""
+    flow = yaml.safe_load((_ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    pin = flow["env"]["SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CELERP"]
+    assert _VERSION.match(pin)
 
 
 def test_check_no_workflow_reads_another_repository():
