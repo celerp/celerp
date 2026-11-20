@@ -364,6 +364,29 @@ async def test_a_claim_that_raises_once_is_tried_again_and_the_job_runs_once(
     assert not jobs.held_operation_ids()
 
 
+async def test_a_company_gone_at_a_reopens_claim_ends_the_job_without_reusing_the_old_claim(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """A reopen's claim meets a company already gone: the task ends there, never reusing
+    the finished run's claim for another one. (It never gets the chance to: a stale claim
+    reused from the finished run would reach the job's own claim inside the second run.)"""
+    calls, real_lock = [], jobs._lock_job
+
+    async def _lock(session, job_id_):
+        calls.append(job_id_)
+        if len(calls) == 3:                             # the reopen's own claim check
+            raise jobs.CompanyGone()
+        return await real_lock(session, job_id_)
+    monkeypatch.setattr(jobs, "_lock_job", _lock)
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud)
+    jobs.start_job(job_id)                              # a reopen while the first run is held
+    cloud.release(identity)
+    await until(lambda: not jobs.task_alive(job_id))
+    assert (await _finished(real_client, tok, job_id))["status"] == "completed"
+    assert cloud.executions[identity] == 1
+    assert len(calls) == 3
+
+
 async def _open_renewals(engine) -> int:
     """The lease renewals whose transaction is still open, as the database sees them."""
     async with engine.connect() as conn:
