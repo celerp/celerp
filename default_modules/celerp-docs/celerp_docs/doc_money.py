@@ -212,11 +212,12 @@ def computable_tax(entry) -> bool:
     return _definition(entry) is not None
 
 
-def _recompute_tax_applications(entries: list, base, currency: str):
-    """Recompute stored tax definitions against a new base, never stale amounts. The entries
-    were checked first (refuse_malformed_taxes)."""
+def _recompute_tax_applications(entries: list, base, currency: str, inclusive: bool = False):
+    """Recompute stored tax definitions against a new base, never stale amounts; with
+    *inclusive*, *base* already holds them (compute_tax_amounts). The entries were checked first
+    (refuse_malformed_taxes)."""
     resolved = compute_tax_amounts([_definition(value) for value in entries],
-                                   to_stored_float(round_money(base, currency)), currency)
+                                   to_stored_float(round_money(base, currency)), currency, inclusive=inclusive)
     return [item.model_dump() for item in resolved], sum(
         (to_decimal(item.amount) for item in resolved), to_decimal(0))
 
@@ -449,7 +450,7 @@ def list_money(state: dict, lines: list[dict], currency: str) -> dict:
 LIST_TOTAL_FIELDS = ("subtotal", "discount_amount", "tax_amount", "total")
 # What a document's money is worked out from, and the figures worked out (document_money).
 DOC_MONEY_INPUTS = frozenset({"line_items", "discount", "discount_type", "shipping", "doc_taxes", "shipping_taxes",
-                              "tax_rate", "currency"})
+                              "tax_rate", "currency", "prices_include_tax"})
 DOC_TOTAL_FIELDS = ("subtotal", "discount_amount", "tax", "total")
 # What a conversion (a quotation to an invoice or memo, a consignment bought) keeps of its source beyond
 # a copy's parties and lines (record_copy.conversion_of): every key document_money reads of it (the money
@@ -484,8 +485,21 @@ def list_totals_differ(state: dict) -> tuple[str, str] | None:
     return str(held["total"]), str(round_money(derived["total"], currency))
 
 
+def _rate_tax(base, rate, currency: str, inclusive: bool) -> Decimal:
+    """The tax at *rate* percent on *base*; with *inclusive*, the part of *base* that is that tax."""
+    if inclusive:
+        return round_money(base, currency) - round_money(base / (1 + rate / 100), currency)
+    return round_money(base * rate / 100, currency)
+
+
 def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrated_tax: bool,
                    stored: dict | None) -> dict:
+    """document_money's figures. With ``prices_include_tax`` the line prices hold the taxes
+    computed on the lines (line taxes, a line or header rate, document taxes): each is
+    back-calculated from its gross on its own (compute_tax_amounts), the subtotal is net of
+    them and the total is the prices less the discount. Shipping is a charge, not a price: its
+    taxes are added to it either way."""
+    inclusive = bool(state.get("prices_include_tax"))
     subtotal = round_money(
         sum((_line_amount(line, currency) for line in lines if isinstance(line, dict)), to_decimal(0)),
         currency,
@@ -507,38 +521,32 @@ def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
         base = _line_amount(line, currency) * ratio
         line_taxes, rate = line_tax_definition(line)
         if line_taxes:
-            resolved, amount = _recompute_tax_applications(line_taxes, base, currency)
+            resolved, amount = _recompute_tax_applications(line_taxes, base, currency, inclusive)
             line["taxes"] = resolved
             line_tax_total += amount
             has_line_tax = True
         elif rate:
-            line_tax_total += round_money(base * rate / 100, currency)
+            line_tax_total += _rate_tax(base, rate, currency, inclusive)
             has_line_tax = True
 
-    result: dict = {
-        "subtotal": to_stored_float(subtotal),
-        "discount_amount": to_stored_float(discount_amount),
-    }
+    result: dict = {"discount_amount": to_stored_float(discount_amount)}
     # Shipping is taxed on its own amount by its own taxes (shipping_taxes); the header
     # discount applies to the lines only.
     shipping = round_money(state.get("shipping", 0) or 0, currency)
     shipping_taxes = tax_entries(state.get("shipping_taxes"))
+    shipping_tax = to_decimal(0)
     if shipping_taxes:
         result["shipping_taxes"], shipping_tax = _recompute_tax_applications(shipping_taxes, shipping, currency)
-        line_tax_total += shipping_tax
     doc_taxes = tax_entries(state.get("doc_taxes"))
     if doc_taxes:
         resolved_doc_taxes, doc_tax_total = _recompute_tax_applications(
-            doc_taxes, taxable, currency)
+            doc_taxes, taxable - line_tax_total if inclusive else taxable, currency, inclusive)
         result["doc_taxes"] = resolved_doc_taxes
         tax_total = line_tax_total + doc_tax_total
     elif has_line_tax or shipping_taxes:
         tax_total = line_tax_total
     elif to_decimal(state.get("tax_rate", 0) or 0):
-        tax_total = round_money(
-            taxable * to_decimal(state.get("tax_rate", 0) or 0) / 100,
-            currency,
-        )
+        tax_total = _rate_tax(taxable, to_decimal(state.get("tax_rate", 0) or 0), currency, inclusive)
     elif stored is not None and _has_rate(stored):
         tax_total = to_decimal(0)
     else:
@@ -546,9 +554,13 @@ def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
         if tax_total and not keep_unrated_tax:
             raise UnratedTaxError("tax amount has no rate")
 
-    tax_total = round_money(tax_total, currency)
+    # An unrated tax amount (the last branch) was never part of the prices.
+    rated = bool(doc_taxes) or has_line_tax or bool(to_decimal(state.get("tax_rate", 0) or 0))
+    included = round_money(tax_total, currency) if inclusive and rated else to_decimal(0)
+    tax_total = round_money(tax_total + shipping_tax, currency)
+    result["subtotal"] = to_stored_float(subtotal - included)
     result["tax"] = to_stored_float(tax_total)
-    result["total"] = to_stored_float(round_money(taxable + tax_total + shipping, currency))
+    result["total"] = to_stored_float(round_money(taxable - included + tax_total + shipping, currency))
     return result
 
 

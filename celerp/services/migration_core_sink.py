@@ -314,8 +314,6 @@ def _apply_company_profile(company: Company, profile: CIFCompanyProfile) -> dict
 def _apply_tax_code(company: Company, tax: CIFTaxCode) -> dict | None:
     """Add an imported tax code to the company's tax list with its category and side. A code
     already there by name is the same code when its rate in force today matches."""
-    if tax.inclusive:
-        return catalog_refusal("migration.record.tax_inclusive", name=tax.name)
     if tax.category is None:
         return catalog_refusal("migration.record.tax_no_category", name=tax.name, type=tax.source_tax_type)
     rate = float(tax.rate_percent)

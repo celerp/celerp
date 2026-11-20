@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, NamedTuple
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, Field, StrictBool, TypeAdapter, ValidationError, field_validator, model_serializer, model_validator
 from sqlalchemy import select, func as _func, text
 import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,7 +89,7 @@ from celerp_docs.sequences import (
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, read_company_units, require_moving_fits, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_amount, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, price_list_includes_tax, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import (
@@ -429,6 +429,8 @@ class DocCreatePayload(BaseModel):
     shipping: FiniteFloat = 0
     # Left out, shipping takes the main supply's taxes (build_shipping_taxes); [] leaves it untaxed.
     shipping_taxes: list[LineTaxEntry] | None = None
+    # Left out, it is the document's price list's (price_list_includes_tax); off for a purchase.
+    prices_include_tax: StrictBool | None = None
     total: FiniteFloat = 0
     payment_terms: str | None = None
     due_date: str | None = None
@@ -484,6 +486,8 @@ class DocPatch(BaseModel):
         if isinstance(data, dict) and isinstance(data.get("fields_changed"), dict):
             changed = _canonical_contact(data["fields_changed"], new=_change_new)
             data = {**data, "fields_changed": _require_iso_dates(changed, new=_change_new)}
+            if not isinstance(_change_new(changed.get("prices_include_tax", False)), bool):
+                raise ValueError(t("tax.err_prices_include_tax_flag"))
         return data
 
 
@@ -2216,6 +2220,9 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
 
     # Default issue_date to the company's today so date filters and sorting work correctly on new docs
     data.setdefault("issue_date", business_date_of(None, company.settings.get("timezone")))
+    if "prices_include_tax" not in data:
+        data["prices_include_tax"] = payload.doc_type in SALES_PRICED_DOC_TYPES and price_list_includes_tax(
+            (await get_price_config(session, company_id))[0], data.get("price_list") or _default_price_list(settings))
     build_line_taxes(data, data.get("line_items") or [], [], settings)
     build_shipping_taxes(data, None, settings)
 
@@ -9793,7 +9800,12 @@ async def _reprice_catalog_lines(
 _CONTACT_SNAPSHOT_FIELDS: tuple[str, ...] = tuple(contact_snapshot({}))
 
 
-CHOSEN_TERMS: tuple[str, ...] = ("currency", "price_list", "payment_terms", "due_date")
+CHOSEN_TERMS: tuple[str, ...] = ("currency", "price_list", "payment_terms", "due_date", "prices_include_tax")
+
+
+def _default_price_list(settings: dict) -> str:
+    """The price list a sales document is on when neither its caller nor its contact names one."""
+    return settings.get("default_price_list") or DEFAULT_PRICE_LIST_NAME
 
 
 def _chosen_terms(values: dict) -> frozenset[str]:
@@ -9909,7 +9921,7 @@ async def _contact_selection_values(
     if priced and "price_list" in chosen:
         _assert_reprice_access(settings, role, state.get("price_list") or "")
     elif priced:
-        price_list = cstate.get("price_list") or settings.get("default_price_list") or DEFAULT_PRICE_LIST_NAME
+        price_list = cstate.get("price_list") or _default_price_list(settings)
         _assert_reprice_access(settings, role, price_list)
         stored_lines = list(state.get("line_items") or [])
         lines, _repriced, _skipped, currency = await _reprice_catalog_lines(
@@ -9920,6 +9932,9 @@ async def _contact_selection_values(
         )
         values["price_list"] = price_list
         values["line_items"] = lines
+        if kind == "doc" and "prices_include_tax" not in chosen:
+            values["prices_include_tax"] = price_list_includes_tax(
+                (await get_price_config(session, company_id))[0], price_list)
     if kind == "doc" and (lines is not None or "currency" in values):
         merged = {**state, **values}
         values.update(document_money(merged, merged.get("line_items") or [], currency, keep_unrated_tax=True,

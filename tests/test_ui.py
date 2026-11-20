@@ -15816,6 +15816,40 @@ class TestPriceLists:
             assert mock_patch.await_args.args[1:] == ("doc:1", {"shipping_taxes": sent})
 
     @pytest.mark.asyncio
+    async def test_prices_include_tax_choice_saves_a_boolean(self, ui_client):
+        """A draft's totals show whether its prices include tax as a Yes or No choice; a pick
+        sends the flag as a boolean and reloads the page, as every line's tax changes. A
+        finalized document names the flag only when it is on."""
+        doc = {**_BLANK_DOC, "prices_include_tax": True, "subtotal": 100.0, "tax": 7.0, "total": 107.0}
+        ui_client.cookies.update(_authed())
+        mocks = (
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD", "current_role": "owner"})),
+            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
+        )
+        pages = {}
+        for name, shown in (("draft", doc), ("final", {**doc, "status": "final"}),
+                            ("final_off", {**doc, "status": "final", "prices_include_tax": False})):
+            with patch("ui.api_client.get_doc", new=AsyncMock(return_value=shown)), \
+                    mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+                r = await ui_client.get(f"/docs/{doc['entity_id']}")
+            assert r.status_code == 200
+            pages[name] = r.content.decode()
+        assert f'hx-patch="/docs/{doc["entity_id"]}/field/prices_include_tax"' in pages["draft"]
+        assert '<option value="true" selected>' in pages["draft"]
+        assert "Prices include tax:" in pages["final"] and "doc-prices-include-tax" not in pages["final"]
+        assert "Prices include tax:" not in pages["final_off"]
+        for value, sent in (("true", True), ("false", False)):
+            with patch("ui.api_client.patch_doc", new=AsyncMock(return_value={})) as mock_patch, \
+                    patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+                r = await ui_client.patch("/docs/doc:1/field/prices_include_tax", data={"value": value})
+            assert r.status_code == 204
+            assert r.headers["HX-Redirect"] == "/docs/doc:1"
+            assert mock_patch.await_args.args[1:] == ("doc:1", {"prices_include_tax": sent})
+
+    @pytest.mark.asyncio
     async def test_reprice_manual_line_result_is_passed_through(self, ui_client):
         """Manual-line behavior belongs to the backend; the UI preserves its result."""
         result = {

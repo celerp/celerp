@@ -243,6 +243,8 @@ def validate_price_lists(price_lists: list[dict], base_name: str, base_explicit:
                 return catalog_refusal("company.err_price_list_rounding_needs_factor", name=name)
             if not _valid_factor(rounding):
                 return catalog_refusal("company.err_price_list_rounding", name=name, max=f"{MAX_FACTOR:,.0f}")
+        if not isinstance(pl.get("prices_include_tax", False), bool):
+            return catalog_refusal("tax.err_prices_include_tax_flag")
     if base_name not in names and (base_explicit or any(is_derived(pl) for pl in price_lists)):
         return catalog_refusal("company.err_price_list_missing", name=base_name)
     return None
@@ -291,6 +293,12 @@ def normalized_price_lists(price_lists: list[dict]) -> list[dict]:
             pl["rounding"] = float(pl["rounding"])
         out.append(pl)
     return out
+
+
+def price_list_includes_tax(price_lists: list[dict], name: str) -> bool:
+    """Whether the price list *name* holds prices that include tax: a document on it starts
+    with ``prices_include_tax`` on. False for a list it does not hold."""
+    return any(pl.get("name") == name and pl.get("prices_include_tax") is True for pl in price_lists)
 
 
 def price_lists_in(settings: dict) -> list[dict]:

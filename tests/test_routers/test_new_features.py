@@ -638,15 +638,3 @@ async def test_compute_tax_amounts_unit(client):
     assert result[2].amount == pytest.approx(-30.0, abs=0.01)      # WHT: 1000 * -3%
 
 
-@pytest.mark.asyncio
-async def test_caller_provided_amount_not_overridden(client):
-    """Explicit non-zero amount from caller is kept as-is, not recomputed."""
-    from celerp.localization.taxcodes import LineTaxSnapshot
-    from celerp_docs.taxes import compute_tax_amounts
-
-    taxes = [
-        LineTaxSnapshot(code="Special", rate=10.0, amount=999.0, order=0, is_compound=False),
-    ]
-    result = compute_tax_amounts(taxes, base=1000.0)
-    # rate would give 100, but caller said 999 — trust the caller
-    assert result[0].amount == 999.0

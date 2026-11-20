@@ -324,7 +324,6 @@ class CIFTaxCode(CIFSourceRecord):
     component: str | None = None
     tax_type: Literal[TAX_TYPES] = "both"
     source_tax_type: str | None = None
-    inclusive: bool = False
     account_external_id: str | None = None    # tax control account
 
 

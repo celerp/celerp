@@ -3291,7 +3291,7 @@ def setup_routes(app):
         if field == "shipping_taxes":
             return await _set_shipping_taxes(token, entity_id, value)
         try:
-            patch = {field: value}
+            patch = {field: value == "true"} if field == "prices_include_tax" else {field: value}
             # A contact change sends only the contact: the backend copies its details, terms,
             # currency and prices onto the document in the same save.
             expected_version = _form_version(form) if field == "contact_id" else None
@@ -3339,9 +3339,10 @@ def setup_routes(app):
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return _action_error(e)
-        # Contact, price_list, terms_template, or currency changes affect multiple sections - full page
-        # refresh, on the page the record is edited on (an agreement's own page holds its schedule).
-        if field in ("contact_id", "price_list", "terms_template"):
+        # Contact, price_list, prices_include_tax (every line's tax) or terms_template changes affect
+        # multiple sections - full page refresh, on the page the record is edited on (an agreement's
+        # own page holds its schedule).
+        if field in ("contact_id", "price_list", "prices_include_tax", "terms_template"):
             from starlette.responses import Response as _R
             page = "subscriptions" if doc.get("doc_type") in TEMPLATE_DOC_TYPES else "docs"
             return _R("", status_code=204, headers={"HX-Redirect": f"/{page}/{entity_id}"})
@@ -7541,6 +7542,25 @@ def _shipping_tax_choice(doc: dict, company_taxes: list | None, can_edit: bool) 
     )
 
 
+def _prices_include_tax_row(doc: dict, can_edit: bool) -> FT:
+    """Whether the line prices already hold their taxes, at the top of the totals. On an
+    editable draft, a Yes or No choice saved as soon as one is picked; the page then reloads,
+    as every line's tax changes. Elsewhere, shown only when the prices include tax."""
+    on = doc.get("prices_include_tax") is True
+    if not can_edit:
+        return Div(Span(t("doc.prices_include_tax"), cls="total-label"),
+                   Span(t("settings.yes"), cls="total-value"), cls="total-row") if on else ""
+    entity_id = doc.get("entity_id") or doc.get("id") or ""
+    choice = Select(
+        Option(t("settings.no"), value="false", selected=not on),
+        Option(t("settings.yes"), value="true", selected=on),
+        name="value", id="doc-prices-include-tax", cls="cell-input cell-input--xs",
+        aria_label=t("doc.prices_include_tax"), hx_patch=f"/docs/{entity_id}/field/prices_include_tax",
+        hx_trigger="change", hx_swap="none",
+    )
+    return Div(Span(t("doc.prices_include_tax"), cls="total-label"), choice, cls="total-row")
+
+
 def _line_account_picker(chart_accounts: list | None, value: str) -> FT:
     """A purchase line's account, saved as soon as one is picked. Blank posts the line to
     the company's account for its kind (stock or expense)."""
@@ -10068,6 +10088,7 @@ function celerpUpdateTotals() {
     let grossSub = 0;
     let totalDiscount = 0;
     const taxByCode = {};
+    const _incl = document.getElementById('doc-prices-include-tax')?.value === 'true';
     document.querySelectorAll('#' + _CELERP_CFG.lineBodyId + ' tr').forEach(row => {
         const qty = parseFloat(row.querySelector('[data-name="quantity"]')?.value || 0);
         const price = parseFloat(row.querySelector('[data-name="unit_price"]')?.value || 0);
@@ -10103,7 +10124,8 @@ function celerpUpdateTotals() {
                 : sel.value === '|stored' ? sel.selectedOptions[0].text
                 : (customLabel || 'Custom') + ' (' + rate + '%)';
             if (!taxByCode[key]) taxByCode[key] = {label, amount: 0, isCustom: !code, rate};
-            taxByCode[key].amount += lineTot * rate / 100;
+            // Prices that include tax hold it: the tax is the part of the line total it makes up.
+            taxByCode[key].amount += _incl ? lineTot - lineTot / (1 + rate / 100) : lineTot * rate / 100;
         }
     });
     // Gross subtotal + discount breakdown (only when line discounts exist)
@@ -10186,7 +10208,9 @@ function celerpUpdateTotals() {
             taxContainer.appendChild(row);
         });
         const totEl = document.getElementById('doc-total');
-        if (totEl) totEl.textContent = _fmt(_hd.taxable + totalTax + _celerpStoredTax() + _CELERP_SHIPPING);
+        // Included taxes are already in the prices: the subtotal is net of them, the total is not raised.
+        if (_incl && subEl) subEl.textContent = _fmt(sub - totalTax);
+        if (totEl) totEl.textContent = _fmt(_hd.taxable + (_incl ? 0 : totalTax) + _celerpStoredTax() + _CELERP_SHIPPING);
     } else {
         const totEl = document.getElementById('doc-total');
         if (totEl) totEl.textContent = _fmt(_hd.taxable + _celerpStoredTax() + _CELERP_SHIPPING);
@@ -11652,6 +11676,7 @@ async function celerpCsvImport(input, entityId) {
     _can_discount = is_draft and doc_type in _HEADER_DISCOUNT_DOC_TYPES and not pol["no_money"]
 
     total_panel = Div(
+        _prices_include_tax_row(doc, can_edit_lines) if not pol["no_money"] else "",
         Div(Span(t("doc.subtotal"), cls="total-label"),
             Span(fmt_money(gross_subtotal, currency), id="doc-gross-subtotal", cls="total-value"), cls="total-row") if line_discount > 0.005 else "",
         Div(Span(t("doc.discount"), cls="total-label"),
