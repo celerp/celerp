@@ -63,7 +63,7 @@ async def _candidates(session, company_id, target: LedgerEntry) -> dict[str, dic
     changed = moved(before, after)
     if not changed:
         return {}
-    names = {code.get("id"): code["name"] for code in get_regime(country).get("codes") or []}
+    names = {code.get("id"): code["name"] for code in get_regime(country)["taxes"]}
     today = dt.date.today().isoformat()
     items = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item",

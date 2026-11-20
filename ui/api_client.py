@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -15,7 +16,7 @@ from starlette.responses import PlainTextResponse
 from celerp.capacity import MODULE_SETTLE_SECONDS, REQUEST_DB_POOL_SIZE
 from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER, connect_caller, is_loopback
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
-from celerp.tax_regimes import doc_side
+from celerp.tax_regimes import doc_side, taxes_on
 from ui.i18n import current_lang, refusal_text, t
 
 logger = logging.getLogger(__name__)
@@ -1382,10 +1383,11 @@ async def patch_purchasing_taxes(token: str, taxes: list[dict]) -> dict:
         return _raise(await c.patch("/companies/me/purchasing-taxes", json={"taxes": taxes})).json()
 
 
-async def get_document_taxes(token: str, doc_type: str | None) -> list[dict]:
-    """The tax list a document of this type draws from: purchasing taxes for a purchase
-    document, sales taxes for any other."""
-    return await (get_purchasing_taxes(token) if doc_side(doc_type) == "purchase" else get_taxes(token))
+async def get_document_taxes(token: str, doc_type: str | None, day: dt.date) -> list[dict]:
+    """The tax list a document of this type draws from as it charges on ``day`` (taxes_on):
+    purchasing taxes for a purchase document, sales taxes for any other."""
+    stored = await (get_purchasing_taxes(token) if doc_side(doc_type) == "purchase" else get_taxes(token))
+    return taxes_on(stored, day)
 
 
 async def get_purchasing_payment_terms(token: str) -> list[dict]:

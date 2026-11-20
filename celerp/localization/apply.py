@@ -20,7 +20,6 @@ from sqlalchemy import select
 
 from celerp.accounting_roles import catalog_refusal
 from celerp.events.engine import emit_event, find_event_by_idempotency, refuse_other_request, request_fingerprint
-from celerp.localization import stored_rows
 from celerp.localization.rate_review import moved
 from celerp.localization.taxcodes import TaxVersion
 from celerp.models.ledger import LedgerEntry
@@ -41,10 +40,8 @@ def _pack(settings: dict) -> tuple[str, dict]:
 
 
 def _versions(row: dict) -> list[dict]:
-    """A list row's or pack code's rate versions, in one canonical form; a row stored with one
-    undated ``rate`` is one open version (a withheld tax stores its rate negative)."""
-    raw = row["versions"] if "versions" in row else [{"rate": abs(float(row.get("rate") or 0))}]
-    return [TaxVersion.model_validate(v).model_dump(mode="json") for v in raw]
+    """A list row's or pack code's rate versions, in one canonical form."""
+    return [TaxVersion.model_validate(v).model_dump(mode="json") for v in row["versions"]]
 
 
 def _diff(base: list[dict], codes: list[dict]) -> tuple[dict, list[dict]]:
@@ -56,11 +53,11 @@ def _diff(base: list[dict], codes: list[dict]) -> tuple[dict, list[dict]]:
         i = by_name.get(tax_name_key(code["name"]))
         if i is None:
             diff["added"].append(code)
-            result.extend(stored_rows([code]))
+            result.append(dict(code))
             continue
         row, have, want = result[i], _versions(result[i]), _versions(code)
         extra = [v for v in want if v not in have]
-        if any(v not in want for v in have) or (extra and "versions" not in row):
+        if any(v not in want for v in have):
             diff["kept"].append({"name": row["name"]})
             continue
         if extra:
@@ -81,7 +78,7 @@ def preview(settings: dict) -> dict:
     """``{"diff", "fingerprint"}`` for applying the company's pack. A list never saved is the
     neutral starting list, which the pack replaces rather than joins."""
     code, pack = _pack(settings)
-    diff, _ = _diff(settings.get("taxes") or [], pack["codes"])
+    diff, _ = _diff(settings.get("taxes") or [], pack["taxes"])
     diff["item_rates"] = moved((settings.get("localization") or {}).get("item_rate_table") or [],
                                pack["item_rate_table"])
     return {"diff": diff, "fingerprint": _binding(settings, code, pack)}
@@ -118,14 +115,17 @@ async def apply(session, company, user_id, binding: str, idempotency_key: str) -
     code, pack = _pack(settings)
     if binding != _binding(settings, code, pack):
         raise HTTPException(status_code=409, detail=catalog_refusal("localization.stale_preview"))
-    _, taxes = _diff(settings.get("taxes") or [], pack["codes"])
+    _, taxes = _diff(settings.get("taxes") or [], pack["taxes"])
     operation_id = uuid.uuid4().hex
     before = {field: settings.get(field) for field in FIELDS}
-    after = {"taxes": with_taxes(settings, taxes)["taxes"],
-             "localization": {"country": code, "version": pack["version"], "digest": pack["sha256"],
-                              "applied_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                              "operation_id": operation_id,
-                              "item_rate_table": pack["item_rate_table"]}}
+    localization = {"country": code, "version": pack["version"], "digest": pack["sha256"],
+                    "applied_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "operation_id": operation_id, "item_rate_table": pack["item_rate_table"]}
+    try:
+        written = with_taxes({**settings, "localization": localization}, "sales", taxes)
+    except ValueError as exc:  # a code the list keeps that the new pack's rules refuse
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    after = {"taxes": written["taxes"], "localization": localization}
     await _record(session, company, user_id, key, {
         "operation_id": operation_id, "undoes": None, "binding": request_fingerprint(binding),
         "before": before, "after": after, "kept": []}, after)

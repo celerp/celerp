@@ -22,12 +22,14 @@ receipt or delivery moved no goods and can still receive or fulfil them.
 
 from __future__ import annotations
 
+import datetime as dt
 from collections import defaultdict
 from collections.abc import Sequence
 from decimal import Decimal
 
 from celerp.accounting_roles import AccountRole, catalog_refusal
 from celerp.importers.results import RecordOutcome, row_refusal
+from celerp.tax_regimes import taxes_on
 from celerp.importers.schema import (
     CIFDocument,
     CIFSettlement,
@@ -157,8 +159,8 @@ async def _tax_rates(context: SinkContext, docs: Sequence[CIFDocument]) -> dict[
     names = await mapped_targets(context, TAX, [x.tax_code_external_id for d in docs for li in d.line_items
                                                 for x in li.taxes])
     company = await context.session.get(Company, context.company_id)
-    rates = {str(t.get("name", "")).strip().lower(): (t.get("name"), float(t.get("rate") or 0))
-             for t in (company.settings or {}).get("taxes") or []}
+    rates = {str(t["name"]).strip().lower(): (t["name"], t["rate"])
+             for t in taxes_on((company.settings or {}).get("taxes") or [], dt.date.today())}
     return {code: rates[name.strip().lower()] for code, name in names.items() if name.strip().lower() in rates}
 
 

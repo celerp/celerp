@@ -13,16 +13,18 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-from typing import Literal
+import uuid
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from celerp.schemas.numbers import FiniteFloat
-from celerp.tax_regimes import TAX_TYPES
+from celerp.tax_regimes import TAX_TYPES, tax_name_key
 
 TaxCategory = Literal["standard", "reduced", "zero", "exempt", "out_of_scope", "reverse_charge",
                       "self_assessed_import", "withholding", "perception"]
 WithholdingPoint = Literal["document", "payment"]
+ReportTag = Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]{1,32}$")]
 
 
 class NoRateInForce(ValueError):
@@ -51,20 +53,20 @@ class TaxCode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str | None = None
-    name: str
+    name: str = Field(min_length=1, max_length=64)
     tax_type: Literal[TAX_TYPES] = "both"
     category: TaxCategory | None = None
-    component: str | None = None
+    component: str | None = Field(None, max_length=32)
     output_account: str | None = None
     input_account: str | None = None
-    report_tags: list[str] = []
-    cash_basis: bool = False
+    report_tags: list[ReportTag] = Field([], max_length=20)
+    cash_basis: StrictBool = False
     withholding_point: WithholdingPoint | None = None
     versions: list[TaxVersion] = Field(min_length=1)
-    is_default: bool = False
-    is_compound: bool = False
-    default_order: int = 0
-    description: str = ""
+    is_default: StrictBool = False
+    is_compound: StrictBool = False
+    default_order: int = Field(0, ge=0)
+    description: str = Field("", max_length=500)
 
     @field_validator("tax_type", mode="before")
     @classmethod
@@ -104,6 +106,32 @@ def rate_on(code: TaxCode, day: dt.date) -> float:
                 version.valid_to is None or day <= version.valid_to):
             return version.rate
     raise NoRateInForce(code, day)
+
+
+class TaxListRefused(ValueError):
+    """A tax list a save would write breaks a rule of the list as a whole."""
+
+
+def normalized_list(rows: list[dict]) -> list[dict]:
+    """A tax list as it is stored: every row a valid TaxCode dump, a row given one bare ``rate``
+    (a CSV import, a peer document, a migration) as one open version, a row with no id given a
+    new one. TaxListRefused when two rows share an id or a name (as tax_name_key compares
+    them); a row that is not a valid code raises its validation error (a ValueError)."""
+    stored, ids, names = [], set(), set()
+    for raw in rows:
+        row = dict(raw)
+        if "versions" not in row and "rate" in row:
+            row["versions"] = [{"rate": row.pop("rate")}]
+        code = TaxCode.model_validate(row)
+        code.id = code.id or f"u-{uuid.uuid4().hex[:12]}"
+        if code.id in ids:
+            raise TaxListRefused(f"{code.name}: id {code.id} belongs to another tax of this list")
+        if tax_name_key(code.name) in names:
+            raise TaxListRefused(f"{code.name}: name is used by another tax of this list")
+        ids.add(code.id)
+        names.add(tax_name_key(code.name))
+        stored.append(code.model_dump(mode="json"))
+    return stored
 
 
 def list_fingerprint(rows: list[dict]) -> str:

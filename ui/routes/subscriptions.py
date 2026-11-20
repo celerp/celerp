@@ -28,6 +28,7 @@ from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
 from celerp.accounting_roles import RECOGNIZE_FIELD
 from celerp.services.business_time import business_today
+from celerp.tax_regimes import tax_day
 from celerp_subscriptions.billing import ENDED, amendments_of, bills, doc_kind, lines_on, send_written
 from celerp_subscriptions.periods import BILLED, COLLECT_MODE, UNRESOLVED, shown
 from celerp_subscriptions.summary import NEEDS_YOU, SUMMARY_WINDOW
@@ -1837,7 +1838,7 @@ def setup_routes(app) -> None:
 
         company_taxes: list = []
         try:
-            company_taxes = await api.get_document_taxes(token, doc_type)
+            company_taxes = await api.get_document_taxes(token, doc_type, tax_day(None))
         except Exception:
             pass
 

@@ -46,7 +46,8 @@ from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_S
 from celerp.services.money import document_line_amount, to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
 from celerp.tax_regimes import (default_line_taxes, holds_tax, legacy_line_taxes, line_tax, line_tax_unset,
-                                matching_tax, set_new_line_taxes, tax_entries, tax_text, taxes_for, unreadable_tax)
+                                matching_tax, set_new_line_taxes, tax_day, tax_entries, tax_text, taxes_for,
+                                unreadable_tax)
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -1577,7 +1578,7 @@ async def _new_line_taxes(token: str, doc_type: str | None, doc: dict | None) ->
     a list. A failed read raises, so no line is added without its tax."""
     if not doc_type or doc_type == "list":
         return []
-    return default_line_taxes(await api.get_document_taxes(token, doc_type), doc_type, doc=doc)
+    return default_line_taxes(await api.get_document_taxes(token, doc_type, tax_day(doc)), doc_type, doc=doc)
 
 
 async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME,
@@ -2788,7 +2789,7 @@ def setup_routes(app):
             pass
         company_taxes: list[dict] = []
         try:
-            company_taxes = await api.get_document_taxes(token, doc_type)
+            company_taxes = await api.get_document_taxes(token, doc_type, tax_day(doc))
         except Exception:
             pass
         # Fetch bank accounts for payment section
@@ -5253,7 +5254,7 @@ def setup_routes(app):
             pass
         company_taxes: list[dict] = []
         try:
-            company_taxes = await api.get_document_taxes(token, lst["doc_type"])
+            company_taxes = await api.get_document_taxes(token, lst["doc_type"], tax_day(lst))
         except Exception:
             pass
 

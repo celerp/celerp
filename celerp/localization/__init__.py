@@ -52,9 +52,10 @@ def lock_codes() -> tuple[str, ...] | None:
 
 @lru_cache(maxsize=1)
 def packs() -> dict[str, dict]:
-    """``{code: {"currency", "taxes", "codes", "retired", "item_rate_table", "version", "sha256"}}``
-    for every lock entry whose pack matches its digest: ``codes`` are the pack's tax codes as the
-    pack states them, ``taxes`` the same codes as a company's tax list stores them."""
+    """``{code: {"currency", "taxes", "cash_basis_cutoff", "retired", "item_rate_table", "version",
+    "sha256"}}`` for every lock entry whose pack matches its digest: ``taxes`` are the pack's tax
+    codes, each a validated TaxCode dump keeping the pack's id."""
+    from celerp.localization.taxcodes import TaxCode
     loaded: dict[str, dict] = {}
     for code, entry in (_lock() or {}).items():
         path = _root() / "packs" / f"{code}.json"
@@ -68,28 +69,14 @@ def packs() -> dict[str, dict]:
             continue
         try:
             pack = json.loads(data)
-            loaded[code] = {"currency": pack["company_defaults"]["currency"], "taxes": stored_rows(pack["taxes"]),
-                            "codes": pack["taxes"], "retired": pack.get("retired", []),
+            loaded[code] = {"currency": pack["company_defaults"]["currency"],
+                            "taxes": [TaxCode.model_validate(c).model_dump(mode="json") for c in pack["taxes"]],
+                            "cash_basis_cutoff": pack.get("cash_basis_cutoff"), "retired": pack.get("retired", []),
                             "item_rate_table": pack.get("item_rate_table", []),
                             "version": entry.get("version"), "sha256": entry["sha256"]}
         except (ValueError, KeyError, TypeError) as exc:  # NoRateInForce and pydantic errors are ValueErrors
             log.error("Country pack %s does not have the pack format: %s", path.name, exc)
     return loaded
-
-
-def stored_rows(codes: list[dict]) -> list[dict]:
-    """A pack's tax codes as a company's tax list stores them: each code's rate in force today,
-    a withheld tax as a negative rate."""
-    import datetime as dt
-
-    from celerp.localization.taxcodes import TaxCode, rate_on
-    today, rows = dt.date.today(), []
-    for code in map(TaxCode.model_validate, codes):
-        rate = rate_on(code, today)
-        rows.append({"name": code.name, "rate": -rate if code.category == "withholding" else rate,
-                     "tax_type": code.tax_type, "is_default": code.is_default, "description": code.description,
-                     "is_compound": code.is_compound, "default_order": code.default_order})
-    return rows
 
 
 def missing() -> tuple[str, ...]:

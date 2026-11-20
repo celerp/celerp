@@ -10,6 +10,7 @@ every batch.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import hashlib
 import mimetypes
 import uuid
@@ -41,7 +42,7 @@ from celerp.importers.sinks import (
     SinkError,
 )
 from celerp.models.company import Company, Location, User
-from celerp.tax_regimes import with_taxes
+from celerp.tax_regimes import tax_name_key, taxes_on, with_taxes
 from celerp.models.migration import MigrationCleanupTask, MigrationEntityMap
 from celerp.models.projections import Projection
 from celerp.services.attachments import FILE_ATTACHED_EVENTS, attach_file, item_file_role, store_file
@@ -316,16 +317,19 @@ def _apply_tax_code(company: Company, tax: CIFTaxCode) -> dict | None:
     rate = float(tax.rate_percent)
     settings = dict(company.settings or {})
     taxes = list(settings.get("taxes") or [])
-    for existing in taxes:
-        if str(existing.get("name", "")).strip().lower() == tax.name.strip().lower():
-            if float(existing.get("rate") or 0) != rate:
+    for existing in taxes_on(taxes, dt.date.today()):
+        if tax_name_key(existing["name"]) == tax_name_key(tax.name):
+            if existing["rate"] != rate:
                 return catalog_refusal("migration.record.tax_rate_differs", name=tax.name)
             return None
     taxes.append({
         "name": tax.name, "rate": rate, "tax_type": "purchase" if rate < 0 else "both", "is_default": False,
         "description": "", "is_compound": False, "default_order": 0,
     })
-    company.settings = with_taxes(settings, taxes)
+    try:
+        company.settings = with_taxes(settings, "sales", taxes)
+    except ValueError as exc:
+        return f"Tax code {tax.name} cannot be added: {exc}"
     return None
 
 

@@ -4,18 +4,18 @@
 Country-based tax regime defaults.
 
 Each country's regime comes from the release's country packs (``celerp.localization``), keyed by
-ISO 3166-1 alpha-2 country code (uppercase). Used to seed company.settings["taxes"] and
-company.settings["currency"] when a default location with a known country is first set.
+ISO 3166-1 alpha-2 country code (uppercase); a company takes one by Update localization.
 
 Each regime:
   currency: str          ISO 4217 code
-  taxes: list[dict]      a list the CountryPack schema in routers/companies.py accepts as a pack's taxes
+  taxes: list[dict]      the pack's tax codes (celerp.localization.taxcodes.TaxCode dumps)
 
 ``DEFAULT_REGIME`` is the fallback for an unknown or unset country.
 """
 from __future__ import annotations
 
 import copy
+import datetime as dt
 
 from celerp.localization import lock_codes, missing, packs
 from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
@@ -26,9 +26,9 @@ TAX_TYPES = ("sales", "purchase", "both")
 DEFAULT_REGIME: dict = {
     "currency": "USD",
     "taxes": [
-        {"name": "Standard Tax", "rate": 0.0, "tax_type": "both", "is_default": True,
+        {"name": "Standard Tax", "versions": [{"rate": 0.0}], "tax_type": "both", "is_default": True,
          "description": "Set your local tax rate", "is_compound": False, "default_order": 0},
-        {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
+        {"name": "Exempt", "versions": [{"rate": 0.0}], "tax_type": "both", "is_default": False,
          "description": "Tax-exempt", "is_compound": False, "default_order": 0},
     ],
 }
@@ -101,9 +101,50 @@ def get_regime(country_code: str | None) -> dict:
     return packs().get(_code(country_code), DEFAULT_REGIME)
 
 
-def with_taxes(settings: dict, taxes: list[dict]) -> dict:
-    """``settings`` with the company's sales taxes set to ``taxes``."""
-    return {**settings, "taxes": taxes}
+# Categories whose tax is settled when the document is, never when the cash moves (V36).
+_NOT_CASH_BASIS = ("withholding", "perception", "reverse_charge", "self_assessed_import")
+
+
+def with_taxes(settings: dict, side: str, taxes: list[dict]) -> dict:
+    """``settings`` with the company's ``side`` ("sales" or "purchase") tax list set to ``taxes``
+    as normalized_list stores it. A cash basis code is refused (TaxListRefused) on a category
+    settled with the document, and when the pack of the localization applied has no cash basis
+    cut-off."""
+    from celerp.localization.taxcodes import TaxListRefused, normalized_list
+    stored = normalized_list(taxes)
+    applied = (settings.get("localization") or {}).get("country")
+    cutoff = applied and packs().get(applied, {}).get("cash_basis_cutoff")
+    for code in stored:
+        if not code["cash_basis"]:
+            continue
+        if code["category"] in _NOT_CASH_BASIS:
+            raise TaxListRefused(f"{code['name']}: a {code['category']} code cannot be cash basis")
+        if not cutoff:
+            raise TaxListRefused(f"{code['name']}: cash basis needs a country whose rules set a cash basis "
+                                 "cut-off; apply one in Settings > Taxes > Update localization")
+    return {**settings, "purchasing_taxes" if side == "purchase" else "taxes": stored}
+
+
+def tax_day(doc: dict | None, timezone_name: str | None = None) -> dt.date:
+    """The day a document's taxes are charged on: its issue date, else today in the business
+    timezone (a new document, or one with no date yet)."""
+    from celerp.services.business_time import business_date_of
+    return dt.date.fromisoformat(business_date_of((doc or {}).get("issue_date"), timezone_name))
+
+
+def taxes_on(taxes: list[dict], day: dt.date) -> list[dict]:
+    """A stored tax list as it charges on ``day``: each code in force that day with its ``rate``
+    (rate_on), a withholding code's rate negative as a line carries it; a code with no version in
+    force that day is left out. Every reader of a list row's rate reads it here."""
+    from celerp.localization.taxcodes import NoRateInForce, TaxCode, rate_on
+    rows = []
+    for row in taxes:
+        try:
+            rate = rate_on(TaxCode.model_validate(row), day)
+        except NoRateInForce:
+            continue
+        rows.append({**row, "rate": -rate if row.get("category") == "withholding" else rate})
+    return rows
 
 
 def generic_taxes() -> list[dict]:
