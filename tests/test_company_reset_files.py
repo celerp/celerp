@@ -325,8 +325,9 @@ async def test_a_reset_whose_commit_landed_but_reported_failure_still_deletes_th
         return await real_commit(self)
 
     monkeypatch.setattr(AsyncSession, "commit", commit_then_lose_the_connection)
-    with pytest.raises(OperationalError):
-        await _reset(real_client, real_engine, boss, a)
+    r = await _reset(real_client, real_engine, boss, a)
+    assert r.status_code == 500, r.text
+    assert r.json()["detail"]["message_key"] == "error.server_error"
     monkeypatch.undo()
     _local_files(monkeypatch, tmp_path)
 
