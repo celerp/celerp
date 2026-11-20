@@ -359,6 +359,61 @@ async def test_a_recipient_whose_permission_is_revoked_before_the_email_is_not_m
     assert r.status_code == 409 and r.json()["detail"]["message_key"] == "reconciliation.no_client_user", r.text
 
 
+async def _before_the_emails_go(monkeypatch, change):
+    """Run ``change()`` once the Ask's attempts are recorded and committed, before any goes out."""
+    from celerp.services import email as email_service
+    real = email_service.transmit
+
+    async def change_then_transmit(attempts, current=None):
+        await change()
+        return await real(attempts, current)
+    monkeypatch.setattr(email_service, "transmit", change_then_transmit)
+
+
+@pytest.mark.parametrize("revoked", ["sole", "all", "one_of_two"])
+async def test_an_ask_reads_as_sent_only_when_an_email_went_out(client, session, monkeypatch, revoked):
+    """Recipients removed after their attempts are recorded, just before the emails go: with
+    nobody left the Ask says no email was sent and names who was left out, on the first answer
+    and on a run of the same key; with one still answering it reads as sent to that one."""
+    import uuid
+
+    from celerp.models.company import User
+    calls = _sent(monkeypatch)
+    if revoked == "sole":
+        co, bk, client_h, lines = await _setup(client, session)
+        members = (B.user_id(client_h),)
+    else:
+        co, bk, members, lines = await _two_clients(client, session)
+    users = [await session.get(User, uuid.UUID(m)) for m in members]
+    known = [(u.email, u.name) for u in users]
+    gone = members[:1] if revoked == "one_of_two" else members
+
+    async def revoke():
+        from celerp.services.company_lock import lock_company
+        await lock_company(session, uuid.UUID(co["company_id"]))
+        for member in gone:
+            await _removed(session, member, co["company_id"])
+        await session.commit()
+    await _before_the_emails_go(monkeypatch, revoke)
+    idem = B.key()
+    r = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    for _email, name in known[:len(gone)]:
+        assert name in out["outcome"] and "not emailed" in out["outcome"], out
+    if revoked == "one_of_two":
+        assert [c["to"] for c in calls] == [known[1][0]]
+        assert out["email"] == {"state": "sent", "recipients": [{"name": known[1][1], "state": "sent"}]}, out
+        assert "got an email" in out["outcome"], out
+        return
+    assert calls == []
+    assert out["email"] == {"state": "not_sent", "recipients": []}, out
+    assert out["outcome"].startswith(str(t("acct.recon_asked_no_email_one"))), out
+    assert "got an email" not in out["outcome"], out
+    again = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)
+    assert again.status_code == 200 and again.json() == out and calls == [], again.text
+
+
 async def test_a_key_used_by_one_bank_operation_is_refused_by_another(client):
     """Two bank operations with the same body under one key: the second is refused, never
     answered with the first operation's result."""

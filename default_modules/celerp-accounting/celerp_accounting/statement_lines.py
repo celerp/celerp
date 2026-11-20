@@ -723,7 +723,9 @@ async def _ask_message(db: AsyncSession, company_id: uuid.UUID, plan: dict) -> d
 async def _ask_outcome(db: AsyncSession, plan: dict, done: dict) -> dict:
     """The Ask's answer, read from each recipient's stored attempt (email.attempt_state): one
     still with the transport reads as sending, so a run of the key while another run's email
-    is slow says so, and says how it went once that send is recorded."""
+    is slow says so, and says how it went once that send is recorded. It reads as sent only
+    when every recipient it names was sent to; with none left it is not_sent, and those left
+    out are named either way."""
     from datetime import datetime, timezone
 
     from celerp.models.company import User
@@ -739,10 +741,13 @@ async def _ask_outcome(db: AsyncSession, plan: dict, done: dict) -> dict:
         state = email_service.attempt_state(record, now)
         rows.append({"name": names.get(member, ""), "state": state,
                      "reason": record.get("reason"), "detail": record.get("detail")})
-    worst = min((r["state"] for r in rows), key=_EMAIL_STATES.index, default="sent")
+    # No recipient left (each was left out before their email went) is its own state, never sent.
+    worst = min((r["state"] for r in rows), key=_EMAIL_STATES.index) if rows else "not_sent"
     failed = [r for r in rows if r["state"] != "sent"]
     count, one = len(plan["asked"]), len(plan["asked"]) == 1
-    if not failed:
+    if not rows:
+        outcome = t("acct.recon_asked_no_email_one" if one else "acct.recon_asked_no_email", count=count)
+    elif not failed:
         outcome = t("acct.recon_asked_one" if one else "acct.recon_asked", count=count,
                     names=", ".join(r["name"] for r in rows))
     else:

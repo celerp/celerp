@@ -476,8 +476,8 @@ def setup_routes(app):
                     t("btn.check_again"), type="button", cls="btn btn--ghost btn--sm",
                     hx_post=bank_url(bank_id, "ask"), hx_vals=hx_vals(sent),
                     hx_target="closest [data-line]", hx_swap="outerHTML"))
-            else:
-                notice = flash(out["outcome"], "success")
+            else:  # a success only when the Ask's own email state reads as sent
+                notice = flash(out["outcome"], "success" if out["email"]["state"] == "sent" else "warning")
         except APIError as e:
             notice = error_flash(e)
         return _line_response(await _fresh_line(token, bank, line_id, notice), line_id)

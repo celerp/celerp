@@ -461,6 +461,31 @@ async def test_a_refused_line_answer_shows_its_reason_on_the_form(ui_client):
     assert refusal_text(reason).split("'")[-1] in r.text, r.text[:600]  # the text after the apostrophe HTML escapes
 
 
+@pytest.mark.parametrize("state,recipients,kind", [
+    ("sent", [("Ann", "sent")], "success"),
+    ("not_sent", [], "warning"),
+    ("failed", [("Ann", "failed"), ("Bo", "sent")], "warning"),
+    ("unconfirmed", [("Ann", "unconfirmed")], "warning"),
+])
+async def test_an_ask_shows_as_a_success_only_when_its_email_reads_as_sent(ui_client, state, recipients, kind):
+    """The page takes the Ask's own email state: a success only when it reads as sent, never
+    because no recipient is still being sent to."""
+    out = {"asked": ["l1"], "outcome": "Asked about 1 line.",
+           "email": {"state": state, "recipients": [{"name": n, "state": s} for n, s in recipients]}}
+    _signed_in(ui_client)
+    patches = _api(_TABLE)
+    for p in patches:
+        p.start()
+    try:
+        with patch("ui.api_client.bank_action", AsyncMock(return_value=out)):
+            r = await ui_client.post("/accounting/reconcile/bank/b1/ask", data={
+                "line_id": "l1", "note": "", "idempotency_key": "k1"})
+    finally:
+        for p in patches:
+            p.stop()
+    assert re.findall(r"flash flash--(\w+)", r.text) == [kind], r.text[-900:]
+
+
 async def test_an_ask_whose_answer_did_not_come_back_shows_its_stored_state_not_an_error(ui_client):
     """An Ask's email can take longer than the page waits for the API. When no answer comes
     back, the page reads the Ask again under the same key, which answers as stored: it shows

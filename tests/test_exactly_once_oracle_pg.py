@@ -223,7 +223,9 @@ async def test_an_ask_emails_only_members_still_answering_whatever_the_interleav
                                                                                       monkeypatch):
     """Ask emails under one claimed key, in rounds of 1-3 runs at once, each email taken by the
     transport at random (accept, reject, answer lost, process killed after acceptance); between
-    rounds a member is revoked or moves address at random. Reference model: a send in a round
+    rounds a member is revoked or moves address at random, and at random one member or everyone
+    is revoked after the first attempts are recorded, just before they go. Reference model: every
+    answer reads as sent only when it names a recipient and each one it names was sent to; a send in a round
     goes only to a member still answering at that round, at the address they have then; over
     SMTP no member is ever delivered twice; a final run answers each delivered member as sent
     (or unconfirmed when its answer never came back), answers unconfirmed and never resends an
@@ -266,9 +268,19 @@ async def test_an_ask_emails_only_members_still_answering_whatever_the_interleav
     cut_off: set[str] = set()  # members whose attempt was pending when its run was killed
     transmit = email_service.transmit
 
-    async def tracked(attempts):
+    first = [True]  # the first emails to go: every attempt is this run's, so no other run is sending
+    answers: list[dict] = []
+
+    async def tracked(attempts, current=None):
+        if first:
+            first.clear()
+            if rng.random() < 0.5:
+                # one member, or everyone, is revoked once the attempts are recorded, just before they go
+                for member in sorted(allowed) if rng.random() < 0.5 else [rng.choice(sorted(allowed))]:
+                    await _change_member(factory, company_id, member, "revoke")
+                    del allowed[member]
         try:
-            return await transmit(attempts)
+            return await transmit(attempts, current)
         except _Killed:
             cut_off.update(by_address[a.message["to"]] for a in attempts)
             raise
@@ -284,7 +296,8 @@ async def test_an_ask_emails_only_members_still_answering_whatever_the_interleav
     async def run():
         async with factory() as s:
             try:
-                return await email_ask(s, company_id=company_id, key=key)
+                answers.append(await email_ask(s, company_id=company_id, key=key))
+                return answers[-1]
             except _Killed:
                 return "killed"
             except HTTPException as exc:
@@ -307,9 +320,14 @@ async def test_an_ask_emails_only_members_still_answering_whatever_the_interleav
     final = await run()
 
     assert misdirected == [], (seed, misdirected)
+    for answer in answers:
+        # an answer reads as sent only when it names a recipient and every one it names was sent to
+        told = {r["state"] for r in answer["email"]["recipients"]}
+        assert (answer["email"]["state"] == "sent") == (told == {"sent"}), (seed, answer)
+        assert (answer["email"]["state"] == "not_sent") == (not told), (seed, answer)
     assert all(len(d) <= 1 for d in delivered.values()), (seed, delivered)
-    if not any(delivered.values()) and not allowed:
-        assert final == "reconciliation.no_client_user", (seed, final)
+    if isinstance(final, str):  # refused: nobody answers now and no email ever went
+        assert final == "reconciliation.no_client_user" and not any(delivered.values()) and not allowed, (seed, final)
         return
     states = {r["name"]: r["state"] for r in final["email"]["recipients"]}
     for member in members:

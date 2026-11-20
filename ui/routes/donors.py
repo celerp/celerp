@@ -115,7 +115,7 @@ def send_card(period: tuple[str, str]) -> FT:
 def _sent_message(results: list[dict], resend: list[str]) -> tuple[str, str]:
     """The toast after a send, read from each donor's result: how many went out, how many were
     skipped for no email or already sent, who could not be reached and whose email may have gone out
-    unconfirmed."""
+    unconfirmed. It is a success only when a statement reads as sent and none failed or is unconfirmed."""
     by_state = {state: [r for r in results if r.get("state") == state]
                 for state in ("sent", "no_email", "failed", "unconfirmed")}
     fresh = [r for r in by_state["sent"] if not r.get("repeat")]
@@ -129,7 +129,8 @@ def _sent_message(results: list[dict], resend: list[str]) -> tuple[str, str]:
         parts.append(sentence("donors.done_failed", names=", ".join(r["name"] for r in by_state["failed"])))
     if by_state["unconfirmed"]:
         parts.append(sentence("donors.done_unconfirmed", names=", ".join(r["name"] for r in by_state["unconfirmed"])))
-    return " ".join(parts), "warning" if by_state["failed"] or by_state["unconfirmed"] else "success"
+    delivered = by_state["sent"] and not by_state["failed"] and not by_state["unconfirmed"]
+    return " ".join(parts or [sentence("donors.done_none")]), "success" if delivered else "warning"
 
 
 async def _signed_in_with(request: Request) -> Response | None:

@@ -112,3 +112,18 @@ async def test_donors_in_the_sidebar_of_a_nonprofit_only(vertical, shown):
 
     keys = {item.get("key") for item in module_nav({"vertical": vertical} if vertical else {})}
     assert ("donors" in keys) is shown
+
+
+async def test_the_toast_after_a_send_reads_as_success_only_when_a_statement_went_out():
+    """No failed statement is not a delivered one: a send that reached nobody (every donor
+    skipped, or the donor named for Send again no longer listed) is not shown as a success."""
+    from ui.routes.donors import _sent_message
+    skipped = {"name": "Di Donor", "state": "no_email"}
+    assert _sent_message([skipped], {}) == (sentence("donors.done_sent", sent=0, skipped=1), "warning")
+    assert _sent_message([], {}) == (sentence("donors.done_sent", sent=0, skipped=0), "warning")
+    assert _sent_message([], {"gone": "1"}) == (sentence("donors.done_none"), "warning")
+    assert _sent_message([skipped], {"di": "1"}) == (sentence("donors.done_none"), "warning")
+    sent = {"name": "Cy Donor", "state": "sent"}
+    assert _sent_message([sent, skipped], {}) == (sentence("donors.done_sent", sent=1, skipped=1), "success")
+    assert _sent_message([{**sent, "repeat": True}], {})[1] == "success"
+    assert _sent_message([sent], {"cy": "1"}) == (sentence("donors.done_resent", name="Cy Donor"), "success")
