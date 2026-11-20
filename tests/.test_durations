@@ -31836,5 +31836,13 @@
     "tests/test_lock_rank_checker.py::test_a_declared_renewals_pending_leaf_survives_a_waitable_take_on_another_connection": 0.02540833002422005,
     "tests/test_lock_rank_checker.py::test_a_waitable_lock_on_the_declared_renewals_own_connection_still_spoils_its_leaf": 0.0025215070054400712,
     "tests/test_lock_rank_checker.py::test_an_undeclared_pending_leaf_is_still_spoiled_by_a_waitable_take_on_another_connection": 0.002407986030448228,
-    "tests/test_e2e_update_relay.py::test_wheel_build_env_overrides_workflow_pinned_version": 0.024623206991236657
+    "tests/test_e2e_update_relay.py::test_wheel_build_env_overrides_workflow_pinned_version": 0.024623206991236657,
+    "tests/test_main_lifespan.py::test_shutdown_cancels_ai_job_tasks_and_lets_a_lease_renewal_in_flight_finish": 0.4184354400204029,
+    "tests/test_update_service.py::test_a_record_without_an_unfinished_update_is_no_update": 0.003115681029157713,
+    "tests/test_update_service.py::test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed['']": 0.0028178519860375673,
+    "tests/test_update_service.py::test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed['x']": 0.0025972429721150547,
+    "tests/test_update_service.py::test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed[0]": 0.00252816901775077,
+    "tests/test_update_service.py::test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed[None]": 0.0024881419958546758,
+    "tests/test_update_service.py::test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed[[]]": 0.0025512079591862857,
+    "tests/test_update_service.py::test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed[{}]": 0.0032835699967108667
 }
