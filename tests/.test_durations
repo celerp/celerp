@@ -31848,5 +31848,9 @@
     "tests/test_ai_job_liveness.py::test_the_final_write_of_a_runner_whose_claim_another_holds_is_refused_while_the_job_is_open[conversation]": 0.5688487029983662,
     "tests/test_ai_job_liveness.py::test_the_final_write_of_a_runner_whose_claim_another_holds_is_refused_while_the_job_is_open[documents]": 0.1900757999974303,
     "tests/test_ai_job_liveness.py::test_the_final_write_of_a_runner_whose_claim_another_holds_is_refused_while_the_job_is_open[one_off]": 0.190576462977333,
-    "tests/test_email_service.py::test_a_transport_that_raises_leaves_the_attempt_unconfirmed_never_sent": 0.0038054210017435253
+    "tests/test_email_service.py::test_a_transport_that_raises_leaves_the_attempt_unconfirmed_never_sent": 0.0038054210017435253,
+    "default_modules/celerp-accounting/tests/test_bank_statements.py::test_a_statement_for_a_date_the_bank_already_has_one_for_is_refused_by_name": 0.9910742150095757,
+    "default_modules/celerp-accounting/tests/test_donors_races_pg.py::test_the_same_statement_send_checked_twice_at_once_emails_once": 7.6492118909955025,
+    "tests/test_ai_executor.py::test_executor_refuses_a_call_with_no_authorization_or_an_unknown_section_before_the_route_runs": 0.006759403011528775,
+    "tests/test_ai_job_liveness.py::test_a_job_a_runner_holds_is_never_taken_by_another_claim": 0.23196887600352056
 }
