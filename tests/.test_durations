@@ -31973,5 +31973,13 @@
     "tests/test_ai_card_names.py::test_a_record_with_several_name_fields_is_named_by_the_first_that_holds_text": 0.007048404950182885,
     "default_modules/celerp-accounting/tests/test_bank_questions.py::test_an_ask_whose_emails_all_fail_gives_the_reason_of_the_first_recipient_by_name": 1.1805532339494675,
     "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_the_reason_dates_the_candidate_shown_first": 0.3447918569436297,
-    "tests/test_donors.py::test_a_send_for_all_answers_with_the_first_send_when_the_statement_has_several": 0.616296132968273
+    "tests/test_donors.py::test_a_send_for_all_answers_with_the_first_send_when_the_statement_has_several": 0.616296132968273,
+    "default_modules/celerp-accounting/tests/test_bank_scope.py::test_a_card_names_an_entry_by_its_first_bank_line": 0.026894657989032567,
+    "tests/test_ai_capabilities.py::test_a_marker_or_schema_flag_that_is_present_but_false_or_empty_reads_as_absent": 0.004987787047866732,
+    "tests/test_ai_capabilities.py::test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty[after_previous-True]": 0.0030387110309675336,
+    "tests/test_ai_capabilities.py::test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty[body-value3]": 0.0027867829194292426,
+    "tests/test_ai_capabilities.py::test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty[file_ids-value4]": 0.0027859160327352583,
+    "tests/test_ai_capabilities.py::test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty[headers-value2]": 0.0027497299597598612,
+    "tests/test_ai_capabilities.py::test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty[path-value0]": 0.0033352299942635,
+    "tests/test_ai_capabilities.py::test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty[query-value1]": 0.002789541962556541
 }
