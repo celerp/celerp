@@ -31844,5 +31844,9 @@
     "tests/test_update_service.py::test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed[0]": 0.00252816901775077,
     "tests/test_update_service.py::test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed[None]": 0.0024881419958546758,
     "tests/test_update_service.py::test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed[[]]": 0.0025512079591862857,
-    "tests/test_update_service.py::test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed[{}]": 0.0032835699967108667
+    "tests/test_update_service.py::test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed[{}]": 0.0032835699967108667,
+    "tests/test_ai_job_liveness.py::test_the_final_write_of_a_runner_whose_claim_another_holds_is_refused_while_the_job_is_open[conversation]": 0.5688487029983662,
+    "tests/test_ai_job_liveness.py::test_the_final_write_of_a_runner_whose_claim_another_holds_is_refused_while_the_job_is_open[documents]": 0.1900757999974303,
+    "tests/test_ai_job_liveness.py::test_the_final_write_of_a_runner_whose_claim_another_holds_is_refused_while_the_job_is_open[one_off]": 0.190576462977333,
+    "tests/test_email_service.py::test_a_transport_that_raises_leaves_the_attempt_unconfirmed_never_sent": 0.0038054210017435253
 }
