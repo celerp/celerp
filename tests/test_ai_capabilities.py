@@ -394,6 +394,71 @@ def test_a_marker_or_schema_flag_that_is_present_but_false_or_empty_reads_as_abs
     assert upload_cap["uploads"] == ("file",) and upload_cap["expects_body"] is False
 
 
+def _marker_app(case: str) -> FastAPI:
+    app = FastAPI()
+    if case == "any_permission":
+        @app.get("/a", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-permission": ["view costs"]})
+        async def a():
+            return {}
+    elif case == "key_field":
+        @app.post("/a", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+                                       "x-celerp-agent-key": "request_key"})
+        async def a(body: _WriteBody):
+            return {}
+    elif case == "download":
+        @app.post("/a", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": True,
+                                       "x-celerp-agent-check": "/a"})
+        async def a(body: _WriteBody):
+            return {}
+    elif case == "no_body":
+        @app.post("/a", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+                                       "x-celerp-agent-key": "idempotency_key"})
+        async def a():
+            return {}
+    else:
+        @app.get("/a", openapi_extra={"x-celerp-agent": True, "operationId": ""})
+        async def a():
+            return {}
+    a.__module__ = "celerp.routers.agent_test"
+    return app
+
+
+@pytest.mark.parametrize("case, message", [
+    ("any_permission", "x-celerp-agent-any-permission must list permission keys"),
+    ("key_field", "agent marker names a field the body does not have: 'request_key'"),
+    ("download", "x-celerp-agent-download on a POST route: /a"),
+    ("no_body", "agent marker names a body field on a route with no body: /a"),
+    ("no_operation_id", "duplicate or missing agent operationId: ''"),
+])
+def test_a_route_whose_agent_markers_do_not_fit_it_stops_the_tool_list_from_compiling(case, message):
+    """A marker that names something the route does not have would give the assistant a tool
+    that cannot be called as described, so the whole list refuses to compile instead."""
+    with pytest.raises(ValueError, match=re.escape(message)):
+        ai_tools.compile_agent_capabilities(_marker_app(case), {})
+
+
+async def test_a_tool_with_two_upload_parts_refuses_a_call_with_one_file_and_sends_nothing():
+    app = FastAPI()
+    reached = []
+
+    @app.post("/pair", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/files"})
+    async def pair(first: UploadFile = File(...), second: UploadFile = File(...)):
+        reached.append(1)
+        return {}
+
+    pair.__module__ = "celerp.routers.agent_test"
+    cap = next(iter(ai_tools.compile_agent_capabilities(app, {}).values()))
+    assert cap["uploads"] == ("first", "second")
+
+    def loaded(file_id):
+        return b"a", {"filename": "a.csv", "content_type": "text/csv"}
+
+    got = await ai_tools.execute_agent_capability(app, "Bearer t", cap, {"file_ids": ["f1"]}, "c", load_file=loaded)
+    assert got["ok"] is False and got["error"]["code"] == "invalid_arguments"
+    assert "takes 2 files" in got["error"]["message"]
+    assert reached == []
+
+
 @pytest.mark.parametrize("section, value", [("path", {}), ("query", {}), ("headers", {}), ("body", {}),
                                             ("file_ids", []), ("after_previous", True)])
 async def test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty(section, value):
