@@ -14,7 +14,7 @@ import textwrap
 from typing import Annotated
 
 import pytest
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
 from fastapi.responses import PlainTextResponse
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -364,6 +364,53 @@ def test_a_preview_marker_on_a_change_that_is_not_confirmed_first_does_not_compi
     operate.__module__ = "celerp.routers.agent_test"
     with pytest.raises(ValueError, match="x-celerp-agent-preview"):
         ai_tools.compile_agent_capabilities(app, {})
+
+
+def test_a_marker_or_schema_flag_that_is_present_but_false_or_empty_reads_as_absent():
+    """A blank check screen is no check, so a confirm-first change with one does not compile; an
+    optional query parameter (OpenAPI writes required: false) is not required; and an upload
+    route whose only body field is the file has no body for the model to fill."""
+    app = FastAPI()
+
+    @app.post("/blank-check", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": ""})
+    async def blank_check():
+        return {}
+
+    @app.get("/listed", openapi_extra={"x-celerp-agent": True})
+    async def listed(q: str | None = None):
+        return {}
+
+    @app.post("/upload", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/files"})
+    async def upload(file: UploadFile = File(...)):
+        return {}
+
+    for endpoint in (blank_check, listed, upload):
+        endpoint.__module__ = "celerp.routers.agent_test"
+    compiled = ai_tools.compile_agent_capabilities(app, {})
+    assert not any(name.startswith("blank_check") for name in compiled)
+    listed_cap = next(cap for name, cap in compiled.items() if name.startswith("listed"))
+    assert "required" not in listed_cap["tool"]["function"]["parameters"]["properties"]["query"]
+    upload_cap = next(cap for name, cap in compiled.items() if name.startswith("upload"))
+    assert upload_cap["uploads"] == ("file",) and upload_cap["expects_body"] is False
+
+
+@pytest.mark.parametrize("section, value", [("path", {}), ("query", {}), ("headers", {}), ("body", {}),
+                                            ("file_ids", []), ("after_previous", True)])
+async def test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty(section, value):
+    """A read with no parameters, body or upload takes none of these sections, empty or not."""
+    app = FastAPI()
+    reached = []
+
+    @app.get("/plain", openapi_extra={"x-celerp-agent": True})
+    async def plain():
+        reached.append(1)
+        return {}
+
+    plain.__module__ = "celerp.routers.agent_test"
+    cap = next(iter(ai_tools.compile_agent_capabilities(app, {}).values()))
+    got = await ai_tools.execute_agent_capability(app, "Bearer user-token", cap, {section: value}, "call-1")
+    assert got["error"]["code"] == "invalid_arguments", got
+    assert reached == []
 
 
 async def test_executor_rejects_request_infrastructure_and_path_escape():
