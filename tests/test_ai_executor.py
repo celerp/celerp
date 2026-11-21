@@ -8,6 +8,8 @@ gets from the public API.
 """
 from __future__ import annotations
 
+import json
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -171,3 +173,108 @@ async def test_successful_confirmed_write_large_result_stays_successful():
     assert result["ok"] is True
     assert result["status"] == 200
     assert result["data"]["result_omitted"] is True
+
+
+def _recording_app(status: int, body: bytes, content_type: bytes = b"application/json", delay: float = 0.0):
+    """A stand-in for the app: it records each request it is sent and answers as told."""
+    import asyncio
+
+    seen: list[str] = []
+
+    async def app(scope, receive, send):
+        if scope["type"] != "http":
+            return
+        seen.append(scope["path"])
+        if delay:
+            await asyncio.sleep(delay)
+        await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", content_type)]})
+        await send({"type": "http.response.body", "body": body})
+
+    return app, seen
+
+
+def _refused_calls(cap: dict) -> tuple[dict, list[tuple[object, str]]]:
+    """A call this tool accepts, and each call one of the executor's checks refuses (with
+    the code it answers), for the sections this tool's shape has."""
+    path_names = list(cap.get("path_names") or ())
+    good: dict = {}
+    if path_names:
+        good["path"] = {n: "x" for n in path_names}
+    if cap.get("expects_body"):
+        good["body"] = {}
+    uploads = tuple(cap.get("uploads") or ())
+    if uploads:
+        good["file_ids"] = ["f"] * len(uploads)
+    refused: list[tuple[object, str]] = [("not an object", "invalid_arguments"), ({**good, "other": {}}, "invalid_arguments")]
+    for section, names in (("path", path_names), ("query", cap.get("query_names")), ("headers", cap.get("header_names"))):
+        if names:
+            refused.append(({**good, section: ["x"]}, "invalid_arguments"))
+            refused.append(({**good, section: {**good.get(section, {}), "not_a_name": "1"}}, "invalid_arguments"))
+    for name in cap.get("header_names") or ():
+        refused.append(({**good, "headers": {name: 1}}, "invalid_arguments"))
+    if cap.get("expects_body"):
+        refused.append(({**good, "body": []}, "invalid_arguments"))
+    for name in path_names:
+        refused.append(({**good, "path": {n: "x" for n in path_names if n != name}}, "invalid_arguments"))
+        refused.append(({**good, "path": {**good["path"], name: "a/b"}}, "invalid_path_parameter"))
+    if uploads and not cap.get("download"):
+        refused.append(({**good, "file_ids": []}, "invalid_arguments"))
+        if len(uploads) > 1:
+            refused.append(({**good, "file_ids": ["f"]}, "invalid_arguments"))
+    return good, refused
+
+
+async def test_every_tool_refuses_without_reaching_the_route_and_never_reports_a_failed_answer_done(monkeypatch):
+    """Over every tool the assistant has (read from the live app, so a new tool is covered
+    the day it is added): each call the executor refuses is answered with its own code and
+    the route is never sent anything; an attached file that cannot be read is refused the
+    same way; and once the route has answered, an answer that is not JSON, a success that
+    carries an error, an answer too large to keep and an answer that never comes are each
+    reported as not done. A download tool answers with the screen's link and sends nothing."""
+    from celerp.ai import deadlines
+    from test_helpers import real_agent_app
+
+    def loaded(file_id):
+        return b"a,b\n", {"filename": "a.csv", "content_type": "text/csv"}
+
+    def unreadable(file_id):
+        raise FileNotFoundError(file_id)
+
+    oversized = json.dumps({"detail": refusal("ai.err_invalid_arguments", "x" * 400)}).encode()
+    monkeypatch.setattr(deadlines, "TOOL_STEP_S", 0.05)
+    problems: list[str] = []
+    caps = ai_tools.compile_agent_capabilities(real_agent_app(), {})
+    assert caps
+    for name, cap in sorted(caps.items()):
+        good, refused = _refused_calls(cap)
+        app, seen = _recording_app(200, b"{}")
+        calls = [("", good, None, "missing_authorization")] + [("Bearer t", args, loaded, code) for args, code in refused]
+        if cap.get("uploads") and not cap.get("download"):
+            calls += [("Bearer t", good, None, "file_not_found"), ("Bearer t", good, unreadable, "file_not_found")]
+        for authorization, args, load_file, code in calls:
+            got = await ai_tools.execute_agent_capability(app, authorization, cap, args, "c", load_file=load_file)
+            if got.get("ok") is not False or got["error"]["code"] != code:
+                problems.append(f"{name} {args!r}: expected {code}, got {got!r}")
+        if cap.get("download"):
+            got = await ai_tools.execute_agent_capability(app, "Bearer t", cap, good, "c", load_file=loaded)
+            if not (got.get("ok") is True and str(got["data"].get("download", "")).startswith("/")):
+                problems.append(f"{name}: download answered {got!r}")
+            if seen:
+                problems.append(f"{name}: the route was sent {seen}")
+            continue
+        if seen:
+            problems.append(f"{name}: a refused call reached the route: {seen}")
+        for code, (status, body, ctype, delay) in (
+                ("non_json_response", (500, b"boom", b"text/plain", 0.0)),
+                ("refused_in_answer", (200, b'{"error": "not done"}', b"application/json", 0.0)),
+                ("result_too_large", (500, oversized, b"application/json", 0.0)),
+                ("capability_timeout", (200, b"{}", b"application/json", 0.5))):
+            app, seen = _recording_app(status, body, ctype, delay)
+            got = await ai_tools.execute_agent_capability(app, "Bearer t", cap, good, "c", load_file=loaded,
+                                                          result_max_bytes=200)
+            if got.get("ok") is not False or got["error"]["code"] != code or not seen:
+                problems.append(f"{name} answered {status}: expected {code}, got {got!r}, sent {seen}")
+    assert problems == []
+    # A screen template naming a placeholder the call has no value for is refused, not sent
+    # with the braces in it; screen_of then falls back to the list screen.
+    assert ai_tools.filled_path("/items/{item_id}", [], {})["error"]["code"] == "invalid_path_parameter"
