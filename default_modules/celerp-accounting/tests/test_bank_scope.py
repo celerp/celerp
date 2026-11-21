@@ -243,6 +243,27 @@ def _caps(role="owner"):
     return _surface()[1][role]
 
 
+async def test_a_card_names_an_entry_by_its_first_bank_line():
+    """An entry with lines on two bank accounts reads on a card by the first bank line's amount."""
+    import types
+    import uuid
+    from celerp_accounting.statement_lines import _entry_names
+
+    banks = [types.SimpleNamespace(id=uuid.uuid4(), chart_account_code=code, currency="USD", opening_balance=0)
+             for code in ("1010", "1020")]
+    state = {"ts": "2026-01-05T00:00:00", "memo": "Sweep", "entries": [
+        {"account": "4000", "debit": 0, "credit": 30}, {"account": "1010", "debit": 30, "credit": 0},
+        {"account": "1020", "debit": 0, "credit": 30}]}
+    results = iter([types.SimpleNamespace(scalars=lambda: banks), types.SimpleNamespace(all=lambda: [("je:1", state)])])
+
+    class Session:
+        async def execute(self, _query):
+            return next(results)
+
+    names = await _entry_names(Session(), uuid.uuid4(), {"currency": "USD"}, ["je:1"])
+    assert names == {"je:1": "2026-01-05, Sweep, 30.00"}
+
+
 def _cap(caps, method, path):
     return next(c for c in caps.values() if c["method"] == method and c["path"] == path)
 
