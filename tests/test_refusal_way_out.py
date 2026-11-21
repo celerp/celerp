@@ -125,9 +125,12 @@ def test_the_ui_judges_the_way_out_by_the_signed_in_reader(cookie, links):
 
 _ROOT = Path(__file__).resolve().parents[1]
 _ROUTE = re.compile(r"^\s*@\w*(?:router|app|rt)\.(?:get|post|put|patch|delete)\(", re.M)
-_ROUTER_FILES = sorted(
+# Every file a person's refusal can come from: the files that declare routes, and the AI
+# package, whose jobs, files and model calls raise straight to the assistant's reader.
+_AI = _ROOT / "celerp" / "ai"
+_REFUSING_FILES = sorted(
     str(path.relative_to(_ROOT)) for root in APP_ROOTS for path in (_ROOT / root).rglob("*.py")
-    if "tests" not in path.parts and _ROUTE.search(path.read_text(encoding="utf-8")))
+    if "tests" not in path.parts and (_AI in path.parents or _ROUTE.search(path.read_text(encoding="utf-8"))))
 # A detail a program reads, never a person, and who reads it.
 _READ_BY_A_PROGRAM = {
     "direct_connection_limit": "the sign-in page, which answers it in the reader's language",
@@ -153,9 +156,9 @@ def _hand_built(path: str) -> list[int]:
             and isinstance(value, ast.Constant) and value.value in REFUSAL_FIXES]
 
 
-@pytest.mark.parametrize("path", _ROUTER_FILES)
-def test_every_refusal_a_router_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out(path):
-    """Class guard, one row per file that declares routes: a refusal is never a bare status
+@pytest.mark.parametrize("path", _REFUSING_FILES)
+def test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out(path):
+    """Class guard, one row per file a refusal can come from: a refusal is never a bare status
     (the reader would get no reason and no next step), never English written where it is
     raised (it goes through the catalog; tests/test_refusal_keys_in_catalog.py proves each
     key), and a refusal one page resolves is built by ``refusal``, which attaches that
@@ -168,6 +171,6 @@ def test_every_refusal_a_router_file_raises_says_why_in_the_reader_language_and_
 
 
 def test_every_detail_read_by_a_program_is_still_raised():
-    raised = {detail.value for path in _ROUTER_FILES for _line, detail in _details(path)
+    raised = {detail.value for path in _REFUSING_FILES for _line, detail in _details(path)
               if isinstance(detail, ast.Constant)}
     assert raised == set(_READ_BY_A_PROGRAM)
