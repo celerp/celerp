@@ -190,3 +190,16 @@ def test_vat_split_needs_tax_id_and_equal_total(tax_id, total, vat):
     assert bool(out.get("vat")) is vat
     if vat:
         assert out["vat"] == {"tax": "7.00", "net": "100.00"}
+
+
+def test_a_line_with_several_candidates_names_the_first_document_and_the_nearest_transfer():
+    """Two open invoices for the same money and no reference: the first open one is offered.
+    Two transfer candidates on one other bank: the reason dates the nearest, not the list's last."""
+    docs = [{"doc_id": f"doc:{n}", "doc_type": "invoice", "contact_id": None, "open_balance": Decimal("1500.00"),
+             "ref": n.upper()} for n in ("inv1", "inv2")]
+    out = run_ladder([_line("e", "2026-01-12", "1500.00", "ACME LTD")], _ctx(open_docs=docs))
+    assert out["e"]["docs"][0]["doc_id"] == "doc:inv1"
+    pairs = [{"id": i, "bank_id": OTHER_BANK, "line_date": d, "amount": Decimal("1000.00"), "key": "TRANSFER FROM OWN"}
+             for i, d in (("near", "2026-01-21"), ("far", "2026-01-23"))]
+    out = run_ladder([_line("t", "2026-01-20", "-1000.00", "TRANSFER TO OWN SAVINGS")], _ctx(pair_lines=pairs))
+    assert "2026-01-21" in out["t"]["reason"] and "2026-01-23" not in out["t"]["reason"]

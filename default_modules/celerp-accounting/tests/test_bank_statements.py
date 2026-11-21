@@ -1064,3 +1064,17 @@ async def test_posting_under_a_key_whose_derived_entry_key_is_taken_is_refused(c
     assert r.json()["results"][0]["ok"] is False, r.text
     after = B.line_by_text(await B.groups(client, co, bk["id"]), "OFFICE SUPPLIES")
     assert after["status"] == "unmatched" and after["matched_je_ids"] == [], after
+
+
+async def test_a_statement_spans_its_earliest_to_latest_date_and_an_entry_names_its_first_party():
+    """Each of these picks one element of a list that can hold several: the period runs from
+    the earliest dated line to the latest, whatever order the file lists them in, and an
+    entry's party is the first non-bank entry that names one."""
+    from celerp_accounting.bank_statements import _contact, _parse_structured
+
+    rows = [("2026-01-20", "WIRE", "50.00"), ("2026-01-05", "FEE", "-5.00"), ("2026-01-12", "FEE", "-5.00")]
+    header = _parse_structured(B.csv_bytes(rows), {"filename": "jan.csv", "content_type": "text/csv"}, None)["header"]
+    assert (header["period_start"], header["period_end"]) == ("2026-01-05", "2026-01-20")
+    state = {"entries": [{"account": "1010", "contact": "bank-side"}, {"account": "4000", "contact": "first"},
+                         {"account": "5000", "contact": "second"}]}
+    assert _contact(state, "1010") == "first"

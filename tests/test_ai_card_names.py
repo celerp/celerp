@@ -330,3 +330,12 @@ async def test_a_card_names_an_entry_by_its_amount_on_the_bank_in_the_bank_curre
     names = await record_names(session, auth["company_id"], uuid.uuid4(), {}, "owner",
                                {"body": {"decisions": [{"separate_from": [je_id]}]}})
     assert names[je_id] == "2026-03-01, Euro fee keyed, -30.00", names
+
+
+def test_a_record_with_several_name_fields_is_named_by_the_first_that_holds_text():
+    """A document carries both its number and a party name: the card reads the number, the
+    first of the name fields in order, never the last one filled in."""
+    from celerp.ai.names import state_name
+
+    assert state_name({"doc_number": "INV-0042", "name": "Acme Ltd", "description": "Widgets"}) == "INV-0042"
+    assert state_name({"doc_number": "  ", "name": "Acme Ltd", "description": "Widgets"}) == "Acme Ltd"
