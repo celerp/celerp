@@ -569,3 +569,61 @@ async def test_a_replayed_statement_never_goes_to_an_address_the_donor_no_longer
     calls = _transport(monkeypatch)
     again = (await _send_all(client, auth))[donors["email"]]
     assert "cy@test.test" not in [c["to"] for c in calls] and again["state"] == "unconfirmed", (calls, again)
+
+
+@pytest.mark.parametrize("legacy", [[0], [0, 1]], ids=["first-send", "with-resend"])
+async def test_a_statement_sent_by_the_earlier_build_is_never_sent_again(client, session, auth, monkeypatch, legacy):
+    """The earlier build recorded a donor statement only once its email had gone out, as a
+    STATEMENT_SENT event whose metadata holds the answer ({"result": ...}) and no attempt record.
+    Such a send reads as sent: a plain Send emails that donor no more and answers the stored result,
+    the donor list shows it sent and numbers the next Send again one past it, and that Send again
+    emails once. A donor with no earlier send is still emailed, and one whose email the transport
+    refused is sent again by the next Send."""
+    from celerp.events.engine import emit_event
+    from celerp_accounting.donors import STATEMENT_SENT, _send_key, _statement_key
+
+    donors = await _statement_donors(client, auth)
+    mine = donors["email"]
+    other = await _donor(client, auth, "Ed Donor", "ed@test.test")
+    await _direct_gift(client, auth, other, 30.0, "2026-03-05")
+
+    async def preview() -> dict:
+        r = await client.get("/donors/statements/preview", headers=auth["headers"], params=PERIOD)
+        assert r.status_code == 200, r.text
+        return {row["contact_id"]: row for row in r.json()["donors"]}
+    row = (await preview())[mine]
+    statement = _statement_key(mine, PERIOD["from"], PERIOD["to"], 0)
+    stored = {}
+    for n in legacy:
+        stored[n] = {"contact_id": mine, "name": row["name"], "total": row["total"], "state": "sent", "email": "cy@test.test"}
+        await emit_event(session, company_id=auth["company_id"], entity_id=mine, entity_type="contact",
+                         event_type=STATEMENT_SENT, actor_id=auth["user_id"], location_id=None, source="api",
+                         data={"date_from": PERIOD["from"], "date_to": PERIOD["to"], "version": 0,
+                               "total": row["total"], "email": "cy@test.test"},
+                         idempotency_key=_send_key(statement, n), metadata_={"result": stored[n]})
+    await session.commit()
+    after = len(legacy)
+    listed = (await preview())[mine]
+    assert listed["state"] == "sent" and listed["sends"] == after, listed
+
+    refuse = {"ed@test.test"}
+    calls: list[str] = []
+
+    async def send(to, subject, body_html, body_text="", **kw):
+        calls.append(to)
+        if to in refuse:
+            refuse.discard(to)
+            return EmailResult(False, "refused", reason="refused")
+        return EmailResult(ok=True, detail="accepted")
+    monkeypatch.setattr("celerp.services.email.send_email", send)
+    plain = await _send_all(client, auth)
+    assert plain[mine] == {**stored[0], "repeat": True}, plain[mine]
+    assert plain[other]["state"] == "failed" and calls == ["ed@test.test"], calls
+    retried = await _send_all(client, auth)
+    assert retried[other]["state"] == "sent" and retried[mine]["repeat"] is True and calls == ["ed@test.test"] * 2, calls
+    again = (await _send_all(client, auth, resend={mine: after}))[mine]
+    assert again["state"] == "sent" and "repeat" not in again and calls[2:] == ["cy@test.test"], calls
+    twin = (await _send_all(client, auth, resend={mine: after}))[mine]
+    assert twin == {**again, "repeat": True} and len(calls) == 3, calls
+    listed = (await preview())[mine]
+    assert listed["state"] == "sent" and listed["sends"] == after + 1, listed
