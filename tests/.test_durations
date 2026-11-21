@@ -31953,5 +31953,18 @@
     "tests/test_refusal_way_out.py::test_every_refusal_a_router_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[ui/routes/subscriptions.py]": 0.034292844036826864,
     "tests/test_refusal_way_out.py::test_every_refusal_a_router_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[ui/routes/subscriptions_import.py]": 0.0051433059852570295,
     "tests/test_refusal_way_out.py::test_every_refusal_a_router_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[ui/routes/sync_accounts.py]": 0.008632762008346617,
-    "tests/test_refusal_way_out.py::test_every_refusal_a_router_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[ui/routes/system_update.py]": 0.0028810920484829694
+    "tests/test_refusal_way_out.py::test_every_refusal_a_router_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[ui/routes/system_update.py]": 0.0028810920484829694,
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_a_bank_list_whose_session_ended_goes_to_sign_in": 0.029526711034122854,
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_a_refusal_in_any_script_reaches_the_bank_list_whole": 0.01926965400343761,
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_post_ticked_names_matched_entries_only_when_there_are_some": 0.01324995799222961,
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_the_bank_page_reads_the_view_and_search_it_was_asked_for_and_leads_back": 0.015486274991417304,
+    "default_modules/celerp-ai/tests/test_ui_routes.py::test_an_upload_is_kept_by_the_kind_its_name_says_not_the_one_the_browser_sent": 0.00848113399115391,
+    "default_modules/celerp-ai/tests/test_ui_routes.py::test_chat_links_each_file_the_answer_offers": 0.00673793998430483,
+    "default_modules/celerp-ai/tests/test_ui_routes.py::test_confirm_runs_a_change_again_only_when_the_form_says_so[form0-False]": 0.006975476047955453,
+    "default_modules/celerp-ai/tests/test_ui_routes.py::test_confirm_runs_a_change_again_only_when_the_form_says_so[form1-True]": 0.009790626005269587,
+    "default_modules/celerp-ai/tests/test_ui_routes.py::test_older_actions_follow_the_session_and_say_why_a_load_failed": 0.013816795981256291,
+    "default_modules/celerp-ai/tests/test_ui_routes.py::test_the_older_actions_button_carries_its_cursor_whole": 0.0026564949948806316,
+    "default_modules/celerp-ai/tests/test_ui_routes.py::test_the_run_button_reads_retry_only_for_a_retryable_change": 0.0026207920454908162,
+    "tests/test_import_navigation.py::test_an_import_template_link_downloads_under_the_session_or_says_why_with_a_way_back[/accounting-/accounting]": 0.014935487997718155,
+    "tests/test_import_navigation.py::test_an_import_template_link_downloads_under_the_session_or_says_why_with_a_way_back[/companies-/settings]": 0.017281754000578076
 }
