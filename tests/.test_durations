@@ -32036,5 +32036,15 @@
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_each_bank_refusal_answers_its_key_and_changes_nothing[transfer_without_bank]": 0.23000134801259264,
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_each_bank_refusal_answers_its_key_and_changes_nothing[unmatch_entry_gone]": 0.2841541749658063,
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_each_bank_refusal_answers_its_key_and_changes_nothing[unmatch_foreign_entry]": 0.27224737603683025,
-    "default_modules/celerp-accounting/tests/test_bank_statements.py::test_each_bank_refusal_answers_its_key_and_changes_nothing[withdraw_unasked]": 0.22832695388933644
+    "default_modules/celerp-accounting/tests/test_bank_statements.py::test_each_bank_refusal_answers_its_key_and_changes_nothing[withdraw_unasked]": 0.22832695388933644,
+    "tests/test_ai_executor.py::test_tool_arguments_that_are_not_one_json_object_are_refused_before_any_tool_runs[\"text\"]": 0.024790086958091706,
+    "tests/test_ai_executor.py::test_tool_arguments_that_are_not_one_json_object_are_refused_before_any_tool_runs[1]": 0.002461739000864327,
+    "tests/test_ai_executor.py::test_tool_arguments_that_are_not_one_json_object_are_refused_before_any_tool_runs[None]": 0.002199439040850848,
+    "tests/test_ai_executor.py::test_tool_arguments_that_are_not_one_json_object_are_refused_before_any_tool_runs[[]]": 0.00219722802285105,
+    "tests/test_ai_executor.py::test_tool_arguments_that_are_not_one_json_object_are_refused_before_any_tool_runs[null]": 0.002165251935366541,
+    "tests/test_ai_executor.py::test_tool_arguments_that_are_not_one_json_object_are_refused_before_any_tool_runs[{not json]": 0.00214844400761649,
+    "tests/test_ai_job_liveness.py::test_a_step_whose_claim_another_took_is_not_tried_again": 0.0026492789620533586,
+    "tests/test_reconciliation_matching.py::test_an_entry_a_line_of_another_statement_date_holds_is_not_matched_again": 1.2149314859998412,
+    "tests/test_reconciliation_matching.py::test_match_to_an_entry_of_another_amount_is_refused_with_both_totals": 0.31912436900893226,
+    "tests/test_reconciliation_matching.py::test_match_with_no_entry_is_refused_even_when_the_lines_cancel_out": 0.271442336961627
 }
