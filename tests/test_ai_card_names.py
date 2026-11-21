@@ -257,6 +257,14 @@ async def test_another_user_of_the_same_company_never_reads_a_file_or_reading_na
     assert mine == {upload: "payroll-march.pdf", str(job.id): "payroll-march.pdf"}
     assert (await named_for_reader(session, company_id, other, actions))[0]["names"] == {}
 
+    # A colleague's reading is not named for this person either, even one that lists this
+    # person's own upload: a reading is named only for the person it belongs to.
+    theirs = AIBatchJob(company_id=company_id, user_id=other, status="done", query="read", file_ids=[upload])
+    session.add(theirs)
+    await session.flush()
+    asked = [{"id": "c2", "arguments": {"body": {"job_id": str(theirs.id)}}}]
+    assert (await named_for_reader(session, company_id, ids["user_id"], asked))[0]["names"] == {}
+
 
 async def test_a_namer_that_fails_leaves_its_ids_as_they_are_and_the_next_namer_still_names(auth, session, monkeypatch):
     from celerp.ai.names import record_names

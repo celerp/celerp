@@ -138,16 +138,9 @@ async def _unit_recorded(db: AsyncSession, company_id: uuid.UUID, actor_id, key:
                             {"results": rows}))["results"]
 
 
-async def _bank(db: AsyncSession, company_id: uuid.UUID, bank_id, *, lock: bool = False) -> BankAccount:
-    """The company's active bank account ``bank_id``; with ``lock``, read again under its row
-    lock by a statement that names the company, so the lock is taken under the company's. The
-    lock is the one an UPDATE of the row takes (FOR NO KEY UPDATE): its key stays free, so rows
-    referring to the account never wait on it."""
-    bank = (await SL.scoped(db, company_id, "bank", [bank_id]))[0]
-    if lock:
-        await db.execute(select(BankAccount).where(BankAccount.id == bank.id, BankAccount.company_id == company_id)
-                         .with_for_update(key_share=True).execution_options(populate_existing=True))
-    return bank
+async def _bank(db: AsyncSession, company_id: uuid.UUID, bank_id) -> BankAccount:
+    """The company's active bank account ``bank_id``."""
+    return (await SL.scoped(db, company_id, "bank", [bank_id]))[0]
 
 
 def _money_text(value, currency: str) -> str:
@@ -1855,7 +1848,7 @@ async def set_opening(bank_id: uuid.UUID, payload: Opening, company_id: uuid.UUI
     if (first := await _replayed(db, company_id, key, request, "opening")) is not None:
         return first
     await hold_fund_ledger(db, company_id)
-    bank = await _bank(db, company_id, bank_id, lock=True)
+    bank = await _bank(db, company_id, bank_id)
     amount = SL.money_value(payload.amount, bank.currency, zero_ok=True)
     current = round_money(to_decimal(bank.opening_balance or 0), bank.currency)
     states = await _states(db, company_id, [_opening_je_id(bank.id)])

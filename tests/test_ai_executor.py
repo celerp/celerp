@@ -64,6 +64,31 @@ async def test_executor_forwards_only_authorization_header():
     assert smuggled["error"]["code"] == "invalid_arguments"
 
 
+async def test_executor_refuses_a_call_with_no_authorization_or_an_unknown_section_before_the_route_runs():
+    """Without the caller's authorization there is nobody to call the route as, and an
+    argument section the capability does not have is not dropped and the rest sent: each is
+    refused with its own code and the route is never reached."""
+    app = FastAPI()
+    reached = []
+
+    @app.get("/echo", openapi_extra={"x-celerp-agent": True})
+    async def echo():
+        reached.append(1)
+        return {}
+
+    _core_module(app, "echo")
+    cap = next(iter(ai_tools.compile_agent_capabilities(app, {}).values()))
+
+    for authorization in ("", None):
+        got = await ai_tools.execute_agent_capability(app, authorization, cap, {}, "call-1")
+        assert got["error"]["code"] == "missing_authorization", got
+    got = await ai_tools.execute_agent_capability(app, "Bearer user-token", cap, {"extra": {"a": 1}}, "call-2")
+    assert got["error"]["code"] == "invalid_arguments", got
+    assert reached == []
+    assert (await ai_tools.execute_agent_capability(app, "Bearer user-token", cap, {}, "call-3"))["ok"] is True
+    assert reached == [1]
+
+
 async def test_executor_403_from_target_route_returned_as_error():
     """A 403 raised by the target route is surfaced as a structured, unsuccessful
     tool result - never converted into a success."""

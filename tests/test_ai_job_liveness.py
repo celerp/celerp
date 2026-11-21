@@ -552,6 +552,22 @@ async def test_the_final_write_of_a_runner_whose_claim_another_holds_is_refused_
     await until(lambda: not jobs.running_tasks(), 20.0)
 
 
+async def test_a_job_a_runner_holds_is_never_taken_by_another_claim(client, owner, cloud, session, monkeypatch):
+    """A claim takes only a job nobody runs: while a runner's lease lasts, a second claim
+    takes nothing and writes nothing, so the job stays its runner's."""
+    token, company_id, user_id = owner
+    case = await _start(client, token, company_id, user_id, cloud, monkeypatch, "one_off", failing=False)
+    held = await _written(session, case)
+    assert held[0][-1] is not None and jobs.liveness(await _row(session, case.job_id)) == "running"
+    async with jobs.SessionLocal() as s:
+        await jobs._lock_job(s, case.job_id)
+        assert await jobs._claim(s, case.job_id) is None
+        await s.commit()
+    assert await _written(session, case) == held
+    _let_go(cloud, case)
+    await until(lambda: not jobs.running_tasks(), 20.0)
+
+
 async def _reopened_by_the_user(client, token, session, case: Case) -> None:
     """The job's lease lapses while its runner waits on the service, and its user asks
     it again (a reading job: Continue). The reopen takes the job for this process while

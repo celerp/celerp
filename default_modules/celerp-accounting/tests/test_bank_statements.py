@@ -363,6 +363,23 @@ async def test_a_line_read_again_with_its_running_balance_is_left_out_as_a_dupli
     assert sorted(l["description"] for l in lines) == ["FEE", "FEE", "WIRE"]
 
 
+async def test_a_statement_for_a_date_the_bank_already_has_one_for_is_refused_by_name(client):
+    """One statement per bank and closing date: a second import ending on the same date is
+    refused with the refusal that says so, and the first statement stays as it was."""
+    co, bk = await _co_bank(client)
+    header = {"opening_balance": "0.00", "closing_balance": "45.00", "period_start": "2026-01-01",
+              "period_end": "2026-01-31"}
+    jan = await B.read(client, co, [(B.csv_bytes([("2026-01-05", "FEE", "-5.00"), ("2026-01-20", "WIRE", "50.00")]),
+                                     "jan.csv", "text/csv")], bank_id=bk["id"])
+    await B.import_statement(client, co, jan, bank_id=bk["id"], header=header)
+    again = await B.read(client, co, [(B.csv_bytes([("2026-01-09", "RENT", "-30.00"), ("2026-01-22", "SALE", "75.00")]),
+                                       "jan-again.csv", "text/csv")], bank_id=bk["id"])
+    refused = await B.import_statement(client, co, again, bank_id=bk["id"], tick_all=True, header=header, expect=409)
+    assert refused["detail"]["message_key"] == "acct.err_import_period_exists", refused
+    lines = B.all_lines(await B.groups(client, co, bk["id"], view="all"))
+    assert sorted(l["description"] for l in lines) == ["FEE", "WIRE"]
+
+
 async def test_a_second_identical_transaction_without_balance_is_left_for_review_and_imports_when_ticked(client):
     co, bk = await _co_bank(client)
     rows = [("2026-01-05", "FEE", "-5.00"), ("2026-01-20", "WIRE", "50.00")]

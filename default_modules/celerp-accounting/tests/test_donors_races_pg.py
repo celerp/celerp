@@ -66,3 +66,32 @@ async def test_the_same_statement_send_pressed_twice_at_once_emails_once(committ
     assert done["state"] == "sent" and len(calls) == 1
     again = _mine(await _send(c, co), donors["email"])
     assert again == {**done, "repeat": True} and len(calls) == 1
+
+
+async def test_the_same_statement_send_checked_twice_at_once_emails_once(committed_engine, own_client, monkeypatch):
+    """Two sends that both reach the check for an earlier send before either has recorded its
+    own: the company is held from the check to the record, so the second checks only after the
+    first is recorded and answers with it."""
+    from celerp_accounting import donors as donors_module
+
+    c = own_client
+    co, donors = await _setup(c)
+    calls, checking, both = [], [], asyncio.Event()
+    _slow_transport(monkeypatch, asyncio.Event(), calls)
+    read = donors_module._taken
+
+    async def checked_together(*args):
+        taken = await read(*args)
+        checking.append(taken)
+        if len(checking) == 2:
+            both.set()
+        try:  # a check made beside another waits for it; one made alone goes on after a moment
+            await asyncio.wait_for(both.wait(), 1.5)
+        except asyncio.TimeoutError:
+            pass
+        return taken
+
+    monkeypatch.setattr(donors_module, "_taken", checked_together)
+    answers = [_mine(r, donors["email"]) for r in await asyncio.wait_for(asyncio.gather(_send(c, co), _send(c, co)), 40)]
+    assert len(calls) == 1, calls
+    assert sorted(bool(a.get("repeat")) for a in answers) == [False, True], answers
