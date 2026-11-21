@@ -825,6 +825,31 @@ async def test_set_opening_once_then_adjustment(client, session):
     assert r.status_code in (409, 422) and "2026-01-31" in r.text
 
 
+async def test_a_line_entry_id_already_held_by_another_record_or_a_live_entry_is_refused(client, session):
+    """The id a line's posting takes is refused while another record or a live entry holds it
+    (the route guards make neither reachable, so the boundary is called directly); a voided
+    attempt hands the posting the next number."""
+    import uuid
+    from datetime import datetime, timezone
+
+    from fastapi import HTTPException
+
+    from celerp.models.projections import Projection
+    from celerp_accounting.statement_lines import next_je_id
+
+    cid = uuid.UUID(str((await B.company(client))["company_id"]))
+    for entity_id, entity_type, status in (("je:recon:a", "doc", "void"), ("je:recon:b", "journal_entry", "posted"),
+                                           ("je:recon:c", "journal_entry", "void")):
+        session.add(Projection(company_id=cid, entity_id=entity_id, entity_type=entity_type, version=1,
+                               state={"status": status}, updated_at=datetime.now(timezone.utc)))
+    await session.commit()
+    for base, key in (("je:recon:a", "acct.err_recon_entry_exists"), ("je:recon:b", "acct.err_recon_line_has_entry")):
+        with pytest.raises(HTTPException) as refused:
+            await next_je_id(session, cid, base)
+        assert (refused.value.status_code, refusal_text(refused.value.detail)) == (409, t(key, "en"))
+    assert await next_je_id(session, cid, "je:recon:c") == "je:recon:c:2"
+
+
 async def test_reclassify_refused_in_locked_period(client, session):
     co, bk = await _co_bank(client)
     await _one_month(client, co, bk, [("2026-01-05", "WITHDRAWAL", "-50.00")])

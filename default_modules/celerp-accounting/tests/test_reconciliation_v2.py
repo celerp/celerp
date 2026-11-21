@@ -464,6 +464,28 @@ async def test_rules_crud(client):
 
 
 @pytest.mark.asyncio
+async def test_a_rule_onto_an_unknown_or_archived_account_is_refused_and_nothing_is_stored(client):
+    from ui.i18n import refusal_text, t
+
+    h = await _auth(client)
+    rule = (await client.post("/accounting/rules", json={
+        "match_pattern": "Fee", "match_type": "contains", "target_account_code": "6100"}, headers=h)).json()
+    assert (await client.patch("/accounting/accounts/6200", headers=h, json={"is_active": False})).status_code == 200
+
+    for code, status, key in (("9999", 404, "acct.err_account_unknown"), ("6200", 422, "acct.err_account_archived")):
+        r = await client.post("/accounting/rules", json={
+            "match_pattern": "Rent", "match_type": "contains", "target_account_code": code}, headers=h)
+        assert r.status_code == status, r.text
+        assert refusal_text(r.json()["detail"]) == t(key, "en", code=code)
+        r = await client.patch(f"/accounting/rules/{rule['id']}", json={"target_account_code": code}, headers=h)
+        assert r.status_code == status, r.text
+        assert refusal_text(r.json()["detail"]) == t(key, "en", code=code)
+
+    items = (await client.get("/accounting/rules", headers=h)).json()["items"]
+    assert [(i["match_pattern"], i["target_account_code"]) for i in items] == [("Fee", "6100")]
+
+
+@pytest.mark.asyncio
 async def test_write_off(client):
     h = await _auth(client)
     bank = await _create_bank(client, h)
