@@ -32152,5 +32152,6 @@
     "tests/test_reads_follow_view_permissions.py::test_every_donor_read_needs_view_contacts_and_view_payments[view_payments]": 0.2947990669636056,
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_a_completed_first_statement_keeps_its_cleared_list_when_earlier_entries_are_keyed": 1.0850364739308134,
     "tests/test_ai_card_names.py::test_a_card_looks_up_at_most_its_id_limit": 0.023141343030147254,
-    "tests/test_help_api.py::test_help_for_route_lists_pages_by_their_order_then_id": 0.17996004701126367
+    "tests/test_help_api.py::test_help_for_route_lists_pages_by_their_order_then_id": 0.17996004701126367,
+    "default_modules/celerp-accounting/tests/test_bank_questions_races_pg.py::test_a_receipt_answered_while_a_line_attachment_is_saved_keeps_both": 1.878141981025692
 }
