@@ -16,6 +16,7 @@ from .conftest import throwaway_db, upgrade_to
 
 _REV, _PREV = "y8d9e0f1a2b3", "x7c8d9e0f1a2"
 _NEW, _OLD = "ix_ai_messages_conversation_created", "ix_ai_messages_conversation_id"
+_COMPOSITE, _ALONE = ["conversation_id", "created_at", "id"], ["conversation_id"]
 
 
 def _existing_ai_tables(sync_url: str) -> None:
@@ -32,11 +33,14 @@ def _existing_ai_tables(sync_url: str) -> None:
 
 
 def _indexes(sync_url: str) -> dict:
+    """The two indexes that exist, each with its columns in key order (None for one left invalid)."""
     eng = create_engine(sync_url)
     try:
         with eng.connect() as conn:
-            return {name: valid for name, valid in conn.execute(text(
-                "SELECT c.relname, i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+            return {name: columns if valid else None for name, valid, columns in conn.execute(text(
+                "SELECT c.relname, i.indisvalid, ARRAY(SELECT a.attname::text FROM unnest(i.indkey) "
+                "WITH ORDINALITY AS k(attnum, pos) JOIN pg_attribute a ON a.attrelid = i.indrelid "
+                "AND a.attnum = k.attnum ORDER BY k.pos) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
                 "WHERE i.indrelid = 'ai_messages'::regclass AND c.relname IN (:new, :old)"),
                 {"new": _NEW, "old": _OLD})}
     finally:
@@ -54,9 +58,9 @@ def test_the_composite_replaces_the_conversation_index_and_the_downgrade_restore
         up = _indexes(sync_url)
         alembic_run(sync_url, "downgrade", _PREV)
         down = _indexes(sync_url)
-    assert before == {_OLD: True}
-    assert up == {_NEW: True}
-    assert down == {_OLD: True}
+    assert before == {_OLD: _ALONE}
+    assert up == {_NEW: _COMPOSITE}
+    assert down == {_OLD: _ALONE}
 
 
 def test_a_failed_build_keeps_the_conversation_index(monkeypatch):
@@ -74,7 +78,7 @@ def test_a_failed_build_keeps_the_conversation_index(monkeypatch):
         _existing_ai_tables(sync_url)
         monkeypatch.setattr(Operations, "create_index", create_index)
         upgrade_to(sync_url, _REV)
-        assert _indexes(sync_url) == {_OLD: True}
+        assert _indexes(sync_url) == {_OLD: _ALONE}
 
 
 def test_a_database_without_the_ai_tables_upgrades_and_downgrades():
@@ -115,4 +119,4 @@ def test_a_fresh_create_all_database_already_carries_the_composite_index():
             Base.metadata.create_all(eng, tables=[Base.metadata.tables[t] for t in ("ai_conversations", "ai_messages")])
         finally:
             eng.dispose()
-        assert _indexes(sync_url) == {_NEW: True}
+        assert _indexes(sync_url) == {_NEW: _COMPOSITE}

@@ -444,6 +444,19 @@ async def test_a_durable_send_confirms_each_recipient_just_before_their_own_emai
     assert inspect.signature(email.send_durably).parameters["current"].default is inspect.Parameter.empty
 
 
+@pytest.mark.asyncio
+async def test_a_transport_that_raises_leaves_the_attempt_unconfirmed_never_sent(monkeypatch):
+    """A send that raised may still have gone out: its outcome is unknown, so it is
+    neither reported sent nor a definite failure the caller may send again."""
+    from celerp.services import email
+
+    async def send(to, subject, body_html, body_text="", **kw):
+        raise RuntimeError("the connection dropped after the message was handed over")
+    monkeypatch.setattr(email, "send_email", send)
+    (result,) = await email.transmit([email.Attempt("op-1", {"to": "a@test.test", "subject": "s", "body_html": "b"})])
+    assert not result.ok and result.unconfirmed and result.reason is None
+
+
 def test_a_replay_whose_recipient_is_not_confirmed_stays_unconfirmed_and_a_first_send_fails(monkeypatch):
     from celerp.services import email
     refused = email.EmailResult(False, "recipient not confirmed before sending", reason=email.RECIPIENT_UNCONFIRMED)
