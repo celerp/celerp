@@ -858,8 +858,9 @@ def _one(lines: list[BankStatementLine]) -> BankStatementLine:
 async def _locked_lines(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | None, line_ids: list,
                         state: tuple[str, ...] | None = ("unmatched",),
                         state_key: str = "acct.err_recon_line_state") -> list[BankStatementLine]:
-    """The lines under their locks, taken in the one order: each line's statement (in id
-    order, refused when completed), then the lines in id order."""
+    """The lines, each line's statement locked first in id order and refused when completed.
+    _lock_recon takes the company lock before any statement, the lock every writer of a line
+    holds, so no other writer changes the lines until this transaction ends."""
     from celerp_accounting.routes import _lock_recon
 
     sessions = (await db.execute(select(BankStatementLine.reconciliation_id).where(
@@ -1977,7 +1978,7 @@ async def withdraw_question(bank_id: uuid.UUID, payload: LineIds,
     if (first := await _replayed(db, company_id, key, request, "withdraw_question")) is not None:
         return first
     bank = await _bank(db, company_id, bank_id)
-    await lock_company(db, company_id)  # the order answer_question takes: the company, then the line
+    await lock_company(db, company_id)  # every writer of a line holds the company lock
     lines = await SL.scoped(db, company_id, "line", payload.line_ids, bank=bank)
     SL.withdraw_lines(lines)
     result = await _recorded(db, company_id, user.id, key, request, "withdraw_question", bank.id,
@@ -2064,7 +2065,7 @@ async def answer_question(line_id: uuid.UUID, payload: Answer, company_id: uuid.
     named = await _named_contact(db, company_id, payload.contact_text)
     try:
         async with storing(db, company_id) as store:
-            await lock_company(db, company_id)  # the one order: the company, then the line
+            await lock_company(db, company_id)  # every writer of a line holds the company lock
             line = (await SL.scoped(db, company_id, "line", [line_id]))[0]
             if not SL.asked(line):
                 raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_statement_line_not_found"))

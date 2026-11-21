@@ -74,7 +74,7 @@ def _not_found(kind: str) -> HTTPException:
 async def scoped(db: AsyncSession, company_id: uuid.UUID, kind: str, ids: list, *, bank: BankAccount | None = None,
                  state: tuple[str, ...] | None = None, state_key: str = "acct.err_recon_line_state") -> list:
     """The records ``ids`` name, each the caller company's (and, for a line or statement, the
-    path bank's), lines read under their row lock in id order. A foreign id gets the same 404
+    path bank's), lines in id order. A foreign id gets the same 404
     as an unknown one; a line outside ``state`` is refused with its status under ``state_key``
     (the default fits a match-side call, where undoing first is the way out; a caller whose
     only possible mismatch is a status that names the caller's own action, like unmatch on an
@@ -84,7 +84,7 @@ async def scoped(db: AsyncSession, company_id: uuid.UUID, kind: str, ids: list, 
         q = select(BankStatementLine).where(BankStatementLine.id.in_(want), BankStatementLine.company_id == company_id)
         if bank is not None:
             q = q.where(BankStatementLine.bank_account_id == bank.id)
-        rows = list((await db.execute(q.order_by(BankStatementLine.id).with_for_update())).scalars())
+        rows = list((await db.execute(q.order_by(BankStatementLine.id))).scalars())
     elif kind == "session":
         q = select(ReconciliationSession).where(ReconciliationSession.id.in_(want),
                                                 ReconciliationSession.company_id == company_id)
@@ -237,8 +237,8 @@ async def _release(db: AsyncSession, recon: ReconciliationSession, line: BankSta
 
 
 async def next_je_id(db: AsyncSession, company_id: uuid.UUID, base_id: str) -> str:
-    """The next usable entry id after any voided earlier attempts; the line's row lock
-    serialises the choice. After an unmatch voided an attempt, the next posting gets a new
+    """The next usable entry id after any voided earlier attempts; the company lock every
+    writer of a line holds serialises the choice. After an unmatch voided an attempt, the next posting gets a new
     entry instead of resurrecting the voided one."""
     attempt = 1
     while True:

@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 import bank_statement_helpers as B
@@ -93,3 +95,46 @@ async def test_the_same_ask_sent_twice_at_once_emails_once(committed_engine, own
     assert len(calls) == 1
     again = await _ask(c, co, bk, lines["WITHDRAWAL"]["id"], idem)
     assert again.json() == done.json() and len(calls) == 1
+
+
+async def test_a_receipt_answered_while_a_line_attachment_is_saved_keeps_both(committed_engine, own_client,
+                                                                               monkeypatch):
+    """Every writer of a line holds the company lock, so an answer with a receipt waits for a file
+    being saved to the same line from the reconciliation page and keeps it, never writes over it."""
+    from celerp_accounting import statement_lines
+    from celerp_accounting.models import BankStatementLine
+    from race_support import _until_waiting_or_done
+
+    c = own_client
+    co, bk, lines = await _setup(c, committed_engine)
+    lid = lines["WITHDRAWAL"]["id"]
+    _slow_transport(monkeypatch, asyncio.Event(), [])
+    monkeypatch.setitem(globals(), "SLOW_S", 0)
+    assert (await _ask(c, co, bk, lid, B.key())).status_code == 200
+    async with async_sessionmaker(bind=committed_engine)() as s:
+        client_h = await B.member(c, s, co, "viewer")
+        await s.commit()
+        sid = await s.scalar(select(BankStatementLine.reconciliation_id).where(BankStatementLine.id == uuid.UUID(lid)))
+    entered, go, real = asyncio.Event(), asyncio.Event(), statement_lines.attach_file
+
+    async def paused(*args, **kwargs):
+        meta = await real(*args, **kwargs)
+        if not entered.is_set():
+            entered.set()
+            await go.wait()
+        return meta
+    monkeypatch.setattr(statement_lines, "attach_file", paused)
+    pdf = b"%PDF-1.4\n%%EOF\n"
+    attach = asyncio.create_task(c.post(f"/accounting/reconciliation/{sid}/lines/{lid}/attach", headers=co["h"],
+                                        files={"file": ("statement.pdf", pdf + b"%1\n", "application/pdf")}))
+    await asyncio.wait_for(entered.wait(), 10)
+    fid = B.upload(co["company_id"], B.user_id(client_h), pdf, "slip.pdf", "application/pdf")
+    answer = asyncio.create_task(c.post(f"/accounting/bank-questions/{lid}/answer", headers=client_h, json={
+        "answer": "receipt", "file_ids": [fid], "idempotency_key": B.key()}))
+    await _until_waiting_or_done(committed_engine, answer)
+    go.set()
+    a, r = await asyncio.wait_for(asyncio.gather(attach, answer), 30)
+    assert a.status_code == 200 and r.status_code == 200, (a.text, r.text)
+    async with async_sessionmaker(bind=committed_engine)() as s:
+        held = await s.scalar(select(BankStatementLine.attachment_ids).where(BankStatementLine.id == uuid.UUID(lid)))
+    assert len(held) == 2, held
