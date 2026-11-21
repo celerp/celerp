@@ -3,13 +3,26 @@
   "title": "Global Config: your account settings",
   "summary": "Change your password from Global Config; admins find Company, Users and Backup here too.",
   "keywords": ["settings", "global config", "password", "change password", "account"],
-  "routes": ["/settings/general?tab=password"],
+  "routes": ["/settings/general?tab=password", "/settings/menu"],
   "permission": null,
   "order": 1,
+  "checked": "d5461e69ede667c9fff459a4fd3a270a658f5a57f814728db673d4c947375547",
   "steps": [
     {
-      "text": "Open {settings} from the sidebar footer. Every signed-in role can use this page's Password tab to set a new one, entering it twice as {confirm}; admins also see Company, Users and Backup tabs here.",
-      "labels": {"settings": "nav.settings", "confirm": "settings.confirm_password"},
+      "text": "Open {settings} from the sidebar footer. Every signed-in role can use this page's Password tab to set a new one, entering it twice as {confirm}; admins also see Company, Users and Backup tabs here, and the owner also sees {menu}, where they choose what the sidebar offers.",
+      "labels": {"settings": "nav.settings", "confirm": "settings.confirm_password", "menu": "settings_menu.title"},
+      "image": null,
+      "capture": {"route": "/settings/general?tab=password", "selector": "main", "actions": []}
+    },
+    {
+      "text": "On {title}, choose which entries and groups the side menu shows and in what order, for everyone in the company. Hiding an entry does not block its page. {reset} shows every entry again in its default order.",
+      "labels": {"title": "settings_menu.title", "reset": "settings_menu.reset"},
+      "image": null,
+      "capture": {"route": "/settings/menu", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to change the company's details or what the side menu offers. It shows each change as a card and makes it only when you confirm. Changing your own password stays with you on this page.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/settings/general?tab=password", "selector": "main", "actions": []}
     }

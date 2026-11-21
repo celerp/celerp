@@ -29,5 +29,15 @@
   "labels.selected": "Selezionato: {ids}{more}",
   "labels.template_deleted": "Modello eliminato.",
   "labels.template_not_found": "Modello non trovato.",
-  "labels.width_example": "ad es. 50"
+  "labels.width_example": "ad es. 50",
+  "labels.err_labels_not_printed_source_records": "Le etichette non vengono stampate per i record {source}.",
+  "labels.err_your_role_cannot_see_these_records": "Il tuo ruolo non può visualizzare questi record, quindi non può stamparne le etichette.",
+  "labels.err_choose_records_print_labels": "Seleziona i record per i quali stampare le etichette.",
+  "labels.err_print_at_most_max_source_ids": "Stampa al massimo {max_source_ids} etichette alla volta.",
+  "tool.create_template_api_labels_templates_post": "Aggiungi un modello di etichetta con dimensioni e campi.",
+  "tool.update_template_api_labels_templates__template_id__put": "Modifica un modello di etichetta.",
+  "tool.delete_template_api_labels_templates__template_id__delete": "Elimina un modello di etichetta.",
+  "tool.print_single_api_labels_print__entity_id__post": "Crea un'etichetta PDF per un articolo di magazzino.",
+  "tool.bulk_print_api_labels_bulk_print_post": "Crea un foglio PDF di etichette per più articoli di magazzino.",
+  "tool.print_source_api_labels_print_source_post": "Crea un foglio PDF di etichette per registrazioni selezionate dello stesso tipo usando il modello scelto."
 }

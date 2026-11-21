@@ -215,6 +215,39 @@ async def test_batch_all_success(session, db_factory, company, user):
 
 
 @pytest.mark.asyncio
+async def test_a_permission_taken_away_after_the_jobs_check_leaves_the_file_unsent_and_the_job_failed(
+        session, db_factory, company, user, caplog):
+    """The asker is moved to a role without the assistant after the job's own check but just
+    before the file is sent: the send is refused under the company lock, the file stays unsent
+    and the job ends failed with the reason, as a refusal and not as a crash run again."""
+    from sqlalchemy import update
+
+    file_ids = _create_test_files(company.id, user.id, 1)
+    job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
+    await session.commit()
+    sent = []
+
+    async def _complete(messages, *, operation_id=None, before_send=None, **_kw):
+        async with db_factory() as s:
+            await s.execute(update(UserCompany).where(UserCompany.user_id == user.id).values(role="viewer"))
+            await s.commit()
+        await before_send(len(str(messages)))
+        sent.append(operation_id)
+        return _model_result("Extracted data")
+
+    with patch("celerp.ai.llm.complete", side_effect=_complete):
+        jobs.start_job(job.id)
+        while jobs.running_tasks():
+            await asyncio.gather(*jobs.running_tasks(), return_exceptions=True)
+
+    updated = await _job(db_factory, job.id)
+    assert (updated.status, updated.error) == ("failed", t("ai.job_permission_lost"))
+    assert sent == []
+    assert [s.state for s in await _files_of(db_factory, job.id)] == ["pending"]
+    assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []
+
+
+@pytest.mark.asyncio
 async def test_batch_partial_failure(session, db_factory, company, user):
     """A file the model keeps failing on ends retryable; the others are read and the
     job completes."""

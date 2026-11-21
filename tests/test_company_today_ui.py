@@ -103,11 +103,9 @@ async def test_printed_reports_carry_the_company_day(co):
     assert re.search(rf'class="report-print-date">[^<]*{co.day.isoformat()}', r.text)
 
 
-async def test_new_journal_entry_and_reconciliation_start_on_the_company_day(co):
+async def test_new_journal_entry_starts_on_the_company_day(co):
     journal = await co.ui.get("/accounting/journal/new")
     assert f'value="{co.day.isoformat()}"' in journal.text
-    reconcile = await co.ui.get("/accounting/reconcile/start")
-    assert f'name="statement_date" value="{co.day.isoformat()}"' in reconcile.text
 
 
 async def test_contact_summary_counts_the_company_fiscal_year(co):

@@ -6,18 +6,25 @@
   "routes": ["/settings/sales", "/settings/purchasing"],
   "permission": "manage_module_settings",
   "order": 6,
+  "checked": "53d1f9b4486f8919a72cd0eb60105e960e09c73494341b349f5da7cb87574ff3",
   "steps": [
     {
-      "text": "On {title}, the tabs cover {taxes}, {numbering} and {lines} for sales documents.",
-      "labels": {"title": "settings_sales.page_title", "taxes": "settings.tab_taxes", "numbering": "settings_sales.tab_numbering", "lines": "settings.tab_line_items"},
+      "text": "On {title}, the tabs cover {taxes}, {terms}, {numbering} and {lines} for sales documents.",
+      "labels": {"title": "settings_sales.page_title", "taxes": "settings.tab_taxes", "terms": "page.terms_conditions", "numbering": "settings_sales.tab_numbering", "lines": "settings.tab_line_items"},
       "image": null,
       "capture": {"route": "/settings/sales", "selector": "main", "actions": []}
     },
     {
-      "text": "On {title}, the same {taxes} and {numbering} tabs apply to purchasing documents.",
-      "labels": {"title": "settings_purchasing.page_title", "taxes": "settings.tab_taxes", "numbering": "settings_sales.tab_numbering"},
+      "text": "On {title}, the same {taxes}, {terms} and {numbering} tabs apply to purchasing documents.",
+      "labels": {"title": "settings_purchasing.page_title", "taxes": "settings.tab_taxes", "terms": "page.terms_conditions", "numbering": "settings_sales.tab_numbering"},
       "image": null,
       "capture": {"route": "/settings/purchasing", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to change the taxes, terms and conditions or numbering for sales or purchasing. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/sales", "selector": "main", "actions": []}
     }
   ],
   "related": ["docs.sales-documents", "docs.purchasing-documents"]

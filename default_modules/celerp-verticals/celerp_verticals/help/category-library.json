@@ -6,6 +6,7 @@
   "routes": ["/settings/inventory"],
   "permission": "manage_module_settings",
   "order": 2,
+  "checked": "7da9687585440c133c50e3fe3129a90039fa165582df0d7ffe8862ea1a805830",
   "steps": [
     {
       "text": "Open {settings} and go to the Categories tab; your applied categories are listed under {yours}.",
@@ -16,6 +17,12 @@
     {
       "text": "Expand {browse} to add categories one at a time, or apply a whole industry preset in a single step.",
       "labels": {"browse": "settings.browse_library"},
+      "image": null,
+      "capture": {"route": "/settings/inventory?tab=categories", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to add categories from an industry preset, one at a time or a whole preset. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/settings/inventory?tab=categories", "selector": "main", "actions": []}
     }

@@ -14,6 +14,7 @@ import pytest
 from migration_support import OWNER_EMAIL, OWNER_PASSWORD, auth, count, real_client, real_engine, rules_bind  # noqa: F401 - fixtures
 from test_company_backup_ui import _page, ui  # noqa: F401 - fixture
 from test_helpers import in_language
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -505,7 +506,7 @@ async def _refused_untouched(client, engine, token: str, company: str, tables: t
         detail = r.json()["detail"]
         assert (detail["message_key"], detail["params"]) == ("company_reset.held_elsewhere", {"table": table})
     else:
-        assert r.json()["detail"] == detail
+        assert refusal_text(r.json()["detail"]) == detail
     assert await count(engine, "companies", "id = :i", i=company) == 1
     assert await _held(engine, company) == held
     assert {t: await _rows(engine, t) for t in tables} == before

@@ -48,6 +48,7 @@ from celerp_fixed_assets.operations import (
 )
 from celerp_fixed_assets.store import _emit, _entities, _state
 from fastapi import HTTPException
+from ui.i18n import t
 
 _AD, _IMP, _SURPLUS = "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus"
 _ZERO = Decimal(0)
@@ -59,10 +60,10 @@ def _money(value, field: str, currency: str) -> Decimal:
     from celerp.services.money import round_money
 
     if value in (None, ""):
-        raise setup.unprocessable(f"Enter the {field}.")
+        raise setup.refuse("fixed_assets.err_enter_field", field=field)
     amount = setup.number(value, f"The {field}")
     if amount < 0:
-        raise setup.unprocessable(f"The {field} must be zero or more.")
+        raise setup.refuse("fixed_assets.err_field_must_zero_more", field=field)
     return round_money(amount, currency)
 
 
@@ -88,7 +89,7 @@ def _position(books: runs.Books, asset: dict, movements: list[dict], day: str) -
         planned = runs.full_schedule(asset, movements, books.settings, month)
         missing = [p.period for p in planned.periods if p.exception is not None]
         if missing:
-            raise setup.unprocessable(f"Enter the reading for {missing[0]} on {asset['number']} first.")
+            raise setup.refuse("fixed_assets.err_enter_reading_value_number_first", value=missing[0], number=asset['number'])
         restated = {parse_period(p.period): p.amount for p in planned.periods}
         never = runs.full_schedule(asset, base, books.settings, month)
         shadow -= sum((p.amount for p in never.periods), _ZERO)
@@ -156,8 +157,7 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
         accumulated_after = -at["accumulated"]
     elif operation == "impairment":
         if value >= carrying:
-            raise setup.unprocessable(f"The recoverable amount {said(value, currency)} is not below the "
-                                      f"carrying amount {said(carrying, currency)} of {asset['number']}, so it is not impaired.")
+            raise setup.refuse("fixed_assets.err_recoverable_amount_said_not_below_carrying", said=said(value, currency), said2=said(carrying, currency), number=asset['number'])
         loss = carrying - value
         to_surplus = -min(loss, surplus) if revalues else _ZERO
         to_pnl = loss + to_surplus
@@ -168,17 +168,15 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
         accumulated_after = _ZERO
     else:
         if not impairment:
-            raise setup.unprocessable(f"{asset['number']} has no impairment to reverse.")
+            raise setup.refuse("fixed_assets.err_number_has_no_impairment_reverse", number=asset['number'])
         if value <= carrying:
-            raise setup.unprocessable(f"The recoverable amount {said(value, currency)} is not above the "
-                                      f"carrying amount {said(carrying, currency)} of {asset['number']}, so there is nothing to reverse.")
+            raise setup.refuse("fixed_assets.err_recoverable_amount_said_not_above_carrying", said=said(value, currency), said2=said(carrying, currency), number=asset['number'])
         reversal = min(value - carrying, impairment)
         to_pnl = -min(reversal, at["losses"], max(at["shadow"] - carrying, _ZERO))
         if not revalues:
             reversal = -to_pnl
         if not reversal:
-            raise setup.unprocessable(f"{asset['number']} already carries what it would have without the "
-                                      f"impairment ({said(at['shadow'], currency)}), so there is nothing to reverse.")
+            raise setup.refuse("fixed_assets.err_number_already_carries_what_would_have", number=asset['number'], said=said(at['shadow'], currency))
         to_surplus = reversal + to_pnl
         lines.append(JournalLine(account=accumulated_account, debit=reversal))
         lines += _surplus_and_pnl(roles, asset, to_surplus, to_pnl)
@@ -245,7 +243,7 @@ async def _asset_and_class(session, company_id, asset_id: str):
 
     row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
     if row is None or row.entity_type != "fa_asset":
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     return row.state, await setup.get_class(session, company_id, row.state.get("class_id"))
 
 
@@ -258,8 +256,7 @@ async def class_assets(session, company_id, class_id: str) -> list[tuple[str, di
 
 def _needs_market(cls: dict) -> None:
     if cls.get("kind") == "intangible" and not cls.get("active_market"):
-        raise setup.unprocessable(f"{cls['name']} is intangible, so it is revalued only by reference to an active "
-                                  "market. Record the active market on the class first.")
+        raise setup.refuse("fixed_assets.err_name_intangible_so_revalued_only_by", name=cls['name'])
 
 
 async def remeasure(session, company_id, user_id, asset_id: str, body: dict, operation: str) -> dict:
@@ -273,8 +270,7 @@ async def remeasure(session, company_id, user_id, asset_id: str, body: dict, ope
         if operation == "revaluation":
             if setup.measurement(cls) != "revaluation":
                 count = len(await class_assets(session, company_id, cls["id"]))
-                raise setup.unprocessable(f"This class uses the cost model. Change class to revaluation revalues all "
-                                          f"{count} assets in it on one date.")
+                raise setup.refuse("fixed_assets.err_class_uses_cost_model_change_class", count=count)
             _needs_market(cls)
         books = await runs._books(session, company_id)
         currency = books.currency
@@ -306,18 +302,17 @@ async def revalue_class(session, company_id, user_id, class_id: str, body: dict)
         _needs_market(cls)
         rows = body.get("rows")
         if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
-            raise setup.unprocessable("Enter a fair value for each asset in the class.")
+            raise setup.refuse("fixed_assets.err_enter_fair_value_each_asset_class")
         members = dict(await class_assets(session, company_id, cls["id"]))
         ids = [str(r.get("asset_id") or "") for r in rows]
         if len(set(ids)) != len(ids):
-            raise setup.unprocessable("Each asset is revalued once.")
+            raise setup.refuse("fixed_assets.err_each_asset_revalued_once")
         strangers = [i for i in ids if i not in members]
         if strangers:
-            raise setup.unprocessable(f"Only assets in use in {cls['name']} are revalued with it.")
+            raise setup.refuse("fixed_assets.err_only_assets_use_name_revalued_with", name=cls['name'])
         missing = [s["number"] for eid, s in members.items() if eid not in ids]
         if missing and not body.get("preview"):
-            raise setup.unprocessable(f"Every asset in {cls['name']} is revalued on the same date. Enter a fair value "
-                                      f"for {', '.join(missing)}.")
+            raise setup.refuse("fixed_assets.err_every_asset_name_revalued_same_date", name=cls['name'], missing=', '.join(missing))
         locked = await lock_projections(session, company_id, ids)
         books = await runs._books(session, company_id)
         currency = books.currency
@@ -446,20 +441,19 @@ async def record_review(session, company_id, user_id, asset_id: str, body: dict)
     settings = await setup.company_settings(session, company_id)
     row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
     if row is None or row.entity_type != "fa_asset":
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     asset = row.state
     in_use(asset_id, asset, "review")
     day = _date(body.get("date"), "The review date")
     setup.not_after_today("The review date", day, settings)
     if day < (asset.get("available_date") or day):
-        raise setup.unprocessable(f"The review date is before {asset['number']} was available for use.")
+        raise setup.refuse("fixed_assets.err_review_date_before_number_was_available", number=asset['number'])
     outcome = body.get("outcome")
     if outcome not in REVIEW_OUTCOMES:
-        raise setup.unprocessable("Choose what the review found: no indication of impairment, or a recoverable "
-                                  "amount.")
+        raise setup.refuse("fixed_assets.err_choose_what_review_found_no_indication")
     basis = _basis(body)
     if not basis:
-        raise setup.unprocessable("Say what the review was based on.")
+        raise setup.refuse("fixed_assets.err_say_what_review_was_based")
     currency = books_currency(settings)
     recoverable = (_money(body.get("recoverable_amount"), "recoverable amount", currency)
                    if outcome == "recoverable_amount" else None)
@@ -484,6 +478,6 @@ async def withdraw_review(session, company_id, user_id, asset_id: str, review_id
     await lock_projections(session, company_id, [asset_id])
     found = await reviews(session, company_id, asset_id)
     if not found or found[-1]["id"] != review_id:
-        raise HTTPException(status_code=409, detail="Only the latest review can be withdrawn.")
+        raise HTTPException(status_code=409, detail=t("fixed_assets.err_only_latest_review_can_withdrawn"))
     await _emit(session, company_id, user_id, review_id, "fa_review", "fa.review.status", {"status": "withdrawn"})
     return {"id": review_id, "status": "withdrawn"}

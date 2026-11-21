@@ -70,7 +70,8 @@ _EVENT_TYPES: tuple[str, ...] = (
     "crm.deal.lost", "crm.deal.deleted", "crm.deal.reopened",
     "memo.created", "memo.returned",
     "scan.checked_in", "scan.checked_out",
-    "acc.period.closed", "acc.period.reopened", "acc.reconciliation.reopened", "doc.closed",
+    "acc.period.closed", "acc.period.reopened", "acc.reconciliation.reopened", "acc.bank_statement.done",
+    "doc.closed",
     "doc.linked", "doc.note_added", "doc.note_removed", "doc.note_updated", "doc.patched",
     "doc.pushed", "doc.receive_undone", "doc.renumbered", "doc.reopened", "doc.return_received",
     "doc.return_undone", "doc.shared_import", "doc.unvoided", "item.cost_adjusted",
@@ -202,8 +203,7 @@ def fmt_qty(value) -> str:
         d = Decimal(str(value)).normalize()
     except (InvalidOperation, ValueError, TypeError):
         return str(value)
-    if d == d.to_integral_value():
-        d = d.quantize(Decimal(1))
+    # "f" writes a normalized whole number (8E+1) in full (80), at any size.
     return format(d, "f")
 
 

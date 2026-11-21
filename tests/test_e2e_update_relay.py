@@ -19,6 +19,17 @@ def test_install_points_relay_at_loopback(tmp_path, monkeypatch):
     assert urlparse(install.env["GATEWAY_HTTP_URL"]).hostname == "127.0.0.1"
 
 
+def test_wheel_build_env_overrides_workflow_pinned_version(monkeypatch):
+    # CI pins SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CELERP for every job's checkout, and
+    # setuptools_scm prefers that package-specific override over the generic one this
+    # script sets per variant, so it must not leak into a wheel built at a specific
+    # release version.
+    monkeypatch.setenv("SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CELERP", "0.0.0")
+    env = _e2e._wheel_build_env("90.0.1")
+    assert env["SETUPTOOLS_SCM_PRETEND_VERSION"] == "90.0.1"
+    assert "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CELERP" not in env
+
+
 def test_free_ports_stay_below_every_ephemeral_range():
     # Outbound connections take ports from the OS's ephemeral range (Linux from
     # 32768, macOS and Windows from 49152), so a port chosen there can be taken

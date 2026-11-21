@@ -28,6 +28,7 @@ from ui.i18n import t
 
 from celerp.config_store import fsync_dir
 from celerp.modules.importer import ModuleImportError, _validate_name_chars
+from celerp.accounting_roles import Refused
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def _refuse_newer_archive(recorded) -> None:
     try:
         newer = is_newer_than_running(recorded)
     except (InvalidVersion, TypeError):
-        raise ValueError(t("error.restore_version_unreadable", recorded=repr(recorded)))
+        raise Refused("error.restore_version_unreadable", recorded=repr(recorded))
     if newer:
         raise ValueError(
             f"This backup was made with Celerp {recorded}, which is newer than this copy "
@@ -93,38 +94,38 @@ def validate_archive(path: Path) -> ImportMeta:
     Raises ValueError on invalid archive or version incompatibility.
     """
     if not tarfile.is_tarfile(str(path)):
-        raise ValueError(t("error.restore_not_backup"))
+        raise Refused("error.restore_not_backup")
 
     with tarfile.open(str(path), "r:gz") as tar:
         names = tar.getnames()
 
         if "database.dump" not in names:
-            raise ValueError(t("error.restore_incomplete"))
+            raise Refused("error.restore_incomplete")
         if "meta.json" not in names:
-            raise ValueError(t("error.restore_incomplete"))
+            raise Refused("error.restore_incomplete")
 
         # Security: check for path traversal and platform-ambiguous separators.
         # Celerp-generated tar names are POSIX paths; a backslash can become a
         # separator on Windows and must never acquire different extraction meaning.
         for name in names:
             if name.startswith("/") or "\\" in name or ".." in name:
-                raise ValueError(t("error.restore_unsafe"))
+                raise Refused("error.restore_unsafe")
 
         meta_file = tar.extractfile("meta.json")
         if meta_file is None:
-            raise ValueError(t("error.restore_damaged"))
+            raise Refused("error.restore_damaged")
         meta_data = json.loads(meta_file.read())
 
     modules = meta_data.get("enabled_modules")
     if modules is None:
         modules = []
     if not isinstance(modules, list) or not all(isinstance(name, str) for name in modules):
-        raise ValueError(t("backup.err_meta_enabled_modules_invalid"))
+        raise Refused("backup.err_meta_enabled_modules_invalid")
     try:
         for name in modules:
             _validate_name_chars(name)
     except ModuleImportError as exc:
-        raise ValueError(t("backup.err_meta_module_name_invalid", reason=str(exc))) from exc
+        raise Refused("backup.err_meta_module_name_invalid", reason=str(exc)) from exc
 
     meta = ImportMeta(
         celerp_version=meta_data.get("celerp_version") or "unknown",
@@ -141,7 +142,7 @@ def validate_archive(path: Path) -> ImportMeta:
     backup_major = _pg_major(meta.pg_version)
     local_major = _local_pg_restore_major()
     if backup_major is not None and local_major is not None and backup_major > local_major:
-        raise ValueError(t("error.restore_pg_newer", backup=backup_major, local=local_major))
+        raise Refused("error.restore_pg_newer", backup=backup_major, local=local_major)
 
     _refuse_newer_archive(meta_data.get("celerp_version"))
     return meta
@@ -386,7 +387,7 @@ def _stage_members(archive: Path, root: Path) -> None:
             if member.name == "meta.json" or member.isdir():
                 continue
             if not member.isfile():
-                raise ValueError(t("error.restore_unsafe"))
+                raise Refused("error.restore_unsafe")
             if member.name == _STAGED_DUMP:
                 dest = root / _STAGED_DUMP
             else:
@@ -394,21 +395,21 @@ def _stage_members(archive: Path, root: Path) -> None:
                 if parts[0] not in keys:
                     continue
                 if len(parts) < 2:
-                    raise ValueError(t("error.restore_unsafe"))
+                    raise Refused("error.restore_unsafe")
                 if parts[0] == "modules" and _is_protected_module_dir(module_root, parts[1], protected):
                     # Bundled module directories belong to the application, not the backup.
                     continue
                 dest = files.joinpath(*parts)
                 if not dest.resolve().is_relative_to(files_root):
-                    raise ValueError(t("error.restore_unsafe"))
+                    raise Refused("error.restore_unsafe")
             dest.parent.mkdir(parents=True, exist_ok=True)
             src = tar.extractfile(member)
             if src is None:
-                raise ValueError(t("error.restore_damaged"))
+                raise Refused("error.restore_damaged")
             with src, dest.open("wb") as out:
                 shutil.copyfileobj(src, out)
     if not (root / _STAGED_DUMP).is_file():
-        raise ValueError(t("error.restore_incomplete"))
+        raise Refused("error.restore_incomplete")
 
 
 def _refuse_unrecorded_history(dump: Path) -> None:
@@ -422,7 +423,7 @@ def _refuse_unrecorded_history(dump: Path) -> None:
     from celerp.services.backup import recorded_migrations
     revisions = recorded_migrations(dump)
     if not revisions:
-        raise ValueError(t("system_recovery.no_migration_history"))
+        raise Refused("system_recovery.no_migration_history")
     script = ScriptDirectory.from_config(build_alembic_config())
     for revision in revisions:
         try:
@@ -430,7 +431,7 @@ def _refuse_unrecorded_history(dump: Path) -> None:
         except CommandError:
             known = False
         if not known:
-            raise ValueError(t("system_recovery.unknown_migration", revision=revision))
+            raise Refused("system_recovery.unknown_migration", revision=revision)
 
 
 def _prepare_sync(path: Path) -> PreparedRecovery:
@@ -450,7 +451,7 @@ def _prepare_sync(path: Path) -> PreparedRecovery:
         try:
             write_restore_script(root / _STAGED_DUMP, root / _STAGED_SCRIPT)
         except RuntimeError as exc:
-            raise ValueError(t("backup.err_file_damaged", reason=str(exc))) from exc
+            raise Refused("backup.err_file_damaged", reason=str(exc)) from exc
         prepared = PreparedRecovery(id=staging_id, root=root, digest=digest, meta=meta,
                                     files=_staged_files(root))
         (root / _STAGED_RECORD).write_text(json.dumps({
@@ -1079,7 +1080,7 @@ async def run_recovery(path: Path):
                 try:
                     _remove_staging((await prepare_recovery(safety.path)).root)
                 except ValueError as exc:
-                    raise ValueError(t("backup.err_safety_restore_failed", reason=str(exc))) from exc
+                    raise Refused("backup.err_safety_restore_failed", reason=str(exc)) from exc
                 await _cloud_safety_snapshot()
                 return await commit_recovery(prepared, safety.path)
     except Exception as exc:

@@ -20,8 +20,9 @@ from celerp_fixed_assets import disposal, projections, runs, setup
 from celerp.services.periods import month_index, period_label
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
-    _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, conflict, in_use)
+    _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, in_use)
 from celerp_fixed_assets.store import _emit
+from ui.i18n import t
 
 _AD, _IMP = "accumulated_depreciation", "accumulated_impairment"
 
@@ -46,7 +47,7 @@ async def reclassify(session, company_id, user_id, asset_id: str, body: dict) ->
     async def plan(fa):
         row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
         if row is None or row.entity_type != "fa_asset":
-            raise HTTPException(status_code=404, detail="No such asset.")
+            raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
         asset = row.state
         in_use(asset_id, asset, "reclassify")
         day = _date(body.get("date"), "The reclassification date")
@@ -54,18 +55,15 @@ async def reclassify(session, company_id, user_id, asset_id: str, body: dict) ->
         old = await setup.get_class(session, company_id, asset.get("class_id"))
         new = await setup.get_class(session, company_id, body.get("class_id"))
         if new["id"] == old["id"]:
-            raise setup.unprocessable(f"{asset['number']} is already in {old['name']}.")
+            raise setup.refuse("fixed_assets.err_number_already_name", number=asset['number'], name=old['name'])
         if new.get("archived"):
-            raise setup.unprocessable("That class is archived. Choose a class in use.")
+            raise setup.refuse("fixed_assets.err_class_archived_choose_class_use")
         if setup.measurement(new) != setup.measurement(old):
-            raise setup.unprocessable(f"{new['name']} is measured on the {setup.measurement(new)} model and "
-                                      f"{old['name']} on the {setup.measurement(old)} model. Choose a class on "
-                                      "the same model.")
+            raise setup.refuse("fixed_assets.err_name_measured_measurement_model_name2_measurement2", name=new['name'], measurement=setup.measurement(new), name2=old['name'], measurement2=setup.measurement(old))
         books = await runs._books(session, company_id)
         month = month_index(date.fromisoformat(day))
         if books.last is not None and books.last >= month:
-            raise conflict(f"Depreciation is posted through {period_label(books.last)}. Reclassify from "
-                           f"{period_label(books.last + 1)}-01 or later.")
+            raise setup.refused(409, "fixed_assets.err_depreciation_posted_through_period_label_reclassify", period_label=period_label(books.last), period_label2=period_label(books.last + 1))
         movements = await asset_movements(session, company_id, asset_id)
         disposal.check_date(books, asset, projections.live(movements), day, what="reclassification")
         owed, _ = disposal.owed(books, asset, movements, month - 1, month - 1)

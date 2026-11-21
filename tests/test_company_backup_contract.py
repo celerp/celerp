@@ -19,6 +19,7 @@ from test_company_backup import (  # noqa: F401
     _bk_sql,
 )
 from company_backup_support import company, members, token
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -70,7 +71,7 @@ async def test_undeclared_rows_block_only_their_company(real_engine, real_client
     try:
         r = await real_client.get("/company-backups/download", headers=auth(tok_a))
         assert r.status_code == 409, r.text
-        detail = r.json()["detail"]
+        detail = refusal_text(r.json()["detail"])
         assert "Widgets" in detail and "zz_gadgets" not in detail and "zz-widgets" not in detail, detail
         assert "No copy was made." in detail
         _no_files(tmp_path)
@@ -113,7 +114,7 @@ async def test_undeclared_module_table_without_company_column_blocks(real_engine
         for tok in (tok_a, tok_b):
             r = await real_client.get("/company-backups/download", headers=auth(tok))
             assert r.status_code == 409, r.text
-            assert "Widgets" in r.json()["detail"] and "zz_cache" not in r.json()["detail"]
+            assert "Widgets" in refusal_text(r.json()["detail"]) and "zz_cache" not in refusal_text(r.json()["detail"])
         _no_files(tmp_path)
     finally:
         await _bk_drop(real_engine, "zz_widgets", "zz_cache")
@@ -130,8 +131,8 @@ async def test_unknown_core_table_blocks_only_company_with_rows(real_engine, rea
         await _row(real_engine, "bk_unknown_things", a, "alpha thing")
         r = await real_client.get("/company-backups/download", headers=auth(tok_a))
         assert r.status_code == 409, r.text
-        assert "bk_unknown_things" not in r.json()["detail"]
-        assert "No copy was made." in r.json()["detail"]
+        assert "bk_unknown_things" not in refusal_text(r.json()["detail"])
+        assert "No copy was made." in refusal_text(r.json()["detail"])
         r = await real_client.get("/company-backups/download", headers=auth(tok_b))
         assert r.status_code == 200, r.text
     finally:

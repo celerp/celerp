@@ -39,6 +39,7 @@ from test_imported_document_cutover import (
 )
 from test_imported_document_cutover import _snapshot as _imported
 from test_receipt_accounting import _OPENING, _books
+from test_helpers import message_texts
 
 pytestmark = pytest.mark.asyncio
 
@@ -89,7 +90,7 @@ async def test_a_live_import_with_no_treatment_is_refused_and_writes_nothing(
     r = await _post(client, auth, rec, batch)
     if batch:
         assert r.status_code == 200 and r.json()["created"] == 0, r.text
-        reason = r.json()["errors"][0]
+        reason = message_texts(r.json()["errors"])[0]
         assert "Already in my opening balances" in reason and "review screen" in reason, r.text
         assert not {"import_treatment", "opening_balances", "record_now"} & set(re.findall(r"\w+", reason)), r.text
     else:
@@ -222,7 +223,7 @@ async def test_record_now_is_refused_for_goods_the_file_says_a_lot_already_holds
     r = await _post(client, auth, rec, batch)
     if batch:
         assert r.status_code == 200 and r.json()["created"] == 0, r.text
-        assert "already in stock" in r.json()["errors"][0], r.text
+        assert "already in stock" in message_texts(r.json()["errors"])[0], r.text
     else:
         assert r.status_code == 422, r.text
         assert r.json()["detail"]["message_key"] == "doc_import.record_now_goods_held", r.text

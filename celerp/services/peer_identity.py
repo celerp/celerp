@@ -16,6 +16,7 @@ from celerp.models.company import Company
 from celerp.models.company_peer import CompanyPeerIdentity
 from celerp.models.projections import Projection
 from celerp.services.company_lock import locked_company
+from ui.i18n import t
 
 ENTITY_TYPES = frozenset({"contact", "item", "doc", "list", "journal_entry"})
 BATCH = 500
@@ -71,7 +72,7 @@ async def seed_restored_identities(session: AsyncSession, *, target_company: uui
 async def peer_identity(session: AsyncSession, *, target_company: uuid.UUID,
                         source_company: uuid.UUID, entity_type: str, source_entity_id: str) -> str | None:
     if entity_type not in ENTITY_TYPES | {"location"} or not isinstance(source_entity_id, str) or not source_entity_id:
-        raise HTTPException(422, "Invalid external identity")
+        raise HTTPException(422, t("peer.err_invalid_external_identity"))
     row = await session.scalar(select(CompanyPeerIdentity).where(
         CompanyPeerIdentity.company_id == target_company,
         CompanyPeerIdentity.source_company_id == source_company,
@@ -81,20 +82,20 @@ async def peer_identity(session: AsyncSession, *, target_company: uuid.UUID,
     if row is None:
         return None
     if row.source_entity_id != source_entity_id:
-        raise HTTPException(409, "External identity conflict")
+        raise HTTPException(409, t("peer.err_external_identity_conflict"))
     if entity_type == "location":
         from celerp.models.company import Location
         try:
             target_id = uuid.UUID(row.target_entity_id)
         except ValueError as exc:
-            raise HTTPException(409, "Mapped location identity is invalid") from exc
+            raise HTTPException(409, t("peer.err_mapped_location_identity_invalid")) from exc
         other = await session.get(Location, target_id)
         if other is None or other.company_id != target_company:
-            raise HTTPException(409, "Mapped location is unavailable")
+            raise HTTPException(409, t("peer.err_mapped_location_unavailable"))
     else:
         other = await session.get(Projection, (target_company, row.target_entity_id))
         if other is None or other.entity_type != entity_type:
-            raise HTTPException(409, "External identity no longer matches its record")
+            raise HTTPException(409, t("peer.err_external_identity_no_longer_matches_its"))
     return row.target_entity_id
 
 
@@ -105,11 +106,11 @@ async def resolve_peer_location(session: AsyncSession, *, grant, source_id: str,
     if (not isinstance(source_id, str) or not isinstance(name, str)
             or not name.strip() or not isinstance(location_type, str)
             or not 1 <= len(name) <= 255 or not 1 <= len(location_type) <= 64):
-        raise HTTPException(422, "Invalid source location")
+        raise HTTPException(422, t("peer.err_invalid_source_location"))
     try:
         uuid.UUID(source_id)
     except ValueError as exc:
-        raise HTTPException(422, "Invalid source location identity") from exc
+        raise HTTPException(422, t("peer.err_invalid_source_location_identity")) from exc
     mapped = await peer_identity(
         session, target_company=grant.company_id, source_company=grant.source_company_id,
         entity_type="location", source_entity_id=source_id)
@@ -119,13 +120,13 @@ async def resolve_peer_location(session: AsyncSession, *, grant, source_id: str,
         Location.company_id == grant.company_id,
         Location.name == name, Location.type == location_type).with_for_update(key_share=True))
     if target is None:
-        raise HTTPException(409, "Configure a matching inventory location before syncing counts")
+        raise HTTPException(409, t("peer.err_configure_matching_inventory_location_before_syncing"))
     conflict = await session.scalar(select(CompanyPeerIdentity.id).where(
         CompanyPeerIdentity.company_id == grant.company_id,
         CompanyPeerIdentity.entity_type == "location",
         CompanyPeerIdentity.target_entity_id == str(target.id)).limit(1))
     if conflict is not None:
-        raise HTTPException(409, "Inventory location is already paired with another company")
+        raise HTTPException(409, t("peer.err_inventory_location_already_paired_with_another"))
     session.add(CompanyPeerIdentity(
         company_id=grant.company_id, source_company_id=grant.source_company_id,
         entity_type="location", source_entity_id=source_id,
@@ -137,7 +138,7 @@ async def resolve_peer_location(session: AsyncSession, *, grant, source_id: str,
 
 def new_target_identity(source_company: uuid.UUID, entity_type: str, source_entity_id: str) -> str:
     if entity_type not in ENTITY_TYPES or not source_entity_id or len(source_entity_id) > 512:
-        raise HTTPException(422, "Invalid external identity")
+        raise HTTPException(422, t("peer.err_invalid_external_identity"))
     target = uuid.uuid5(uuid.NAMESPACE_URL, f"celerp-peer:{source_company}:{entity_type}:{source_entity_id}")
     return f"{entity_type}:{target}"
 
@@ -163,7 +164,7 @@ def _held(mapping: CompanyPeerIdentity, source_revision: int, digest: str) -> bo
         return True
     if source_revision == mapping.last_revision:
         if mapping.last_payload_hash and mapping.last_payload_hash != digest:
-            raise HTTPException(409, "Source revision already used")
+            raise HTTPException(409, t("peer.err_source_revision_already_used"))
         return True
     return False
 
@@ -202,11 +203,11 @@ async def claim_peer_revision(
             or not 1 <= source_revision <= 2**63 - 1
             or not isinstance(source_entity_id, str)
             or not 1 <= len(source_entity_id) <= 512):
-        raise HTTPException(422, "Invalid source revision")
+        raise HTTPException(422, t("peer.err_invalid_source_revision"))
     company_id, source_company = grant.company_id, grant.source_company_id
     company = await locked_company(session, company_id)
     if company is None or not company.is_active or company.is_migration_staged:
-        raise HTTPException(403, "Company unavailable")
+        raise HTTPException(403, t("peer.err_company_unavailable"))
     source_key = _digest(source_entity_id)
     digest = _payload_digest(data)
     mapping = await session.scalar(select(CompanyPeerIdentity).where(
@@ -217,14 +218,14 @@ async def claim_peer_revision(
     ).with_for_update())
     if mapping is not None:
         if mapping.source_entity_id != source_entity_id:
-            raise HTTPException(409, "External identity conflict")
+            raise HTTPException(409, t("peer.err_external_identity_conflict"))
         target = await peer_identity(
             session, target_company=company_id, source_company=source_company,
             entity_type=entity_type, source_entity_id=source_entity_id)
         if entity_type == "contact":
             row = await session.get(Projection, (company_id, target))
             if (row.state or {}).get("is_self"):
-                raise HTTPException(403, "Company-owned contacts cannot be updated by an integration")
+                raise HTTPException(403, t("peer.err_company_owned_contacts_cannot_updated_by"))
         return PeerRevisionClaim(mapping, target, source_key, digest,
                                  _held(mapping, source_revision, digest))
     if entity_type == "doc":
@@ -240,12 +241,10 @@ async def claim_peer_revision(
             ).limit(1))
             if existing_documents is not None:
                 raise HTTPException(
-                    409, "Receiving company already contains documents. Use a new company "
-                         "or a company copy with source identities preserved before "
-                         "starting financial-document synchronization.")
+                    409, t("peer.err_company_has_documents"))
     target = new_target_identity(source_company, entity_type, source_entity_id)
     if await session.get(Projection, (company_id, target)) is not None:
-        raise HTTPException(409, "External identity conflicts with an existing record")
+        raise HTTPException(409, t("peer.err_external_identity_conflicts_with_existing_record"))
     return PeerRevisionClaim(None, target, source_key, digest, False)
 
 
@@ -315,15 +314,15 @@ async def receive_product(session: AsyncSession, *, grant, source_entity_id: str
 
     if (type(source_revision) is not int or not 1 <= source_revision <= 2**63 - 1
             or not isinstance(source_entity_id, str) or not 1 <= len(source_entity_id) <= 512):
-        raise HTTPException(422, "Invalid product revision")
+        raise HTTPException(422, t("peer.err_invalid_product_revision"))
     name = data.get("name")
     if not isinstance(name, str) or not name.strip():
-        raise HTTPException(422, "Product name required")
+        raise HTTPException(422, t("peer.err_product_name_required"))
     # Product/catalog changes do not represent stock movements or expense postings.
     allowed = {"name", "sku", "description", "sell_by", "category",
                "barcode", "retail_price", "wholesale_price"}
     if set(data) - allowed:
-        raise HTTPException(422, "Unsupported product fields")
+        raise HTTPException(422, t("peer.err_unsupported_product_fields"))
     body = {key: value for key, value in data.items() if value is not None}
     claim = await claim_peer_revision(
         session, grant=grant, entity_type="item",
@@ -340,7 +339,7 @@ async def receive_product(session: AsyncSession, *, grant, source_entity_id: str
                 body[field] = None
     company = await session.get(Company, company_id)
     if company is None or not company.is_active or company.is_migration_staged:
-        raise HTTPException(403, "Company unavailable")
+        raise HTTPException(403, t("peer.err_company_unavailable"))
     member = (await session.execute(select(User.id, UserCompany.role).join(
         UserCompany, UserCompany.user_id == User.id).where(
         UserCompany.company_id == company_id,
@@ -349,7 +348,7 @@ async def receive_product(session: AsyncSession, *, grant, source_entity_id: str
         User.is_active.is_(True),
     ).order_by(User.id).limit(1))).first()
     if member is None:
-        raise HTTPException(403, "Company owner unavailable")
+        raise HTTPException(403, t("peer.err_company_owner_unavailable"))
     record = ImportRecord(
         entity_id=target_id, event_type=event_type, data=body,
         source="connector",
@@ -361,7 +360,7 @@ async def receive_product(session: AsyncSession, *, grant, source_entity_id: str
             dict(company.settings or {}), BatchImportRequest(records=[record]))
         result = outcome.records[0]
         if result.status not in ("created", "updated", "skipped"):
-            raise HTTPException(409, "Product update was not accepted")
+            raise HTTPException(409, t("peer.err_product_update_was_not_accepted"))
     await commit_peer_revision(
         session, grant=grant, claim=claim, entity_type="item",
         source_entity_id=source_entity_id, source_revision=source_revision)

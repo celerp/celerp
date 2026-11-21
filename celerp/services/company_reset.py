@@ -130,13 +130,17 @@ def _placed(schema: dict) -> None:
     installation = db_catalog.reach(schema, install, lambda name, fk: True)
     unplaced = sorted(name for name in schema if name not in company and name not in installation)
     if unplaced:
-        raise ResetRefused(409, f"This company cannot be reset safely: {', '.join(unplaced)} could not be "
-                                "identified as company data. Nothing was deleted.")
+        raise ResetRefused(409, refusal(
+            "company_reset.unplaced", f"This company cannot be reset safely: {', '.join(unplaced)} could not be "
+            "identified as company data. Nothing was deleted.", tables=", ".join(unplaced)))
     crossing = sorted(install & company)
     if crossing:
-        verb = "holds" if len(crossing) == 1 else "hold"
-        raise ResetRefused(409, f"This company cannot be reset safely: {', '.join(crossing)} {verb} both "
-                                "installation and company data. Nothing was deleted.")
+        tables = ", ".join(crossing)
+        one = len(crossing) == 1
+        raise ResetRefused(409, refusal(
+            "company_reset.crossing_one" if one else "company_reset.crossing",
+            f"This company cannot be reset safely: {tables} {'holds' if one else 'hold'} both installation "
+            "and company data. Nothing was deleted.", tables=tables))
 
 
 def _company_rows(schema: dict) -> dict[str, str]:
@@ -357,8 +361,9 @@ async def reset(session: AsyncSession, company: Company, typed_name: str,
     connected = sorted(set((await session.scalars(
         select(ConnectorConfig.connector).where(ConnectorConfig.company_id == cid))).all()))
     if connected:
-        raise ResetRefused(409, f"Disconnect {', '.join(connected)} before resetting this company. "
-                                "Nothing was deleted.")
+        raise ResetRefused(409, refusal(
+            "company_reset.connected", f"Disconnect {', '.join(connected)} before resetting this company. "
+            "Nothing was deleted.", connectors=", ".join(connected)))
     # A connector set up before companies had their own is adopted by the only company left
     # at the next startup, so a reset must never be what leaves one company standing beside it.
     # An unfinished import's company does not count: discarding it removes it again.

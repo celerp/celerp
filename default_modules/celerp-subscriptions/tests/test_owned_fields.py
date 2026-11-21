@@ -16,6 +16,7 @@ from celerp_docs.doc_constants import (
 )
 from celerp_docs.doc_money import CONVERSION_KEYS, DOC_TOTAL_FIELDS
 from celerp_docs.record_copy import LINE_KEYS, RECORD_KEYS
+from ui.i18n import refusal_text
 
 from agreement_kit import LINE, agreement, freeze_day, register
 from owned_fields_census import doors, writes, written_keys
@@ -127,7 +128,7 @@ async def test_create_edit_and_import_refuse_an_owned_or_removed_field_by_name(c
     assert _refused(r, key), (key, r.status_code, r.text)
     r = await client.post("/docs/import/batch", json={"records": [{**record, "idempotency_key": uuid.uuid4().hex}]},
                           headers=hd)
-    assert r.status_code == 200 and r.json()["created"] == 0 and key in " ".join(r.json()["errors"]), r.text
+    assert r.status_code == 200 and r.json()["created"] == 0 and key in refusal_text(r.json()["errors"]), r.text
 
 
 @pytest.mark.parametrize("key", sorted(SCHEDULE_REMOVED_FIELDS))
@@ -140,7 +141,7 @@ async def test_an_import_update_refuses_a_removed_field(client, key):
     assert (await client.post("/docs/import", json=record, headers=hd)).status_code == 200
     again = {**record, "data": {**record["data"], key: "2027-03-01"}}
     r = await client.post("/docs/import/batch", json={"upsert": True, "records": [again]}, headers=hd)
-    assert r.status_code == 200 and r.json()["updated"] == 0 and key in " ".join(r.json()["errors"]), r.text
+    assert r.status_code == 200 and r.json()["updated"] == 0 and key in refusal_text(r.json()["errors"]), r.text
 
 
 async def test_an_agreement_cannot_name_an_unrelated_invoice_as_a_bill_it_let_go(client, monkeypatch):

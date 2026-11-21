@@ -76,8 +76,9 @@ def _require_free_port(port: int) -> None:
 
 
 def _reset_pg_database() -> None:
-    """Drop + recreate the public schema so the browser session starts clean.
-    The app rebuilds all tables via create_all when the server boots."""
+    """Drop + recreate the public schema, so the browser session starts clean (the app
+    rebuilds all tables via create_all when the server boots) and leaves the database empty.
+    A lock still held on a table fails the reset at once rather than hanging the session."""
     import psycopg2
     from urllib.parse import urlsplit
 
@@ -87,6 +88,7 @@ def _reset_pg_database() -> None:
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
+            cur.execute("SET lock_timeout = '10s'")
             cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
     finally:
         conn.close()
@@ -94,9 +96,9 @@ def _reset_pg_database() -> None:
 
 # ── Server fixtures ───────────────────────────────────────────────────────────
 
-@pytest.fixture(scope="session")
-def api_server():
-    """Start FastAPI on this worker's API port against the (Postgres) test database."""
+def _serve_api():
+    """FastAPI on this worker's API port against the (Postgres) test database, from a clean
+    schema to a clean schema."""
     _require_free_port(_API_PORT)
     import uvicorn
     os.environ.setdefault("ENABLED_MODULES", _ALL_MODULES)
@@ -112,6 +114,13 @@ def api_server():
     yield _API_BASE
     server.should_exit = True
     thread.join(timeout=3)
+    _reset_pg_database()
+
+
+@pytest.fixture(scope="session")
+def api_server():
+    """Start FastAPI on this worker's API port against the (Postgres) test database."""
+    yield from _serve_api()
 
 
 @pytest.fixture(scope="session")

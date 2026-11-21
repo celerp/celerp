@@ -84,7 +84,7 @@ async def test_a_failed_statement_names_the_donor_and_sending_again_retries(owne
     r = await _send(owner_ui, confirm="on")
     assert _toast(r)["type"] == "warning", _toast(r)
     assert sentence("donors.done_failed", names="Cy Donor") in _toast(r)["message"]
-    assert t("donors.statement_not_sent") in (await owner_ui.get(PAGE)).text
+    assert '"seen":' not in (await owner_ui.get(PAGE)).text  # no Send again: the statement reads not sent
     sent = _mailbox(monkeypatch)
     await _send(owner_ui, confirm="on")
     assert attempts == ["cy@test.test"] and [m["to"] for m in sent] == ["cy@test.test"]
@@ -112,3 +112,83 @@ async def test_donors_in_the_sidebar_of_a_nonprofit_only(vertical, shown):
 
     keys = {item.get("key") for item in module_nav({"vertical": vertical} if vertical else {})}
     assert ("donors" in keys) is shown
+
+
+async def test_the_toast_after_a_send_reads_as_success_only_when_a_statement_went_out():
+    """No failed statement is not a delivered one: a send that reached nobody (every donor
+    skipped, or the donor named for Send again no longer listed) is not shown as a success."""
+    from ui.routes.donors import _sent_message
+    skipped = {"name": "Di Donor", "state": "no_email"}
+    assert _sent_message([skipped], {}) == (sentence("donors.done_sent", sent=0, skipped=1), "warning")
+    assert _sent_message([], {}) == (sentence("donors.done_sent", sent=0, skipped=0), "warning")
+    assert _sent_message([], {"gone": "1"}) == (sentence("donors.done_none"), "warning")
+    assert _sent_message([skipped], {"di": "1"}) == (sentence("donors.done_none"), "warning")
+    sent = {"name": "Cy Donor", "state": "sent"}
+    assert _sent_message([sent, skipped], {}) == (sentence("donors.done_sent", sent=1, skipped=1), "success")
+    assert _sent_message([{**sent, "repeat": True}], {})[1] == "success"
+    assert _sent_message([sent], {"cy": "1"}) == (sentence("donors.done_resent", name="Cy Donor"), "success")
+
+
+async def test_a_send_whose_answer_did_not_come_back_shows_each_statement_as_stored(owner_ui, monkeypatch):
+    """A batch can take longer than the page waits for the API. When no answer comes back the
+    send may still be running: the toast says so and names whose statement is still being sent,
+    never a timeout or a failure, and the page reads each statement as stored, then as sent."""
+    import asyncio
+    import ui.api_client as api
+
+    await _statement_donors(owner_ui.api, AUTH)
+    going, release, sent = asyncio.Event(), asyncio.Event(), []
+
+    async def slow(to, subject, body_html, body_text="", **kw):
+        going.set()
+        await release.wait()
+        sent.append(to)
+        return EmailResult(ok=True, detail="")
+
+    monkeypatch.setattr("celerp.services.email.send_email", slow)
+    real, running = api.send_donor_statements, []
+
+    async def unanswered(*args):
+        running.append(asyncio.ensure_future(real(*args)))
+        await going.wait()  # the attempt is recorded and its email is with the mail server
+        raise api._no_response(504, api.timeout_message())
+
+    monkeypatch.setattr(api, "send_donor_statements", unanswered)
+    r = await _send(owner_ui, confirm="on")
+    toast = _toast(r)
+    assert r.headers.get("HX-Redirect") == PAGE and toast.get("type") == "info", (r.status_code, toast)
+    assert sentence("donors.done_pending") in toast["message"], toast
+    assert sentence("donors.done_sending", names="Cy Donor") in toast["message"], toast
+    assert api.timeout_message() not in toast["message"]
+    page = await owner_ui.get(PAGE)
+    assert t("donors.statement_sending") in page.text and t("btn.check_again") in page.text
+    assert t("donors.statement_sent") not in page.text and '"seen":' not in page.text  # not sent yet, no Send again
+    release.set()
+    await running[0]
+    page = await owner_ui.get(PAGE)
+    assert sent == ["cy@test.test"] and t("donors.statement_sent") in page.text
+    assert t("donors.statement_sending") not in page.text
+
+
+async def test_a_pending_sends_status_check_failure_shows_as_pending_with_its_own_error(owner_ui, monkeypatch):
+    """When a send's answer does not come back and the follow-up read of who is still sending
+    also fails, the toast still says the send may be pending, with that read's own error
+    alongside it; it never reads as nobody still sending."""
+    import ui.api_client as api
+    from ui.api_client import APIError
+
+    await _statement_donors(owner_ui.api, AUTH)
+
+    async def unanswered(*args):
+        raise api._no_response(504, api.timeout_message())
+
+    async def broken_preview(*args):
+        raise APIError(500, "boom")
+
+    monkeypatch.setattr(api, "send_donor_statements", unanswered)
+    monkeypatch.setattr(api, "donor_statements_preview", broken_preview)
+    r = await _send(owner_ui, confirm="on")
+    toast = _toast(r)
+    assert r.headers.get("HX-Redirect") == PAGE and toast.get("type") == "info", (r.status_code, toast)
+    assert sentence("donors.done_pending") in toast["message"], toast
+    assert "boom" in toast["message"], toast

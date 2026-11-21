@@ -27,6 +27,7 @@ from celerp.services.peer_lines import UNRESTRICTED
 from celerp.services.permissions import role_has_permission
 from celerp.services.recognition import GIFT_CATEGORIES
 from ui.api_client import APIError, error_message
+from ui.components.report_kit import date_params
 from ui.components.encode import safe_url
 from ui.components.shell import module_active, no_access_banner, page_header, page_title
 from ui.components.table import display_cell, doc_href, editable_cell, empty_state_cta, fmt_money
@@ -224,7 +225,7 @@ async def _body(token: str, company: dict, period: tuple[str, str], banner: FT |
     if not data.get("schedules") and not data.get("runs"):
         return Div(banner, empty_state_cta(t("recognition.empty")), id=_BODY_ID)
     d_from, d_to = period
-    roll = await api.get_recognition_roll_forward(token, {"date_from": d_from, "date_to": d_to})
+    roll = await api.get_recognition_roll_forward(token, date_params(d_from, d_to))
     names = {}
     if roll.get("by_fund"):
         names = {UNRESTRICTED: t("label.unrestricted"),

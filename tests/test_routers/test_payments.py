@@ -340,7 +340,7 @@ async def test_void_blocked_with_active_payments(client):
 
     r = await client.post(f"/docs/{inv}/void", headers=_h(token), json={})
     assert r.status_code == 409
-    assert "payments" in r.json()["detail"].lower() or "void" in r.json()["detail"].lower()
+    assert "payments" in refusal_text(r.json()["detail"]).lower() or "void" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio
@@ -975,7 +975,7 @@ async def test_delete_cn_settlement_blocked(client):
     cn_pay = next(p for p in doc["payments"] if p.get("method") == "credit_note")
     r = await client.delete(f"/docs/{inv}/payments/{cn_pay['index']}", headers=_h(token))
     assert r.status_code == 422
-    assert "void" in r.json()["detail"].lower()
+    assert "void" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio

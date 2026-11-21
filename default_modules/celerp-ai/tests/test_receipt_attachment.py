@@ -11,7 +11,14 @@ from celerp_ai import routes
 
 @pytest.mark.asyncio
 async def test_bill_proposal_does_not_leave_transient_upload_id_in_notes():
+    from celerp.ai.tools import compile_agent_capabilities
+    from test_helpers import real_agent_app
+
+    capabilities = compile_agent_capabilities(real_agent_app(), {})
+
     class Lookups:
+        def capability(self, name):
+            return capabilities[name]
         async def contact_id(self, vendor, warnings):
             return "contact:vendor"
         async def item_id(self, description):

@@ -42,7 +42,7 @@ from celerp.accounting_roles import refusal
 from celerp.services.business_time import company_today
 
 from celerp_fixed_assets import fixaccount, runs, setup, sources
-from celerp_fixed_assets.operations import MODULE, _dec, conflict
+from celerp_fixed_assets.operations import MODULE, _dec
 from celerp_fixed_assets.projections import fold_movements, money
 from celerp_fixed_assets.store import _emit, _entities
 
@@ -349,18 +349,18 @@ async def acknowledge(session, company_id, user_id, body: dict) -> dict:
     await lock_company(session, company_id)
     key, state = str(body.get("key") or ""), body.get("state")
     if state not in RECON_STATES:
-        raise setup.unprocessable("Choose open, noted or accepted.")
+        raise setup.refuse("fixed_assets.err_choose_open_noted_accepted")
     reason = str(body.get("reason") or "").strip()
     effect = str(body.get("effect") or "").strip()
     if state != "open" and not reason:
-        raise setup.unprocessable("A reason is required to note or accept a difference.")
+        raise setup.refuse("fixed_assets.err_reason_required_note_accept_difference")
     if state == "accepted" and not effect:
-        raise setup.unprocessable("Describe the accounting effect of accepting this difference.")
+        raise setup.refuse("fixed_assets.err_describe_accounting_effect_accepting_difference")
     found = await find(session, company_id, key)
     if found["rule"] == 4:
-        raise conflict("This line was noted when it was kept or marked as not an acquisition. Undo that to open it.")
+        raise setup.refused(409, "fixed_assets.err_line_was_noted_when_was_kept")
     if _dec(body.get("amount")) != _dec(found["amount"]):
-        raise conflict(f"The difference is now {found['amount']}. Review it again.")
+        raise setup.refused(409, "fixed_assets.err_difference_now_amount_review_again", amount=found['amount'])
     data = {"key": key, "state": state, "amount": found["amount"], "reason": reason or None,
             "effect": effect or None, "by": str(user_id), "at": (await company_today(session, company_id)).isoformat()}
     await _emit(session, company_id, user_id, recon_id(key), "fa_recon", "fa.recon.recorded", data)

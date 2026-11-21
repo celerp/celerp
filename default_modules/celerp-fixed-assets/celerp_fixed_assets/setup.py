@@ -18,6 +18,7 @@ from celerp.accounting_roles import catalog_refusal
 from celerp.models.projections import Projection
 from celerp.services.business_time import business_today, company_today
 from celerp_fixed_assets.calc import rules
+from ui.i18n import t
 
 SETTINGS_KEY = "fixed_assets"
 RUN_MODES = ("prepare", "post", "manual")
@@ -317,12 +318,12 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
     unknown = set(body) - {"threshold", "run_mode", "run_day", "convention", "first_managed_period", "tax_year_end",
                            "tax_regimes"}
     if unknown:
-        raise unprocessable(f"Unknown setting: {sorted(unknown)[0]}.")
+        raise refuse("fixed_assets.err_unknown_setting_value", value=sorted(unknown)[0])
     if "threshold" in body:
         fa["threshold"] = _money(body["threshold"], "Threshold")
     if "run_mode" in body:
         if body["run_mode"] not in RUN_MODES:
-            raise unprocessable("Choose how depreciation runs: prepare, post or manual.")
+            raise refuse("fixed_assets.err_choose_how_depreciation_runs_prepare_post")
         fa["run_mode"] = body["run_mode"]
         if body["run_mode"] == "post":
             # Runs post as the user who chose to post them, while that user may.
@@ -333,7 +334,7 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
     if "run_day" in body:
         run_day = body["run_day"]
         if not isinstance(run_day, int) or isinstance(run_day, bool) or not 1 <= run_day <= 28:
-            raise unprocessable("The run day is a day of the month from 1 to 28.")
+            raise refuse("fixed_assets.err_run_day_day_month_from_1")
         fa["run_day"] = run_day
     if "convention" in body:
         if body["convention"] != fa.get("convention") and not rules.is_available(
@@ -345,15 +346,15 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
     if "tax_regimes" in body:
         chosen = body["tax_regimes"]
         if not isinstance(chosen, list) or not all(isinstance(k, str) for k in chosen):
-            raise unprocessable("Tax regimes are a list of regime keys.")
+            raise refuse("fixed_assets.err_tax_regimes_list_regime_keys")
         for key in chosen:
             if key not in (fa.get("tax_regimes") or []) and not rules.is_available("tax_regime", key, company.settings):
-                raise unprocessable(f"{key} is not a tax regime this company can use.")
+                raise refuse("fixed_assets.err_key_not_tax_regime_company_can", regime=key)
         fa["tax_regimes"] = list(dict.fromkeys(chosen))
     if "first_managed_period" in body:
         first = day(body["first_managed_period"], "The first managed period")
         if first.day != 1:
-            raise unprocessable("The first managed period starts on the first day of a month.")
+            raise refuse("fixed_assets.err_first_managed_period_starts_first_day")
         if fa.get("first_managed_period") and fa["first_managed_period"] != first.isoformat():
             from celerp_fixed_assets import opening
 
@@ -373,7 +374,7 @@ def _month_day(value) -> str:
     except ValueError:
         day = None
     if day is None:
-        raise unprocessable("The tax year end is a month and day, such as 12-31.")
+        raise refuse("fixed_assets.err_tax_year_end_month_day_such")
     return day.strftime("%m-%d")
 
 
@@ -439,11 +440,11 @@ def _active_market(value) -> dict | None:
     if value is None:
         return None
     if not isinstance(value, dict) or set(value) - {"date", "basis"}:
-        raise unprocessable("An active market has a date and a basis.")
+        raise refuse("fixed_assets.err_active_market_has_date_basis")
     on = day(value.get("date"), "The active market date").isoformat()
     basis = str(value.get("basis") or "").strip()
     if not basis:
-        raise unprocessable("Say where the active market is quoted.")
+        raise refuse("fixed_assets.err_say_where_active_market_quoted")
     return {"date": on, "basis": basis}
 
 
@@ -454,7 +455,7 @@ def check_tax_categories(value, current: dict | None = None) -> dict:
     if value is None:
         return {}
     if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
-        raise unprocessable("Tax categories name a category for each tax regime.")
+        raise refuse("fixed_assets.err_tax_categories_name_category_each_tax")
     current = current or {}
     for regime_key, category in value.items():
         if current.get(regime_key) == category:
@@ -462,9 +463,9 @@ def check_tax_categories(value, current: dict | None = None) -> dict:
         try:
             regime = rules.regime(regime_key)
         except rules.RuleUnavailable:
-            raise unprocessable(f"{regime_key} is not a tax regime any installed module provides.") from None
+            raise refuse("fixed_assets.err_regime_key_not_tax_regime_any", regime_key=regime_key) from None
         if category not in {c.key for c in regime.categories}:
-            raise unprocessable(f"{category} is not a category of the tax regime {regime_key}.")
+            raise refuse("fixed_assets.err_category_not_category_tax_regime_regime", category=category, regime_key=regime_key)
     return dict(value)
 
 
@@ -473,13 +474,13 @@ async def check_class(session, company_id, data: dict, company_settings: dict | 
     from celerp.services.journal_accounts import require_destinations
 
     if not str(data.get("name") or "").strip():
-        raise unprocessable("A class needs a name.")
+        raise refuse("fixed_assets.err_class_needs_name")
     if data.get("kind") not in KINDS:
-        raise unprocessable("A class is tangible or intangible.")
+        raise refuse("fixed_assets.err_class_tangible_intangible")
     if not isinstance(data.get("construction"), bool):
-        raise unprocessable("Under construction is true or false.")
+        raise refuse("fixed_assets.err_under_construction_true_false")
     if data["construction"] and data.get("method") != "none":
-        raise unprocessable("A class for assets under construction is not depreciated. Choose no depreciation.")
+        raise refuse("fixed_assets.err_class_assets_under_construction_not_depreciated")
     check_policy(data, company_settings, current)
     data["tax_categories"] = check_tax_categories(data.get("tax_categories"), (current or {}).get("tax_categories"))
     await require_destinations(session, company_id, {
@@ -493,7 +494,7 @@ def new_class(body: dict, company_settings: dict | None, seq: int) -> dict:
 
     roles = role_map(company_settings)
     if body.get("measurement_policy") not in (None, "cost"):
-        raise unprocessable("A new class uses the cost model. Change class to revaluation once its assets are in.")
+        raise refuse("fixed_assets.err_new_class_uses_cost_model_change")
     kind = body.get("kind") or "tangible"
     return {"name": str(body.get("name") or "").strip(), "kind": kind,
             "asset_account": body.get("asset_account") or roles.get(_ASSET_ROLE.get(kind, "fixed_assets")) or "",
@@ -529,13 +530,12 @@ async def _check_measurement(session, company_id, class_id: str, policy) -> None
     from celerp_fixed_assets import remeasure
 
     if policy not in MEASUREMENT_POLICIES:
-        raise unprocessable("A class is measured at cost or by revaluation.")
+        raise refuse("fixed_assets.err_class_measured_at_cost_by_revaluation")
     if policy == "revaluation":
-        raise unprocessable("Use Change class to revaluation, which revalues every asset in the class on one date.")
+        raise refuse("fixed_assets.err_use_change_class_revaluation_which_revalues")
     revalued = await remeasure.revalued_numbers(session, company_id, class_id)
     if revalued:
-        raise HTTPException(status_code=409, detail=f"{', '.join(revalued)} are revalued, so this class stays on "
-                                                    "the revaluation model.")
+        raise HTTPException(status_code=409, detail=t("fixed_assets.err_revalued_revalued_so_class_stays_revaluation", revalued=', '.join(revalued)))
 
 
 async def class_changes(session, company_id, company_settings: dict | None, class_id: str, current: dict,
@@ -543,12 +543,12 @@ async def class_changes(session, company_id, company_settings: dict | None, clas
     """What ``body`` changes on a class, checked against the class it leaves."""
     unknown = set(body) - set(CLASS_FIELDS)
     if unknown:
-        raise unprocessable(f"Unknown class field: {sorted(unknown)[0]}.")
+        raise refuse("fixed_assets.err_unknown_class_field_value", value=sorted(unknown)[0])
     changes = {k: v for k, v in body.items() if current.get(k) != v}
     if "name" in changes:
         changes["name"] = str(changes["name"] or "").strip()
     if "archived" in changes and not isinstance(changes["archived"], bool):
-        raise unprocessable("Archived is true or false.")
+        raise refuse("fixed_assets.err_archived_true_false")
     if "measurement_policy" in changes:
         await _check_measurement(session, company_id, class_id, changes["measurement_policy"])
     if "active_market" in changes:
@@ -572,7 +572,7 @@ async def update_class(session, company_id, user_id, class_id: str, body: dict) 
     rows = await lock_projections(session, company_id, [class_id])
     row = rows.get(class_id)
     if row is None or row.entity_type != "fa_class":
-        raise HTTPException(status_code=404, detail="No such asset class.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_class"))
     changes = await class_changes(session, company_id, settings, class_id, row.state, body)
     if changes:
         await _emit(session, company_id, user_id, class_id, "fa.class.updated", {"changes": changes})

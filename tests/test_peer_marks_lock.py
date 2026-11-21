@@ -13,6 +13,7 @@ _CLASSES = ("row:company_peer_grants", "row:company_peer_attention", "row:compan
 
 
 async def test_key_attention_and_delivery_writers_take_the_company_lock_first(session, auth, ids):
+    from celerp.accounting_roles import catalog_refusal
     from celerp.services import peer_access, peer_attention, peer_journals
 
     company_id, source = ids["company_id"], uuid.uuid4()
@@ -24,7 +25,8 @@ async def test_key_attention_and_delivery_writers_take_the_company_lock_first(se
     await session.commit()
     where = dict(company_id=company_id, source_company_id=source, entity_type="journals",
                  source_entity_id="J-1")
-    await peer_attention.record(session, **where, label="J-1", reason="Refused")
+    await peer_attention.record(session, **where, label="J-1",
+                                reason=catalog_refusal("error.refusal_as_written", text="Refused"))
     await session.commit()
     await peer_attention.clear(session, **where)
     await session.commit()

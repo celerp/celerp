@@ -10,6 +10,7 @@ import asyncio
 import pytest
 from sqlalchemy import delete
 
+from celerp.accounting_roles import Refused
 from celerp.config import settings
 from celerp.models.projections import Projection
 from celerp.services import attachments
@@ -95,7 +96,7 @@ async def test_a_failed_upload_leaves_no_file_and_no_event(client, stored_files,
     events = await _ledger_by_type(client, h, eid)
 
     async def too_large(*_a, **_k):
-        raise ValueError("File exceeds the size limit")
+        raise Refused("error.file_too_large", mb=50)
     monkeypatch.setattr(attachments, "store_upload", too_large)
     r = await client.post(f"/{door}/{eid}/files", headers=h, files=_upload(),
                           data={"document_tag": "contracts", "description": "Signed original"})

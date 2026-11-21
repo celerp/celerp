@@ -177,6 +177,6 @@ async def cloud(monkeypatch):
     drained (``drain_jobs``)."""
     from celerp.ai import service
     c = install(monkeypatch, FakeCloud())
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     yield c
     await drain_jobs(lambda: c.release(*c.hold))

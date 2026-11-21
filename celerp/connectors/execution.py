@@ -38,6 +38,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import Pool
 
+from celerp.accounting_roles import refusal_detail
 from celerp.capacity import REQUEST_DB_MAX_OVERFLOW
 
 log = logging.getLogger(__name__)
@@ -541,7 +542,7 @@ async def _acquire(ex: Execution, connector) -> None:
             raise
         except ConnectorBusyError as exc:
             await s.rollback()
-            raise ExecutionBusy(str(exc)) from exc
+            raise ExecutionBusy(refusal_detail(exc)) from exc
         for beat in beats:
             expires = _aware(beat.expires_at)
             if beat.holder is not None and expires is not None and expires > _aware(beat.db_now):
@@ -1047,9 +1048,9 @@ async def _prove_store(ex: Execution, connector) -> bool:
     try:
         return await ensure_store_bound(ex.company_id, connector, ex.ctx)
     except ConnectorStoreUncheckedError as exc:
-        raise ExecutionRefused("store_unchecked", str(exc)) from exc
+        raise ExecutionRefused("store_unchecked", refusal_detail(exc)) from exc
     except ConnectorStoreChangedError as exc:
-        raise ExecutionRefused("store_changed", str(exc)) from exc
+        raise ExecutionRefused("store_changed", refusal_detail(exc)) from exc
 
 
 @contextlib.asynccontextmanager

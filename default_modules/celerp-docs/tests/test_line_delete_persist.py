@@ -11,6 +11,7 @@ import uuid
 
 import pytest
 from test_helpers import doc_version
+from ui.i18n import refusal_text
 
 
 async def _register(client) -> str:
@@ -60,7 +61,7 @@ async def test_send_blocked_when_empty(client):
         "doc_type": "invoice", "line_items": []})).json()["id"]
     r = await client.post(f"/docs/{doc}/send", headers=_h(t), json={"sent_to": "buyer@x.test"})
     assert r.status_code == 422
-    assert "at least one line" in r.json()["detail"].lower()
+    assert "at least one line" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio

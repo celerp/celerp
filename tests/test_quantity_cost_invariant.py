@@ -15,6 +15,7 @@ import pytest
 
 from celerp_inventory.projections import apply_item_event
 from test_cost_restatement import _cogs, _cogs_adjustments, _item, _merge, _sell, _set_cost, _state
+from ui.i18n import refusal_text
 
 
 def _apply(state: dict, *events: tuple[str, dict]) -> dict:
@@ -268,7 +269,7 @@ async def test_po_receipt_no_line_prices_is_refused(client, session, auth):
     po = await _po(client, auth, [{"sku": "OTHER", "name": "Other", "quantity": 5, "unit_price": 3.0}])
     r = await _receive(client, auth, po, item_id, 5, po_line_index=-1)
     assert r.status_code == 422, r.text
-    assert "is not on this purchase order" in r.json()["detail"]
+    assert "is not on this purchase order" in refusal_text(r.json()["detail"])
     state = await _state(session, auth, item_id)
     assert (state["quantity"], state["cost_total"]) == (10, 100.0)
 

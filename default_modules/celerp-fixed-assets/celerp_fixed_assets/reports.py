@@ -24,6 +24,7 @@ from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import _dec
 from celerp_fixed_assets.sales import _credited, doc_number
 from celerp_fixed_assets.store import _entities, _state, movements_by_asset
+from ui.i18n import t
 
 _ZERO = Decimal(0)
 # The cost column each operation moves within the period; any other operation is an addition.
@@ -51,11 +52,10 @@ async def _range(session, company_id, date_from, date_to) -> tuple[dict, date, d
     fa = await setup.require_managed(session, company_id)
     start, end = _day(date_from, "The start date"), _day(date_to, "The end date")
     if end < start:
-        raise setup.unprocessable("The end date must be on or after the start date.")
+        raise setup.refuse("fixed_assets.err_end_date_must_after_start_date")
     first = fa["first_managed_period"]
     if start.isoformat() < first:
-        raise setup.unprocessable(f"Reports start on or after the first managed period, {first}. "
-                                  "What the books held before it is the opening register.")
+        raise setup.refuse("fixed_assets.err_reports_start_after_first_managed_period", first=first)
     return fa, start, end
 
 
@@ -312,15 +312,14 @@ async def statutory(session, company_id, report_key: str, year) -> dict:
     """A country form, drawn by its module from its regime's book for the tax year."""
     from celerp_fixed_assets.calc import rules
     from fastapi import HTTPException
-    from ui.i18n import t
 
     settings = await setup.company_settings(session, company_id)
     try:
         form = rules.statutory_report(report_key)
-    except rules.RuleUnavailable as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except rules.RuleUnavailable:
+        raise HTTPException(status_code=404, detail=rules.unavailable_refusal("statutory_report", report_key)) from None
     if not rules.is_available("statutory_report", report_key, settings):
-        raise HTTPException(status_code=404, detail=rules.unavailable_reason("statutory_report", report_key))
+        raise HTTPException(status_code=404, detail=rules.unavailable_refusal("statutory_report", report_key))
     book = await taxbooks.book(session, company_id, form.regime, year, settings)
     rendered = form.render(_tax_lines(book), book["year"])
     return {"key": report_key, "label": t(form.label_key), "regime": form.regime, "regime_label": book["label"],

@@ -19,6 +19,7 @@ Endpoints:
   POST   /ai/conversations                           Start a conversation
   GET    /ai/conversations                           List conversations
   GET    /ai/conversations/{id}                      Thread with messages and jobs
+  GET    /ai/conversations/{id}/older-actions        Older messages still carrying actions, a page
   PATCH  /ai/conversations/{id}                      Rename
   DELETE /ai/conversations/{id}                      Delete
   POST   /ai/conversations/{id}/query                Ask, or hand receipts to a job
@@ -42,22 +43,24 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal_detail
-from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
+from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
+from celerp.agent_markers import agent_excluded
+from celerp.ai.tools import SHOWN_ONCE
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.routers.auth import limiter as _limiter
 from celerp.services.auth import (
     AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user,
 )
-from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
-from ui.i18n import refusal_text, t
+from ui.i18n import kept, read_kept, refusal_text, t
 from ui.components.encode import inert_media_type
+from celerp.accounting_roles import Refused
 
 # AI routes count on Celerp's one limiter, per caller: tighter limits than the global
 # 60/min default, as LLM queries are expensive and uploads have file-size costs.
@@ -104,6 +107,7 @@ class QueryResponse(BaseModel):
     retryable: bool = False         # ask again under the same question id
     new_question: bool = False      # only a new question, under a new id, can follow
     help_pages: list[str] | None = None
+    downloads: list[str] = []       # links to the files the answer offers
     message_id: str | None = None   # the question's id in its conversation
     asked_again: bool = False       # the question was already in the conversation
 
@@ -187,7 +191,7 @@ async def _find_question(session: AsyncSession, conversation_id: uuid.UUID, ques
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@router.post("/query", response_model=QueryResponse)
+@router.post("/query", response_model=QueryResponse, openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("20/minute")
 async def ai_query(
     request: Request,
@@ -217,11 +221,11 @@ async def ai_query(
     return QueryResponse(
         answer=out["answer"], model_used=out["model_used"],
         tools_called=out["tools_called"], pending_actions=[],
-        help_pages=out["help_pages"],
+        help_pages=out["help_pages"], downloads=out["downloads"],
     )
 
 
-@router.post("/estimate-credits", response_model=EstimateResponse)
+@router.post("/estimate-credits", response_model=EstimateResponse, openapi_extra=agent_excluded("assistant"))
 async def estimate_credits(
     body: EstimateRequest,
     company_id=Depends(get_current_company_id),
@@ -251,7 +255,7 @@ async def estimate_credits(
     return EstimateResponse(total_credits=total, files=file_estimates)
 
 
-@router.post("/upload", status_code=201)
+@router.post("/upload", status_code=201, openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("30/minute")
 async def ai_upload(
     request: Request,
@@ -261,35 +265,11 @@ async def ai_upload(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Upload files for AI batch processing. Returns list of file IDs."""
-    from celerp.ai.files import save_upload
-    if len(files) > 20:
-        raise HTTPException(status_code=400, detail=t("error.batch_too_many", max=20))
-    for file in files:
-        # Check size limit (10MB)
-        file.file.seek(0, 2)
-        size = file.file.tell()
-        file.file.seek(0)
-        if size > 10 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail=t("ai.err_file_too_large", name=file.filename))
-        if file.content_type not in AGENT_UPLOAD_TYPES:
-            raise HTTPException(
-                status_code=400,
-                detail=t("ai.err_file_type_named", name=file.filename),
-            )
-
-    # Held until the files are written: a company reset waits, then deletes them with the company.
-    if not await hold_company(session, company_id):
-        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    file_ids = []
-    try:
-        for file in files:
-            file_ids.append(save_upload(company_id, user.id, file.filename, file.content_type, await file.read()))
-    finally:
-        await session.rollback()
-    return {"file_ids": file_ids}
+    from celerp.ai.files import keep_uploads
+    return {"file_ids": await keep_uploads(session, company_id, user.id, files)}
 
 
-@router.get("/file/{file_id}")
+@router.get("/file/{file_id}", openapi_extra=agent_excluded("assistant"))
 async def ai_file(file_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user)):
     """Retrieve a previously uploaded file."""
     from celerp.ai.files import upload_dir
@@ -298,7 +278,7 @@ async def ai_file(file_id: str, company_id=Depends(get_current_company_id), user
     return FileResponse(bin_path, media_type=inert_media_type(meta.get("content_type")))
 
 
-@router.get("/memory", response_model=MemoryResponse)
+@router.get("/memory", response_model=MemoryResponse, openapi_extra={"x-celerp-agent": True}, summary="Show the notes and facts the assistant keeps for this company.")
 async def get_ai_memory(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -312,7 +292,7 @@ async def get_ai_memory(
     )
 
 
-@router.delete("/memory", status_code=204)
+@router.delete("/memory", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/ai/settings"}, summary="Clear every note and fact the assistant keeps for this company.")
 async def clear_ai_memory(
     company_id=Depends(get_current_company_id),
     _: None = require_permission("manage_company_settings"),
@@ -324,7 +304,7 @@ async def clear_ai_memory(
     await session.commit()
 
 
-@router.post("/memory/notes", status_code=201)
+@router.post("/memory/notes", status_code=201, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/ai/settings"}, summary="Add a note for the assistant to keep for this company.")
 async def add_ai_memory_note(
     body: NoteRequest,
     company_id=Depends(get_current_company_id),
@@ -338,7 +318,7 @@ async def add_ai_memory_note(
     return {"ok": True}
 
 
-@router.post("/memory/kv", status_code=201)
+@router.post("/memory/kv", status_code=201, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/ai/settings"}, summary="Set a named fact for the assistant to keep for this company.")
 async def set_ai_memory_kv(
     body: KVRequest,
     company_id=Depends(get_current_company_id),
@@ -354,7 +334,7 @@ async def set_ai_memory_kv(
 
 # ── Quota status (settings_router - no session token required) ────────────────
 
-@settings_router.get("/quota-status")
+@settings_router.get("/quota-status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show how many assistant credits are used and left.")
 async def quota_status() -> dict:
     """Return current AI quota usage for the UI badge.
 
@@ -411,13 +391,14 @@ class ConversationQueryRequest(BaseModel):
     @model_validator(mode="after")
     def _require_query_or_files(self) -> "ConversationQueryRequest":
         if not self.query.strip() and not self.file_ids:
-            raise ValueError(t("ai.question_or_file_required"))
+            raise Refused("ai.question_or_file_required")
         return self
 
 
 class ConfirmActionRequest(BaseModel):
     message_id: uuid.UUID
     tool_call_id: str = Field(..., min_length=1, max_length=128)
+    run_again: bool = False         # repeat a change whose outcome is unknown, after its warning
 
 
 class ConfirmAllRequest(BaseModel):
@@ -427,7 +408,7 @@ class ConfirmAllRequest(BaseModel):
 
 class DismissAllRequest(BaseModel):
     message_id: uuid.UUID
-    tool_call_ids: list[str] = Field(..., min_length=1, max_length=200)
+    tool_call_ids: list[str] | None = Field(default=None, min_length=1, max_length=200)
 
 
 class MessageOut(BaseModel):
@@ -446,6 +427,8 @@ class MessageOut(BaseModel):
     refusal: dict | None = None         # the AI service's refusal, for a refused question
     refusal_status: int | None = None
     help_pages: list[str] | None = None
+    downloads: list[str] = []
+    continuation: bool = False          # the app's own question that carried a request on
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -480,9 +463,25 @@ class ConversationOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class OlderActions(BaseModel):
+    """Where the next older page of messages carrying actions starts (older-actions)."""
+    before_at: datetime
+    before_id: uuid.UUID
+
+
+def _older(cursor) -> OlderActions | None:
+    return None if cursor is None else OlderActions(before_at=cursor[0], before_id=cursor[1])
+
+
 class ConversationDetail(ConversationOut):
     messages: list[MessageOut]
     jobs: list[BatchJobOut] = []
+    older_actions: OlderActions | None = None
+
+
+class ActionsPage(BaseModel):
+    messages: list[MessageOut]
+    older_actions: OlderActions | None = None
 
 
 def _failure_next(code: str | None) -> dict:
@@ -491,24 +490,34 @@ def _failure_next(code: str | None) -> dict:
     return {"retryable": code in RETRYABLE_ERRORS, "new_question": code in NEW_QUESTION_ERRORS}
 
 
-def _message_out(m) -> MessageOut:
-    from celerp.ai.conversations import help_pages, message_failure, pending_actions, tool_names
+async def _open_actions(session: AsyncSession, company_id, user_id, msg) -> list[dict]:
+    """The message's open proposals, each naming its records for this reader as they stand now."""
+    from celerp.ai.conversations import pending_actions
+    from celerp.ai.names import named_for_reader
+    return await named_for_reader(session, company_id, user_id,
+                                  [{**r, "message_id": str(msg.id)} for r in pending_actions(msg.tools_called)])
+
+
+async def _message_out(session: AsyncSession, company_id, user_id, m) -> MessageOut:
+    from celerp.ai.conversations import downloads, help_pages, is_continuation, message_failure, tool_names
     failure = message_failure(m.tools_called) or {}
     return MessageOut(
         id=m.id, role=m.role, content=m.content,
         model_used=m.model_used, tools_called=tool_names(m.tools_called),
-        pending_actions=[{**r, "message_id": str(m.id)} for r in pending_actions(m.tools_called)],
+        pending_actions=await _open_actions(session, company_id, user_id, m),
         file_ids=m.file_ids, credits_used=m.credits_used,
         error=bool(failure), error_code=failure.get("code"), **_failure_next(failure.get("code")),
         refusal=failure.get("refusal"), refusal_status=failure.get("status"),
-        help_pages=help_pages(m.tools_called),
+        help_pages=help_pages(m.tools_called), downloads=downloads(m.tools_called),
+        continuation=is_continuation(m.tools_called),
         created_at=m.created_at.isoformat(),
     )
 
 
-def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> QueryResponse:
+async def _answer_response(session: AsyncSession, company_id, user_id, msg, *, question_id: uuid.UUID,
+                           asked_again: bool) -> QueryResponse:
     """The response for a stored assistant message: an answer, or the failure it records."""
-    from celerp.ai.conversations import help_pages, message_failure, pending_actions, tool_names
+    from celerp.ai.conversations import downloads, help_pages, message_failure, tool_names
     failure = message_failure(msg.tools_called)
     common = dict(
         model_used=msg.model_used or "", tools_called=tool_names(msg.tools_called),
@@ -521,8 +530,8 @@ def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> Query
         )
     return QueryResponse(
         answer=msg.content,
-        pending_actions=[{**p, "message_id": str(msg.id)} for p in pending_actions(msg.tools_called)],
-        help_pages=help_pages(msg.tools_called), **common,
+        pending_actions=await _open_actions(session, company_id, user_id, msg),
+        help_pages=help_pages(msg.tools_called), downloads=downloads(msg.tools_called), **common,
     )
 
 
@@ -561,7 +570,7 @@ async def _jobs_out(session: AsyncSession, rows: list) -> list[BatchJobOut]:
 
 # ── Conversation endpoints ────────────────────────────────────────────────────
 
-@router.post("/conversations", status_code=201)
+@router.post("/conversations", status_code=201, openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("60/minute")
 async def create_conv(
     request: Request,
@@ -581,7 +590,7 @@ async def create_conv(
     )
 
 
-@router.get("/conversations")
+@router.get("/conversations", openapi_extra={"x-celerp-agent": True}, summary="List the person's assistant conversations, newest first.")
 @_limiter.limit("60/minute")
 async def list_convs(
     request: Request,
@@ -596,7 +605,7 @@ async def list_convs(
     from celerp.ai.conversations import list_conversation_history, list_conversations, pending_action_counts
     if include_protected:
         if offset:
-            raise HTTPException(status_code=400, detail="include_protected requires offset=0")
+            raise HTTPException(status_code=400, detail=t("ai.err_include_protected_requires_offset_0"))
         convs = await list_conversation_history(
             session, company_id, user.id, limit=limit,
         )
@@ -615,7 +624,9 @@ async def list_convs(
     ]
 
 
-@router.get("/conversations/{conversation_id}")
+# Confirm card names are read per reader by role (celerp.ai.names), so a kept read
+# depends on every permission of the asker.
+@router.get("/conversations/{conversation_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"}, summary="Show one assistant conversation with its messages.")
 async def get_conv(
     conversation_id: uuid.UUID,
     company_id=Depends(get_current_company_id),
@@ -628,18 +639,39 @@ async def get_conv(
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
-    msgs = await get_messages(session, conversation_id)
+    msgs, older = await get_messages(session, conversation_id)
     rows = await jobs.conversation_jobs(session, conversation_id, company_id=company_id, user_id=user.id,
                                         shape="documents")
     return ConversationDetail(
         id=conv.id, title=conv.title,
         created_at=conv.created_at.isoformat(), updated_at=conv.updated_at.isoformat(),
-        messages=[_message_out(m) for m in msgs],
+        messages=[await _message_out(session, company_id, user.id, m) for m in msgs],
         jobs=await _jobs_out(session, rows),
+        older_actions=_older(older),
     )
 
 
-@router.delete("/conversations/{conversation_id}", status_code=204)
+@router.get("/conversations/{conversation_id}/older-actions", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"}, summary="Show the next page of older messages in an assistant conversation that still carry actions.")
+async def get_older_actions(
+    conversation_id: uuid.UUID,
+    before_at: AwareDatetime,
+    before_id: uuid.UUID,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ActionsPage:
+    """The messages older than the cursor a conversation read or the previous page gave
+    (older_actions) that still carry an action awaiting the user or being run, a page at a
+    time, with the cursor of the next older page."""
+    from celerp.ai.conversations import get_conversation, protected_before
+    if await get_conversation(session, conversation_id, company_id, user.id) is None:
+        raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
+    page, older = await protected_before(session, conversation_id, (before_at, before_id))
+    return ActionsPage(messages=[await _message_out(session, company_id, user.id, m) for m in page],
+                       older_actions=_older(older))
+
+
+@router.delete("/conversations/{conversation_id}", status_code=204, openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("60/minute")
 async def delete_conv(
     request: Request,
@@ -660,7 +692,7 @@ async def delete_conv(
     await session.commit()
 
 
-@router.patch("/conversations/{conversation_id}")
+@router.patch("/conversations/{conversation_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/ai/conversations"}, summary="Rename an assistant conversation.")
 @_limiter.limit("60/minute")
 async def rename_conv(
     request: Request,
@@ -683,7 +715,7 @@ async def rename_conv(
     )
 
 
-@router.post("/conversations/{conversation_id}/query")
+@router.post("/conversations/{conversation_id}/query", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("20/minute")
 async def query_in_conversation(
     request: Request,
@@ -759,7 +791,7 @@ async def query_in_conversation(
         )
 
     if answered is not None:
-        return _answer_response(answered, question_id=question_id, asked_again=True)
+        return await _answer_response(session, company_id, user.id, answered, question_id=question_id, asked_again=True)
     try:
         if asked is None:
             await add_message(session, conversation_id, "user", body.query,
@@ -784,7 +816,7 @@ async def query_in_conversation(
         answer = await jobs.answer_message(session, job)
         if answer is None:
             raise HTTPException(status_code=404, detail=t("ai.err_question_not_found"))
-        return _answer_response(answer, question_id=question_id, asked_again=True)
+        return await _answer_response(session, company_id, user.id, answer, question_id=question_id, asked_again=True)
     jobs.start_job(question_id)
     return JSONResponse(
         status_code=202,
@@ -792,7 +824,7 @@ async def query_in_conversation(
     )
 
 
-@router.get("/conversations/{conversation_id}/questions/{question_id}")
+@router.get("/conversations/{conversation_id}/questions/{question_id}", openapi_extra=agent_excluded("assistant"))
 async def question_state(
     conversation_id: uuid.UUID,
     question_id: uuid.UUID,
@@ -821,9 +853,10 @@ async def question_state(
         notice = t("ai.question_promoted")
     message = stored["message"]
     return {
-        "asked": _message_out(stored["asked"]).model_dump(mode="json"),
+        "asked": (await _message_out(session, company_id, user.id, stored["asked"])).model_dump(mode="json"),
         "state": "running" if held else stored["state"], "promoted": stored["promoted"], "waiting": waiting,
-        "notice": notice, "message": None if held or message is None else _message_out(message).model_dump(mode="json"),
+        "notice": notice, "message": None if held or message is None else (
+            await _message_out(session, company_id, user.id, message)).model_dump(mode="json"),
     }
 
 
@@ -952,17 +985,21 @@ async def _run_confirmed_action(
     tool_call_id: str,
     company_id,
     user_id,
+    run_again: bool = False,
 ) -> dict:
     """Claim, execute and finalize one pending action; never raises for action state.
 
     The action is claimed under a row lock and committed before execution. A
-    crash/transport ambiguity becomes retryable; the retry reuses the immutable
-    tool-call id and therefore the canonical operation's idempotency identity.
+    crash/transport ambiguity on a keyed tool becomes retryable; the retry reuses the
+    immutable tool-call id and so the canonical key. On an unkeyed tool it becomes
+    unknown and runs again only when the confirm carries run_again.
     The capability re-enters the app with the user's bearer token, so the target
     route enforces every module permission.
     """
-    from celerp.ai.conversations import claim_tool_call, finalize_tool_call
-    from celerp.ai.tools import execute_agent_capability, keyed_error
+    from celerp.ai.conversations import (
+        ActionOutcomeUnknown, claim_tool_call, finalize_tool_call, outcome_unknown_error,
+    )
+    from celerp.ai.tools import keyed_error
     resolved_arguments, dependency_error, dependency_record = await _resolved_action_arguments(
         session, conversation_id=conversation_id, message_id=message_id,
         tool_call_id=tool_call_id, company_id=company_id, user_id=user_id,
@@ -979,14 +1016,24 @@ async def _run_confirmed_action(
             outcome["action_status"] = "pending"
         return outcome
 
-    record = await claim_tool_call(
-        session,
-        conversation_id=conversation_id,
-        message_id=message_id,
-        tool_call_id=tool_call_id,
-        company_id=company_id,
-        user_id=user_id,
-    )
+    try:
+        record = await claim_tool_call(
+            session,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            tool_call_id=tool_call_id,
+            company_id=company_id,
+            user_id=user_id,
+            run_again=run_again,
+        )
+    except ActionOutcomeUnknown as exc:
+        await session.commit()      # nothing changed; releases the row lock
+        return {
+            "tool_call_id": tool_call_id, "name": exc.record.get("name"),
+            "title": exc.record.get("title") or exc.record.get("name"),
+            "ok": False, "status": 409, "action_status": "unknown", "data": None,
+            "error": outcome_unknown_error(exc.record),
+        }
     if record is None:
         return {
             "tool_call_id": tool_call_id, "ok": False, "status": 409, "data": None,
@@ -1007,36 +1054,40 @@ async def _run_confirmed_action(
             "error": unavailable,
         }
 
-    result = await execute_agent_capability(
-        request.app,
-        request.headers.get("authorization", ""),
-        capability,
-        resolved_arguments or {},
-        _confirmed_action_identity(message_id, record["id"]),
-    )
-    if result["ok"] and record["name"] == _DOCS_CREATE and record.get("file_id"):
-        try:
-            await _attach_confirmed_bill_receipt(
-                session, company_id=company_id, user_id=user_id,
-                message_id=message_id, record=record, result=result,
-            )
-        except Exception:
-            result = {
-                "ok": False, "status": 503, "data": None,
-                "error": keyed_error("receipt_attachment_pending", "ai.action_receipt_not_attached"),
-            }
-    action_error = _action_error(result)
-    action_status = (
-        "completed" if result["ok"]
-        else "retryable" if _retryable_action_result(result)
-        else "failed"
-    )
+    identity = _confirmed_action_identity(message_id, record["id"])
+    keyed = record.get("keyed") is True
+    outcomes = None
+    if record.get("for_each"):
+        result, outcomes = await _run_for_each(
+            request, session, capability, resolved_arguments or {}, identity, record.get("outcomes"),
+            keyed=keyed, company_id=company_id, user_id=user_id, message_id=message_id,
+            tool_call_id=tool_call_id)
+        action_status = result["action_status"]
+    else:
+        result = await _execute(request, capability, resolved_arguments or {}, identity,
+                                company_id=company_id, user_id=user_id)
+        if result["ok"] and record["name"] == _DOCS_CREATE and record.get("file_id"):
+            try:
+                await _attach_confirmed_bill_receipt(
+                    session, company_id=company_id, user_id=user_id,
+                    message_id=message_id, record=record, result=result,
+                )
+            except Exception:
+                result = {
+                    "ok": False, "status": 503, "data": None,
+                    "error": keyed_error("receipt_attachment_pending", "ai.action_receipt_not_attached"),
+                }
+        action_status = _action_status(result, keyed)
+    action_error = (outcome_unknown_error(record) if action_status == "unknown"
+                    else _action_error(result))
+    shown_once = result.get("shown_once")
     await finalize_tool_call(
         session, message_id=message_id, tool_call_id=tool_call_id,
-        status=action_status, result=result, error=action_error,
+        status=action_status, result=result, error=action_error, outcomes=outcomes,
+        kept={field: SHOWN_ONCE for field in shown_once} if shown_once else None,
     )
     await session.commit()
-    return {
+    outcome = {
         "tool_call_id": tool_call_id,
         "name": record["name"],
         "title": record.get("title") or record["name"],
@@ -1046,6 +1097,69 @@ async def _run_confirmed_action(
         "data": result.get("data"),
         "error": action_error,
     }
+    if shown_once:
+        # Only the person who confirmed sees it, once; every stored copy holds SHOWN_ONCE.
+        outcome["shown_once"] = shown_once
+    return outcome
+
+
+async def _execute(request: Request, capability: dict, arguments: dict, identity: str, *,
+                   company_id, user_id) -> dict:
+    """One run of a confirmed change under the user's own token."""
+    from celerp.ai import tools as ai_tools
+    from celerp.ai.files import load_file
+    return await ai_tools.execute_agent_capability(
+        request.app,
+        request.headers.get("authorization", ""),
+        capability,
+        arguments,
+        identity,
+        load_file=lambda file_id: load_file(file_id, company_id, user_id),
+    )
+
+
+async def _run_for_each(request: Request, session: AsyncSession, capability: dict, arguments: dict, identity: str,
+                        earlier: list | None, *, keyed: bool, company_id, user_id, message_id,
+                        tool_call_id: str) -> tuple[dict, list[dict]]:
+    """Run one propose_for_each card: the tool once per record, each under its own key.
+    Records are independent, so one refusal never stops the others. Each record's outcome
+    is stored before and after it runs, so a run that stops leaves only the record in
+    flight open: a record that completed or failed is never run again."""
+    from celerp.ai.conversations import note_outcomes
+
+    async def note() -> None:
+        await note_outcomes(session, message_id=message_id, tool_call_id=tool_call_id, outcomes=outcomes)
+        await session.commit()
+
+    records = arguments.get("records") or []
+    outcomes = [dict(o) for o in (earlier or [])] + [{} for _ in range(len(records) - len(earlier or []))]
+    for index, one in enumerate(records):
+        if outcomes[index].get("status") in {"completed", "failed"}:
+            continue
+        outcomes[index] = {"status": "executing"}
+        await note()
+        result = await _execute(request, capability, one if isinstance(one, dict) else {},
+                                f"{identity}:{index}", company_id=company_id, user_id=user_id)
+        status = _action_status(result, keyed)
+        outcomes[index] = {"status": status, "http_status": result.get("status")}
+        if status == "failed":
+            outcomes[index]["error"] = _action_error(result)
+        await note()
+    statuses = {o.get("status") for o in outcomes}
+    action_status = next((s for s in ("unknown", "retryable", "failed") if s in statuses), "completed")
+    done = action_status == "completed"
+    return ({"ok": done, "status": 200 if done else 207, "action_status": action_status,
+             "data": {"outcomes": outcomes}}, outcomes)
+
+
+def _action_status(result: dict, keyed: bool) -> str:
+    """completed, failed, or for an answer that never came: retryable when the route looks
+    up the card's key (the retry answers the first result), otherwise unknown."""
+    if result["ok"]:
+        return "completed"
+    if _retryable_action_result(result):
+        return "retryable" if keyed else "unknown"
+    return "failed"
 
 
 def _retryable_action_result(result: dict) -> bool:
@@ -1054,7 +1168,12 @@ def _retryable_action_result(result: dict) -> bool:
         status = int(result.get("status") or 0)
     except (TypeError, ValueError):
         status = 0
-    return status == 0 or status in {408, 425, 429} or status >= 500
+    if status == 0:
+        # The executor's own refusal (a missing file, a bad argument) came before anything
+        # was sent; only a timeout or an answer that never came leaves the outcome open.
+        code = (result.get("error") or {}).get("code")
+        return code in (None, "capability_timeout")
+    return status in {408, 425, 429} or status >= 500
 
 
 def _action_error(result: dict) -> dict | None:
@@ -1085,10 +1204,36 @@ def _action_error(result: dict) -> dict | None:
     return keyed_error(code or "route_error", "ai.action_request_failed", status=result.get("status"))
 
 
-_ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable"})
+_ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable", "action_outcome_unknown"})
+_CONTINUE_QUESTION = "Continue the request with these results."
 
 
-@router.post("/conversations/{conversation_id}/confirm")
+async def _continue_request(session: AsyncSession, *, conversation_id: uuid.UUID, message_id: uuid.UUID,
+                            company_id, user_id, auth: AuthContext) -> str | None:
+    """Carry the request on once its cards are answered: when the message has no action
+    left open or running and at least one change completed, the same question job an ask
+    starts runs with the outcomes in its history. It only reads or proposes; every change
+    is still a card. Nothing continues when every card was dismissed or failed. The job
+    is claimed once per message, so a later completer or a retry gets the same job id."""
+    from celerp.ai import jobs
+    from celerp.ai.conversations import CONTINUATION, add_message, claim_continuation
+    question_id = uuid.uuid4()
+    claimed = await claim_continuation(session, conversation_id=conversation_id, message_id=message_id,
+                                       company_id=company_id, user_id=user_id, job_id=question_id)
+    if claimed is None or not claimed[1]:
+        await session.commit()  # releases the locks the claim took
+        return claimed[0] if claimed else None
+    request = jobs.JobRequest.question(company_id=company_id, user_id=user_id, query=_CONTINUE_QUESTION,
+                                       file_ids=None, conversation_id=conversation_id)
+    await add_message(session, conversation_id, "user", _CONTINUE_QUESTION, message_id=question_id,
+                      tools_called=[CONTINUATION])
+    session.add(jobs.question_job(job_id=question_id, request=request, auth_nonce=auth.snonce))
+    await session.commit()
+    jobs.start_job(question_id)
+    return str(question_id)
+
+
+@router.post("/conversations/{conversation_id}/confirm", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("60/minute")
 async def confirm_action(
     request: Request,
@@ -1098,26 +1243,38 @@ async def confirm_action(
     user=Depends(get_current_user),
     role: str = Depends(get_current_role),
     company_settings: dict = Depends(get_current_company_settings),
+    auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Execute one pending action the user has confirmed.
 
-    No model turn resumes after a write; the user asks the next question.
-    An action that is no longer pending, or whose module is not enabled, is 409.
+    ``run_again`` repeats a change whose outcome is unknown, after the card's warning.
+    When it was the message's last open action, the request carries on as a job
+    (``continued_job_id``). An action that is no longer pending, whose outcome is
+    unknown (without ``run_again``), whose outcome is known (with ``run_again``), or whose
+    module is not enabled, is 409.
     """
-    from celerp.ai.tools import compile_agent_capabilities
+    # The action run may roll the session back, which expires the user row: read its id once.
+    user_id = user.id
+    from celerp.ai.tools import compile_agent_capabilities, gates_of_caller
     outcome = await _run_confirmed_action(
-        request, session, compile_agent_capabilities(request.app, company_settings, role),
+        request, session, compile_agent_capabilities(
+        request.app, company_settings, role, caller_gates=await gates_of_caller(session, user_id, role)),
         conversation_id=conversation_id, message_id=body.message_id,
-        tool_call_id=body.tool_call_id, company_id=company_id, user_id=user.id,
+        tool_call_id=body.tool_call_id, company_id=company_id, user_id=user_id,
+        run_again=body.run_again,
     )
     error = outcome.get("error") or {}
-    if error.get("code") in _ACTION_STATE_CODES:
+    # A refused claim is 409; a run that just ended unknown is the card's outcome (200).
+    if outcome.get("status") == 409 and error.get("code") in _ACTION_STATE_CODES:
         raise HTTPException(status_code=409, detail=error)
+    outcome["continued_job_id"] = await _continue_request(
+        session, conversation_id=conversation_id, message_id=body.message_id,
+        company_id=company_id, user_id=user_id, auth=auth)
     return outcome
 
 
-@router.post("/conversations/{conversation_id}/dismiss")
+@router.post("/conversations/{conversation_id}/dismiss", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("60/minute")
 async def dismiss_action(
     request: Request,
@@ -1125,21 +1282,27 @@ async def dismiss_action(
     body: ConfirmActionRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Persist dismissal of one proposal so it stays gone after reload."""
+    """Persist dismissal of one proposal so it stays gone after reload; when another
+    card of the message completed, the request carries on (``continued_job_id``)."""
     from celerp.ai.conversations import dismiss_tool_call
+    user_id = user.id
     dismissed = await dismiss_tool_call(
         session, conversation_id=conversation_id, message_id=body.message_id,
-        tool_call_id=body.tool_call_id, company_id=company_id, user_id=user.id,
+        tool_call_id=body.tool_call_id, company_id=company_id, user_id=user_id,
     )
     if not dismissed:
         raise _conflict("action_not_pending", "ai.action_not_pending")
     await session.commit()
-    return {"dismissed": True, "tool_call_id": body.tool_call_id}
+    continued = await _continue_request(
+        session, conversation_id=conversation_id, message_id=body.message_id,
+        company_id=company_id, user_id=user_id, auth=auth)
+    return {"dismissed": True, "tool_call_id": body.tool_call_id, "continued_job_id": continued}
 
 
-@router.post("/conversations/{conversation_id}/dismiss-all")
+@router.post("/conversations/{conversation_id}/dismiss-all", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("60/minute")
 async def dismiss_all(
     request: Request,
@@ -1147,16 +1310,25 @@ async def dismiss_all(
     body: DismissAllRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Persist dismissal of a selected proposal set under one message-row lock."""
-    from celerp.ai.conversations import dismiss_tool_calls
+    """Persist dismissal of a selected proposal set (every open one without
+    ``tool_call_ids``) under one message-row lock."""
+    from celerp.ai.conversations import dismiss_tool_calls, get_message, pending_actions
+    ids = body.tool_call_ids
+    if ids is None:
+        msg = await get_message(session, body.message_id, conversation_id)
+        ids = [r["id"] for r in pending_actions(msg.tools_called if msg else None)]
     dismissed = await dismiss_tool_calls(
         session, conversation_id=conversation_id, message_id=body.message_id,
-        tool_call_ids=body.tool_call_ids, company_id=company_id, user_id=user.id,
+        tool_call_ids=ids, company_id=company_id, user_id=user.id,
     )
     await session.commit()
-    return {"dismissed": dismissed}
+    continued = await _continue_request(
+        session, conversation_id=conversation_id, message_id=body.message_id,
+        company_id=company_id, user_id=user.id, auth=auth) if dismissed else None
+    return {"dismissed": dismissed, "continued_job_id": continued}
 
 
 def _selected_action_ids(records: list[dict], selection: list[str] | None) -> list[str]:
@@ -1167,10 +1339,9 @@ def _selected_action_ids(records: list[dict], selection: list[str] | None) -> li
     not pending, so its row reports ``action_not_pending`` instead of vanishing.
     An empty result means nothing selected is pending.
     """
-    # ``records`` already comes from pending_actions(), which contains every
-    # action the user may act on: fresh proposals plus retryable/stale claims.
-    # Treat retryable actions exactly like pending ones so a bulk review can
-    # safely retry the same immutable tool-call/idempotency identity.
+    # records comes from pending_actions(): fresh proposals and keyed retryable claims,
+    # which are treated like pending ones because their retry reuses the canonical key.
+    # Unknown records are skipped and reported: confirm-all never re-runs an unknown outcome.
     pending = [r["id"] for r in records]
     if selection is None:
         return pending
@@ -1181,7 +1352,40 @@ def _selected_action_ids(records: list[dict], selection: list[str] | None) -> li
     return chosen + [i for i in wanted if i not in pending]
 
 
-@router.post("/conversations/{conversation_id}/confirm-all")
+def _action_groups(records: list[dict]) -> dict[str, int]:
+    """Group of each action, in proposal order: two actions share a group when they name
+    the same record (a path value) or the later one says ``after_previous``."""
+    group_of: dict[str, int] = {}
+    by_value: dict[str, int] = {}
+    merged: dict[int, int] = {}
+
+    def root(group: int) -> int:
+        while merged.get(group, group) != group:
+            group = merged[group]
+        return group
+
+    previous: str | None = None
+    for index, record in enumerate(records):
+        arguments = record.get("arguments") or {}
+        joined = {root(by_value[v]) for v in _target_values(arguments) if v in by_value}
+        if arguments.get("after_previous") is True and previous is not None:
+            joined.add(root(group_of[previous]))
+        group = min(joined) if joined else index
+        for other in joined:
+            merged[other] = group
+        for value in _target_values(arguments):
+            by_value[value] = group
+        group_of[record["id"]] = group
+        previous = record["id"]
+    return {action_id: root(group) for action_id, group in group_of.items()}
+
+
+def _target_values(arguments: dict) -> set[str]:
+    path = arguments.get("path")
+    return {str(v) for v in path.values() if v not in (None, "")} if isinstance(path, dict) else set()
+
+
+@router.post("/conversations/{conversation_id}/confirm-all", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("5/minute")
 async def confirm_all(
     request: Request,
@@ -1191,6 +1395,7 @@ async def confirm_all(
     user=Depends(get_current_user),
     role: str = Depends(get_current_role),
     company_settings: dict = Depends(get_current_company_settings),
+    auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Execute the pending actions on one message, in the order they were proposed.
@@ -1198,36 +1403,61 @@ async def confirm_all(
     ``tool_call_ids`` narrows the run to a selection; without it every pending
     action runs. Each action is claimed and finalized on its own, so one
     failure never rolls back the others; the reply lists the outcome per action.
+    At the first failure in a group of dependent actions (same record, or
+    ``after_previous``) the rest of that group stays pending with the reason; other
+    groups keep running. An unknown outcome never runs and counts as a failure.
     """
-    from celerp.ai.conversations import get_conversation, get_message, pending_actions
-    from celerp.ai.tools import compile_agent_capabilities
-    conv = await get_conversation(session, conversation_id, company_id, user.id)
+    # The action run may roll the session back, which expires the user row: read its id once.
+    user_id = user.id
+    from celerp.ai.conversations import get_conversation, get_message, note_pending, pending_actions
+    from celerp.ai.tools import compile_agent_capabilities, gates_of_caller, keyed_error
+    conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     msg = await get_message(session, body.message_id, conversation_id)
     if msg is None:
         raise HTTPException(status_code=404, detail=t("ai.err_message_not_found"))
-    ids = _selected_action_ids(pending_actions(msg.tools_called), body.tool_call_ids)
+    open_records = pending_actions(msg.tools_called)
+    ids = _selected_action_ids(open_records, body.tool_call_ids)
     if not ids:
         raise _conflict("action_not_pending", "ai.action_none_pending")
+    groups = _action_groups(open_records)
 
-    capabilities = compile_agent_capabilities(request.app, company_settings, role)
+    capabilities = compile_agent_capabilities(
+        request.app, company_settings, role, caller_gates=await gates_of_caller(session, user_id, role))
     results = []
+    stopped: dict[int, str] = {}
     for tool_call_id in ids:
-        results.append(await _run_confirmed_action(
+        group = groups.get(tool_call_id)
+        if group in stopped:
+            reason = keyed_error("not_run_dependent", "ai.not_run_dependent", title=stopped[group])
+            await note_pending(session, message_id=body.message_id, tool_call_id=tool_call_id, error=reason)
+            await session.commit()
+            record = next(r for r in open_records if r["id"] == tool_call_id)
+            results.append({"tool_call_id": tool_call_id, "name": record.get("name"),
+                            "title": record.get("title") or record.get("name"), "ok": False,
+                            "status": 409, "action_status": "pending", "data": None, "error": reason})
+            continue
+        outcome = await _run_confirmed_action(
             request, session, capabilities,
             conversation_id=conversation_id, message_id=body.message_id,
-            tool_call_id=tool_call_id, company_id=company_id, user_id=user.id,
-        ))
+            tool_call_id=tool_call_id, company_id=company_id, user_id=user_id,
+        )
+        results.append(outcome)
+        if not outcome["ok"] and group is not None:
+            stopped[group] = read_kept(outcome.get("title")) or outcome.get("name") or tool_call_id
     completed = sum(1 for r in results if r["ok"])
     attention = sum(
         1 for r in results
-        if not r["ok"] and r.get("action_status") in {"pending", "retryable"}
+        if not r["ok"] and r.get("action_status") in {"pending", "retryable", "unknown"}
     )
     failed = len(results) - completed - attention
+    continued = await _continue_request(
+        session, conversation_id=conversation_id, message_id=body.message_id,
+        company_id=company_id, user_id=user_id, auth=auth)
     return {
         "results": results, "completed": completed,
-        "failed": failed, "attention": attention,
+        "failed": failed, "attention": attention, "continued_job_id": continued,
     }
 
 
@@ -1268,16 +1498,19 @@ def _same_text(a, b: str) -> bool:
     return str(a or "").strip().casefold() == b.strip().casefold()
 
 
-def _proposal_record(name: str, arguments: dict, *, title: str, warnings: list[str],
+def _proposal_record(capability: dict, arguments: dict, *, title: str, warnings: list[str],
                      file_id: str, now: datetime, bindings: list[dict] | None = None) -> dict:
+    from celerp.ai.card import card_arguments
+
     record = {
         "id": f"prop_{secrets.token_hex(12)}",
-        "name": name,
+        "name": capability["name"],
         "arguments": arguments,
+        "shown": card_arguments(capability, arguments),
         "created_at": now.isoformat(),
         "expires_at": (now + timedelta(seconds=PROPOSAL_TTL_S)).isoformat(),
-        "title": title,
-        "warnings": warnings,
+        "title": kept(title),
+        "warnings": [kept(w) for w in warnings],
         "file_id": file_id,
     }
     if bindings:
@@ -1297,6 +1530,9 @@ class _Lookups:
 
     def has(self, name: str) -> bool:
         return name in self._capabilities
+
+    def capability(self, name: str) -> dict:
+        return self._capabilities[name]
 
     async def rows(self, name: str, query: dict) -> list[dict] | dict:
         """Result rows of a list capability, or why it failed (``_action_error``)."""
@@ -1345,9 +1581,9 @@ class _Lookups:
 
 
 async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now: datetime) -> tuple[list[dict], str]:
-    """Proposal records for one read receipt plus a one-line summary, written in the
-    asker's language and kept as written: a proposal reads in the language it was
-    proposed in, whatever language its reader later switches to."""
+    """Proposal records for one read receipt plus a one-line summary in the asker's
+    language; each proposal's title and warnings are kept (ui.i18n.kept), so its card
+    reads in the language of whoever opens it."""
     file_id = str(entry.get("file_id"))
     filename = entry.get("filename") or file_id
     warnings: list[str] = []
@@ -1362,7 +1598,7 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
         if found is False:
             if lookups.has(_CONTACTS_CREATE):
                 vendor_create = _proposal_record(
-                    _CONTACTS_CREATE,
+                    lookups.capability(_CONTACTS_CREATE),
                     {"body": {"name": vendor, "contact_type": "vendor"}},
                     title=t("ai.receipt_create_vendor", vendor=vendor), warnings=[], file_id=file_id, now=now,
                 )
@@ -1444,7 +1680,7 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
             "target_path": ["body", "contact_id"],
         }]
     records.append(_proposal_record(
-        _DOCS_CREATE, {"body": body},
+        lookups.capability(_DOCS_CREATE), {"body": body},
         title=t("ai.receipt_create_bill", label=label), warnings=warnings, file_id=file_id, now=now,
         bindings=bindings,
     ))
@@ -1534,11 +1770,12 @@ async def _proposals_locked(session: AsyncSession, job, seen_id: str | None):
     return await get_message(session, uuid.UUID(current), job.conversation_id)
 
 
-def _proposals_out(msg) -> dict:
-    return {"message_id": str(msg.id), "answer": msg.content, "pending_actions": _message_out(msg).pending_actions}
+async def _proposals_out(session: AsyncSession, company_id, user_id, msg) -> dict:
+    return {"message_id": str(msg.id), "answer": msg.content,
+            "pending_actions": await _open_actions(session, company_id, user_id, msg)}
 
 
-@router.post("/conversations/{conversation_id}/jobs/{job_id}/proposals")
+@router.post("/conversations/{conversation_id}/jobs/{job_id}/proposals", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("20/minute")
 async def propose_from_job(
     request: Request,
@@ -1560,7 +1797,7 @@ async def propose_from_job(
     """
     from celerp.ai import jobs
     from celerp.ai.conversations import add_message, get_conversation, get_message, pending_actions
-    from celerp.ai.tools import compile_agent_capabilities
+    from celerp.ai.tools import compile_agent_capabilities, gates_of_caller
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
@@ -1582,24 +1819,25 @@ async def propose_from_job(
         if msg is not None:
             open_actions = pending_actions(msg.tools_called)
             if open_actions:
-                return _proposals_out(msg)
+                return await _proposals_out(session, company_id, user.id, msg)
             now = datetime.now(timezone.utc)
             refreshed = _refresh_expired_proposals(msg.tools_called or [], now)
             if refreshed:
                 if (other := await _proposals_locked(session, job, existing_id)) is not None:
-                    return _proposals_out(other)
+                    return await _proposals_out(session, company_id, user.id, other)
                 refreshed_msg = await add_message(
                     session, conversation_id, "assistant", msg.content, tools_called=refreshed,
                 )
                 job.results = {**(job.results or {}), "proposal_message_id": str(refreshed_msg.id)}
                 await session.commit()
-                return _proposals_out(refreshed_msg)
+                return await _proposals_out(session, company_id, user.id, refreshed_msg)
             return {
                 "message_id": str(msg.id), "answer": msg.content,
                 "pending_actions": [],
             }
 
-    capabilities = compile_agent_capabilities(request.app, company_settings, role)
+    capabilities = compile_agent_capabilities(
+        request.app, company_settings, role, caller_gates=await gates_of_caller(session, user.id, role))
     if _DOCS_CREATE not in capabilities:
         raise _conflict("capability_unavailable", "ai.receipt_documents_off")
 
@@ -1619,14 +1857,14 @@ async def propose_from_job(
             lines.append(t("ai.receipt_file_many_bills", filename=entry["filename"], count=entry["bill_count"]))
 
     if (other := await _proposals_locked(session, job, existing_id)) is not None:
-        return _proposals_out(other)
+        return await _proposals_out(session, company_id, user.id, other)
     msg = await add_message(session, conversation_id, "assistant", "\n".join(lines), tools_called=records)
     job.results = {**(job.results or {}), "proposal_message_id": str(msg.id)}
     await session.commit()
-    return _proposals_out(msg)
+    return await _proposals_out(session, company_id, user.id, msg)
 
 
-@settings_router.get("/usage-stats")
+@settings_router.get("/usage-stats", openapi_extra={"x-celerp-agent": True}, summary="Show how many questions each person asked the assistant this month or in all, and the credits used.")
 async def usage_stats(
     period: Literal["month", "all"] = "month",
     company_id=Depends(get_current_company_id),
@@ -1708,7 +1946,7 @@ async def usage_stats(
     }
 
 
-@router.get("/batch/{job_id}")
+@router.get("/batch/{job_id}", openapi_extra=agent_excluded("assistant"))
 async def batch_status(
     job_id: uuid.UUID,
     company_id=Depends(get_current_company_id),
@@ -1732,7 +1970,7 @@ async def _job_action(action, job_id: uuid.UUID, company_id, user, session: Asyn
     return JSONResponse(status_code=202, content={"job_id": str(job_id)})
 
 
-@router.post("/jobs/{job_id}/cancel")
+@router.post("/jobs/{job_id}/cancel", openapi_extra=agent_excluded("assistant"))
 async def cancel_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)) -> JSONResponse:
@@ -1741,7 +1979,7 @@ async def cancel_job(job_id: uuid.UUID, company_id=Depends(get_current_company_i
     return await _job_action(jobs.cancel, job_id, company_id, user, session)
 
 
-@router.post("/jobs/{job_id}/resume")
+@router.post("/jobs/{job_id}/resume", openapi_extra=agent_excluded("assistant"))
 async def resume_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)) -> JSONResponse:
@@ -1750,7 +1988,7 @@ async def resume_job(job_id: uuid.UUID, company_id=Depends(get_current_company_i
     return await _job_action(jobs.resume, job_id, company_id, user, session)
 
 
-@router.post("/jobs/{job_id}/retry-failed")
+@router.post("/jobs/{job_id}/retry-failed", openapi_extra=agent_excluded("assistant"))
 async def retry_failed_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
                            user=Depends(get_current_user),
                            session: AsyncSession = Depends(get_session)) -> JSONResponse:

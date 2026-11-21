@@ -16,6 +16,7 @@ import uuid
 import pytest
 
 from celerp.services.company_lock import locked_company
+from test_helpers import message_texts
 from ui.i18n import refusal_text
 
 
@@ -211,8 +212,8 @@ async def test_chart_import_refuses_a_parent_of_another_type(client, session):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 2
-    assert any("8891" in e for e in body["errors"])
-    assert any("8893" in e for e in body["errors"])
+    assert any("8891" in e for e in message_texts(body["errors"]))
+    assert any("8893" in e for e in message_texts(body["errors"]))
     chart = await _chart(client, h)
     assert "8890" in chart and "8891" not in chart and "8893" not in chart
 

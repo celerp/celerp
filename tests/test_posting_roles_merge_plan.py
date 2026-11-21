@@ -135,7 +135,7 @@ async def test_a_merge_confirmed_with_another_requests_preview_is_refused(sessio
     items, before = await _items(session, auth), await _ledger_count(session, auth)
     r = await client.post("/items/merge", headers=auth["headers"], json=confirmed)
     assert r.status_code == 409, r.text
-    assert "Review the merge again" in r.json()["detail"]
+    assert "Review the merge again" in refusal_text(r.json()["detail"])
     await session.rollback()
     assert await _items(session, auth) == items
     assert await _ledger_count(session, auth) == before
@@ -150,7 +150,7 @@ async def test_a_merge_confirmed_without_its_preview_is_refused(session, client,
     items, before = await _items(session, auth), await _ledger_count(session, auth)
     r = await client.post("/items/merge", headers=auth["headers"], json=body)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == _PREVIEW_FIRST
+    assert refusal_text(r.json()["detail"]) == _PREVIEW_FIRST
     await session.rollback()
     assert await _items(session, auth) == items
     assert await _ledger_count(session, auth) == before
@@ -225,7 +225,7 @@ async def test_a_merge_confirmed_after_its_items_changed_is_refused(session, cli
     items, before = await _items(session, auth), await _ledger_count(session, auth)
     r = await _merge(client, auth, [a, b], plan_fingerprint=fingerprint)
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == "The merge or its items changed since it was reviewed. Review the merge again."
+    assert refusal_text(r.json()["detail"]) == "The merge or its items changed since it was reviewed. Review the merge again."
     await session.rollback()
     assert await _items(session, auth) == items
     assert await _ledger_count(session, auth) == before

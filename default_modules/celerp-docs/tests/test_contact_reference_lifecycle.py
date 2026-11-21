@@ -72,7 +72,7 @@ async def test_delete_refuses_a_contact_named_on_a_list(client, session):
 
     r = await client.post("/crm/contacts/bulk/delete", headers=h, json={"contact_ids": [cid]})
     assert r.status_code == 422, r.text
-    assert "Quoted Co: 1 quotation(s)" in r.json()["detail"]
+    assert "Quoted Co: 1 quotation(s)" in refusal_text(r.json()["detail"])
     contact = (await client.get(f"/crm/contacts/{cid}", headers=h)).json()
     assert not contact.get("deleted")
     assert (await _get_list(client, h, list_id))["contact_id"] == cid

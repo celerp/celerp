@@ -386,3 +386,58 @@ def test_first_run_fails_when_a_module_the_type_needs_is_not_running_after_the_r
         _smoke.first_run(str(install.port_file), _presets(tmp_path))
 
     assert "furniture: after the restart celerp-manufacturing is not running" in capsys.readouterr().err
+
+
+def test_ledger_events_pages_through_the_endpoint_instead_of_exceeding_its_limit(monkeypatch):
+    """The /ledger route refuses a limit above its own bound; ledger_events must ask inside it
+    and follow has_older/before to read every event, not one oversized request."""
+    from urllib.parse import parse_qs, urlparse
+
+    pages = {
+        None: {"items": [{"id": 3, "event_type": "b", "entity_id": "x"},
+                          {"id": 2, "event_type": "a", "entity_id": "y"}],
+                "has_older": True},
+        2: {"items": [{"id": 1, "event_type": "company.created", "entity_id": "c"}],
+            "has_older": False},
+    }
+    seen_limits = []
+
+    def http(method, url, token=None, body=None, timeout=30):
+        qs = parse_qs(urlparse(url).query)
+        seen_limits.append(int(qs["limit"][0]))
+        before = int(qs["before"][0]) if "before" in qs else None
+        return 200, pages[before]
+
+    monkeypatch.setattr(_smoke, "http", http)
+    events = _smoke.ledger_events("http://api", "t")
+
+    assert [e["id"] for e in events] == [3, 2, 1]
+    assert seen_limits == [_smoke.LEDGER_PAGE_LIMIT, _smoke.LEDGER_PAGE_LIMIT]
+
+
+def test_every_smoke_script_limit_fits_its_routes_declared_bound():
+    """Every limit a smoke script sends, literal or through a named constant, must fit inside
+    the live route's own Query(le=...), read from the running app's OpenAPI schema, so a script
+    that outgrows a route's bound fails here instead of in a CI smoke run."""
+    import re
+
+    from celerp.main import app
+
+    bounds: dict[str, int | None] = {}
+    for path, methods in app.openapi()["paths"].items():
+        for param in methods.get("get", {}).get("parameters", []):
+            if param.get("name") == "limit":
+                bounds[path] = param.get("schema", {}).get("maximum")
+
+    pattern = re.compile(r'"(/[\w-]+)\?[^"]*\blimit=(\d+|\{\w+\})"')
+    checked = 0
+    for script in sorted((_ROOT / "scripts").glob("smoke_*.py")):
+        module = _load(script.stem)
+        for path, value in pattern.findall(script.read_text("utf-8")):
+            if path not in bounds:
+                continue  # a per-company module route, mounted with no static schema here
+            limit = int(value) if value.isdigit() else getattr(module, value.strip("{}"))
+            checked += 1
+            le = bounds[path]
+            assert le is None or limit <= le, f"{script.name}: {path}?limit={limit} exceeds limit<={le}"
+    assert checked, "no limit= the test could resolve against a live route bound"

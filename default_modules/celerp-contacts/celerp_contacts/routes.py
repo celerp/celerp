@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import FileResponse
 
-from celerp.accounting_roles import CONSIGNOR_FIELD, catalog_refusal, refusal, refusal_detail
+from celerp.accounting_roles import CONSIGNOR_FIELD, Refused, catalog_refusal, refusal, refusal_detail
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.ledger import LedgerEntry
@@ -29,8 +29,9 @@ from celerp.services.peer_import import peer_batch
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.currencies import require_email, require_phone
 from celerp.services.permissions import assert_role_permission, locked_authority, read_authority, require_permission
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
+from celerp.importers.results import BatchImportResult
 from celerp.importers.sinks import register_sink
 from celerp_contacts import services
 from celerp_contacts.migration_sink import SINK
@@ -118,13 +119,6 @@ class ContactAddressUpdate(BaseModel):
     is_default: bool | None = None
 
 
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str]
-
-
 class CRMBatchImportRequest(BaseModel):
     records: list[CRMImportRecord] = Field(..., max_length=500)
 
@@ -140,7 +134,7 @@ async def _get_contact(session: AsyncSession, company_id, contact_id: str) -> Pr
     return row
 
 
-@router.post("/contacts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
+@router.post("/contacts", summary="Add a new customer or vendor after checking with the contact list that it does not exist yet.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
 async def create_contact(payload: ContactCreate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     await lock_company(session, company_id)
     if payload.idempotency_key:
@@ -169,7 +163,7 @@ async def create_contact(payload: ContactCreate, company_id: str = Depends(get_c
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
-@router.get("/contacts", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
+@router.get("/contacts", summary="Find customers and vendors by name, email, phone, company name or tag, or list them all.", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
 async def list_contacts(
     q: str = "",
     limit: int = 50,
@@ -186,13 +180,13 @@ async def list_contacts(
     return {"items": items, "total": await count_contacts(session, company_id, q, **filters)}
 
 
-@router.get("/contacts/{contact_id}", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
+@router.get("/contacts/{contact_id}", summary="Read one customer or vendor in full, with contact details, addresses, currency and tags.", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
 async def get_contact(contact_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_contact(session, company_id, contact_id)
     return row.state | {"id": row.entity_id}
 
 
-@router.patch("/contacts/{contact_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+@router.patch("/contacts/{contact_id}", summary="Change details of an existing customer or vendor, such as their email, phone, address or currency.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key",
                                                     "x-celerp-agent-result-permissions": ["edit_contacts", "manage_company_settings"]})
 async def update_contact(contact_id: str, payload: ContactUpdate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _locked_identity_contact(session, company_id, user, contact_id)
@@ -224,7 +218,7 @@ async def update_contact(contact_id: str, payload: ContactUpdate, company_id: st
 
 # ── Tags ──────────────────────────────────────────────────────────────────────
 
-@router.post("/contacts/{contact_id}/tags")
+@router.post("/contacts/{contact_id}/tags", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts", "x-celerp-agent-key": "idempotency_key"}, summary="Add or remove tags on a customer or vendor.")
 async def tag_contact(contact_id: str, payload: TagBody, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     await _locked_contact(session, company_id, contact_id)
     entry = await emit_event(
@@ -283,7 +277,7 @@ def _get_contact_file(files: list[dict], file_id: str) -> dict:
     return match
 
 
-@router.post("/contacts/{contact_id}/files")
+@router.post("/contacts/{contact_id}/files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts"}, summary="Attach a file to a customer or vendor, such as a contract or ID document.")
 async def upload_contact_file(
     contact_id: str,
     file: UploadFile,
@@ -295,7 +289,7 @@ async def upload_contact_file(
     async with storing(session, company_id) as store:
         try:
             meta = await store.upload(file)
-        except ValueError as exc:
+        except Refused as exc:
             raise HTTPException(status_code=413, detail=refusal_detail(exc))
         # Read after the upload so a contact deleted meanwhile, or an uploader who has
         # lost access, leaves no file behind.
@@ -304,7 +298,7 @@ async def upload_contact_file(
     return {"event_id": entry.id, **meta}
 
 
-@router.post("/contacts/{contact_id}/files/{file_id}/tag")
+@router.post("/contacts/{contact_id}/files/{file_id}/tag", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts"}, summary="Change the tag of a file attached to a customer or vendor.")
 async def tag_contact_file(
     contact_id: str,
     file_id: str,
@@ -335,7 +329,7 @@ async def tag_contact_file(
     return (updated.state if updated else {}) | {"id": contact_id}
 
 
-@router.patch("/contacts/{contact_id}/files/{file_id}/description")
+@router.patch("/contacts/{contact_id}/files/{file_id}/description", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts"}, summary="Change the description of a file attached to a customer or vendor.")
 async def update_contact_file_description(
     contact_id: str,
     file_id: str,
@@ -365,7 +359,7 @@ async def update_contact_file_description(
     return (updated.state if updated else {}) | {"id": contact_id}
 
 
-@router.get("/contacts/{contact_id}/files/{file_id}")
+@router.get("/contacts/{contact_id}/files/{file_id}", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/contacts/{contact_id}/files/{file_id}/download"}, summary="Download a file attached to a customer or vendor.")
 async def download_contact_file(
     contact_id: str,
     file_id: str,
@@ -394,7 +388,7 @@ async def download_contact_file(
     )
 
 
-@router.delete("/contacts/{contact_id}/files/{file_id}")
+@router.delete("/contacts/{contact_id}/files/{file_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts"}, summary="Delete a file attached to a customer or vendor.")
 async def delete_contact_file(
     contact_id: str,
     file_id: str,
@@ -443,7 +437,7 @@ async def _locked_note(session: AsyncSession, company_id, contact_id: str, note_
             "edit or remove one of those."))
 
 
-@router.get("/contacts/{contact_id}/notes")
+@router.get("/contacts/{contact_id}/notes", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True}, summary="List the notes written on a customer or vendor, newest first.")
 async def list_contact_notes(
     contact_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -466,7 +460,7 @@ async def list_contact_notes(
     return notes
 
 
-@router.post("/contacts/{contact_id}/notes")
+@router.post("/contacts/{contact_id}/notes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts", "x-celerp-agent-key": "idempotency_key"}, summary="Add a note to a customer or vendor.")
 async def add_contact_note(
     contact_id: str,
     payload: ContactNoteCreate,
@@ -502,7 +496,7 @@ async def add_contact_note(
     return {"event_id": entry.id, "id": note_id}
 
 
-@router.patch("/contacts/{contact_id}/notes/{note_id}")
+@router.patch("/contacts/{contact_id}/notes/{note_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts", "x-celerp-agent-key": "idempotency_key"}, summary="Change the text of a note on a customer or vendor.")
 async def update_contact_note(
     contact_id: str,
     note_id: str,
@@ -536,7 +530,7 @@ async def update_contact_note(
     return {"event_id": entry.id}
 
 
-@router.delete("/contacts/{contact_id}/notes/{note_id}")
+@router.delete("/contacts/{contact_id}/notes/{note_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts"}, summary="Delete a note from a customer or vendor.")
 async def delete_contact_note(
     contact_id: str,
     note_id: str,
@@ -566,7 +560,7 @@ async def delete_contact_note(
 
 # ── People ────────────────────────────────────────────────────────────────────
 
-@router.post("/contacts/{contact_id}/people")
+@router.post("/contacts/{contact_id}/people", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts", "x-celerp-agent-result-permissions": ["manage_company_settings"]}, summary="Add a contact person to a customer or vendor, with their name, role, email and phone.")
 async def add_contact_person(
     contact_id: str,
     payload: ContactPersonCreate,
@@ -596,7 +590,7 @@ async def add_contact_person(
     return {"event_id": entry.id, "person_id": person_id}
 
 
-@router.patch("/contacts/{contact_id}/people/{person_id}")
+@router.patch("/contacts/{contact_id}/people/{person_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts", "x-celerp-agent-result-permissions": ["manage_company_settings"]}, summary="Change the details of a contact person at a customer or vendor.")
 async def update_contact_person(
     contact_id: str,
     person_id: str,
@@ -629,7 +623,7 @@ async def update_contact_person(
     return {"event_id": entry.id}
 
 
-@router.delete("/contacts/{contact_id}/people/{person_id}")
+@router.delete("/contacts/{contact_id}/people/{person_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts", "x-celerp-agent-result-permissions": ["manage_company_settings"]}, summary="Remove a contact person from a customer or vendor.")
 async def remove_contact_person(
     contact_id: str,
     person_id: str,
@@ -658,7 +652,7 @@ async def remove_contact_person(
 
 # ── Addresses ─────────────────────────────────────────────────────────────────
 
-@router.post("/contacts/{contact_id}/addresses")
+@router.post("/contacts/{contact_id}/addresses", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts", "x-celerp-agent-result-permissions": ["manage_company_settings"]}, summary="Add an address to a customer or vendor, such as a billing or shipping address.")
 async def add_contact_address(
     contact_id: str,
     payload: ContactAddressCreate,
@@ -686,7 +680,7 @@ async def add_contact_address(
     return {"event_id": entry.id, "address_id": address_id}
 
 
-@router.patch("/contacts/{contact_id}/addresses/{address_id}")
+@router.patch("/contacts/{contact_id}/addresses/{address_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts", "x-celerp-agent-result-permissions": ["manage_company_settings"]}, summary="Change an address of a customer or vendor.")
 async def update_contact_address(
     contact_id: str,
     address_id: str,
@@ -714,7 +708,7 @@ async def update_contact_address(
     return {"event_id": entry.id}
 
 
-@router.delete("/contacts/{contact_id}/addresses/{address_id}")
+@router.delete("/contacts/{contact_id}/addresses/{address_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts", "x-celerp-agent-result-permissions": ["manage_company_settings"]}, summary="Remove an address from a customer or vendor.")
 async def remove_contact_address(
     contact_id: str,
     address_id: str,
@@ -744,7 +738,7 @@ async def remove_contact_address(
 
 # ── Import endpoints (CIF) ───────────────────────────────────────────────────
 
-@router.post("/contacts/import")
+@router.post("/contacts/import", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Import one contact record from another system.")
 async def import_contact(
     body: CRMImportRecord,
     company_id: str = Depends(get_current_company_id),
@@ -756,7 +750,7 @@ async def import_contact(
     """Accept only the canonical contact-create CIF snapshot transport. A contact that
     already exists is updated, as in the batch import."""
     if body.event_type != "crm.contact.created":
-        raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+        raise HTTPException(status_code=422, detail=t("contacts.err_event_type_event_type_not_import", event_type=f'{body.event_type!r}'))
     await locked_authority(session, company_id, user.id, ("edit_contacts", "import_export_data"))
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
@@ -764,7 +758,7 @@ async def import_contact(
             raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
     record = (await services.import_contact_records(session, company_id, user.id, [body], match_identity=True)).records[0]
     if record.status in ("rejected", "failed"):
-        raise HTTPException(status_code=409 if record.status == "rejected" else 422, detail=record.message)
+        raise HTTPException(status_code=409 if record.status == "rejected" else 422, detail=t("contacts.err_import_refused", reason=refusal_text(record.message)))
     await session.commit()
     event_id = await session.scalar(
         select(func.max(LedgerEntry.id)).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == record.entity_id)
@@ -776,7 +770,7 @@ async def import_contact(
 
 # ── CSV export ────────────────────────────────────────────────────────────────
 
-@router.get("/contacts/export/csv")
+@router.get("/contacts/export/csv", dependencies=[require_permission("view_contacts"), require_permission("import_export_data")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/crm/export/csv"}, summary="Download the contact list as a CSV file.")
 async def export_contacts_csv(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -812,7 +806,7 @@ class BulkContactDeleteBody(BaseModel):
     contact_ids: list[str]
 
 
-@router.post("/contacts/bulk/delete")
+@router.post("/contacts/bulk/delete", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts", "x-celerp-agent-selection": "contact_ids"}, summary="Delete several customers or vendors at once.")
 async def bulk_delete_contacts(
     payload: BulkContactDeleteBody,
     company_id: str = Depends(get_current_company_id),
@@ -850,8 +844,7 @@ async def bulk_delete_contacts(
         for cid, type_counts in blocking.items():
             summary = ", ".join(f"{n} {dt}(s)" for dt, n in sorted(type_counts.items()))
             parts.append(f"{names.get(cid, cid)}: {summary}")
-        detail = "Cannot delete contact(s) with associated documents, lists, or deals: " + "; ".join(parts)
-        raise HTTPException(status_code=422, detail=detail)
+        raise HTTPException(status_code=422, detail=t("contacts.err_delete_linked", records="; ".join(parts)))
 
     for row in contact_rows:
         await emit_event(
@@ -1110,7 +1103,7 @@ async def merge_legacy_self_vendor(session: AsyncSession, company_id, actor_id, 
     return await merge_contacts_service(session, company_id, actor_id, winner_id, [vendor_id], legacy_self=True)
 
 
-@router.post("/contacts/merge")
+@router.post("/contacts/merge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/crm/import/contacts", "x-celerp-agent-result-permissions": ["manage_company_settings"]}, summary="Merge duplicate contacts into one, moving their documents and history onto the contact that is kept.")
 async def merge_contacts(
     payload: ContactMergeBody,
     company_id: str = Depends(get_current_company_id),
@@ -1134,7 +1127,7 @@ def setup_api_routes(app) -> None:
 
 # ── Batch import endpoints (CIF) ─────────────────────────────────────────────
 
-@router.post("/contacts/import/batch", response_model=BatchImportResult)
+@router.post("/contacts/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records"}, summary="Import a batch of contacts, creating new ones and updating those that already exist.")
 async def batch_import_contacts(
     body: CRMBatchImportRequest,
     company_id: str = Depends(get_current_company_id),

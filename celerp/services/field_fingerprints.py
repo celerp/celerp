@@ -42,3 +42,30 @@ def changed_since(link: dict, field: str, value) -> bool:
     """Whether ``value`` differs from what the link last agreed on for ``field``."""
     last = (link.get(LINK_KEY) or {}).get(field)
     return last is None or last != fingerprint(value)
+
+
+def _amount_text(value) -> str:
+    return "" if value is None else _normal(Decimal(str(value)))
+
+
+def statement_line_ident(line_date: str, amount, text: str, reference, balance) -> tuple:
+    """What two identical lines of one statement share: the date, the amount in the bank's
+    sign convention, the description with its spacing and case folded, the reference and the
+    running balance."""
+    return (line_date, _amount_text(amount), " ".join((text or "").upper().split()), (reference or "").strip(),
+            _amount_text(balance))
+
+
+def statement_line(line_date: str, amount, text: str, reference, balance, n: int) -> str:
+    """The identity of one bank statement line on its bank: its ``statement_line_ident`` and
+    ``n``, the line's place among identical lines of the same statement. The bank is not part
+    of it (the unique index scopes it by bank), so a company restored with new bank ids still
+    knows a line read again."""
+    return fingerprint([*statement_line_ident(line_date, amount, text, reference, balance), n])
+
+
+def statement_line_fitid(fitid: str, n: int) -> str:
+    """The identity of a line its bank numbered itself (OFX FITID). ``n`` is the line's place
+    among lines of the same statement that share the FITID (some banks repeat one); the first
+    keeps the plain FITID identity."""
+    return fingerprint(["FITID", fitid.strip()] + ([n] if n else []))

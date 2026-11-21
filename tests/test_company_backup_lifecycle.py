@@ -300,7 +300,7 @@ async def test_enabling_subscriptions_refuses_outdated_running_version(real_clie
     response = await real_client.post("/companies/me/modules/celerp-subscriptions/enable",
                                        headers=auth(tok))
     assert response.status_code == 409, response.text
-    assert "Restart" in response.json()["detail"]
+    assert "Restart" in refusal_text(response.json()["detail"])
     async with AsyncSession(real_engine) as session:
         company = await session.get(Company, cid)
         assert "celerp-subscriptions" not in get_enabled(company.settings)
@@ -347,7 +347,7 @@ async def test_chosen_destination_name_is_checked(real_client, real_engine):
         r = await real_client.post("/company-backups/restore", json={**confirm(preview), "company_name": name},
                                    headers=auth(tok))
         assert r.status_code == status, (name, r.text)
-        assert "Nothing was restored." in r.json()["detail"]
+        assert "Nothing was restored." in refusal_text(r.json()["detail"])
     assert await _companies(real_engine) == before
     r = await real_client.post("/company-backups/restore", json={**confirm(preview), "company_name": "Alpha Copy"},
                                headers=auth(tok))
@@ -601,7 +601,7 @@ async def test_bad_files_are_told_apart(real_client, real_engine):
     }
     for body, message in cases.items():
         r = await read(real_client, tok, body)
-        assert r.status_code == 422 and r.json()["detail"] == message, r.text
+        assert r.status_code == 422 and refusal_text(r.json()["detail"]) == message, r.text
     assert "damaged or incomplete" in t(cb.INCOMPLETE)
 
 
@@ -698,7 +698,7 @@ async def test_module_from_outside_celerp_needs_the_owners_consent(real_client, 
     upload_token = (await read(real_client, tok, data)).json()["upload_token"]
     r = await real_client.post("/company-backups/prepare", json={"upload_token": upload_token}, headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert "Widgets" in r.json()["detail"]
+    assert "Widgets" in refusal_text(r.json()["detail"])
     from celerp.config import read_config
     assert read_config()["modules"]["enabled"] == []
     r = await real_client.post("/company-backups/prepare", json={"upload_token": upload_token,

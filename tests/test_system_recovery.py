@@ -274,7 +274,7 @@ async def test_export_disk_full_shows_plain_message(real_client, real_engine, tm
     _, _, tok = await _install_owner(real_engine)
     r = await real_client.get("/backup/export", headers=auth(tok))
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("error.backup_disk_full", "en")
+    assert refusal_text(r.json()["detail"]) == t("error.backup_disk_full", "en")
     assert not list(tmp_path.glob("*.celerp-backup"))
 
 

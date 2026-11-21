@@ -14,7 +14,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, page_title
+from ui.components.shell import base_shell, no_access_banner, page_header, page_title
 from ui.components.table import EMPTY, empty_state_cta, fmt_money
 from ui.config import PAYMENT_TERMS_URL, get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang, category_label
@@ -74,6 +74,11 @@ async def _page_or_fragment(request: Request, *content, title: str, nav_active: 
     return await base_shell(*content, title=title, nav_active=nav_active, request=request)
 
 
+async def _no_access_page(request: Request, header: FT, error: APIError, title_key: str) -> FT:
+    """A report the reader's role may not open: its header and the no-access banner, never an empty report."""
+    return await _page_or_fragment(request, header, no_access_banner(error), title=page_title(title_key), nav_active="reports")
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -96,8 +101,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             if e.status == 403:
-                return await _page_or_fragment(request, header, Div(t("perm.page_no_access"), cls="error-banner"),
-                                               title=page_title(title_key), nav_active="reports")
+                return await _no_access_page(request, header, e, title_key)
             data = {"lines": [], "buckets": {}}
         content = [
             header,
@@ -130,19 +134,22 @@ def setup_routes(app):
             params["date_from"] = date_from
         if date_to:
             params["date_to"] = date_to
+        header = page_header(
+            t("page.sales_report"),
+            _group_by_filter(group_by, "/reports/sales"),
+            A(t("label.back"), href="/reports", cls="btn btn--secondary"),
+        )
         try:
             data = await api.get_sales_report(token, params)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
+            if e.status == 403:
+                return await _no_access_page(request, header, e, "page.sales_report")
             data = {"lines": [], "group_by": group_by, "total": 0}
 
         content = [
-            page_header(
-                t("page.sales_report"),
-                _group_by_filter(group_by, "/reports/sales"),
-                A(t("label.back"), href="/reports", cls="btn btn--secondary"),
-            ),
+            header,
             _date_filter_bar("/reports/sales", date_from, date_to, preset,
                              settings_link=PAYMENT_TERMS_URL,
                              extra_params=f"&group_by={quote_plus(group_by)}",
@@ -167,19 +174,22 @@ def setup_routes(app):
             params["date_from"] = date_from
         if date_to:
             params["date_to"] = date_to
+        header = page_header(
+            t("page.purchases_report"),
+            _group_by_filter(group_by, "/reports/purchases", first_option="supplier"),
+            A(t("label.back"), href="/reports", cls="btn btn--secondary"),
+        )
         try:
             data = await api.get_purchases_report(token, params)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
+            if e.status == 403:
+                return await _no_access_page(request, header, e, "page.purchases_report")
             data = {"lines": [], "group_by": group_by, "total": 0}
 
         content = [
-            page_header(
-                t("page.purchases_report"),
-                _group_by_filter(group_by, "/reports/purchases", first_option="supplier"),
-                A(t("label.back"), href="/reports", cls="btn btn--secondary"),
-            ),
+            header,
             _date_filter_bar("/reports/purchases", date_from, date_to, preset,
                              settings_link=PAYMENT_TERMS_URL,
                              extra_params=f"&group_by={quote_plus(group_by)}",
@@ -199,6 +209,10 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
+            if e.status == 403:
+                header = page_header(t("page.expiring_items"), A(t("label.back"), href="/reports", cls="btn btn--secondary"))
+                return await _page_or_fragment(request, header, Div(t("perm.page_no_access"), cls="error-banner"),
+                                               title=page_title("page.expiring_items"), nav_active="reports")
             data = {"count": 0, "days_threshold": days, "lines": []}
         try:
             category_names = await api.get_category_display_names(token)

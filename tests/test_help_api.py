@@ -148,7 +148,7 @@ async def test_help_routes_are_agent_tools():
     compiled = ai_tools.compile_agent_capabilities(real_agent_app(), {})
     assert compiled["help_search"]["path"] == "/help/search"
     assert compiled["help_read"]["path"] == "/help/page/{page_id}"
-    assert not any(cap["path"] == "/help/for-route" for cap in compiled.values())
+    assert any(cap["path"] == "/help/for-route" for cap in compiled.values())
 
 
 async def test_help_for_route_matches_tab_routes(client, monkeypatch):
@@ -168,31 +168,30 @@ async def test_help_for_route_matches_tab_routes(client, monkeypatch):
     assert await ids("/settings/general") == []
 
 
-async def test_every_first_party_screen_gets_its_module_help_on_both_routes(client):
+async def test_every_first_party_screen_offers_the_help_page_it_names(client):
     """Over the pages that ship, not the fixed set: each sidebar and settings screen of
-    every first-party module (the AI page and its settings among them) is answered by
-    the route lookup with a page of that module, and that page opens on the read
-    route. Pages count only as first-party, so a module whose content no longer matches
-    its lock entry (loaded as third-party) fails here."""
+    every first-party module (the AI page and its settings among them) names a help
+    page, the top bar Help panel of that screen lists that page, and it opens on the
+    read route. Pages count only as first-party, so a module whose content no longer
+    matches its lock entry (loaded as third-party) fails here."""
     from celerp.help import checks
     registry.reset()
     try:
         headers = await _headers(client)
         index = registry.get_index()
         screens = checks.nav_screens()
-        assert {"/ai", "/ai/settings"} <= set(screens["celerp-ai"])
+        assert {"/ai", "/ai/settings"} <= {path for path, _page in screens["celerp-ai"]}
         missing = []
-        for module, paths in sorted(screens.items()):
-            for path in dict.fromkeys(paths):
+        for module, named in sorted(screens.items()):
+            for path, page_id in dict.fromkeys(named):
                 r = await client.get("/help/for-route", params={"path": path}, headers=headers)
                 assert r.status_code == 200
-                ids = [p["id"] for p in r.json()["pages"]
-                       if index.pages[p["id"]].module == module
-                       and index.pages[p["id"]].source == "first_party"]
-                if not ids:
-                    missing.append(f"{module}: {path}")
-                for page_id in ids:
-                    assert (await client.get(f"/help/page/{page_id}", headers=headers)).status_code == 200
+                page = index.pages.get(page_id)
+                if (page_id not in [p["id"] for p in r.json()["pages"]] or page.source != "first_party"
+                        or page.module not in (module, "core")):
+                    missing.append(f"{module}: {path} -> {page_id}")
+                    continue
+                assert (await client.get(f"/help/page/{page_id}", headers=headers)).status_code == 200
         assert missing == []
     finally:
         registry.reset()
@@ -210,8 +209,8 @@ async def test_a_screen_offers_help_only_from_its_own_module_or_core(client):
         headers = await _headers(client)
         index = registry.get_index()
         stray = []
-        for module, paths in sorted(checks.nav_screens().items()):
-            for path in dict.fromkeys(paths):
+        for module, named in sorted(checks.nav_screens().items()):
+            for path in dict.fromkeys(p for p, _page in named):
                 r = await client.get("/help/for-route", params={"path": path}, headers=headers)
                 stray += [f"{path}: {p['id']}" for p in r.json()["pages"]
                           if index.pages[p["id"]].module not in (module, "core")

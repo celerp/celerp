@@ -751,3 +751,24 @@ async def test_item_sync_route_toggles_the_shopify_sync_flag_through_the_ledger(
     assert r.json()["updated"] == 1
     assert await _flag() is False
     assert await _events() == ["shop.sync.enabled", "shop.sync.disabled"]
+
+
+@pytest.mark.usefixtures("connector_modules_running")
+async def test_a_refused_store_sync_item_is_a_keyed_refusal(client, connector_session, monkeypatch):
+    """Each item the store sync refuses (one not linked to a Shopify product, one that
+    does not exist) comes back as a keyed refusal naming it, so the inventory screen and
+    the assistant show it in the reader's language."""
+    from test_import_result_errors import _keyed
+
+    h, cid = await _register(client)
+    unlinked = await _item(client, h, "UNLINKED-1")
+    await connect(connector_session, cid, "shopify", first_sync="completed")
+    stand_in_execution(monkeypatch)
+    r = await client.post("/connector-items/shopify/sync", headers={**h, "Accept-Language": "th"},
+                          json={"entity_ids": [unlinked, "no-such-item"], "action": "publish"})
+    assert r.status_code == 200, r.text
+    errors = r.json()["errors"]
+    assert len(errors) == 2 and all(_keyed(e) for e in errors), errors
+    assert [e["params"]["refusal"]["message_key"] for e in errors] == [
+        "inventory.err_items_not_found", "connectors.err_item_not_linked_shopify"]
+    assert t("connectors.err_item_not_linked_shopify") in refusal_text(errors[1])

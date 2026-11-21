@@ -90,6 +90,7 @@ PERMISSIONS: list[Permission] = [
     Permission("send_statements", "manager", True, "viewer"),
     Permission("view_financial_reports", "manager", True, "viewer"),
     Permission("manage_accounting", "manager", True, "viewer"),
+    Permission("answer_bank_questions", "manager", True, "viewer"),
     Permission("reallocate_restricted_funds", "admin", True, "viewer"),
     Permission("manage_module_settings", "manager", True, "viewer"),
     Permission("automate_billing", "manager", True, "viewer"),

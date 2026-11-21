@@ -827,13 +827,27 @@ async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
     return bearer
 
 
-def relay_error_detail(resp, fallback: str) -> str:
-    """The relay's own error message when it sent one, else the fallback."""
+def _relay_words(resp) -> str | None:
+    """The relay's own error message, when it sent one."""
     try:
         d = resp.json().get("detail")
-        return d if isinstance(d, str) and d else fallback
     except Exception:
-        return fallback
+        return None
+    return d if isinstance(d, str) and d else None
+
+
+def relay_error_detail(resp, fallback: str) -> str:
+    """The relay's own error message when it sent one, else the fallback."""
+    return _relay_words(resp) or fallback
+
+
+def cloud_refusal(resp, key: str, /, **params) -> dict:
+    """The refusal a route answers a relay refusal with: the relay's own words, quoted as
+    what Celerp Cloud answered, else the catalog refusal ``key``."""
+    from celerp.accounting_roles import catalog_refusal
+
+    words = _relay_words(resp)
+    return catalog_refusal("error.cloud_said", reason=words) if words else catalog_refusal(key, **params)
 
 
 def is_foreign_relay_identity(

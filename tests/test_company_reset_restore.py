@@ -143,7 +143,7 @@ async def test_two_restores_at_once_make_one_company(real_client, real_engine, m
     assert sorted(r.status_code for r in results) == [201, 409], [r.text for r in results]
     # Refused while the first runs, or once it has made the company.
     [refusal] = [r.json()["detail"] for r in results if r.status_code == 409]
-    assert refusal in {RESTORE_RUNNING, HAS_COMPANY}, refusal
+    assert refusal_text(refusal) in {t(RESTORE_RUNNING, "en"), HAS_COMPANY}, refusal
     assert [n for _, n in await _companies(real_engine)] == [NAME]
 
 

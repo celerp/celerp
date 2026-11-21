@@ -1411,6 +1411,16 @@ class AccReconciliationReopened(BaseModel):
     completed_at: str | None = None
 
 
+class AccBankStatementDone(BaseModel):
+    """A keyed bank statement operation (reading, import, resolve, unmatch, completion and
+    the rest) as it answered, so the same key with the same request answers it again.
+    The books change only through the entries the operation posted."""
+    operation: str
+    bank_account_id: str | None = None
+    # The receipts read with an imported statement, which suggestions match to its lines.
+    receipts: list[dict] = []
+
+
 # -----------------
 # System
 # -----------------
@@ -1799,6 +1809,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "acc.period.closed": AccPeriodClosed,
     "acc.period.reopened": AccPeriodReopened,
     "acc.reconciliation.reopened": AccReconciliationReopened,
+    "acc.bank_statement.done": AccBankStatementDone,
     "fund.created": FundCreated,
     "fund.updated": FundUpdated,
     "fund.archived": FundArchived,

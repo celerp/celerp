@@ -12,7 +12,7 @@ PLUGIN_MANIFEST = {
     "api_routes": "celerp_reports.api_setup",
     "ui_routes": "celerp_reports.ui_routes",
     "slots": {
-        "nav": {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "label_key": "nav.reports", "order": 51, "permission": "view_financial_reports"},
+        "nav": {"group": "Finance", "key": "reports", "href": "/reports", "help": "reports.operational-reports", "label": "Reports", "label_key": "nav.reports", "order": 51, "permission": "view_financial_reports"},
     },
     "help": {"dir": "celerp_reports/help"},
 }

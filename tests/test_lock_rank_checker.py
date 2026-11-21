@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import uuid
 
 import pytest
 
@@ -750,6 +751,40 @@ def test_an_insert_under_the_company_lock_keyed_by_a_fresh_secret_is_gated(recor
     recorder.statement(1, _TOKEN, ("t1", "c1", "tok"), 0.0)
     assert recorder.ungated_sites({"row:doc_share_tokens"}) == set()
     assert recorder.classes["row:doc_share_tokens"].get("gated") == 1
+
+
+def _token_insert(key: str = "t1") -> Lock:
+    return Lock("row:doc_share_tokens", "insert", "celerp/x.py:1 f", "test_x.py:1", key, company="c1")
+
+
+def _heartbeat_write(key: str = "t1") -> Lock:
+    """The one statement mutation_observer.LEASE_RENEWALS declares as ai_batch_jobs's own
+    lease renewal (jobs._heartbeat), built as an ungated row take directly."""
+    return Lock("row:ai_batch_jobs", "insert", "celerp/ai/jobs.py:1 _heartbeat", "test_x.py:1", key, company="c1")
+
+
+def test_a_declared_renewals_pending_leaf_survives_a_waitable_take_on_another_connection(recorder):
+    """jobs._heartbeat's own renewal, the one entry mutation_observer.LEASE_RENEWALS declares
+    for ai_batch_jobs, is the one leaf a lock on a connection outside its task cannot spoil:
+    Postgres never contends that single statement against a lock its own task never touches."""
+    recorder.acquire(1, _heartbeat_write(), 0.0)
+    recorder.acquire(2, _lock("adv:external-product", "xact exclusive wait", key="p"), 0.0)
+    assert recorder.classes["row:ai_batch_jobs"].get("company_ungated") is None
+
+
+def test_a_waitable_lock_on_the_declared_renewals_own_connection_still_spoils_its_leaf(recorder):
+    recorder.acquire(1, _heartbeat_write(), 0.0)
+    recorder.acquire(1, _lock("adv:external-product", "xact exclusive wait", key="p"), 0.0)
+    assert recorder.classes["row:ai_batch_jobs"].get("company_ungated") == 1
+
+
+def test_an_undeclared_pending_leaf_is_still_spoiled_by_a_waitable_take_on_another_connection(recorder):
+    """Only the one statement LEASE_RENEWALS declares is spared: every other table's leaf is
+    still spoiled by any lock that can wait anywhere, exactly as it always was - a leaf is the
+    gated-inversion/deadlock-order proof's evidence too, not just the AI race census."""
+    recorder.acquire(1, _token_insert(), 0.0)
+    recorder.acquire(2, _lock("adv:external-product", "xact exclusive wait", key="p"), 0.0)
+    assert recorder.classes["row:doc_share_tokens"].get("company_ungated") == 1
 
 
 @pytest.mark.parametrize("table", sorted(lock_rank.SECRET_KEYED))
@@ -1632,6 +1667,54 @@ def test_a_child_row_keyed_by_its_parent_is_judged_under_the_parents_company(rec
     recorder.statement(1, _STEP_BY_JOB, ("done", "j1"), 0.0)
     info = recorder.dump()["classes"]["row:ai_job_steps"]
     assert info.get("ungated_takes", []) == ([f"nokey|{counted}"] if counted else [])
+
+
+_FLUSH_STEP = "UPDATE ai_job_steps SET status=$1::VARCHAR WHERE ai_job_steps.id = $2::UUID"
+
+
+@pytest.mark.parametrize("named, counted", [
+    ("c1", None),          # the step's job was named in this transaction as c1's: gated
+    ("c2", "none"),        # the job is another company's
+    (None, "unknown"),     # nothing names the job: unknown, never assumed gated
+])
+def test_a_child_row_the_orm_flushes_is_judged_under_its_parents_company(recorder, named, counted):
+    """The ORM flushes a step by its own key; the step carries its job's key, and the job's
+    company is the one this transaction named it under."""
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    if named:
+        recorder.name_row(1, "ai_batch_jobs", "j1", named)
+    recorder.name_child_row(1, "ai_job_steps", "s1", "ai_batch_jobs", "j1")
+    recorder.statement(1, _FLUSH_STEP, ("done", "s1"), 0.0)
+    info = recorder.dump()["classes"]["row:ai_job_steps"]
+    assert info.get("ungated_takes", []) == ([f"nokey|{counted}"] if counted else [])
+
+
+async def test_a_message_the_orm_flushes_is_judged_under_its_conversations_company(session, auth):
+    """End to end: finalizing a tool call locks the conversation's company and row, then
+    flushes the message by its own key. A lock taken later in the process, before the
+    commit, must not turn that write into a take outside the company lock."""
+    from sqlalchemy import select
+
+    from celerp.ai import conversations
+    from celerp.models.ai import AIConversation, AIMessage
+    from celerp.models.company import Company
+
+    company_id, user_id = uuid.UUID(str(auth["company_id"])), uuid.UUID(str(auth["user_id"]))
+    conv = AIConversation(company_id=company_id, user_id=user_id, title="t")
+    session.add(conv)
+    await session.flush()
+    msg = AIMessage(conversation_id=conv.id, role="assistant", content="",
+                    tools_called=[{"id": "call-1", "status": "pending"}])
+    session.add(msg)
+    await session.commit()
+
+    lock_rank.RECORDER.clear_transactions()
+    with lock_rank.ungated_takes(("row:ai_messages",), "celerp/ai/") as found:
+        await conversations.finalize_tool_call(session, message_id=msg.id, tool_call_id="call-1",
+                                               status="completed", result={"status": 200})
+        await session.execute(select(Company.id).where(Company.id != company_id).limit(1).with_for_update())
+        await session.commit()
+    assert sorted(found) == []
 
 
 # ── A write joined to other tables names its company only through its own table ──

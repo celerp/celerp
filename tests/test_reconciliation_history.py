@@ -22,6 +22,7 @@ from celerp.main import app
 from company_backup_support import token
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
 from test_company_reset_payments import _harbor, _waiting_on_a_lock
+from bank_statement_helpers import bank_complete, complete, stopped_reason  # noqa: F401
 from test_helpers import invite_user, register_admin
 from test_reconciliation_reopen import _ui_as
 from ui.i18n import t, refusal_text
@@ -79,12 +80,6 @@ async def legacy_deposit(client, h, session, b: dict, day, amount) -> str:
 
 async def match(client, h, sid, je_ids):
     return await client.post(f"/accounting/reconciliation/{sid}/match", json={"je_ids": je_ids}, headers=h)
-
-
-async def complete(client, h, sid):
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 200 and r.json()["status"] == "completed", r.text
-    return r.json()
 
 
 async def completed(client, h, b: dict, day, balance=OPENING, je_ids=()) -> str:
@@ -176,25 +171,27 @@ async def test_history_of_an_account_with_no_reconciliations_says_so(client, ses
     async with _ui_as(tok) as ui:
         page = (await ui.get(f"/accounting/reconcile/history/{b['id']}")).text
     assert "This account has no reconciliations yet. Start one with Reconcile." in page
-    assert f"/accounting/reconcile/start?bank_id={b['id']}" in page
+    assert f'href="/accounting/reconcile/bank/{b["id"]}"' in page
 
 
 async def test_history_status_filter_reads_the_url(client, session):
     tok, h = await admin(client)
     b = await bank(client, h)
-    done = await completed(client, h, b, "2026-08-31")
-    open_ = (await start(client, h, b["id"], "2026-09-30")).json()["id"]
+    await completed(client, h, b, "2026-08-31")
+    assert (await start(client, h, b["id"], "2026-09-30")).status_code == 200
     async with _ui_as(tok) as ui:
         page = (await ui.get(f"/accounting/reconcile/history/{b['id']}")).text
         assert "Reconciliation history" in page and "Harbor Bank" in page
-        assert f"/accounting/reconcile/{done}" in page and f"/accounting/reconcile/{open_}" in page
+        # Each row opens the bank page, where the statement's lines are.
+        row = f'href="/accounting/reconcile/bank/{b["id"]}?view=all">'
+        assert f"{row}2026-08-31<" in page and f"{row}2026-09-30<" in page
         assert "In progress" in page and "Completed" in page
         page = (await ui.get(f"/accounting/reconcile/history/{b['id']}?status=completed")).text
-        assert f"/accounting/reconcile/{done}" in page and f"/accounting/reconcile/{open_}" not in page
+        assert f"{row}2026-08-31<" in page and f"{row}2026-09-30<" not in page
         page = (await ui.get(f"/accounting/reconcile/history/{b['id']}?status=open")).text
-        assert f"/accounting/reconcile/{open_}" in page and f"/accounting/reconcile/{done}" not in page
+        assert f"{row}2026-09-30<" in page and f"{row}2026-08-31<" not in page
         page = (await ui.get(f"/accounting/reconcile/history/{b['id']}?status=bogus")).text
-        assert f"/accounting/reconcile/{open_}" in page and f"/accounting/reconcile/{done}" in page
+        assert f"{row}2026-09-30<" in page and f"{row}2026-08-31<" in page
 
 
 async def test_history_lists_an_archived_account(client, session):
@@ -227,37 +224,34 @@ async def test_bank_account_card_links_its_history(client, session):
     assert f'href="/accounting/reconcile/history/{archived["id"]}"' in page
 
 
-async def test_workspace_links_its_history(client, session):
+async def test_bank_page_links_its_history(client, session):
     tok, h = await admin(client)
     b = await bank(client, h)
-    sid = (await start(client, h, b["id"], "2026-09-30")).json()["id"]
+    assert (await start(client, h, b["id"], "2026-09-30")).status_code == 200
     async with _ui_as(tok) as ui:
-        page = (await ui.get(f"/accounting/reconcile/{sid}")).text
+        page = (await ui.get("/accounting/reconcile/start")).text
     assert f'href="/accounting/reconcile/history/{b["id"]}"' in page
 
 
-async def test_completed_workspace_is_read_only(client, session):
+async def test_completed_statement_offers_only_reopen(client, session):
     tok, h = await admin(client)
     b = await bank(client, h)
     je = await deposit(client, h, b, "2026-09-10", 50.0)
     sid = await completed(client, h, b, "2026-09-30", OPENING + 50.0, [je])
     async with _ui_as(tok) as ui:
-        page = (await ui.get(f"/accounting/reconcile/{sid}")).text
-    assert f'hx-post="/accounting/reconcile/{sid}/reopen"' in page
-    for control in ("/auto-match", "/bulk-confirm", "/import", "/write-off", "/unmatch", "/match-confirm",
-                    "/split-form", "/create-form", "/skip"):
-        assert f"/accounting/reconcile/{sid}{control}" not in page and control + '"' not in page, control
+        page = (await ui.get(f"/accounting/reconcile/bank/{b['id']}")).text
+    actions = f"/accounting/reconcile/bank/{b['id']}/statement/{sid}/"
+    assert f'hx-post="{actions}reopen"' in page
+    assert f'{actions}write-off' not in page and f'{actions}remove' not in page
 
 
 async def test_reopen_asks_for_confirmation(client, session):
     tok, h = await admin(client)
     b = await bank(client, h)
-    sid = await completed(client, h, b, "2026-09-30")
+    await completed(client, h, b, "2026-09-30")
     async with _ui_as(tok) as ui:
-        page = (await ui.get(f"/accounting/reconcile/{sid}")).text
-    assert "hx-confirm=\"Reopen this reconciliation? Its matches stay as they are and your books don&#x27;t change." \
-        in page or "hx-confirm=\"Reopen this reconciliation? Its matches stay as they are and your books don't change." \
-        in page
+        page = (await ui.get(f"/accounting/reconcile/bank/{b['id']}")).text
+    assert f'hx-confirm="{t("recon.reopen_confirm")}"' in html.unescape(page)
 
 
 async def test_reopen_needs_manage_accounting(client, session):
@@ -280,18 +274,8 @@ RECONCILIATION_ROUTES = {
     ("GET", "/accounting/bank-accounts/{bank_id}/reconciliations"): "manage_accounting",
     ("POST", "/accounting/reconciliation/start"): "manage_accounting",
     ("GET", "/accounting/reconciliation/{session_id}"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/auto-match"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/bulk-confirm"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/complete"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/import-csv"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/import-file"): "manage_accounting",
-    ("PATCH", "/accounting/reconciliation/{session_id}/lines/{line_id}"): "manage_accounting",
     ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/attach"): "manage_accounting",
     ("DELETE", "/accounting/reconciliation/{session_id}/lines/{line_id}/attach/{att_id}"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/create"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/match"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/split"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/unmatch"): "manage_accounting",
     ("POST", "/accounting/reconciliation/{session_id}/match"): "manage_accounting",
     ("POST", "/accounting/reconciliation/{session_id}/reopen"): "manage_accounting",
     ("GET", "/accounting/reconciliation/{session_id}/statement-lines"): "manage_accounting",
@@ -335,30 +319,13 @@ async def test_session_of_another_company_is_not_found(real_engine, real_client)
     sid = (await start(real_client, ha, b["id"], "2026-09-30")).json()["id"]
     assert (await real_client.get(f"/accounting/reconciliation/{sid}", headers=hb)).status_code == 404
     assert (await match(real_client, hb, sid, [])).status_code == 404
-    assert (await real_client.post(f"/accounting/reconciliation/{sid}/complete", headers=hb)).status_code == 404
+    r = await real_client.post(f"/accounting/reconciliation/bank/{b['id']}/complete", headers=hb,
+                               json={"idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 404, r.text
     await complete(real_client, ha, sid)
     assert (await real_client.post(f"/accounting/reconciliation/{sid}/reopen", headers=hb)).status_code == 404
     assert (await real_client.get(f"/accounting/reconciliation/{sid}", headers=ha)).json()["status"] == "completed"
 
-
-async def test_line_of_another_session_is_not_found(client, session):
-    _, h = await admin(client)
-    b = await bank(client, h)
-    s1 = (await start(client, h, b["id"], "2026-08-31")).json()["id"]
-    s2 = (await start(client, h, b["id"], "2026-09-30")).json()["id"]
-    r = await client.post(f"/accounting/reconciliation/{s1}/import-csv", headers=h, files={
-        "file": ("s.csv", b"Date,Description,Amount\n2026-08-05,Coffee,-4.50\n", "text/csv")})
-    assert r.status_code == 200, r.text
-    line = (await client.get(f"/accounting/reconciliation/{s1}/statement-lines", headers=h)).json()
-    line_id = (line.get("items") if isinstance(line, dict) else line)[0]["id"]
-    for action in ("match", "unmatch", "split", "create"):
-        r = await client.post(f"/accounting/reconciliation/{s2}/lines/{line_id}/{action}", headers=h, json={})
-        assert r.status_code in (404, 422), (action, r.text)
-    r = await client.patch(f"/accounting/reconciliation/{s2}/lines/{line_id}", headers=h, json={"status": "skipped"})
-    assert r.status_code == 404, r.text
-
-
-# --- Flagging for review ------------------------------------------------------------
 
 async def test_history_flags_a_reference_outside_the_account_for_review(client, session):
     tok, h = await admin(client)
@@ -370,7 +337,7 @@ async def test_history_flags_a_reference_outside_the_account_for_review(client, 
     assert item["id"] == sid and item["needs_review"] is True
     assert (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["needs_review"] is True
     async with _ui_as(tok) as ui:
-        page = (await ui.get(f"/accounting/reconcile/{sid}")).text
+        page = (await ui.get(f"/accounting/reconcile/bank/{b['id']}")).text
         assert "Needs review" in page
         page = (await ui.get(f"/accounting/reconcile/history/{b['id']}")).text
         assert "Needs review" in page
@@ -425,33 +392,6 @@ async def test_repeated_start_resumes_the_same_session(client, session):
     assert first.json()["id"] == again.json()["id"] and again.json()["status"] == "open"
     assert again.json()["statement_date"] == "2026-09-30"
     assert await _session_count(session, b["id"]) == 1
-
-
-async def test_start_refusal_is_shown_on_the_start_page(client, session):
-    tok, h = await admin(client)
-    b = await bank(client, h)
-    await start(client, h, b["id"], "2026-09-30")
-    async with _ui_as(tok) as ui:
-        r = await ui.post("/accounting/reconcile/start", data={
-            "bank_account_id": b["id"], "statement_date": "2026-09-30", "statement_balance": "1234.00"})
-        assert r.status_code in (302, 303), r.text
-        loc = r.headers["location"]
-        assert loc.startswith("/accounting/reconcile/start") and "msg=" in loc
-        page = (await ui.get(loc)).text
-    assert "already" in page.lower()
-
-
-async def test_start_refusal_keeps_what_the_user_entered(client, session):
-    tok, h = await admin(client)
-    b = await bank(client, h)
-    await bank(client, h, name="Second Bank", number="0003")
-    await start(client, h, b["id"], "2026-09-30")
-    async with _ui_as(tok) as ui:
-        r = await ui.post("/accounting/reconcile/start", data={
-            "bank_account_id": b["id"], "statement_date": "2026-09-30", "statement_balance": "1234.00"})
-        page = (await ui.get(r.headers["location"])).text
-    assert re.search(rf'<option[^>]*value="{b["id"]}"[^>]*selected|<option[^>]*selected[^>]*value="{b["id"]}"', page)
-    assert 'value="2026-09-30"' in page and 'value="1234.00"' in page
 
 
 async def test_statement_date_must_be_a_real_date(client, session):
@@ -606,9 +546,7 @@ async def test_three_decimal_currency_completes_at_its_own_precision(client, ses
         sid = (await start(client, h, b["id"], "2026-09-30", statement)).json()["id"]
         assert (await match(client, h, sid, [je])).status_code == 200
         if refused:
-            r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-            assert r.status_code == 422, r.text
-            assert "0.001" in refusal_text(r.json()["detail"])
+            assert "0.001" in stopped_reason(await bank_complete(client, h, sid))
         else:
             await complete(client, h, sid)
 
@@ -645,8 +583,7 @@ async def test_foreign_currency_account_refuses_the_base_figure(client, session)
     je = await fx_deposit(client, h, b, 1850, 0.0067, 12.40)
     sid = (await start(client, h, b["id"], "2026-09-30", 12)).json()["id"]
     assert (await match(client, h, sid, [je])).status_code == 200
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 422 and "1838" in refusal_text(r.json()["detail"]), r.text
+    assert "1838" in stopped_reason(await bank_complete(client, h, sid))
 
 
 async def test_entry_with_no_amount_in_the_account_currency_is_flagged_not_converted(client, session):
@@ -657,9 +594,9 @@ async def test_entry_with_no_amount_in_the_account_currency_is_flagged_not_conve
     got = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
     assert got["reconciled_entries"][0]["amount"] is None
     assert got["difference"] is None and got["balanced"] is False and got["book_balance"] is None
-    for action in ("complete", "write-off"):
-        r = await client.post(f"/accounting/reconciliation/{sid}/{action}", headers=h, json={})
-        assert r.status_code == 422 and "JPY" in refusal_text(r.json()["detail"]), r.text
+    assert "JPY" in stopped_reason(await bank_complete(client, h, sid))
+    r = await client.post(f"/accounting/reconciliation/{sid}/write-off", headers=h, json={})
+    assert r.status_code == 422 and "JPY" in refusal_text(r.json()["detail"]), r.text
 
 
 async def test_default_bank_account_is_kept_in_the_base_currency(client, session):
@@ -700,7 +637,7 @@ async def test_completed_balances_and_events_are_never_rewritten(client, session
     assert got["status"] == "completed" and got["difference"] == 0 and got["needs_review"] is False
 
 
-async def test_a_difference_of_one_minor_unit_offers_the_write_off_not_complete(client, session):
+async def test_a_difference_of_one_minor_unit_offers_the_write_off(client, session):
     tok, h = await admin(client)
     b = await bank(client, h, currency="KWD", opening=0)
     je = await fx_deposit(client, h, b, 1000, 3.25, 3250)
@@ -709,24 +646,22 @@ async def test_a_difference_of_one_minor_unit_offers_the_write_off_not_complete(
     got = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
     assert got["difference"] == 0.001 and got["balanced"] is False
     async with _ui_as(tok) as ui:
-        page = (await ui.get(f"/accounting/reconcile/{sid}")).text
-    assert f'hx-post="/accounting/reconcile/{sid}/write-off"' in page
-    assert f'hx-post="/accounting/reconcile/{sid}/complete"' not in page
-    assert "recon-diff--warn" in page
+        page = (await ui.get(f"/accounting/reconcile/bank/{b['id']}")).text
+    assert f'hx-post="/accounting/reconcile/bank/{b["id"]}/statement/{sid}/write-off"' in page
+    assert "Difference on the statement to 2026-09-30: KWD 0.001" in html.unescape(page) \
+        or "0.001" in page.split('class="bank-difference"')[1].split("</p>")[0]
 
 
-async def test_a_three_decimal_statement_balance_can_be_entered(client, session):
-    tok, h = await admin(client)
-    await bank(client, h, currency="KWD", opening=0)
-    async with _ui_as(tok) as ui:
-        page = (await ui.get("/accounting/reconcile/start")).text
-    assert re.search(r'name="statement_balance"[^>]*step="0\.001"', page), page
+async def test_a_three_decimal_statement_balance_can_be_entered():
+    from fasthtml.common import to_xml
+    from ui.components.bank_groups import header_cell
+    cell = to_xml(header_cell("b1", "j1", 0, "closing_balance", "1000.001", "{}"))
+    assert 'value="1000.001"' in cell and "step=" not in cell
 
 
 async def test_a_zero_decimal_currency_steps_in_whole_units():
     from fasthtml.common import to_xml
-    from ui.routes.reconciliation import _create_form, _split_form
-    line = {"id": "l1", "amount": -1850, "description": "Fee", "date": "2026-09-10"}
-    for form in (_create_form, _split_form):
-        html = to_xml(form("s1", "l1", line, [], {"currency": "JPY", "books_currency": "JPY"}))
-        assert 'step="1"' in html and 'step="0.01"' not in html, form.__name__
+    from ui.components.bank_groups import split_form
+    form = to_xml(split_form({"id": "b1", "currency": "JPY"}, [("post:6100", "6100 Bank fees")], line_id="l1"))
+    assert 'step="1"' in form and 'step="0.01"' not in form
+    assert 'step="0.001"' in to_xml(split_form({"id": "b1", "currency": "KWD"}, [("post:6100", "6100 Bank fees")]))

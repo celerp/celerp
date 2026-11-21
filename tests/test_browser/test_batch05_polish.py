@@ -9,8 +9,10 @@ from ui.components.activity import history_table
 pytestmark=pytest.mark.browser
 
 def mount(page, ui_server, html):
+    """The component as the only content of the app's main column, where pages render it.
+    The dashboard's own widgets are cleared so a late render of theirs cannot move it."""
     page.goto(ui_server+'/dashboard')
-    page.evaluate('(html)=>{const e=document.createElement("section");e.id="polish-test";e.innerHTML=html;document.body.append(e)}',html)
+    page.evaluate('(html)=>{const e=document.createElement("section");e.id="polish-test";e.innerHTML=html;document.getElementById("main-content").replaceChildren(e)}',html)
 
 @pytest.mark.parametrize('long', [False, True])
 def test_full_note_remains_readable_and_editable_with_bounded_height(page, ui_server, long):

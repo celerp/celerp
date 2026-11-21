@@ -94,7 +94,7 @@ _ENTRY_ID_TEXT_ALLOWED = {
     ("default_modules/celerp-docs/celerp_docs/legacy_credit_notes.py", "_posted_entry"): "a credit note's entries",
     ("default_modules/celerp-docs/celerp_docs/routes.py", "unvoid_doc"): "a Document's entries",
     ("default_modules/celerp-docs/celerp_docs/routes.py", "_posted_journal_entries"): "a Document's entries",
-    ("default_modules/celerp-docs/celerp_docs/routes.py", "delete_payment"): "a Document's payment entries",
+    ("default_modules/celerp-docs/celerp_docs/routes.py", "delete_doc_payment"): "a Document's payment entries",
     ("default_modules/celerp-fixed-assets/celerp_fixed_assets/sales.py", "_cleared"): "a Document's entries",
     ("default_modules/celerp-inventory/celerp_inventory/routes.py", "undo_import_batch"): "an opening-stock batch's entries",
     ("ui/components/activity.py", "entity_url"): "a display link, moves no money",

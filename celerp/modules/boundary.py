@@ -109,8 +109,9 @@ class ModuleBusy(ModuleRefused):
 
 
 class CompanyBusy(HTTPException):
-    """A 409: a change to modules met the company's other work still holding the company's
-    locks past the brief wait (take_company_locks), so it did not go ahead, and can be
+    """A 409: work met the company's other work still holding the locks it waits for, past
+    the brief wait of a change to modules (take_company_locks) or the request lock timeout
+    of any route (celerp.main.lock_timeout_handler), so it did not go ahead, and can be
     tried again. Which work holds them is not known here (it may be in another process),
     so it names none."""
 

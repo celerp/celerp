@@ -27,7 +27,7 @@ from celerp.models.company import Company, Location, User
 from celerp.events.engine import emit_event
 from celerp_docs import routes as docs
 from ui.i18n import t
-from test_helpers import provision_company_books
+from test_helpers import provision_company_books, message_texts
 
 pytestmark = pytest.mark.asyncio
 
@@ -93,7 +93,7 @@ async def test_a_document_whose_entry_is_refused_is_not_imported(committed_engin
     assert not [r for r in ledger if "INV-A" in r[0]], ledger
     assert (result.created, result.skipped, result.updated) == (1, 0, 0)
     assert len(result.errors) == 1
-    assert result.errors[0] == "doc:INV-A: " + refusal_text(period_locked_refusal("31 Jan 2026")), result.errors
+    assert message_texts(result.errors)[0] == "doc:INV-A: " + refusal_text(period_locked_refusal("31 Jan 2026")), message_texts(result.errors)
     assert ("doc:INV-B", "doc.created") in ledger
     assert ("je:auto:doc:INV-B:fin", "acc.journal_entry.posted") in ledger
     assert await _entities(committed_engine, company_id) == ["doc:INV-B", "je:auto:doc:INV-B:fin"]
@@ -110,7 +110,7 @@ async def test_a_refused_row_does_not_block_a_corrected_row_for_the_same_documen
     result = await _batch_docs(factory, company_id, user, [refused, corrected])
 
     assert (result.created, result.skipped) == (1, 0), result
-    assert len(result.errors) == 1 and result.errors[0] == "doc:INV-C: " + refusal_text(period_locked_refusal("31 Jan 2026"))
+    assert len(message_texts(result.errors)) == 1 and message_texts(result.errors)[0] == "doc:INV-C: " + refusal_text(period_locked_refusal("31 Jan 2026"))
     assert await _entities(committed_engine, company_id) == ["doc:INV-C", "je:auto:doc:INV-C:fin"]
 
 

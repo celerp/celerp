@@ -22,9 +22,9 @@ import httpx
 from fastapi import HTTPException
 
 from celerp.ai import deadlines, jobs
-from celerp.ai.files import XLSX_CONTENT_TYPE
+from celerp.ai.files import TABULAR_UPLOAD_TYPES
 from celerp.gateway.state import relay_http_url, relay_session_headers, with_relay_client
-from ui.i18n import t
+from celerp.accounting_roles import Refused
 
 log = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ def _build_user_content(
 
     - image/* becomes an image_url part;
     - application/pdf becomes a file part carrying the base64 data-uri;
-    - text/csv and xlsx become a text part naming the file and its file_id so
+    - tabular files (CSV, XLSX, OFX) become a text part naming the file and its file_id so
       the model can call the import-preview capability - the bytes are never
       sent to the model;
     - anything else raises ValueError naming the kinds of file that work.
@@ -159,13 +159,13 @@ def _build_user_content(
                 "type": "file",
                 "file": {"filename": f.get("filename") or "document.pdf", "file_data": data_uri},
             })
-        elif media_type in ("text/csv", XLSX_CONTENT_TYPE):
+        elif media_type in TABULAR_UPLOAD_TYPES:
             parts.append({
                 "type": "text",
                 "text": f"Attached file: {f.get('filename')} (file_id {f.get('file_id')})",
             })
         else:
-            raise ValueError(t("error.ai_file_type"))
+            raise Refused("error.ai_file_type")
 
     if text:
         parts.append({"type": "text", "text": text})
@@ -253,7 +253,9 @@ async def complete(
     Posts to {relay}/ai/complete with the session headers, or with the
     install's account key when there is no Connect session. tools,
     tool_choice, reservation_id, operation_id and step_id are sent only when not None.
-    The caller holds a slot of the model gate (celerp.ai.jobs.gate); the call's
+    The caller holds a slot of the model gate (celerp.ai.jobs.gate) and sends the
+    call as a step of celerp.ai.jobs.send_step, the one place a refusal is answered
+    (a step still running is asked again after ``retry_after``); the call's
     budget is computed once the slot is held and declared to the service.
     ``before_send(nbytes)`` is awaited after the budget and before the request
     leaves, with the body's size (a job step journals the send there).
@@ -270,6 +272,7 @@ async def complete(
     call's budget.
     """
     assert jobs.holding_slot(), "a model call runs inside a slot of celerp.ai.jobs.gate"
+    assert jobs.sending_step(), "a model call is sent as a step of celerp.ai.jobs.send_step"
     body: dict = {"messages": messages, "max_tokens": max_tokens}
     if hints is not None:
         body["hints"] = hints

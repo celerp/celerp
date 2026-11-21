@@ -14,6 +14,7 @@ import pytest
 from company_backup_support import download
 from migration_support import real_client, real_engine  # noqa: F401
 from test_company_backup_lifecycle import _data_dir, _fresh_install  # noqa: F401
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -49,7 +50,7 @@ async def test_an_unreachable_cloud_is_not_called_a_mismatch(real_client, real_e
     _cloud(monkeypatch, offline)
     refused = await _read(real_client, data)
     assert refused.status_code == 503
-    assert refused.json()["detail"] == (
+    assert refusal_text(refused.json()["detail"]) == (
         "Celerp could not reach the cloud to check this company copy. Nothing was restored. "
         "Check your internet connection and try again.")
 
@@ -63,6 +64,6 @@ async def test_a_copy_the_cloud_refuses_is_a_mismatch(real_client, real_engine, 
     _cloud(monkeypatch, lambda request: httpx.Response(404))
     refused = await _read(real_client, data)
     assert refused.status_code == 422
-    assert refused.json()["detail"] == (
+    assert refusal_text(refused.json()["detail"]) == (
         "This file does not match the company copy its link names. Nothing was restored. "
         "Open the company copy from its link again.")

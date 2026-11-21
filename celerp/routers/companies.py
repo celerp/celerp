@@ -19,12 +19,13 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import catalog_refusal, refusal_detail
+from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
-from celerp.importers.results import failure_reason
+from celerp.importers.results import BatchImportResult, record_refused, row_n, row_refusal
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
+from celerp.agent_markers import agent_excluded, agent_gate
 from celerp.services.auth import (
     AuthContext,
     first_usable_company_link,
@@ -242,13 +243,6 @@ class SettingsBatchImportRequest(BaseModel):
     records: list[SettingsImportRecord] = Field(..., max_length=500)
 
 
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str]
-
-
 class UnitRecord(BaseModel):
     name: str
     label: str
@@ -268,7 +262,7 @@ class CompanyCreate(BaseModel):
 # Company profile
 # ---------------------------------------------------------------------------
 
-@router.post("")
+@router.post("", openapi_extra=agent_excluded("switch"))
 async def create_company(
     payload: CompanyCreate,
     ctx: AuthContext = Depends(get_auth_context),
@@ -283,13 +277,13 @@ async def create_company(
     except Exception as e:
         await session.rollback()
         logger.error("create_company failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Could not create company: {e}") from e
+        raise HTTPException(status_code=400, detail=t("company.err_could_not_create_company_e", e=e)) from e
     # Creating a company is a continuation of the current owner session: pass the
     # snonce it authenticated on so a concurrent revocation cannot be jumped over.
     return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
 
 
-@router.get("/me")
+@router.get("/me", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read the company's profile and settings, such as its name, address, currency and fiscal year.")
 async def me(
     company_id=Depends(get_current_company_id),
     role: str = Depends(get_current_role),
@@ -310,7 +304,7 @@ async def me(
     }
 
 
-@router.get("/commercial-state")
+@router.get("/commercial-state", openapi_extra={"x-celerp-agent": True}, summary="Show the company's Celerp Cloud plan state, such as active, trial or lapsed.")
 async def commercial_state(_: None = require_permission("manage_integrations")) -> dict:
     """Return the live commercial state the API process holds from the relay WS
     push, for the separate UI process to read over an authenticated seam.
@@ -335,7 +329,7 @@ async def commercial_state(_: None = require_permission("manage_integrations")) 
     }
 
 
-@router.patch("/me")
+@router.patch("/me", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general"}, summary="Change the company's profile, such as its name, address, tax number or logo.")
 async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company_id), _: None = require_permission("manage_company_settings"), session: AsyncSession = Depends(get_session)) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
@@ -352,7 +346,7 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
         if "timezone" in payload.settings:
             try:
                 business_timezone(payload.settings.get("timezone"))
-            except ValueError as exc:
+            except Refused as exc:
                 raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
         require_phone(payload.settings.get("phone"))
         company.settings = merged
@@ -431,7 +425,7 @@ async def _check_books_change(session: AsyncSession, company_id, current: dict, 
     return value
 
 
-@router.patch("/me/books")
+@router.patch("/me/books", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/accounting"}, summary="Change the settings the books depend on, such as the company currency and the fiscal year start.")
 async def patch_books(
     payload: BooksPatch,
     company_id=Depends(get_current_company_id),
@@ -464,7 +458,7 @@ async def patch_books(
     return {key: settings.get(key) for key in sorted(BOOKS_KEYS)}
 
 
-@router.patch("/me/role-permissions")
+@router.patch("/me/role-permissions", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/members"}, summary="Grant or remove one permission for one role in the company's permission matrix.")
 async def patch_role_permissions(
     payload: RolePermissionPatch,
     company_id=Depends(get_current_company_id),
@@ -480,9 +474,9 @@ async def patch_role_permissions(
     """
     perm = next((p for p in PERMISSIONS if p.key == payload.perm_key), None)
     if perm is None:
-        raise HTTPException(status_code=422, detail=f"Unknown permission '{payload.perm_key}'")
+        raise HTTPException(status_code=422, detail=t("settings.unknown_permission", perm_key=payload.perm_key))
     if payload.role_key not in ROLE_LEVELS:
-        raise HTTPException(status_code=422, detail=f"Unknown role '{payload.role_key}'")
+        raise HTTPException(status_code=422, detail=t("company.err_unknown_role_role_key", role_key=payload.role_key))
     if not perm.grantable:
         raise HTTPException(status_code=403, detail=t("company.err_permission_fixed"))
 
@@ -523,7 +517,7 @@ _NAV_WRITE_RESPONSES = {
 
 
 @router.get("/me/nav-overrides", responses={200: {"headers": {"ETag": {
-    "description": "The revision of these choices, for If-Match on a write.", "schema": {"type": "string"}}}}})
+    "description": "The revision of these choices, for If-Match on a write.", "schema": {"type": "string"}}}}}, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read the company's side menu choices: which entries and groups are hidden and their order.")
 async def get_nav_overrides(
     response: Response,
     company_id=Depends(get_current_company_id),
@@ -554,7 +548,7 @@ async def _nav_overrides_for_write(expected: str | None, session: AsyncSession, 
     return company, settings
 
 
-@router.patch("/me/nav-overrides", responses=_NAV_WRITE_RESPONSES)
+@router.patch("/me/nav-overrides", responses=_NAV_WRITE_RESPONSES, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/menu"}, summary="Change which side menu entries and groups the company hides and the order they appear in.")
 async def patch_nav_overrides(
     payload: NavOverridesPatch,
     if_match: _NAV_IF_MATCH = None,
@@ -583,7 +577,7 @@ async def patch_nav_overrides(
     return {field: cleaned.get(field, []) for field in nav_overrides.FIELDS}
 
 
-@router.delete("/me/nav-overrides", responses=_NAV_WRITE_RESPONSES)
+@router.delete("/me/nav-overrides", responses=_NAV_WRITE_RESPONSES, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/menu"}, summary="Put the side menu back to its default entries and order.")
 async def reset_nav_overrides(
     if_match: _NAV_IF_MATCH = None,
     company_id=Depends(get_current_company_id),
@@ -606,7 +600,7 @@ async def reset_nav_overrides(
 # Locations
 # ---------------------------------------------------------------------------
 
-@router.get("/import/template", response_class=PlainTextResponse, include_in_schema=False)
+@router.get("/import/template", response_class=PlainTextResponse, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-download": "/companies/import/template"}, summary="Download the spreadsheet template for importing company settings.")
 async def import_settings_template():
     return PlainTextResponse(
         "entity_id,event_type,idempotency_key\n",
@@ -615,7 +609,7 @@ async def import_settings_template():
     )
 
 
-@router.post("/import/batch", response_model=BatchImportResult)
+@router.post("/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records"}, summary="Import a batch of company settings rows from a spreadsheet.")
 async def batch_import_settings(
     body: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
@@ -637,14 +631,14 @@ async def batch_import_settings(
     )).scalars().all())
 
     created = skipped = 0
-    errors: list[str] = []
+    errors: list[str | dict] = []
     for rec in body.records:
         # This legacy transport is a company snapshot import, not arbitrary access
         # to the system-event namespace. User/API-key/backup/migration events have
         # different owners and must never be emitted against the company projection.
         if rec.event_type != "sys.company.created":
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+                errors.append(record_refused(rec.entity_id, "not_import_safe", event_type=rec.event_type))
             skipped += 1
             continue
         if rec.idempotency_key in existing_keys:
@@ -672,13 +666,13 @@ async def batch_import_settings(
                 created += 1
         except Exception as exc:
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
+                errors.append(row_refusal(rec.entity_id, exc))
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, errors=errors)
 
 
-@router.post("/me/locations")
+@router.post("/me/locations", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Add a new location, such as a warehouse, shop or office, where stock can be kept.")
 async def create_location(
     payload: LocationCreate,
     company_id=Depends(get_current_company_id),
@@ -720,7 +714,7 @@ class LocationBatchImportRequest(BaseModel):
     records: list[dict] = Field(..., max_length=500)
 
 
-@router.post("/me/locations/import/batch")
+@router.post("/me/locations/import/batch", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory", "x-celerp-agent-selection": "records"}, summary="Import a batch of locations from a spreadsheet.")
 async def import_locations_batch(
     payload: LocationBatchImportRequest,
     company_id=Depends(get_current_company_id),
@@ -733,13 +727,14 @@ async def import_locations_batch(
         r.name
         for r in (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
     }
-    created = skipped = failed = 0
+    created = skipped = 0
+    errors: list[dict] = []
     first = True
-    for rec in payload.records:
+    for i, rec in enumerate(payload.records):
         name = (rec.get("name") or "").strip()
         loc_type = (rec.get("type") or "warehouse").strip()
         if not name:
-            failed += 1
+            errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
             continue
         if name in existing:
             skipped += 1
@@ -755,17 +750,17 @@ async def import_locations_batch(
         created += 1
         first = False
     await session.commit()
-    return {"created": created, "skipped": skipped, "failed": failed}
+    return {"created": created, "skipped": skipped, "failed": len(errors), "errors": errors}
 
 
-@router.get("/me/locations")
+@router.get("/me/locations", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the company's locations, such as warehouses, shops and offices.")
 async def list_locations(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
     items = [{"id": str(r.id), "name": r.name, "type": r.type, "address": r.address, "is_default": r.is_default} for r in rows]
     return {"items": items, "total": len(items)}
 
 
-@router.patch("/me/locations/{location_id}")
+@router.patch("/me/locations/{location_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Change a location's name, address or type.")
 async def patch_location(
     location_id: str,
     payload: LocationPatch,
@@ -808,7 +803,7 @@ async def patch_location(
             "is_default": loc.is_default, "taxes_from": taxes_from}
 
 
-@router.delete("/me/locations/{location_id}")
+@router.delete("/me/locations/{location_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Delete a location that no longer holds any stock.")
 async def delete_location(
     location_id: str,
     company_id=Depends(get_current_company_id),
@@ -857,9 +852,16 @@ async def delete_location(
 
 
 
-@router.get("/me/users")
-async def list_users(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    from celerp.models.accounting import UserCompany
+@router.get("/me/users", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_users"]}, summary="List the company's members with their roles and whether they are active.")
+async def list_users(
+    company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Every role sees who the members are; their email addresses go only to a role that
+    can manage users (``email`` is None otherwise, so the shape stays the same)."""
+    emails = role_has_permission(settings, role, "manage_users")
     rows = (
         await session.execute(
             select(User, UserCompany.role, UserCompany.is_active).join(UserCompany, UserCompany.user_id == User.id).where(
@@ -868,14 +870,14 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
         )
     ).all()
     items = [
-        {"id": str(u.id), "email": u.email, "name": u.name, "role": normalize_role(role), "is_active": uc_active,
+        {"id": str(u.id), "email": u.email if emails else None, "name": u.name, "role": normalize_role(role), "is_active": uc_active,
          "is_install_owner": bool(u.is_install_owner)}
         for u, role, uc_active in rows
     ]
     return {"items": items, "total": len(items)}
 
 
-@router.post("/me/users/{user_id}/installation-owner")
+@router.post("/me/users/{user_id}/installation-owner", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/members"}, summary="Hand installation-wide authority over to another active member of this company.")
 async def transfer_install_owner(
     user_id: uuid.UUID,
     company_id=Depends(get_current_company_id),
@@ -896,7 +898,7 @@ async def transfer_install_owner(
     )).scalars().all()
     current = next((u for u in logins if u.is_install_owner), None)
     if current is None or current.id != owner.id:
-        raise HTTPException(status_code=403, detail="Installation owner access required")
+        raise HTTPException(status_code=403, detail=t("company.err_installation_owner_access_required"))
     if current.id == user_id:
         return {"ok": True}
 
@@ -931,13 +933,20 @@ class StaffPasswordBody(BaseModel):
     new_password: str
 
 
-async def _staff_reset_target(
-    session: AsyncSession, company_id, caller: User, caller_role: str, user_id: uuid.UUID, *, lock: bool,
-) -> User:
-    """The staff member whose password the caller may set, or the refusal that says
-    why not and who can. With lock, the rows are held for the reset that follows."""
+async def _company_owner(caller_role: str = Depends(get_current_role)) -> None:
+    """Only the company owner may set a member's password."""
     if caller_role != "owner":
         raise HTTPException(status_code=403, detail=t("users.reset_password_owner_only"))
+
+
+agent_gate(_company_owner, "owner")
+
+
+async def _staff_reset_target(
+    session: AsyncSession, company_id, caller: User, user_id: uuid.UUID, *, lock: bool,
+) -> User:
+    """The staff member whose password the owner may set, or the refusal that says
+    why not and who can. With lock, the rows are held for the reset that follows."""
     target_q = select(User).where(User.id == user_id)
     if lock:
         # The user's row, then the company, then the memberships: the order patch_user
@@ -968,27 +977,25 @@ async def _staff_reset_target(
     return target
 
 
-@router.get("/me/users/{user_id}/password")
+@router.get("/me/users/{user_id}/password", dependencies=[Depends(_company_owner)], openapi_extra={"x-celerp-agent": True}, summary="Show whether the user may set a new password for this member.")
 async def can_reset_user_password(
     user_id: uuid.UUID,
     company_id=Depends(get_current_company_id),
     caller: User = Depends(get_current_user),
-    caller_role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Whether the caller may set this member's password, answered before they type
     one: the same refusal the reset itself gives."""
-    await _staff_reset_target(session, company_id, caller, caller_role, user_id, lock=False)
+    await _staff_reset_target(session, company_id, caller, user_id, lock=False)
     return {"ok": True}
 
 
-@router.post("/me/users/{user_id}/password")
+@router.post("/me/users/{user_id}/password", dependencies=[Depends(_company_owner)], openapi_extra=agent_excluded("secret"))
 async def reset_user_password(
     user_id: uuid.UUID,
     payload: StaffPasswordBody,
     company_id=Depends(get_current_company_id),
     caller: User = Depends(get_current_user),
-    caller_role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """An owner sets a new password for a member of their company who is not an owner;
@@ -997,7 +1004,7 @@ async def reset_user_password(
     owner's to reset."""
     from celerp.services.password_reset import reset_password
 
-    target = await _staff_reset_target(session, company_id, caller, caller_role, user_id, lock=True)
+    target = await _staff_reset_target(session, company_id, caller, user_id, lock=True)
     try:
         await reset_password(session, target, payload.new_password, method="owner", by_user=caller)
     except ValueError:
@@ -1013,7 +1020,7 @@ def _assert_role_assignable(caller_role: str, target_role: str) -> None:
         raise HTTPException(status_code=403, detail=t("company.err_role_above_own"))
 
 
-@router.post("/me/users")
+@router.post("/me/users", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/members", "x-celerp-agent-generated-secret": "password"}, summary="Add a new member to the company with their name, email and role.")
 async def create_user(
     payload: UserCreate,
     company_id=Depends(get_current_company_id),
@@ -1024,7 +1031,7 @@ async def create_user(
     from celerp.models.accounting import UserCompany
 
     if payload.role not in ROLE_LEVELS:
-        raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
+        raise HTTPException(400, t("company.err_invalid_role_must_one_role_levels", role_levels=', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))))
     _assert_role_assignable(caller_role, payload.role)
 
     # The user's row is held, or inserted, before the company lock (tests/lock_rank.py
@@ -1032,6 +1039,8 @@ async def create_user(
     user = (await session.execute(
         select(User).where(User.email == payload.email).with_for_update(read=True, key_share=True)
     )).scalar_one_or_none()
+    # A linked member keeps their own password, so the generated one is never shown.
+    linked = user is not None
     if user is None:
         # Only the branch that actually creates a new password hash enforces the length
         # policy; linking an existing global user never touches this password field.
@@ -1040,7 +1049,7 @@ async def create_user(
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
+                detail=t("auth.err_password_must_at_least_min_password", min_password_length=MIN_PASSWORD_LENGTH),
             )
         user = User(
             id=uuid.uuid4(),
@@ -1068,10 +1077,10 @@ async def create_user(
         await session.rollback()
         logger.error("create_user failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=t("company.err_user_not_added")) from e
-    return {"id": str(user.id)}
+    return {"id": str(user.id), "linked": linked}
 
 
-@router.patch("/me/users/{user_id}")
+@router.patch("/me/users/{user_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/members"}, summary="Change a member's name, role or whether they are active.")
 async def patch_user(
     user_id: uuid.UUID,
     payload: UserPatch,
@@ -1112,7 +1121,7 @@ async def patch_user(
     security_change = False
     if payload.role is not None:
         if payload.role not in ROLE_LEVELS:
-            raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
+            raise HTTPException(400, t("company.err_invalid_role_must_one_role_levels", role_levels=', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))))
         # Nor may they promote anyone above their own role.
         _assert_role_assignable(caller_role, payload.role)
         # Guard: cannot demote the last active owner
@@ -1180,7 +1189,7 @@ from celerp.services.field_schema import get_effective_field_schema  # noqa: F40
 from celerp.services.field_schema import reject_system_item_fields
 
 
-@router.get("/me/item-schema")
+@router.get("/me/item-schema", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["view_inventory_costs"]}, summary="Read the item fields the company uses, with their labels, types and which are shown.")
 async def get_item_schema(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> list[dict]:
     schema = await get_effective_field_schema(session, company_id)
     if not role_has_permission(settings, role, "view_inventory_costs"):
@@ -1188,7 +1197,7 @@ async def get_item_schema(company_id=Depends(get_current_company_id), role: str 
     return schema
 
 
-@router.patch("/me/item-schema")
+@router.patch("/me/item-schema", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Change the item fields the company uses, such as adding a field or renaming its label.")
 async def patch_item_schema(
     payload: ItemSchemaPatch,
     company_id=Depends(get_current_company_id),
@@ -1210,7 +1219,7 @@ async def patch_item_schema(
 # Category schema - per-category attribute column definitions
 # ---------------------------------------------------------------------------
 
-@router.get("/me/category-schema/{category}")
+@router.get("/me/category-schema/{category}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read the extra item fields one category uses.")
 async def get_category_schema(category: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
@@ -1219,7 +1228,7 @@ async def get_category_schema(category: str, company_id=Depends(get_current_comp
     return all_category_schemas(company.settings or {}).get(category, [])
 
 
-@router.patch("/me/category-schema/{category}")
+@router.patch("/me/category-schema/{category}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Change the extra item fields one category uses.")
 async def patch_category_schema(
     category: str,
     payload: CategorySchemaPatch,
@@ -1240,7 +1249,7 @@ async def patch_category_schema(
     return {"ok": True, "category": category, "field_count": len(payload.fields)}
 
 
-@router.get("/me/company-category-schemas")
+@router.get("/me/company-category-schemas", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the item field sets the company defined for its own categories.")
 async def get_company_category_schemas(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Return only company-level category schemas (no module defaults). Used to determine which categories the user explicitly applied."""
     company = await session.get(Company, company_id)
@@ -1249,7 +1258,7 @@ async def get_company_category_schemas(company_id=Depends(get_current_company_id
     return dict(company.settings.get("category_schemas") or {})
 
 
-@router.get("/me/category-display-names")
+@router.get("/me/category-display-names", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the display name of every item category.")
 async def get_category_display_names(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Return display names keyed by category slug."""
     company = await session.get(Company, company_id)
@@ -1258,7 +1267,7 @@ async def get_category_display_names(company_id=Depends(get_current_company_id),
     return dict(company.settings.get("category_display_names") or {})
 
 
-@router.get("/me/category-schemas")
+@router.get("/me/category-schemas", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the item fields of every category, including the defaults modules provide.")
 async def get_all_category_schemas(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Return all category schemas keyed by category name (module defaults plus company overrides)."""
     from celerp.services.field_schema import all_category_schemas
@@ -1277,7 +1286,7 @@ def _slugify_category(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
-@router.post("/me/categories")
+@router.post("/me/categories", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Add a new item category.")
 async def create_category(
     payload: dict,
     company_id=Depends(get_current_company_id),
@@ -1321,7 +1330,7 @@ def _move_category_settings(settings: dict, old: str, new: str | None) -> None:
         settings[GIFT_CATEGORIES] = sorted({*(k for k in gifts if k != old), *([new] if new else [])})
 
 
-@router.patch("/me/categories/{category_key}")
+@router.patch("/me/categories/{category_key}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Rename an item category, moving every item in it to the new name.")
 async def rename_category(
     category_key: str,
     payload: dict,
@@ -1381,7 +1390,7 @@ async def rename_category(
     return {"ok": True, "items_updated": updated}
 
 
-@router.delete("/me/categories/{category_key}")
+@router.delete("/me/categories/{category_key}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Delete an item category.")
 async def delete_category(
     category_key: str,
     company_id=Depends(get_current_company_id),
@@ -1407,7 +1416,7 @@ async def delete_category(
     if item_count > 0:
         raise HTTPException(
             status_code=409,
-            detail={"detail": t("company.err_category_in_use", count=item_count), "item_count": item_count},
+            detail={**catalog_refusal("company.err_category_in_use", count=item_count), "item_count": item_count},
         )
     cat_schemas.pop(category_key)
     settings["category_schemas"] = cat_schemas
@@ -1424,7 +1433,7 @@ class CategoryIncomeAccount(BaseModel):
     income_account: str | None = None
 
 
-@router.get("/me/category-income-accounts")
+@router.get("/me/category-income-accounts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show the revenue account each item category's sales are credited to.")
 async def get_category_income_accounts(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """The revenue account each category's sales are credited to, keyed by category; a
     category without one is absent and its items sell on the sales revenue account."""
@@ -1434,7 +1443,7 @@ async def get_category_income_accounts(company_id=Depends(get_current_company_id
     return dict(company.settings.get(CATEGORY_INCOME_ACCOUNTS) or {})
 
 
-@router.put("/me/categories/{category_key}/income-account")
+@router.put("/me/categories/{category_key}/income-account", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Set or clear the revenue account an item category's sales are credited to.")
 async def set_category_income_account(
     category_key: str,
     payload: CategoryIncomeAccount,
@@ -1471,7 +1480,7 @@ class CategoryGift(BaseModel):
     gift: bool
 
 
-@router.put("/me/categories/{category_key}/gift")
+@router.put("/me/categories/{category_key}/gift", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Mark or unmark an item category as gifts whose sales never defer revenue.")
 async def set_category_gift(
     category_key: str,
     payload: CategoryGift,
@@ -1496,7 +1505,7 @@ async def set_category_gift(
     return {"ok": True, "category": category_key, "gift": payload.gift}
 
 
-@router.get("/me/column-prefs")
+@router.get("/me/column-prefs", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read which columns the item list shows for each category.")
 async def get_column_prefs(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Return column visibility prefs keyed by category or '__all__'."""
     company = await session.get(Company, company_id)
@@ -1505,7 +1514,7 @@ async def get_column_prefs(company_id=Depends(get_current_company_id), session: 
     return company.settings.get("column_prefs") or {}
 
 
-@router.patch("/me/column-prefs")
+@router.patch("/me/column-prefs", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general", "x-celerp-agent-any-role": True}, summary="Change which columns the item list shows for a category.")
 async def patch_column_prefs(
     payload: ColumnPrefsPatch,
     company_id=Depends(get_current_company_id),
@@ -1528,7 +1537,7 @@ async def patch_column_prefs(
 # Tax rates
 # ---------------------------------------------------------------------------
 
-@router.get("/me/taxes")
+@router.get("/me/taxes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the company's sales tax rates.")
 async def get_taxes(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
@@ -1536,7 +1545,7 @@ async def get_taxes(company_id=Depends(get_current_company_id), session: AsyncSe
     return sales_taxes(company.settings)
 
 
-@router.patch("/me/taxes")
+@router.patch("/me/taxes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/sales"}, summary="Change the company's sales tax rates, such as adding a rate or changing its percentage.")
 async def patch_taxes(
     payload: TaxRatesPatch,
     company_id=Depends(get_current_company_id),
@@ -1553,7 +1562,7 @@ async def patch_taxes(
     return {"ok": True}
 
 
-@router.post("/me/taxes/import/batch", response_model=BatchImportResult)
+@router.post("/me/taxes/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/sales", "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records"}, summary="Import a batch of sales tax rates from a spreadsheet.")
 async def import_taxes_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
@@ -1586,7 +1595,7 @@ async def import_taxes_batch(
         description = str(r.get("description", "") or "").strip()
 
         if not name:
-            res.errors.append(f"row:{i}: Missing name")
+            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
             continue
 
         key = name.lower()
@@ -1597,11 +1606,11 @@ async def import_taxes_batch(
         try:
             rate = float(rate_raw)
         except Exception:
-            res.errors.append(f"{name}: Invalid rate")
+            res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
             continue
 
         if tax_type not in {"sales", "purchase", "both"}:
-            res.errors.append(f"{name}: Invalid tax_type: {tax_type}")
+            res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
             continue
 
         is_default = bool(is_default_raw)
@@ -1630,7 +1639,7 @@ async def import_taxes_batch(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/me/payment-terms")
+@router.get("/me/payment-terms", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the company's sales payment terms, such as Net 30.")
 async def get_payment_terms(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
@@ -1638,7 +1647,7 @@ async def get_payment_terms(company_id=Depends(get_current_company_id), session:
     return company_payment_terms(company.settings)
 
 
-@router.patch("/me/payment-terms")
+@router.patch("/me/payment-terms", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/sales"}, summary="Change the company's sales payment terms, such as adding Net 45.")
 async def patch_payment_terms(
     payload: PaymentTermsPatch,
     company_id=Depends(get_current_company_id),
@@ -1655,7 +1664,7 @@ async def patch_payment_terms(
     return {"ok": True}
 
 
-@router.post("/me/payment-terms/import/batch", response_model=BatchImportResult)
+@router.post("/me/payment-terms/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/sales", "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records"}, summary="Import a batch of sales payment terms from a spreadsheet.")
 async def import_payment_terms_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
@@ -1686,7 +1695,7 @@ async def import_payment_terms_batch(
         description = str(r.get("description", "") or "").strip()
 
         if not name:
-            res.errors.append(f"row:{i}: Missing name")
+            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
             continue
 
         key = name.lower()
@@ -1697,7 +1706,7 @@ async def import_payment_terms_batch(
         try:
             days = int(days_raw)
         except Exception:
-            res.errors.append(f"{name}: Invalid days")
+            res.errors.append(row_refusal(name, catalog_refusal("error.days_must_be_number")))
             continue
 
         terms.append({"name": name, "days": days, "description": description})
@@ -1715,7 +1724,7 @@ async def import_payment_terms_batch(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/me/contact-tags")
+@router.get("/me/contact-tags", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the tags the company uses to group contacts.")
 async def get_contact_tags(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
@@ -1723,7 +1732,7 @@ async def get_contact_tags(company_id=Depends(get_current_company_id), session: 
     return company.settings.get("contact_tags") or []
 
 
-@router.patch("/me/contact-tags")
+@router.patch("/me/contact-tags", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/contacts"}, summary="Change the tags the company uses to group contacts.")
 async def patch_contact_tags(
     payload: ContactTagsPatch,
     company_id=Depends(get_current_company_id),
@@ -1745,7 +1754,7 @@ async def patch_contact_tags(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/me/contact-defaults")
+@router.get("/me/contact-defaults", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read the defaults new contacts get, such as their currency and payment terms.")
 async def get_contact_defaults(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     company = await session.get(Company, company_id)
     if company is None:
@@ -1753,7 +1762,7 @@ async def get_contact_defaults(company_id=Depends(get_current_company_id), sessi
     return company.settings.get("contact_defaults") or {}
 
 
-@router.patch("/me/contact-defaults")
+@router.patch("/me/contact-defaults", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/contacts"}, summary="Change the defaults new contacts get, such as their currency and payment terms.")
 async def patch_contact_defaults(
     payload: ContactDefaultsPatch,
     company_id=Depends(get_current_company_id),
@@ -1774,7 +1783,7 @@ async def patch_contact_defaults(
 # Terms & Conditions templates
 # ---------------------------------------------------------------------------
 
-@router.get("/me/terms-conditions")
+@router.get("/me/terms-conditions", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read the terms and conditions printed on the company's documents.")
 async def get_terms_conditions(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
@@ -1783,7 +1792,7 @@ async def get_terms_conditions(company_id=Depends(get_current_company_id), sessi
     return terms_templates(company.settings)
 
 
-@router.patch("/me/terms-conditions")
+@router.patch("/me/terms-conditions", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/sales"}, summary="Change the terms and conditions printed on the company's documents.")
 async def patch_terms_conditions(
     payload: TermsConditionsPatch,
     company_id=Depends(get_current_company_id),
@@ -1813,7 +1822,7 @@ def _purchasing_list(settings: dict, key: str, sales_key: str, default: list[dic
     return copy.deepcopy(configured(settings, sales_key, default))
 
 
-@router.get("/me/purchasing-taxes")
+@router.get("/me/purchasing-taxes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the company's purchase tax rates.")
 async def get_purchasing_taxes(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -1824,7 +1833,7 @@ async def get_purchasing_taxes(
     return purchasing_taxes(company.settings)
 
 
-@router.patch("/me/purchasing-taxes")
+@router.patch("/me/purchasing-taxes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/purchasing"}, summary="Change the company's purchase tax rates.")
 async def patch_purchasing_taxes(
     payload: TaxRatesPatch,
     company_id=Depends(get_current_company_id),
@@ -1842,7 +1851,7 @@ async def patch_purchasing_taxes(
     return {"ok": True}
 
 
-@router.post("/me/purchasing-taxes/import/batch", response_model=BatchImportResult)
+@router.post("/me/purchasing-taxes/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/purchasing", "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records"}, summary="Import a batch of purchase tax rates from a spreadsheet.")
 async def import_purchasing_taxes_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
@@ -1859,7 +1868,7 @@ async def import_purchasing_taxes_batch(
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()
         if not name:
-            res.errors.append(f"row:{i}: Missing name")
+            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
             continue
         if name.lower() in existing_names:
             res.skipped += 1
@@ -1867,11 +1876,11 @@ async def import_purchasing_taxes_batch(
         try:
             rate = float(r.get("rate", None))
         except Exception:
-            res.errors.append(f"{name}: Invalid rate")
+            res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
             continue
         tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
         if tax_type not in {"sales", "purchase", "both"}:
-            res.errors.append(f"{name}: Invalid tax_type: {tax_type}")
+            res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
             continue
         is_default_raw = r.get("is_default", False)
         is_default = bool(is_default_raw) if isinstance(is_default_raw, bool) else str(is_default_raw).strip().lower() in {"true", "1", "yes"}
@@ -1886,7 +1895,7 @@ async def import_purchasing_taxes_batch(
     return res
 
 
-@router.get("/me/purchasing-payment-terms")
+@router.get("/me/purchasing-payment-terms", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the payment terms the company uses with its vendors.")
 async def get_purchasing_payment_terms(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -1897,7 +1906,7 @@ async def get_purchasing_payment_terms(
     return _purchasing_list(company.settings, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS)
 
 
-@router.patch("/me/purchasing-payment-terms")
+@router.patch("/me/purchasing-payment-terms", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/purchasing"}, summary="Change the payment terms the company uses with its vendors.")
 async def patch_purchasing_payment_terms(
     payload: PaymentTermsPatch,
     company_id=Depends(get_current_company_id),
@@ -1914,7 +1923,7 @@ async def patch_purchasing_payment_terms(
     return {"ok": True}
 
 
-@router.post("/me/purchasing-payment-terms/import/batch", response_model=BatchImportResult)
+@router.post("/me/purchasing-payment-terms/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/purchasing", "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records"}, summary="Import a batch of vendor payment terms from a spreadsheet.")
 async def import_purchasing_payment_terms_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
@@ -1931,7 +1940,7 @@ async def import_purchasing_payment_terms_batch(
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()
         if not name:
-            res.errors.append(f"row:{i}: Missing name")
+            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
             continue
         if name.lower() in existing_names:
             res.skipped += 1
@@ -1939,7 +1948,7 @@ async def import_purchasing_payment_terms_batch(
         try:
             days = int(r.get("days", None))
         except Exception:
-            res.errors.append(f"{name}: Invalid days")
+            res.errors.append(row_refusal(name, catalog_refusal("error.days_must_be_number")))
             continue
         terms.append({"name": name, "days": days, "description": str(r.get("description", "") or "").strip()})
         existing_names.add(name.lower())
@@ -1973,13 +1982,13 @@ def _validate_units(units: list[UnitRecord]) -> None:
         if not (0 <= u.decimals <= 6):
             raise HTTPException(status_code=422, detail=t("company.err_unit_decimals", name=u.name))
         if u.unit_type not in _VALID_UNIT_TYPES:
-            raise HTTPException(status_code=422, detail=f"Unit '{u.name}' type must be one of: {', '.join(sorted(_VALID_UNIT_TYPES))}")
+            raise HTTPException(status_code=422, detail=t("company.err_unit_name_type_must_one_valid", name=u.name, valid_unit_types=', '.join(sorted(_VALID_UNIT_TYPES))))
         if u.name in seen:
             raise HTTPException(status_code=422, detail=t("company.err_unit_duplicate", name=u.name))
         seen.add(u.name)
 
 
-@router.get("/me/units")
+@router.get("/me/units", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the units of measure the company uses, such as pieces, kilograms or boxes.")
 async def get_units(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
@@ -1987,7 +1996,7 @@ async def get_units(company_id=Depends(get_current_company_id), session: AsyncSe
     return settings_units(company.settings)
 
 
-@router.put("/me/units")
+@router.put("/me/units", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Replace the list of units of measure the company uses.")
 async def put_units(
     payload: UnitsPatch,
     company_id=Depends(get_current_company_id),
@@ -2009,7 +2018,7 @@ async def put_units(
 
 # ── Module management ──────────────────────────────────────────────────────────
 
-@router.get("/me/modules")
+@router.get("/me/modules", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_settings"]}, summary="List the installed modules and whether each is turned on for this company.")
 async def list_modules(
     company_id=Depends(get_current_company_id),
     role: str = Depends(get_current_role),
@@ -2134,7 +2143,7 @@ async def list_modules(
     return modules
 
 
-@router.post("/me/modules/{module_name}/enable", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/{module_name}/enable", dependencies=[require_permission("manage_company_settings")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Turn a module on for this company, together with the modules it needs.")
 async def enable_module(
     module_name: str,
     company_id=Depends(get_current_company_id),
@@ -2169,26 +2178,27 @@ async def enable_module(
     }
 
 
-@router.post("/me/modules/{module_name}/disable", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/{module_name}/disable", dependencies=[require_permission("manage_company_settings")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Turn a module off for this company.")
 async def disable_module(
     module_name: str,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Turn a module off for this company. Other companies keep using it. Refused for a
-    module built into Celerp, which is always on."""
+    module built into Celerp, which is always on, and for a name that is neither installed
+    nor on."""
     from celerp.accounting_roles import refusal
     from celerp.modules.boundary import refused_past_lock_timeout, settle_module_use, take_company_locks
     from celerp.modules.loader import is_core_folded, module_label
     from celerp.modules.registry import (
         ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled,
-        hold_company_modules, hold_module_gate, hold_module_state,
+        hold_company_modules, hold_module_gate, hold_module_state, is_installed,
     )
     from celerp.services.turn_off_preflight import outstanding
 
     if is_core_folded(module_name):
         raise HTTPException(status_code=409, detail=(
-            f"{module_label(module_name)} is part of Celerp and is always on."))
+            t("company.err_module_label_part_celerp_always", module_label=module_label(module_name))))
 
     # Each wait is bounded, so the answer always comes within the UI's wait
     # (api_client.disable_module): turned off, or a 409 that says to try again.
@@ -2206,6 +2216,8 @@ async def disable_module(
         session, lambda: hold_company_modules(session, company_id), lambda: locked_company(session, company_id))
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    if not is_installed(module_name) and module_name not in get_enabled(company.settings):
+        raise HTTPException(status_code=404, detail=t("company.err_module_not_found"))
     blocking = (await outstanding(session, company_id, module_name))["blocking"]
     if blocking:
         raise HTTPException(status_code=409, detail=t(
@@ -2215,8 +2227,7 @@ async def disable_module(
         company.settings = disable_for_company(company.settings, module_name)
     except ModuleStillNeeded as exc:
         raise HTTPException(status_code=409, detail=(
-            f"{', '.join(module_label(n) for n in exc.needed_by)} needs this module. "
-            "Turn that off first."))
+            t("company.err_value_needs_module_turn_off_first", value=', '.join((module_label(n) for n in exc.needed_by)))))
     await commit_with_load_set(session, activated=[])
     return {
         "ok": True, "name": module_name, "enabled": False, "restart_required": False,
@@ -2239,7 +2250,7 @@ async def _refuse_while_in_use(session: AsyncSession, module_name: str, action: 
                 action=action))
 
 
-@router.post("/me/modules/{module_name}/delete", dependencies=[Depends(require_install_owner)])
+@router.post("/me/modules/{module_name}/delete", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Delete the folder of an added module no company uses, so its package can be added again later.")
 async def delete_module(
     module_name: str,
     session: AsyncSession = Depends(get_session),
@@ -2270,7 +2281,7 @@ async def delete_module(
     try:
         await asyncio.to_thread(remove_module_dir, module_name)
     except ModuleImportError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=refusal_detail(exc))
     await session.commit()
 
     return {"ok": True, "name": module_name}
@@ -2326,7 +2337,7 @@ def _is_fk_dependency_error(exc: Exception) -> bool:
     return sqlstate(exc) == "2BP01" or "depend" in str(exc).lower()
 
 
-@router.post("/me/modules/{module_name}/purge-data", dependencies=[Depends(require_install_owner)])
+@router.post("/me/modules/{module_name}/purge-data", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Permanently drop every table of a module no company uses.")
 async def purge_module_data(
     module_name: str,
     session: AsyncSession = Depends(get_session),
@@ -2394,7 +2405,7 @@ class _ImportPathBody(BaseModel):
     path: str
 
 
-@router.post("/me/modules/import", dependencies=[Depends(require_install_owner)])
+@router.post("/me/modules/import", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Add a module from an uploaded .zip package; it stays off until turned on.")
 async def import_module_upload(
     request: Request,
     file: UploadFile = File(...),
@@ -2417,7 +2428,7 @@ async def import_module_upload(
     from celerp.modules.meta import IMPORT_SOURCES
 
     if source not in IMPORT_SOURCES:
-        raise HTTPException(status_code=422, detail="Unknown module source.")
+        raise HTTPException(status_code=422, detail=t("company.err_unknown_module_source"))
     # Reject on the declared length before reading, then read with a hard cap so
     # an oversize (or lying-Content-Length) body cannot be buffered whole in RAM.
     clen = request.headers.get("content-length")
@@ -2429,11 +2440,11 @@ async def import_module_upload(
     try:
         info = await asyncio.to_thread(install_from_zip, data, source=source)
     except ModuleImportError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=refusal_detail(exc))
     return {"ok": True, **info}
 
 
-@router.post("/me/modules/import-path", dependencies=[Depends(require_install_owner)])
+@router.post("/me/modules/import-path", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Add a module from a folder on this computer; it stays off until turned on.")
 async def import_module_from_path(body: _ImportPathBody) -> dict:
     """Install a module from a local folder path (desktop folder picker). Installation owner only.
 
@@ -2447,7 +2458,7 @@ async def import_module_from_path(body: _ImportPathBody) -> dict:
     try:
         info = await asyncio.to_thread(install_from_folder, body.path)
     except ModuleImportError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=refusal_detail(exc))
     return {"ok": True, **info}
 
 
@@ -2492,11 +2503,12 @@ class _BuyBody(BaseModel):
     custom_text: str | None = None   # buyer-language purchase disclosures for the Checkout page
 
 
-@router.post("/me/modules/buy", dependencies=[Depends(require_install_owner)])
+@router.post("/me/modules/buy", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Get the checkout link to buy a paid module.")
 async def buy_module(body: _BuyBody) -> dict:
     """Start a purchase: ask the relay for a Stripe Checkout URL for this module.
     The UI opens it in the browser, then polls the license. Installation owner only."""
     import httpx
+    from celerp.gateway.state import cloud_refusal
     url, jwt = await _relay_creds()
     payload: dict = {"slug": body.slug, "kind": body.kind}
     if body.custom_text:
@@ -2506,15 +2518,14 @@ async def buy_module(body: _BuyBody) -> dict:
                          json=payload,
                          headers={"Authorization": f"Bearer {jwt}"})
     if r.status_code != 200:
-        raise HTTPException(status_code=r.status_code,
-                            detail=_json_dict(r).get("detail") or t("company.err_checkout_failed"))
+        raise HTTPException(status_code=r.status_code, detail=cloud_refusal(r, "company.err_checkout_failed"))
     body_json = _json_dict(r)
     if not body_json:
         raise HTTPException(status_code=502, detail=t("company.err_checkout_bad_reply"))
     return body_json
 
 
-@router.get("/me/modules/licenses", dependencies=[require_permission("manage_company_settings")])
+@router.get("/me/modules/licenses", dependencies=[require_permission("manage_company_settings")], openapi_extra={"x-celerp-agent": True}, summary="List the paid modules this installation holds a license for.")
 async def module_licenses() -> dict:
     """Slugs this instance holds an active license for (for buy/install CTAs)."""
     import httpx
@@ -2563,7 +2574,7 @@ def _install_answer(answer: dict, slug: str) -> dict | None:
     return {field: answer[field] for field in _INSTALL_FIELDS}
 
 
-@router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)])
+@router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Download a module from the marketplace and check it, ready to add.")
 async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     """Stage a marketplace module for install: fetch it from the relay and hold
     the archive on disk, ready for a following Install. Installation owner only.
@@ -2579,7 +2590,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
 
     import httpx
 
-    from celerp.gateway.state import relay_error_detail
+    from celerp.gateway.state import cloud_refusal
     from celerp.modules import marketplace_stage
     from celerp.modules.importer import MAX_ARCHIVE_BYTES
 
@@ -2594,7 +2605,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
             if r.status_code != 200:
                 raise HTTPException(
                     status_code=r.status_code,
-                    detail=relay_error_detail(r, t("company.err_download_refused")))
+                    detail=cloud_refusal(r, "company.err_download_refused"))
             answer = _install_answer(_json_dict(r), body.slug)
             if answer is None:
                 raise HTTPException(status_code=502, detail=t("error.relay_bad_reply"))
@@ -2603,7 +2614,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
             if d.status_code != 200:
                 raise HTTPException(
                     status_code=502,
-                    detail=relay_error_detail(d, "The module download failed. Try again."))
+                    detail=cloud_refusal(d, "company.err_module_download_failed"))
             data = d.content
     except HTTPException:
         raise
@@ -2621,7 +2632,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     return {"ok": True, "ref": ref}
 
 
-@router.post("/me/modules/marketplace-install", dependencies=[Depends(require_install_owner)])
+@router.post("/me/modules/marketplace-install", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Add a downloaded marketplace module; it stays off until turned on.")
 async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     """Install a staged marketplace module through the shared importer. Installation owner only.
 
@@ -2649,7 +2660,7 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
             install_from_zip, stage.data, official=stage.is_official, premium=stage.is_paid,
             source="marketplace", expected=(stage.slug, stage.version))
     except ModuleImportError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=refusal_detail(exc))
 
     if stage.is_official and not stage.is_paid:
         # Install is online by definition: keep the free verdict now, so the
@@ -2666,7 +2677,7 @@ class CompanyReset(BaseModel):
     company_name: str
 
 
-@router.post("/me/reset", dependencies=[require_permission("manage_company_lifecycle")])
+@router.post("/me/reset", dependencies=[require_permission("manage_company_lifecycle")], openapi_extra=agent_excluded("company"))
 async def reset_company(
     payload: CompanyReset,
     ctx: AuthContext = Depends(get_auth_context),
@@ -2726,7 +2737,7 @@ async def reset_company(
     return result
 
 
-@router.delete("/me", dependencies=[require_permission("manage_company_lifecycle")])
+@router.delete("/me", dependencies=[require_permission("manage_company_lifecycle")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general"}, summary="Deactivate the company: its records are kept, members lose access and connectors are disconnected.")
 async def deactivate_company(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -2823,7 +2834,7 @@ async def deactivate_company(
     return {"ok": True, "company_id": str(company_id), "is_active": False}
 
 
-@router.post("/me/reactivate", dependencies=[require_permission("manage_company_lifecycle")])
+@router.post("/me/reactivate", dependencies=[require_permission("manage_company_lifecycle")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general"}, summary="Reactivate the company after it was deactivated; disconnected connectors stay disconnected.")
 async def reactivate_company(
     company_id=Depends(get_current_company_id),
     user: User = Depends(get_current_user),
@@ -2836,7 +2847,7 @@ async def reactivate_company(
     try:
         done = await company_lifecycle.reactivate_company(session, company_id, user.id)
     except company_lifecycle.NotAnOwner as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from None
+        raise HTTPException(status_code=403, detail=refusal_detail(exc)) from None
     return {
         "ok": True,
         "company_id": str(done.company_id),
@@ -2868,7 +2879,7 @@ class PriceListNamePatch(BaseModel):
     name: str
 
 
-@router.get("/me/price-lists")
+@router.get("/me/price-lists", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["view_inventory_costs"]}, summary="List the company's price lists, such as Retail and Wholesale.")
 async def get_price_lists(
     company_id=Depends(get_current_company_id),
     role: str = Depends(get_current_role),
@@ -2890,7 +2901,7 @@ async def get_price_lists(
     return price_lists
 
 
-@router.patch("/me/price-lists")
+@router.patch("/me/price-lists", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Change the company's price lists, such as adding or renaming one.")
 async def patch_price_lists(
     payload: PriceListsPatch,
     company_id=Depends(get_current_company_id),
@@ -2914,7 +2925,7 @@ async def patch_price_lists(
     return {"ok": True}
 
 
-@router.get("/me/base-price-list")
+@router.get("/me/base-price-list", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show which price list other prices are calculated from.")
 async def get_base_price_list(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -2925,7 +2936,7 @@ async def get_base_price_list(
     return company.settings.get("base_price_list") or DEFAULT_PRICE_LIST_NAME
 
 
-@router.patch("/me/base-price-list")
+@router.patch("/me/base-price-list", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Choose which price list other prices are calculated from.")
 async def patch_base_price_list(
     payload: PriceListNamePatch,
     company_id=Depends(get_current_company_id),
@@ -2951,7 +2962,7 @@ async def patch_base_price_list(
     return {"ok": True}
 
 
-@router.get("/me/default-price-list")
+@router.get("/me/default-price-list", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show which price list new documents use by default.")
 async def get_default_price_list(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -2962,7 +2973,7 @@ async def get_default_price_list(
     return company.settings.get("default_price_list") or DEFAULT_PRICE_LIST_NAME
 
 
-@router.patch("/me/default-price-list")
+@router.patch("/me/default-price-list", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Choose which price list new documents use by default.")
 async def patch_default_price_list(
     payload: PriceListNamePatch,
     company_id=Depends(get_current_company_id),
@@ -2983,7 +2994,7 @@ class BusinessTypeIn(BaseModel):
     vertical: str
 
 
-@router.post("/me/business-type", dependencies=[require_permission("manage_company_lifecycle")])
+@router.post("/me/business-type", dependencies=[require_permission("manage_company_lifecycle")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general"}, summary="Set the company's business type, which decides its default item fields and categories.")
 async def set_company_business_type(
     payload: BusinessTypeIn,
     company_id=Depends(get_current_company_id),
@@ -2996,10 +3007,10 @@ async def set_company_business_type(
     try:
         return await set_business_type(session, company_id, user.id, payload.vertical)
     except UnknownBusinessType:
-        raise HTTPException(status_code=422, detail=f"Unknown business type: {payload.vertical!r}")
+        raise HTTPException(status_code=422, detail=t("company.err_unknown_business_type_vertical", vertical=f'{payload.vertical!r}'))
 
 
-@router.post("/me/demo/reseed", dependencies=[require_permission("manage_company_lifecycle")])
+@router.post("/me/demo/reseed", dependencies=[require_permission("manage_company_lifecycle")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general"}, summary="Replace the untouched demo items with the demo set for the company's current business type.")
 async def reseed_demo_items(
     company_id=Depends(get_current_company_id),
     user: User = Depends(get_current_user),

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -283,7 +284,7 @@ async def _reconcile_newly_enabled(session, activated) -> None:
                 await session.rollback()
                 raise HTTPException(
                     status_code=409,
-                    detail="Restart Celerp to load the updated module before enabling it.",
+                    detail=t("modules.err_restart_celerp_load_updated_module_before"),
                 )
         running = {name for name in added & contributors if loader.is_running(name)}
         if running:
@@ -297,7 +298,7 @@ async def _reconcile_newly_enabled(session, activated) -> None:
             await session.rollback()
             raise HTTPException(
                 status_code=409,
-                detail="A module could not prepare this company's existing records. Nothing was changed.",
+                detail=t("modules.err_module_could_not_prepare_company_s"),
             )
 
 

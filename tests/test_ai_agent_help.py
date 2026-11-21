@@ -43,13 +43,13 @@ _CAPS = {
     "help_search": {
         "name": "help_search", "method": "GET", "path": "/help/search",
         "path_names": (), "query_names": ("q", "module"), "expects_body": False,
-        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "key_field": None, "keyed": False, "result_permissions": (), "field_visibility": False,
         "tool": _tool("help_search"),
     },
     "help_read": {
         "name": "help_read", "method": "GET", "path": "/help/page/{page_id}",
         "path_names": ("page_id",), "query_names": (), "expects_body": False,
-        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "key_field": None, "keyed": False, "result_permissions": (), "field_visibility": False,
         "tool": _tool("help_read"),
     },
 }
@@ -82,7 +82,7 @@ def _script(monkeypatch, turns: list[ModelResult]) -> list[list[dict]]:
 
     monkeypatch.setattr(service, "complete", _complete)
     monkeypatch.setattr(service, "_authority", _owner_authority)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: _CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: _CAPS)
     return seen
 
 
@@ -107,11 +107,11 @@ def thai():
 
 @pytest.mark.asyncio
 async def test_agent_prompt_names_user_language(monkeypatch, thai):
-    prompt = agent_system_prompt("th")
+    prompt = agent_system_prompt("th", _CAPS, {})
     assert lang_label("th") in prompt
     assert "help_search" in prompt and "help_read" in prompt
     assert "English" in prompt
-    assert agent_system_prompt("en") != prompt
+    assert agent_system_prompt("en", _CAPS, {}) != prompt
 
     seen = _script(monkeypatch, [_turn("สวัสดี")])
     await _run()
@@ -126,8 +126,8 @@ async def test_tool_requests_forward_accept_language(thai):
     async def _echo(request: Request):
         return {"lang": request.headers.get("accept-language")}
 
-    capability = {"name": "echo", "method": "GET", "path": "/echo", "path_names": (),
-                  "query_names": (), "expects_body": False, "inject_idempotency": False}
+    capability = {"name": "echo", "encoding": "json", "method": "GET", "path": "/echo", "path_names": (),
+                  "query_names": (), "expects_body": False, "key_field": None, "keyed": False}
     result = await execute_agent_capability(app, "Bearer tok", capability, {}, "c1")
     assert result["ok"] is True
     assert result["data"] == {"lang": "th"}
@@ -189,7 +189,7 @@ def test_citation_record_ignored_by_action_helpers():
     assert help_pages(None) is None
 
 
-def test_message_out_carries_help_pages():
+async def test_message_out_carries_help_pages():
     import celerp.main  # noqa: F401  (puts bundled module packages on the import path)
     from celerp_ai.routes import _message_out
 
@@ -198,8 +198,10 @@ def test_message_out_carries_help_pages():
                                tools_called=tools_called, file_ids=None, credits_used=0,
                                created_at=datetime.now(timezone.utc))
 
-    assert _message_out(_msg(["help_read", {"help_pages": ["core.settings"]}])).help_pages == ["core.settings"]
-    assert _message_out(_msg(["list_items"])).help_pages is None
+    # No open proposal here, so nothing is named and no session is read.
+    out = await _message_out(None, None, None, _msg(["help_read", {"help_pages": ["core.settings"]}]))
+    assert out.help_pages == ["core.settings"]
+    assert (await _message_out(None, None, None, _msg(["list_items"]))).help_pages is None
 
 
 def test_refreshing_expired_proposals_keeps_citation_record():
@@ -241,3 +243,13 @@ async def test_relay_refusal_after_a_charged_turn_carries_the_credits(monkeypatc
     assert refused.value.status_code == 503
     assert refused.value.detail["code"] == "free_paused"
     assert refused.value.credits == 1
+
+
+def test_help_search_finds_the_recipe_page_for_a_make_and_take_from_stock_question():
+    """The lookup the assistant's help_search runs, over the shipped pages: a question about
+    making a product from another and taking the ingredient out of stock lands on the page
+    that walks the recipe, work order, issue and complete steps."""
+    from celerp.help import search
+
+    hits = search.search("how do I make oil from rapeseed and take the seed out of stock", "en", {}, "owner")
+    assert hits and hits[0].page.id == "manufacturing.make-from-recipe"

@@ -1,0 +1,25 @@
+{
+  "id": "contacts.crm-import",
+  "title": "Import contacts",
+  "summary": "Bring in customers and vendors from a spreadsheet.",
+  "keywords": ["import", "contacts", "customers", "vendors", "spreadsheet", "csv"],
+  "routes": ["/crm/import/contacts"],
+  "permission": "import_export_data",
+  "order": 4,
+  "checked": "e4127a2549e703c451d4bbb276f3ef8060cd50e4b90464c5f38a7eb1b1313e43",
+  "steps": [
+    {
+      "text": "On {title}, upload a spreadsheet of contacts, match its columns to Celerp's fields and check the rows before they are created.",
+      "labels": {"title": "contacts.import_contacts"},
+      "image": null,
+      "capture": {"route": "/crm/import/contacts", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also give the assistant a spreadsheet of contacts: it previews the rows and shows the import as a card that runs only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/crm/import/contacts", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["contacts.add-customer", "contacts.add-vendor"]
+}

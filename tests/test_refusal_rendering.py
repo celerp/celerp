@@ -55,6 +55,11 @@ def test_bare_and_prefixed_ids_are_stripped_from_plain_text():
     assert i18n.refusal_text(f"doc:{_UUID}: already closed") == "already closed"
 
 
+def test_an_id_inside_a_path_stays_in_the_text():
+    url = f"https://cloud.test/bucket/attachments/{_UUID}/photo.png"
+    assert url in i18n.refusal_text(refusal("company_backup.err_attachment_unreadable", f"x {url}", url=url))
+
+
 def test_an_unrecognised_dict_renders_as_nothing_rather_than_raw():
     assert i18n.refusal_text({"weird": {"x": 1}}) == ""
 

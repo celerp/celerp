@@ -13,6 +13,7 @@
   ],
   "permission": "view_subscriptions",
   "order": 3,
+  "checked": "8f4e251f2addf5f1f814bc6e757dff941bd48a30afe9c5327a04c65d441ad542",
   "steps": [
     {
       "text": "Open {nav} from the sidebar to see every retainer and its status.",
@@ -43,6 +44,16 @@
       "labels": {
         "gen": "btn.generate_all_due"
       },
+      "image": null,
+      "capture": {
+        "route": "/retainers",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "You can also ask the assistant to generate the retainer invoices that are due, bill one early or skip a period. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {
         "route": "/retainers",

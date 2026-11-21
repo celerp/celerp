@@ -18,6 +18,7 @@ from celerp.accounting_roles import ROLE_TYPES, AccountRole
 from celerp.services.account_roles import set_role
 from celerp_accounting.chart_rules import change_account
 from celerp_accounting.import_service import create_chart_account
+from test_helpers import message_texts
 from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
@@ -110,7 +111,7 @@ async def test_a_chart_file_cannot_add_an_account_under_a_role_target(client, au
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 1
-    assert "posting account for Accounts receivable" in " ".join(body["errors"])
+    assert "posting account for Accounts receivable" in " ".join(message_texts(body["errors"]))
 
 
 async def test_a_refused_type_is_named_without_a_wrong_article(session, auth):

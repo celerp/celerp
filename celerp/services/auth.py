@@ -19,7 +19,8 @@ from passlib.context import CryptContext
 from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import REQUEST_COMPANY_SETTINGS, catalog_refusal
+from celerp.agent_markers import agent_gate
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
@@ -402,9 +403,11 @@ async def get_auth_context(
     if token is not None:
         session.info[SIGNED_TOKEN] = token
     request.state.company_id = ctx.company_id  # the company a refused request places stock for (OlderStockMiddleware)
+    settings_token = REQUEST_COMPANY_SETTINGS.set(ctx.company.settings or {})
     try:
         yield ctx
     finally:
+        REQUEST_COMPANY_SETTINGS.reset(settings_token)
         end_request(session, authority)
         if token is not None and session.info.get(SIGNED_TOKEN) is token:
             session.info.pop(SIGNED_TOKEN, None)
@@ -417,7 +420,7 @@ async def _peer_context(request: Request, session: AsyncSession, credential: str
 
     entity = peer_access.route_entity(request.method, request.url.path)
     if entity is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=peer_access.UNAVAILABLE)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t(peer_access.UNAVAILABLE))
     try:
         source = uuid.UUID(request.headers.get(peer_access.SOURCE_HEADER, ""))
     except ValueError:
@@ -429,7 +432,7 @@ async def _peer_context(request: Request, session: AsyncSession, credential: str
         UserCompany.company_id == company.id, UserCompany.role == "owner",
         UserCompany.is_active.is_(True), User.is_active.is_(True)).order_by(User.created_at, User.id).limit(1))
     if user is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=peer_access.UNAVAILABLE)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t(peer_access.UNAVAILABLE))
     return AuthContext(claims={}, user=user, company=company, company_id=company.id, role="owner",
                        snonce="", peer=peer_access.PeerCaller(credential, source, scope))
 
@@ -532,6 +535,9 @@ async def require_install_owner(
             detail=t("auth.install_owner_required"),
         )
     return user
+
+
+agent_gate(require_install_owner, "install_owner")
 
 
 async def get_current_company_id(ctx: AuthContext = Depends(get_auth_context)) -> uuid.UUID:

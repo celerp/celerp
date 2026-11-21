@@ -16,7 +16,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import _sidebar, base_shell, flash, module_nav, page_header, page_title
+from ui.components.shell import _sidebar, base_shell, flash, module_nav, page_header, page_title, error_flash
 from ui.config import get_role as _get_role, get_token as _token
 from ui.i18n import get_lang, t
 from ui.nav_overrides import apply_nav_overrides, entry_id, group_id, protected
@@ -157,7 +157,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302), None
-            return flash(str(e.detail)), None
+            return error_flash(e), None
         settings = company.get("settings") or {}
         if not role_has_permission(settings, _get_role(request), "manage_permissions"):
             return flash(t("settings_menu.owner_only")), None
@@ -183,7 +183,7 @@ def setup_routes(app):
                 return _redrawn(request, _after(settings, await write(token, current, settings)))
             except APIError as e:
                 if e.status != 412:
-                    return _redrawn(request, settings, flash(str(e.detail)))
+                    return _redrawn(request, settings, error_flash(e))
         latest = _after(settings, _current(await api.get_nav_overrides(token)))
         return _redrawn(request, latest, flash(t("settings_menu.changed_elsewhere")))
 

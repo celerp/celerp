@@ -170,8 +170,9 @@ def test_send_link_without_connect_asks_for_a_free_account(tmp_path, monkeypatch
 
 
 def test_relay_refusal_reason_reaches_the_sender(tmp_path, monkeypatch):
-    """A limit the relay names (50 active copies, daily email limit) is shown as is, with
-    its way out, instead of a generic retry message."""
+    """A limit the relay names (50 active copies, daily email limit) reaches the sender in
+    the relay's own words, quoted as what Celerp Cloud answered, instead of a generic retry
+    message."""
     _private_staging(monkeypatch, tmp_path)
     plain = tmp_path / "plain"
     plain.write_bytes(b"books")
@@ -184,7 +185,7 @@ def test_relay_refusal_reason_reaches_the_sender(tmp_path, monkeypatch):
     monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", full)
     with pytest.raises(sender.HandoffSendError) as refused:
         _run(_send(plain, uuid.uuid4(), uuid.uuid4(), bytes(32)))
-    assert str(refused.value) == limit
+    assert str(refused.value) == f"Celerp Cloud answered: {limit}"
 
 
 @pytest.mark.parametrize("status", [503, 409])
@@ -197,15 +198,15 @@ def test_a_reason_the_cloud_gives_is_kept_on_an_unavailable_service_too(monkeypa
         return httpx.Response(status, json={"detail": reason})
     monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", refuse)
     with pytest.raises(sender.HandoffRefused) as refused:
-        _run(sender.cloud_json("POST", "/xero-attachments", unconfirmed="unconfirmed", account_needed="account"))
-    assert str(refused.value) == reason and refused.value.status_code == status
+        _run(sender.cloud_json("POST", "/xero-attachments", unconfirmed="handoff.copy_unconfirmed", account_needed="handoff.account_needed"))
+    assert str(refused.value) == f"Celerp Cloud answered: {reason}" and refused.value.status_code == status
 
     async def bare(method, path, **kw):
         return httpx.Response(503, text="<html>Service Unavailable</html>")
     monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", bare)
     with pytest.raises(sender.HandoffSendError) as unconfirmed:
-        _run(sender.cloud_json("POST", "/xero-attachments", unconfirmed="unconfirmed", account_needed="account"))
-    assert str(unconfirmed.value) == "unconfirmed" and not isinstance(unconfirmed.value, sender.HandoffRefused)
+        _run(sender.cloud_json("POST", "/xero-attachments", unconfirmed="handoff.copy_unconfirmed", account_needed="handoff.account_needed"))
+    assert unconfirmed.value.detail["message_key"] == "handoff.copy_unconfirmed" and not isinstance(unconfirmed.value, sender.HandoffRefused)
 
 
 def _relay_copies(monkeypatch, company_id, copy_id):

@@ -18,6 +18,7 @@ from ui.i18n import t
 from ui.routes.settings import _check_permission
 from ui.routes.csv_import import (
     CsvImportSpec,
+    serve_import_template,
     discard_import_csv,
     resolve_import_csv,
     _rows_to_csv,
@@ -83,6 +84,7 @@ def _settings_records(kind: str, rows: list[dict]) -> list[dict]:
 
 
 def setup_routes(app):
+    serve_import_template(app, "/companies", "/settings")
 
     # ── Locations ───────────────────────────────────────────────
 

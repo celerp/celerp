@@ -28,33 +28,39 @@ def decode_json_value(value):
     return value
 
 
-# Rows a rewrite holds at a time: one FETCH from its cursor, one UPDATE back. Memory stays flat
-# however many rows a table has.
+# Rows a streamed pass holds at a time: one FETCH from its cursor, one write back. Memory stays
+# flat however many rows a table has.
 BATCH = 1000
+
+
+def stream(conn, sql: str, params: dict | None = None):
+    """The rows of ``sql`` BATCH at a time, through a server-side cursor, so memory does not grow
+    with the table. The cursor reads the snapshot taken when it opened, inside the revision's
+    own transaction, so rows a caller writes between batches are not read again and every row
+    is seen once; an interrupted pass rolls back with that transaction and a rerun starts clean."""
+    conn.execute(sa.text(f"DECLARE celerp_stream NO SCROLL CURSOR FOR {sql}"), params or {})
+    fetch = sa.text(f"FETCH FORWARD {int(BATCH)} FROM celerp_stream")
+    while rows := conn.execute(fetch).mappings().all():
+        yield rows
+    conn.execute(sa.text("CLOSE celerp_stream"))
 
 
 def _rewrite_rows(conn, table: str, column: str, select: str, where: str, params: dict | None,
                   rewrite: Callable[["sa.engine.RowMapping"], str | None]) -> int:
     """Write ``rewrite(row)`` into *column* for every matching row of *table* that it returns
-    text for, and return how many. The rows stream through a server-side cursor BATCH at a time
-    and each batch goes back in one UPDATE, so memory does not grow with the table. Rows are
-    addressed by ctid (the physical row id, on every PostgreSQL table: no index or column-type
-    assumption). The cursor reads the snapshot taken when it opened, inside the revision's own
-    transaction, so a row the pass has rewritten is not read again and every row is seen once;
-    an interrupted pass rolls back with that transaction and a rerun starts clean."""
-    sql = f"DECLARE celerp_json_rewrite NO SCROLL CURSOR FOR SELECT ctid, {select} FROM {table}"
-    conn.execute(sa.text(f"{sql} WHERE {where}" if where else sql), params or {})
-    fetch = sa.text(f"FETCH FORWARD {int(BATCH)} FROM celerp_json_rewrite")
+    text for, and return how many. The rows ``stream`` and each batch goes back in one UPDATE.
+    Rows are addressed by ctid (the physical row id, on every PostgreSQL table: no index or
+    column-type assumption)."""
+    sql = f"SELECT ctid, {select} FROM {table}"
     write = sa.text(
         f"UPDATE {table} AS t SET {column} = CAST(v.value AS json) "
         "FROM unnest(CAST(:ctids AS tid[]), CAST(:values AS text[])) AS v(row_id, value) WHERE t.ctid = v.row_id")
     n = 0
-    while rows := conn.execute(fetch).mappings().all():
+    for rows in stream(conn, f"{sql} WHERE {where}" if where else sql, params):
         changed = [(str(row["ctid"]), new) for row in rows if (new := rewrite(row)) is not None]
         if changed:
             conn.execute(write, {"ctids": [c for c, _ in changed], "values": [v for _, v in changed]})
             n += len(changed)
-    conn.execute(sa.text("CLOSE celerp_json_rewrite"))
     return n
 
 

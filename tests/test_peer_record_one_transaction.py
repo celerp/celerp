@@ -35,7 +35,7 @@ async def test_a_receiver_that_commits_midway_is_refused_and_leaves_nothing(sess
 
     result = await peer_import.receive_records(session, peer, [record])
 
-    assert result["created"] == 0 and [e.split(":")[0] for e in result["errors"]] == ["C-1"]
+    assert result["created"] == 0 and [e["params"]["entity_id"] for e in result["errors"]] == ["C-1"]
     kept = (await session.scalars(select(CompanyPeerAttention.source_entity_id).where(
         CompanyPeerAttention.company_id == company_id))).all()
     assert kept == ["C-1"]

@@ -166,7 +166,7 @@ async def _map_restricted_net_assets(session: AsyncSession, company_id, settings
     await set_role(session, company_id, role.value, code, user.id)
 
 
-@router.get("/funds")
+@router.get("/funds", openapi_extra={"x-celerp-agent": True}, summary="List every fund, archived ones included, with whether it is restricted and its balance.")
 async def list_funds(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -179,7 +179,7 @@ async def list_funds(
     return {"items": sorted((_view(f, s) for f, s in funds.items()), key=lambda v: v["name"].casefold())}
 
 
-@router.get("/funds/waiting")
+@router.get("/funds/waiting", openapi_extra={"x-celerp-agent": True}, summary="List the records brought in from outside that wait for a fund to be chosen.")
 async def list_waiting_for_funds(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -191,7 +191,7 @@ async def list_waiting_for_funds(
     return await outside_waiting(session, company_id)
 
 
-@router.put("/funds/setting")
+@router.put("/funds/setting", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Turn fund accounting on or off for the company.")
 async def set_funds_setting(
     payload: FundsSettingIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -285,7 +285,7 @@ async def _default_items(session: AsyncSession, company_id, settings: dict) -> l
     return items
 
 
-@router.get("/funds/connection-defaults")
+@router.get("/funds/connection-defaults", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": "a connection setting: the fund each connection posts to, with no balance", "x-celerp-agent-result-permissions": ["manage_accounting"]}, summary="List the default fund of each connection that brings in records.")
 async def list_connection_defaults(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -298,7 +298,7 @@ async def list_connection_defaults(
     return {"items": await _default_items(session, company_id, dict(company.settings or {}))}
 
 
-@router.put("/funds/connection-defaults")
+@router.put("/funds/connection-defaults", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting", "x-celerp-agent-key": "request_key"}, summary="Set, change or clear the default fund of one connection.")
 async def set_connection_default(
     payload: ConnectionDefaultIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -337,7 +337,7 @@ async def set_connection_default(
     return {k: entry.get(k) for k in ("fund_choice", "set_by", "set_at", "version")}
 
 
-@router.post("/funds")
+@router.post("/funds", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key"}, summary="Add a new fund, such as a restricted grant or an unrestricted general fund.")
 async def create_fund(
     payload: FundIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -366,7 +366,7 @@ async def create_fund(
     return _view(fund_id, {**data, "archived": False})
 
 
-@router.patch("/funds/{fund_id}")
+@router.patch("/funds/{fund_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Rename a fund or change its opening date.")
 async def update_fund(
     fund_id: str,
     payload: FundPatch,
@@ -411,7 +411,7 @@ async def _set_archived(session: AsyncSession, company_id, fund_id: str, archive
     return _view(fund_id, {**state, "archived": archived})
 
 
-@router.post("/funds/{fund_id}/archive")
+@router.post("/funds/{fund_id}/archive", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Archive a fund that holds nothing so nothing new can be posted to it.")
 async def archive_fund(
     fund_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -424,7 +424,7 @@ async def archive_fund(
     return await _set_archived(session, company_id, fund_id, True, user)
 
 
-@router.post("/funds/{fund_id}/unarchive")
+@router.post("/funds/{fund_id}/unarchive", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Bring an archived fund back so records can be posted to it again.")
 async def unarchive_fund(
     fund_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -573,7 +573,7 @@ async def _account(session: AsyncSession, company_id, chosen: str | None) -> str
     return role_map(company.settings or {}).get(AccountRole.DEFAULT_DEPOSIT)
 
 
-@router.post("/funds/transfer")
+@router.post("/funds/transfer", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": "*"}, summary="Move money between two unrestricted funds, or between a fund and money on no fund.")
 async def transfer_between_funds(
     payload: TransferIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -592,7 +592,7 @@ async def transfer_between_funds(
         kind="fund_transfer", legs=[(payload.from_fund, payload.to_fund, account, payload.amount)]))
 
 
-@router.get("/funds/release-spending")
+@router.get("/funds/release-spending", openapi_extra={"x-celerp-agent": True}, summary="List the spending a release from restriction can pay for, newest first.")
 async def list_release_spending(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
@@ -623,7 +623,7 @@ async def list_release_spending(
     return {"items": items}
 
 
-@router.post("/funds/release")
+@router.post("/funds/release", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": "*"}, summary="Release restricted money to an unrestricted fund once it was spent on its purpose.")
 async def release_from_restriction(
     payload: ReleaseIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -648,7 +648,7 @@ async def release_from_restriction(
         details={"backing": [b.model_dump() for b in payload.backing]}))
 
 
-@router.post("/funds/reallocate")
+@router.post("/funds/reallocate", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": "*"}, summary="Move restricted money to another restricted fund with the same purpose.")
 async def reallocate_restricted_funds(
     payload: ReallocateIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -668,7 +668,7 @@ async def reallocate_restricted_funds(
         details={"donor_authorization": payload.donor_authorization}))
 
 
-@router.post("/funds/opening")
+@router.post("/funds/opening", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": "*"}, summary="Give part of each account's opening balance to a fund when the company starts using funds.")
 async def opening_balances_by_fund(
     payload: OpeningIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -687,7 +687,7 @@ async def opening_balances_by_fund(
         kind="fund_opening", legs=[(None, a.fund, a.account, a.amount) for a in payload.assignments]))
 
 
-@router.post("/funds/movements/{je_id}/reverse")
+@router.post("/funds/movements/{je_id}/reverse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting", "x-celerp-agent-result-permissions": "*"}, summary="Undo a movement between funds by posting its reversal.")
 async def reverse_fund_movement(
     je_id: str,
     payload: ReverseIn,
@@ -704,7 +704,7 @@ async def reverse_fund_movement(
         reason=payload.reason, actor=user.id, reverses=je_id))
 
 
-@router.get("/journal/{entity_id}/funds")
+@router.get("/journal/{entity_id}/funds", openapi_extra={"x-celerp-agent": True}, summary="Show a posted journal entry's lines with the fund of each.")
 async def journal_funds(
     entity_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -733,7 +733,7 @@ class JournalChangeFundIn(ChangeFundIn):
     all: str | None = None
 
 
-@router.post("/journal/{entity_id}/change-fund")
+@router.post("/journal/{entity_id}/change-fund", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": ["reallocate_restricted_funds"]}, summary="Change the fund of a posted journal entry that came from outside, with a reason.")
 async def change_journal_fund(
     entity_id: str,
     payload: JournalChangeFundIn,

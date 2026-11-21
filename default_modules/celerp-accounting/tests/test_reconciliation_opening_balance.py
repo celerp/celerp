@@ -18,6 +18,8 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+import bank_statement_helpers as B
+
 
 async def _company(client) -> dict:
     r = await client.post("/auth/register", json={
@@ -73,6 +75,13 @@ async def _workbench(client, h, sid: str) -> dict:
     return r.json()
 
 
+async def _complete(client, h, sid: str) -> dict:
+    """Complete the bank's open statements: the answer, ``stopped_at`` set when one is off."""
+    r = await B.bank_post(client, h, sid, "complete")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 def _opening(bank: dict) -> str:
     return f"je:opening:{bank['id']}"
 
@@ -110,9 +119,8 @@ async def test_matching_every_offered_entry_reconciles_a_statement_that_agrees_w
     after = await _view(client, h, sid)
     assert (after["matched_balance"], after["difference"]) == (1500.0, 0.0)
     assert (await _workbench(client, h, sid))["difference"] == 0.0
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 200, r.text
-    assert r.json()["status"] == "completed"
+    assert (await _complete(client, h, sid))["stopped_at"] is None
+    assert (await _view(client, h, sid))["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -136,8 +144,7 @@ async def test_an_opening_entry_held_by_hand_still_counts_once(client, session):
     assert view["unreconciled_entries"] == []
     wb = await _workbench(client, h, sid)
     assert (wb["book_entries"], wb["difference"]) == ([], 0.0)
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 200, r.text
+    assert (await _complete(client, h, sid))["stopped_at"] is None
 
 
 @pytest.mark.asyncio
@@ -155,8 +162,7 @@ async def test_write_off_takes_only_the_true_difference(client):
     assert r.json()["amount"] == pytest.approx(0.5)
     view = await _view(client, h, sid)
     assert view["difference"] == pytest.approx(0.0)
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 200, r.text
+    assert (await _complete(client, h, sid))["stopped_at"] is None
 
 
 @pytest.mark.asyncio
@@ -165,16 +171,20 @@ async def test_auto_match_never_pairs_a_statement_line_with_the_opening_entry(cl
     bank = await _bank(client, h, 1000.0)
     sid = await _start(client, h, bank["id"], 2000.0)
     opening_ts = next(e["ts"] for e in (await _view(client, h, sid))["all_entries"] if e["je_id"] == _opening(bank))
-    csv = f"Date,Description,Amount\n{opening_ts},Customer receipt,1000\n".encode()
-    r = await client.post(f"/accounting/reconciliation/{sid}/import-csv", headers=h,
-                          files={"file": ("s.csv", csv, "text/csv")})
+    # A statement that ends on the opening entry's date, so its line can sit beside it.
+    r = await client.request("DELETE", f"{B.API}/{sid}", json={"idempotency_key": B.key()}, headers=h)
     assert r.status_code == 200, r.text
-
-    r = await client.post(f"/accounting/reconciliation/{sid}/auto-match", headers=h)
+    r = await client.post("/accounting/reconciliation/start", headers=h, json={
+        "bank_account_id": bank["id"], "statement_date": opening_ts[:10], "statement_balance": 2000.0})
     assert r.status_code == 200, r.text
-    assert r.json()["matched"] == 0 and r.json()["suggested"] == 0
-    line = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=h)).json()["items"][0]
-    assert (line["status"], line["matched_je_id"]) == ("unmatched", None)
+    sid = r.json()["id"]
+    csv = f"Date,Description,Amount\n{opening_ts[:10]},Customer receipt,1000\n".encode()
+    sid = (await B.import_into(client, h, sid, csv, "s.csv"))["session_id"]
+    r = await B.bank_post(client, h, sid, "suggest")
+    assert r.status_code == 200, r.text
+    (line,) = B.all_lines(await B.groups(client, await B.co_of(client, h), bank["id"], view="all"))
+    assert (line["status"], line["matched_je_ids"]) == ("unmatched", [])
+    assert _opening(bank) not in str(line.get("suggestion"))
     assert (await _view(client, h, sid))["difference"] == 1000.0
 
 
@@ -194,7 +204,7 @@ async def test_a_bank_with_no_opening_balance_reconciles_from_its_entries_alone(
     assert (view["matched_balance"], view["difference"]) == (0.0, 500.0)
     await client.post(f"/accounting/reconciliation/{sid}/match", headers=h, json={"je_ids": [deposit]})
     assert (await _view(client, h, sid))["difference"] == 0.0
-    assert (await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)).status_code == 200
+    assert (await _complete(client, h, sid))["stopped_at"] is None
 
 
 @pytest.mark.asyncio
@@ -224,21 +234,16 @@ async def test_matching_then_unmatching_a_line_restores_the_difference(client):
     bank = await _bank(client, h, 1000.0)
     deposit = await _deposit(client, h, bank["chart_account_code"], 500.0)
     sid = await _start(client, h, bank["id"], 1500.0)
-    r = await client.post(f"/accounting/reconciliation/{sid}/import-csv", headers=h,
-                          files={"file": ("s.csv", b"Date,Description,Amount\n2026-03-20,Deposit,500\n", "text/csv")})
-    assert r.status_code == 200, r.text
-    line = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=h)).json()["items"][0]
-
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{line['id']}/match", headers=h,
-                          json={"je_id": deposit})
-    assert r.status_code == 200, r.text
+    data = await B.import_into(client, h, sid, b"Date,Description,Amount\n2026-03-20,Deposit,500\n", "s.csv")
+    sid, (line,) = data["session_id"], data["lines"]
+    r = await B.decide(client, h, sid, line["id"], "match", je_ids=[deposit])
+    assert r.status_code == 200 and r.json()["results"][0]["ok"], r.text
     assert (await _view(client, h, sid))["difference"] == 0.0
     assert (await _workbench(client, h, sid))["difference"] == 0.0
 
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{line['id']}/unmatch", headers=h)
+    r = await B.undo(client, h, sid, [line["id"]])
     assert r.status_code == 200, r.text
     view = await _view(client, h, sid)
     assert (view["matched_balance"], view["difference"]) == (1000.0, 500.0)
     assert [e["je_id"] for e in view["unreconciled_entries"]] == [deposit]
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 422
+    assert (await _complete(client, h, sid))["stopped_at"] is not None

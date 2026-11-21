@@ -57,7 +57,7 @@ def _older_relay(monkeypatch, replies: list) -> _OlderRelay:
     monkeypatch.setattr(llm, "relay_http_url", lambda: "https://relay.test")
     monkeypatch.setattr(llm.httpx, "AsyncClient",
                         lambda **kw: real(transport=httpx.MockTransport(relay.handle), **kw))
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     return relay
 
 

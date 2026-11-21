@@ -216,3 +216,30 @@ def _server_settings(engine):
         except (TypeError, AttributeError):
             continue
     return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/items/item:1", "/a/route/added/later"])
+async def test_a_lock_wait_past_the_request_timeout_is_refused_as_busy_in_any_route(path):
+    """Whatever route's statement gave up at the request lock timeout, the answer is the
+    keyed busy refusal (409, try again), never a server error; any other database error is
+    left to the server-error handler."""
+    import json
+
+    from sqlalchemy.exc import DBAPIError
+    from starlette.requests import Request
+
+    from celerp.main import lock_timeout_handler
+
+    class _Pg(Exception):
+        def __init__(self, code):
+            self.sqlstate = code
+
+    request = Request({"type": "http", "method": "PATCH", "path": path, "headers": [], "query_string": b""})
+    busy = await lock_timeout_handler(request, DBAPIError("UPDATE x", {}, _Pg("55P03")))
+    assert busy.status_code == 409
+    assert json.loads(busy.body)["detail"]["message_key"] == "modules.company_busy"
+    other = DBAPIError("UPDATE x", {}, _Pg("23505"))
+    server_error = await lock_timeout_handler(request, other)
+    assert server_error.status_code == 500
+    assert json.loads(server_error.body)["detail"]["message_key"] == "error.server_error"

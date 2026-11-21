@@ -15,16 +15,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import catalog_refusal
-from celerp.importers.results import message_text
+from celerp.importers.results import kept_refusal
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.services import peer_access, peer_accounts, peer_attention
 from celerp.services.company_lock import locked_company
 from celerp.services.peer_lines import LINE_KEYS
-from celerp.services.peer_payments import BY_HAND
 from celerp.services.peer_identity import (
     claim_peer_revision, commit_peer_revision, holds_peer_revision, peer_identity,
 )
+from ui.i18n import t
 
 # The source may supply only document inputs. Payments, receipts and fulfilment arrive as
 # the source's own operations and are replayed through the canonical services; no posting,
@@ -45,7 +45,7 @@ _RECEIPT_KEYS = ("po_line_index", "item_id", "quantity_received", "condition", "
 _RECEIVING_TYPES = frozenset({"bill", "purchase_order"})
 _FULFILLING_TYPES = frozenset({"invoice"})
 # Issued documents of other types (credit notes, memos, returns, consignments) and other
-# statuses are refused with the BY_HAND reason, which the sender shows as needing attention.
+# statuses are refused as copied by hand, which the sender shows as needing attention.
 _ISSUED_STATUSES = frozenset({
     "final", "sent", "partial", "paid", "awaiting_payment", "received", "partially_received",
 })
@@ -85,8 +85,7 @@ def held_choice_key(request_key: str) -> str:
     return f"peer:doc-funds:{request_key}"
 
 
-ISSUED_IN_COPY = ("The accountant's copy of this document is already issued, so this change was not "
-                  "copied. Nothing is needed in your books; ask your accountant if their copy should change.")
+ISSUED_IN_COPY = "peer.err_issued_in_copy"
 
 
 def requires_stock_movement(data: dict) -> bool:
@@ -116,7 +115,7 @@ async def _map_identity(session, grant, entity_type: str, source_id: str) -> str
         source_company=grant.source_company_id,
         entity_type=entity_type, source_entity_id=source_id)
     if mapped is None:
-        raise HTTPException(409, "Source document dependency is not synchronized")
+        raise HTTPException(409, t("peer.err_source_document_dependency_not_synchronized"))
     return mapped
 
 
@@ -141,19 +140,19 @@ async def receive_document(
     from celerp_docs.sequences import require_doc_type
 
     if not isinstance(data, dict):
-        raise HTTPException(422, "Invalid document")
+        raise HTTPException(422, t("peer.err_invalid_document"))
     if set(data) - _FIELDS or set(data) & (
             LIFECYCLE_OWNED_FIELDS - {"status", "payments", "amount_paid", "fulfilled_items"}):
-        raise HTTPException(422, "Unapproved document fields")
+        raise HTTPException(422, t("peer.err_unapproved_document_fields"))
     if (data.get("doc_type") is None or not isinstance(data.get("line_items", []), list)
             or len(data.get("line_items", [])) > 200):
-        raise HTTPException(422, "Invalid document")
+        raise HTTPException(422, t("peer.err_invalid_document"))
     if len(json.dumps(data, separators=(",", ":"))) > 1_000_000:
-        raise HTTPException(413, "Document exceeds integration size limit")
+        raise HTTPException(413, t("peer.err_document_exceeds_integration_size_limit"))
     try:
         require_doc_type(data["doc_type"])
     except (ValueError, TypeError):
-        raise HTTPException(422, "Unsupported document type") from None
+        raise HTTPException(422, t("peer.err_unsupported_document_type")) from None
     data = dict(data)
     sent = dict(data)
     accounts = peer_accounts.parse(data.pop("accounts", None))
@@ -170,7 +169,7 @@ async def receive_document(
     payments = validate_source_payments(data)
     receipts, fulfilled = _validate_stock(data)
     if data.get("status") == "void" and (data.get("payments") or data.get("payment_events")):
-        raise HTTPException(409, "Previously settled void requires payment reconciliation")
+        raise HTTPException(409, t("peer.err_previously_settled_void_requires_payment_reconciliation"))
     claim = await claim_peer_revision(
         session, grant=grant, entity_type="doc",
         source_entity_id=source_entity_id, source_revision=source_revision,
@@ -179,15 +178,14 @@ async def receive_document(
         return "skipped"
     source_status = data.get("status", "draft")
     if source_status not in _ISSUED_STATUSES | {"draft", "void"}:
-        raise HTTPException(409, BY_HAND.format(f"A {source_status} document"))
+        raise HTTPException(409, t("peer.err_by_hand_status", status=source_status))
     if source_status != "draft" and data["doc_type"] not in _RECEIVING_TYPES | _FULFILLING_TYPES:
-        raise HTTPException(409, BY_HAND.format(
-            "An issued " + str(data["doc_type"]).replace("_", " ")))
+        raise HTTPException(409, t("peer.err_by_hand_issued", doc_type=str(data["doc_type"]).replace("_", " ")))
     if (receipts and data["doc_type"] not in _RECEIVING_TYPES) or (
             fulfilled and data["doc_type"] not in _FULFILLING_TYPES):
-        raise HTTPException(422, "Stock operations do not match the document type")
+        raise HTTPException(422, t("peer.err_stock_operations_do_not_match_document"))
     if source_status == "sent" and data["doc_type"] != "invoice":
-        raise HTTPException(409, "Only invoices support a sent document transition")
+        raise HTTPException(409, t("peer.err_only_invoices_support_sent_document_transition"))
 
     incoming = dict(data)
     incoming.pop("payments", None)
@@ -202,7 +200,7 @@ async def receive_document(
     source_contact = incoming.get("contact_id")
     if source_contact:
         if not isinstance(source_contact, str):
-            raise HTTPException(422, "Invalid contact identity")
+            raise HTTPException(422, t("peer.err_invalid_contact_identity"))
         incoming["contact_id"] = await _map_identity(session, grant, "contact", source_contact)
     # A line names the parcel its receipt created; until that receipt is replayed here the
     # parcel does not exist, and the replayed receipt names the receiving company's own.
@@ -210,7 +208,7 @@ async def receive_document(
     mapped_lines = []
     for line in incoming.get("line_items", []):
         if not isinstance(line, dict):
-            raise HTTPException(422, "Invalid document line")
+            raise HTTPException(422, t("peer.err_invalid_document_line"))
         moved = dict(line)
         # A line id names a line within the sender's record; the copy's lines keep their own.
         moved.pop("line_id", None)
@@ -221,13 +219,13 @@ async def receive_document(
         for key in _SOURCE_ITEM_KEYS:
             if moved.get(key):
                 if not isinstance(moved[key], str):
-                    raise HTTPException(422, "Invalid item reference")
+                    raise HTTPException(422, t("peer.err_invalid_item_reference"))
                 if key == "item_id" or moved[key].startswith("item:"):
                     moved[key] = await _map_identity(session, grant, "item", moved[key])
         try:
             LineItem.model_validate(moved)
         except ValidationError as exc:
-            raise HTTPException(422, "Invalid document line") from exc
+            raise HTTPException(422, t("peer.err_invalid_document_line")) from exc
         mapped_lines.append(moved)
     if "line_items" in incoming:
         _reject_line_attributes(mapped_lines)
@@ -242,7 +240,7 @@ async def receive_document(
                                   f"{standing.source}:{source_entity_id}:{source_revision}", standing.source)
     company = await session.get(Company, grant.company_id)
     if company is None or not company.is_active or company.is_migration_staged:
-        raise HTTPException(403, "Company unavailable")
+        raise HTTPException(403, t("peer.err_company_unavailable"))
     member = SimpleNamespace(id=posting.user_id, role=posting.role) if posting else (await session.execute(
         select(User.id, UserCompany.role).join(UserCompany, UserCompany.user_id == User.id).where(
             UserCompany.company_id == grant.company_id,
@@ -250,7 +248,7 @@ async def receive_document(
             User.is_active.is_(True),
         ).order_by(User.id).limit(1))).first()
     if member is None:
-        raise HTTPException(403, "Company owner unavailable")
+        raise HTTPException(403, t("peer.err_company_owner_unavailable"))
     if source_status != "void":
         await _place_accounts(session, grant, company, incoming, payments, accounts)
     key = hashlib.sha256(source_entity_id.encode("utf-8")).hexdigest()
@@ -269,16 +267,16 @@ async def receive_document(
         if target is None and claim.mapping is None:
             return "skipped"  # voided before it was ever copied here (held for funds): nothing to void
         if target is None or target.entity_type != "doc" or claim.mapping is None:
-            raise HTTPException(409, "Source document must be synchronized before void")
+            raise HTTPException(409, t("peer.err_source_document_must_synchronized_before_void"))
         state = target.state or {}
         if state.get("doc_type") != data["doc_type"] or state.get("currency") != data.get("currency"):
-            raise HTTPException(409, "Receiving document does not match voided source")
+            raise HTTPException(409, t("peer.err_receiving_document_does_not_match_voided"))
         currency = state.get("currency") or "USD"
         if ("total" in data and round_money(data["total"], currency)
                 != round_money(state.get("total") or 0, currency)):
-            raise HTTPException(409, "Document total must be reconciled before void")
+            raise HTTPException(409, t("peer.err_document_total_must_reconciled_before_void"))
         if target_status == "draft":
-            raise HTTPException(409, "Receiving document must be issued before void")
+            raise HTTPException(409, t("peer.err_receiving_document_must_issued_before_void"))
         if target_status != "void":
             await void_document(
                 claim.target_id,
@@ -291,13 +289,13 @@ async def receive_document(
             source_entity_id=source_entity_id, source_revision=source_revision)
         return "skipped" if target_status == "void" else "updated"
     if source_status == "draft" and target_status not in (None, "draft"):
-        raise HTTPException(409, "Previously issued document requires reconciliation")
+        raise HTTPException(409, t("peer.err_previously_issued_document_requires_reconciliation"))
     if target is not None and target_status != "draft":
         from celerp_docs.routes import _doc_import_fields_changed, assert_finalized_edit
         try:
             assert_finalized_edit(target.state or {}, _doc_import_fields_changed(target.state or {}, incoming))
         except HTTPException as exc:
-            raise HTTPException(409, ISSUED_IN_COPY) from exc
+            raise HTTPException(409, t(ISSUED_IN_COPY)) from exc
     finalizing = source_status != "draft" and (target_status == "draft" or posting is not None)
     if finalizing:
         # Update its draft fields (and a held posting's choices) before the canonical
@@ -314,8 +312,8 @@ async def receive_document(
         ):
             # The import's own reason, such as a locked period, tells the owner what to change.
             message = outcome.records[0].message if len(outcome.records) == 1 else None
-            refused = HTTPException(409, message_text(message).removeprefix(f"{claim.target_id}: ")
-                                    if message else "Receiving document needs review")
+            refused = HTTPException(409, kept_refusal(message, claim.target_id) if message
+                                    else t("peer.err_receiving_document_needs_review"))
             refused.fix = outcome.records[0].fix if len(outcome.records) == 1 else None
             raise refused
         if posting is not None:
@@ -482,7 +480,7 @@ def _validate_stock(data: dict) -> tuple[list[dict], set[str]]:
     """The source's receipts and the items its fulfilment shipped, checked for shape."""
     receipts = data.get("stock_receipts") or []
     if not isinstance(receipts, list) or len(receipts) > 200:
-        raise HTTPException(422, "Invalid stock receipts")
+        raise HTTPException(422, t("peer.err_invalid_stock_receipts"))
     for receipt in receipts:
         location = receipt.get("location") if isinstance(receipt, dict) else None
         if (not isinstance(receipt, dict) or type(receipt.get("event_id")) is not int
@@ -493,10 +491,10 @@ def _validate_stock(data: dict) -> tuple[list[dict], set[str]]:
                 or not isinstance(receipt.get("created_item_ids", []), list)
                 or not isinstance(receipt.get("parcels", {}), dict)
                 or not all(isinstance(it, dict) for it in receipt["received_items"])):
-            raise HTTPException(422, "Invalid stock receipt")
+            raise HTTPException(422, t("peer.err_invalid_stock_receipt"))
     shipped = data.get("fulfilled_items") or []
     if not isinstance(shipped, list) or not all(isinstance(x, dict) for x in shipped):
-        raise HTTPException(422, "Invalid fulfilled items")
+        raise HTTPException(422, t("peer.err_invalid_fulfilled_items"))
     return receipts, {str(x["item_id"]) for x in shipped if str(x.get("item_id") or "").startswith("item:")}
 
 
@@ -560,7 +558,7 @@ async def _replay_receipt(session: AsyncSession, grant, target_id: str, receipt:
         try:
             lines.append(ReceivedItem.model_validate(line))
         except ValidationError as exc:
-            raise HTTPException(422, "Invalid stock receipt line") from exc
+            raise HTTPException(422, t("peer.err_invalid_stock_receipt_line")) from exc
     body = ReceiveBody(location_id=location_id, received_items=lines)
     row = await _get_doc(session, company_id, target_id, for_update=True)
     _refuse_receipt_when_not_open(row.state)
@@ -572,7 +570,7 @@ async def _replay_receipt(session: AsyncSession, grant, target_id: str, receipt:
     made = list(row.state.get("received_item_ids") or [])[before:]
     sources = [str(x) for x in receipt.get("created_item_ids") or []]
     if len(made) != len(sources):
-        raise HTTPException(409, "Received parcels do not match the source receipt")
+        raise HTTPException(409, t("peer.err_received_parcels_do_not_match_source"))
     for source_id, target_item in zip(sources, made):
         session.add(CompanyPeerIdentity(
             company_id=company_id, source_company_id=grant.source_company_id,
@@ -581,7 +579,7 @@ async def _replay_receipt(session: AsyncSession, grant, target_id: str, receipt:
     await session.flush()
     for source_id, parcel in (receipt.get("parcels") or {}).items():
         if source_id not in sources or not isinstance(parcel, dict):
-            raise HTTPException(422, "Invalid received parcel")
+            raise HTTPException(422, t("peer.err_invalid_received_parcel"))
         from celerp.services.peer_import import ProductData
         await receive_product(session, grant=grant, source_entity_id=source_id,
                               source_revision=parcel.get("revision"),

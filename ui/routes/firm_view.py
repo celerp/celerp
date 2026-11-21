@@ -15,7 +15,7 @@ import ui.api_client as api
 from ui.components.activity import relative_time
 from ui.components.table import search_results
 from ui.config import get_token as _token
-from ui.i18n import get_lang, t
+from ui.i18n import get_lang, refusal_text, t
 from ui.components.encode import safe_url
 
 SYNC_STATES = ("on", "off", "failing", "expiring")
@@ -42,7 +42,7 @@ def _attention_link(row: dict, item: dict, lang: str) -> FT | str:
 def _attention(row: dict, lang: str) -> FT:
     """What needs attention, opened in place; each item names its record and the reason."""
     items = row.get("attention") or []
-    hints = [P(reason, cls="settings-hint") for reason in row.get("unavailable") or []]
+    hints = [P(refusal_text(reason), cls="settings-hint") for reason in row.get("unavailable") or []]
     if not items:
         return Div(Span("--"), *hints)
     return Div(
@@ -50,7 +50,7 @@ def _attention(row: dict, lang: str) -> FT:
             Summary(t("firm_view.to_look_at", lang, n=len(items))),
             Ul(*[Li(
                 Strong(t(f"firm_view.kind_{item['kind']}", lang)), " ",
-                Span(item.get("label") or "--"), ": ", Span(item.get("reason") or ""), " ",
+                Span(item.get("label") or "--"), ": ", Span(refusal_text(item.get("reason"))), " ",
                 _attention_link(row, item, lang),
             ) for item in items]),
         ),

@@ -4,6 +4,7 @@
 
 from celerp.importers.sinks import register_sink
 from celerp.services.journal_accounts import ChartAccess, register_chart
+from celerp_accounting.bank_statements import router as bank_statements_router
 from celerp_accounting.chart_rules import chart_accounts, lock_accounts
 from celerp_accounting.donors import router as donors_router
 from celerp_accounting.fund_reports import router as fund_reports_router
@@ -16,6 +17,7 @@ from celerp_accounting.routes import router as accounting_router
 
 
 def setup_api_routes(app) -> None:
+    app.include_router(bank_statements_router, prefix="/accounting", tags=["accounting"])
     app.include_router(accounting_router, prefix="/accounting", tags=["accounting"])
     app.include_router(funds_router, prefix="/accounting", tags=["accounting"])
     app.include_router(fund_reports_router, prefix="/accounting", tags=["accounting"])

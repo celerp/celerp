@@ -10,6 +10,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select
 
+from celerp.importers.results import message_text
 from test_helpers import register_admin
 from ui.i18n import t
 
@@ -160,7 +161,8 @@ async def test_internal_sinks_share_domain_import_services(client, session, monk
     }]})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["created"] == 0 and t("error.contacts_not_found", "en", names="contact:missing") in body["errors"][0]
+    assert body["created"] == 0 and body["errors"][0]["params"]["refusal"]["message_key"] == "error.contacts_not_found"
+    assert t("error.contacts_not_found", "en", names="contact:missing") in message_text(body["errors"][0])
     assert calls == ["import_journal_records"]
     receivable = CIFAccount(
         **_PROVENANCE, source_type="Account", source_external_id="acct-ar", code="1100",
@@ -330,9 +332,10 @@ async def test_core_sink_attaches_source_files_like_the_upload_routes(client, se
     assert (result.created, result.skipped) == (3, 0)
     errors = {e.source_external_id: e.message for e in result.errors}
     assert set(errors) == {"att-missing", "att-hash", "att-exe"}
-    assert "target record was not imported" in errors["att-missing"]
-    assert "does not match its recorded hash" in errors["att-hash"]
-    assert "can't be attached" in errors["att-exe"]
+    assert errors["att-missing"]["message_key"] == "migration.record.file_target_not_imported"
+    assert errors["att-hash"]["message_key"] == "migration.record.file_hash_mismatch"
+    assert errors["att-exe"]["message_key"] == "migration.record.file_refused"
+    assert "can't be attached" in errors["att-exe"]["message"]
     assert "att-missing" not in read_keys
     doc = await session.get(Projection, (company_id, targets["inv-1"]))
     contact = await session.get(Projection, (company_id, targets["cust-1"]))

@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import weakref
 
 from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -307,6 +309,38 @@ def _refused_authority_never_commits(session: Session) -> None:
     # Savepoint releases fire this too; only the outer commit makes anything durable.
     if refused is not None and not session.in_nested_transaction():
         raise refused
+
+
+# The sessions each task has begun a transaction in, read by holds_transaction: no external
+# send may wait on the network while its caller holds a transaction, and with it any lock.
+_BEGUN: "weakref.WeakKeyDictionary[asyncio.Task, weakref.WeakSet[Session]]" = weakref.WeakKeyDictionary()
+
+
+@event.listens_for(Session, "after_begin")
+def _transaction_begun(session: Session, transaction, connection) -> None:
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:  # no event loop: a synchronous caller, which sends nothing
+        return
+    if task is not None:
+        _BEGUN.setdefault(task, weakref.WeakSet()).add(session)
+
+
+def holds_transaction() -> bool:
+    """Whether the running task holds a database transaction open in any session, and with it
+    every lock the transaction took (the company lock among them) until it ends."""
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        return False
+    return any(s.in_transaction() for s in _BEGUN.get(task, ()))
+
+
+def refuse_held_transaction(what: str) -> None:
+    """Refuse ``what``, an external send, while the caller holds a transaction: a send waits on
+    the network, and every writer of the company would wait on the locks held through it."""
+    if holds_transaction():
+        raise RuntimeError(f"{what} while a database transaction is open: commit before sending")
 
 
 @event.listens_for(Session, "after_transaction_end")

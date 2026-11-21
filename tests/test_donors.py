@@ -12,8 +12,11 @@ History is read from GET /donors/{contact}/history and statements through /donor
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
 import pytest
+
+from celerp.services.email import EmailResult
 
 from income_books import GIFT_ACCOUNT, PERIOD, _books, _donor, _invoice, _issued, _line, _mailbox, _pay, _statement_donors
 
@@ -396,3 +399,173 @@ async def test_statement_amounts_carry_the_books_currency_places(client, auth, m
     for figure in shown:
         assert re.search(r"(?<![\d.,])%s(?![\d])" % re.escape(figure), text), (figure, text)
     assert not re.search(r"\d\.\d\d(?!\d)", text) if currency == "KWD" else ".00" not in text, text
+
+
+def _transport(monkeypatch, outcome=lambda: EmailResult(ok=True, detail="accepted")) -> list[dict]:
+    """A transport that refuses a send made with a transaction open, as the real one does."""
+    calls: list[dict] = []
+
+    async def send(to, subject, body_html, body_text="", **kw):
+        from celerp.services.company_lock import refuse_held_transaction
+        refuse_held_transaction("an email is sent")
+        calls.append({"to": to, "operation_id": kw.get("operation_id")})
+        return outcome()
+    monkeypatch.setattr("celerp.services.email.send_email", send)
+    return calls
+
+
+async def _send_all(client, auth, **extra) -> dict:
+    r = await client.post("/donors/statements/send", headers=auth["headers"], json={**PERIOD, "confirm": True, **extra})
+    assert r.status_code == 200, r.text
+    return {row["contact_id"]: row for row in r.json()["results"]}
+
+
+async def test_a_statement_email_goes_out_with_no_transaction_open(client, auth, monkeypatch):
+    """The bulk send records each donor's attempt and commits before the email goes out, so no
+    lock is held while the transport works."""
+    donors = await _statement_donors(client, auth)
+    calls = _transport(monkeypatch)
+    out = await _send_all(client, auth)
+    assert out[donors["email"]]["state"] == "sent" and [c["to"] for c in calls] == ["cy@test.test"]
+
+
+class _Crash(BaseException):
+    """The process stopping after the transport took the email, before its outcome is kept."""
+
+
+@pytest.mark.parametrize("relay", [False, True], ids=["smtp", "relay"])
+async def test_a_statement_taken_before_a_crash_is_never_sent_again_unless_the_relay_deduplicates(
+        client, auth, monkeypatch, relay):
+    """A run cut off after the transport took the email leaves it unconfirmed: a retry tells the
+    person it may have gone out and sends nothing through SMTP; a deduplicating relay is asked
+    again under the same operation id."""
+    donors = await _statement_donors(client, auth)
+    monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "account" if relay else None)
+    first: list = []
+
+    async def crash(to, subject, body_html, body_text="", **kw):
+        first.append(kw["operation_id"])
+        raise _Crash()
+    monkeypatch.setattr("celerp.services.email.send_email", crash)
+    with pytest.raises(_Crash):
+        await _send_all(client, auth)
+    monkeypatch.setattr("celerp.services.email.SEND_TIMEOUT", timedelta(0))
+    calls = _transport(monkeypatch)
+    again = (await _send_all(client, auth))[donors["email"]]
+    if relay:
+        assert [c["operation_id"] for c in calls] == first and again["state"] == "sent"
+    else:
+        assert calls == [] and again["state"] == "unconfirmed" and again["repeat"] is True
+
+
+@pytest.mark.parametrize("change", ["past_the_window", "another_relay_account"])
+async def test_a_cut_off_statement_the_relay_may_no_longer_know_is_never_replayed(client, auth, monkeypatch, change):
+    """The relay answers for an operation id only for a while, and only to the account that sent
+    it: past the replay window, or through another account, the send stays unconfirmed."""
+    donors = await _statement_donors(client, auth)
+    monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "account")
+
+    async def crash(to, subject, body_html, body_text="", **kw):
+        raise _Crash()
+    monkeypatch.setattr("celerp.services.email.send_email", crash)
+    with pytest.raises(_Crash):
+        await _send_all(client, auth)
+    monkeypatch.setattr("celerp.services.email.SEND_TIMEOUT", timedelta(0))
+    if change == "past_the_window":
+        monkeypatch.setattr("celerp.services.email.REPLAY_WINDOW", timedelta(0))
+    else:
+        monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "another account")
+    calls = _transport(monkeypatch)
+    again = (await _send_all(client, auth))[donors["email"]]
+    assert calls == [] and again["state"] == "unconfirmed" and again["repeat"] is True
+
+
+@pytest.mark.parametrize("address", ["moved@test.test", None])
+async def test_a_donor_whose_address_changes_while_an_earlier_statement_is_slow_is_not_mailed_at_the_old_one(
+        client, auth, monkeypatch, address):
+    """Each donor's address is read again just before their own email: one changed or removed
+    while an earlier statement of the batch is with the transport gets nothing at the old one."""
+    import asyncio
+
+    from celerp.services.company_lock import refuse_held_transaction
+    donors = await _statement_donors(client, auth)
+    later = await _donor(client, auth, "Bo Donor", "bo@test.test")
+    await _direct_gift(client, auth, later, 50, "2026-03-10")
+    entered, release, calls = asyncio.Event(), asyncio.Event(), []
+
+    async def slow(to, subject, body_html, body_text="", **kw):
+        refuse_held_transaction("an email is sent")
+        calls.append(to)
+        if not entered.is_set():
+            entered.set()
+            await asyncio.wait_for(release.wait(), 10)
+        return EmailResult(ok=True, detail="accepted")
+    monkeypatch.setattr("celerp.services.email.send_email", slow)
+    sending = asyncio.create_task(_send_all(client, auth))
+    await asyncio.wait_for(entered.wait(), 10)
+    assert calls == ["cy@test.test"]
+    r = await client.patch(f"/crm/contacts/{later}", headers=auth["headers"],
+                           json={"fields_changed": {"email": {"old": "bo@test.test", "new": address}}})
+    assert r.status_code == 200, r.text
+    release.set()
+    out = await sending
+    assert calls == ["cy@test.test"] and out[donors["email"]]["state"] == "sent", (calls, out)
+    assert out[later]["state"] == "failed", out
+    again = await _send_all(client, auth)
+    if address:
+        assert again[later]["state"] == "sent" and calls[1:] == [address], (calls, again)
+    else:
+        assert again[later]["state"] == "no_email" and calls == ["cy@test.test"], (calls, again)
+
+
+async def test_an_unconfirmed_statement_is_reported_and_a_failed_one_is_retried_once(client, auth, monkeypatch):
+    """The answer names an email that may have gone out; one the transport refused is sent again
+    by the next Send under the same send, and a press after that answers as stored."""
+    donors = await _statement_donors(client, auth)
+    mine = donors["email"]
+    _transport(monkeypatch, lambda: EmailResult(False, "timeout", unconfirmed=True))
+    assert (await _send_all(client, auth))[mine]["state"] == "unconfirmed"
+    calls = _transport(monkeypatch)
+    assert (await _send_all(client, auth))[mine] == {**(await _send_all(client, auth))[mine]} and calls == []
+    _transport(monkeypatch, lambda: EmailResult(False, "refused", reason="refused"))
+    assert (await _send_all(client, auth, resend={mine: 1}))[mine]["state"] == "failed"
+    calls = _transport(monkeypatch)
+    retried = (await _send_all(client, auth, resend={mine: 1}))[mine]
+    assert retried["state"] == "sent" and "repeat" not in retried and len(calls) == 1
+    r = await client.get("/donors/statements/preview", headers=auth["headers"], params=PERIOD)
+    preview = {row["contact_id"]: row for row in r.json()["donors"]}[mine]
+    assert preview["sends"] == 2 and preview["state"] == "sent", preview
+    assert (await _send_all(client, auth, resend={mine: 1}))[mine]["repeat"] is True and len(calls) == 1
+
+
+async def test_a_send_for_all_answers_with_the_first_send_when_the_statement_has_several(client, auth, monkeypatch):
+    """Sends numbered from a page read under another wording leave the statement without a send
+    0; a Send for all then answers with the first send the statement has, as stored, and emails
+    no one."""
+    mine = (await _statement_donors(client, auth))["email"]
+    _transport(monkeypatch, lambda: EmailResult(False, "timeout", unconfirmed=True))
+    assert (await _send_all(client, auth, resend={mine: 1}))[mine]["state"] == "unconfirmed"
+    calls = _transport(monkeypatch)
+    assert (await _send_all(client, auth, resend={mine: 2}))[mine]["state"] == "sent" and len(calls) == 1
+    first = (await _send_all(client, auth))[mine]
+    assert first["state"] == "unconfirmed" and first["repeat"] is True and len(calls) == 1, first
+
+
+async def test_a_replayed_statement_never_goes_to_an_address_the_donor_no_longer_has(client, auth, monkeypatch):
+    """The recipient is read when the email goes out, never from the stored attempt: a donor whose
+    address changed after a send was cut off is not emailed at the old one by a deduplicating
+    relay's replay; the send stays unconfirmed."""
+    donors = await _statement_donors(client, auth)
+    monkeypatch.setattr("celerp.services.email.relay_identity", lambda: "account")
+
+    async def crash(to, subject, body_html, body_text="", **kw):
+        raise _Crash()
+    monkeypatch.setattr("celerp.services.email.send_email", crash)
+    with pytest.raises(_Crash):
+        await _send_all(client, auth)
+    r = await client.patch(f"/crm/contacts/{donors['email']}", headers=auth["headers"], json={"fields_changed": {"email": {"old": "cy@test.test", "new": "new@test.test"}}})
+    assert r.status_code == 200, r.text
+    monkeypatch.setattr("celerp.services.email.SEND_TIMEOUT", timedelta(0))
+    calls = _transport(monkeypatch)
+    again = (await _send_all(client, auth))[donors["email"]]
+    assert "cy@test.test" not in [c["to"] for c in calls] and again["state"] == "unconfirmed", (calls, again)

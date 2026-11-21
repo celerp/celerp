@@ -20,11 +20,12 @@ from celerp.services.permissions import require_permission
 from celerp.services.runtime_state import dismiss_star_prompt, star_prompt_dismissed
 from celerp.services.star_cta import get_star_cta, neutral_cta
 from ui.i18n import available_langs
+from celerp.agent_markers import agent_excluded
 
 router = APIRouter()
 
 
-@router.get("/cta")
+@router.get("/cta", openapi_extra=agent_excluded("internal"))
 async def star_cta(
     medium: str = "footer",
     lang: str = "en",
@@ -43,7 +44,7 @@ async def star_cta(
     return {**cta, "dismissed": await star_prompt_dismissed(session)}
 
 
-@router.post("/dismiss")
+@router.post("/dismiss", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/dashboard"}, summary="Stop showing the request to star Celerp on GitHub for the whole installation.")
 async def dismiss(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
@@ -56,7 +57,7 @@ async def dismiss(
 # ── Supporter badge (claim via the relay verify flow, then store locally) ─────
 
 
-@router.get("/badge/verify-url")
+@router.get("/badge/verify-url", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Get the link that verifies the user's GitHub star for a supporter badge.")
 async def badge_verify_url(return_url: str, _user=Depends(get_current_user)) -> dict:
     """The relay verify-start URL to open in the browser. ``return_url`` is where the
     relay redirects back with the credential (the install's own page). Claiming a badge
@@ -69,7 +70,7 @@ async def badge_verify_url(return_url: str, _user=Depends(get_current_user)) -> 
     return {"url": f"{relay_http_url()}/github/verify/start?{q}"}
 
 
-@router.get("/badge")
+@router.get("/badge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show the user's supporter badge, if any, and the link to the public founders wall.")
 async def get_badge(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -82,7 +83,7 @@ async def get_badge(
     }
 
 
-@router.post("/badge")
+@router.post("/badge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/dashboard", "x-celerp-agent-any-role": True}, summary="Save the user's supporter badge after they verified their GitHub star.")
 async def claim_badge(
     payload: dict,
     user=Depends(get_current_user),
@@ -99,7 +100,7 @@ async def claim_badge(
     return {"badge": _badge.to_dict(badge)}
 
 
-@router.delete("/badge")
+@router.delete("/badge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/dashboard", "x-celerp-agent-any-role": True}, summary="Remove the user's supporter badge and take them off the public founders wall.")
 async def delete_badge(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),

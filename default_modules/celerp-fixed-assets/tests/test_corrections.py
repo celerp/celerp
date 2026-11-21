@@ -22,6 +22,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from celerp.accounting_roles import period_locked_refusal
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _lock, _managed_from, _movements, _notices, _run, _run_journals
 from ui.i18n import refusal_text
@@ -213,7 +214,7 @@ async def test_s3_one_action_multiple_coordinated_entries(fa, monkeypatch):
     async def failing(*args, **kwargs):
         calls.append(kwargs.get("key"))
         if len(calls) == 3:
-            raise HTTPException(status_code=409, detail="The ledger refused the entry.")
+            raise HTTPException(status_code=409, detail=period_locked_refusal("2026-04-20"))
         return await real(*args, **kwargs)
 
     monkeypatch.setattr(corrections, "_post", failing)
