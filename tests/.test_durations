@@ -30430,7 +30430,6 @@
     "default_modules/celerp-accounting/tests/test_bank_ladder.py::test_vat_split_needs_tax_id_and_equal_total[tax-id-equal-total]": 0.0024276109179481864,
     "default_modules/celerp-accounting/tests/test_bank_ladder.py::test_vat_split_needs_tax_id_and_equal_total[total-differs]": 0.002425474114716053,
     "default_modules/celerp-accounting/tests/test_bank_questions.py::test_answer_after_post_is_refused": 0.3902795509202406,
-    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_answer_naming_contact_suggests_without_model": 0.4220604880247265,
     "default_modules/celerp-accounting/tests/test_bank_questions.py::test_answer_receipt_refused_saves_nothing": 0.3520822139689699,
     "default_modules/celerp-accounting/tests/test_bank_questions.py::test_answer_receipt_store_failure_keeps_form": 0.3767190830549225,
     "default_modules/celerp-accounting/tests/test_bank_questions.py::test_ask_client_email_failure_keeps_question[failed]": 0.32901832496281713,
@@ -32046,5 +32045,17 @@
     "tests/test_ai_job_liveness.py::test_a_step_whose_claim_another_took_is_not_tried_again": 0.0026492789620533586,
     "tests/test_reconciliation_matching.py::test_an_entry_a_line_of_another_statement_date_holds_is_not_matched_again": 1.2149314859998412,
     "tests/test_reconciliation_matching.py::test_match_to_an_entry_of_another_amount_is_refused_with_both_totals": 0.31912436900893226,
-    "tests/test_reconciliation_matching.py::test_match_with_no_entry_is_refused_even_when_the_lines_cancel_out": 0.271442336961627
+    "tests/test_reconciliation_matching.py::test_match_with_no_entry_is_refused_even_when_the_lines_cancel_out": 0.271442336961627,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_answer_naming_contact_suggests_without_model[Siam Landlord]": 1.2241398229962215,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_answer_naming_contact_suggests_without_model[\\u0e23\\u0e49\\u0e32\\u0e19\\u0e40\\u0e0a\\u0e48\\u0e32 \\u0e2a\\u0e22\\u0e32\\u0e21]": 0.3975780869368464,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_the_ask_email_links_the_questions_only_where_the_install_has_an_address[]": 0.3005814650095999,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_the_ask_email_links_the_questions_only_where_the_install_has_an_address[https://books.example.com/]": 0.292991402966436,
+    "default_modules/celerp-accounting/tests/test_bank_statements.py::test_a_search_past_ascii_finds_only_the_lines_that_hold_it": 0.0045723619987256825,
+    "default_modules/celerp-accounting/tests/test_bank_statements.py::test_a_spreadsheet_statement_keeps_text_past_ascii": 0.008452114067040384,
+    "default_modules/celerp-accounting/tests/test_suggest_model_step.py::test_the_model_reads_text_past_ascii_as_written_and_each_text_is_its_own_step": 0.002490332059096545,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_an_entry_carries_its_documents_number_only_while_it_pays_the_documents_only_payment": 0.3917770679690875,
+    "default_modules/celerp-ai/tests/test_conversations.py::test_a_completed_actions_arguments_past_ascii_are_read_back_as_written": 0.0027329829754307866,
+    "tests/test_ai_capabilities.py::test_a_tool_call_key_tells_apart_identities_that_differ_past_ascii": 0.002300260995980352,
+    "tests/test_ai_capabilities.py::test_executor_measures_a_result_past_ascii_as_utf8": 0.0037836210103705525,
+    "tests/test_email_service.py::test_an_emails_stored_form_keeps_text_past_ascii_and_its_digest_tells_it_apart": 0.002926793065853417
 }
