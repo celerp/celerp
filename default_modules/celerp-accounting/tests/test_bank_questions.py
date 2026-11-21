@@ -141,20 +141,21 @@ async def test_answer_after_post_is_refused(client, session, monkeypatch):
     assert r.status_code == 409 and "already" in r.json()["detail"]["message"].lower()
 
 
-async def test_answer_naming_contact_suggests_without_model(client, session, monkeypatch):
+@pytest.mark.parametrize("name", ["Siam Landlord", "ร้านเช่า สยาม"])
+async def test_answer_naming_contact_suggests_without_model(client, session, monkeypatch, name):
     from celerp_accounting import suggest
     called = []
     monkeypatch.setattr(suggest, "model_rung", lambda groups, accounts: called.append(groups) or {})
     _sent(monkeypatch)
     co, bk, client_h, lines = await _setup(client, session)
-    r = await client.post("/crm/contacts", json={"name": "Siam Landlord", "contact_type": "vendor"}, headers=co["h"])
+    r = await client.post("/crm/contacts", json={"name": name, "contact_type": "vendor"}, headers=co["h"])
     contact_id = r.json()["id"]
     r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [lines["BANK FEE"]["id"]], "kind": "post",
                                                           "account_code": "6100", "contact": contact_id}])
     assert r.json()["results"][0]["ok"]
     lid = lines["WITHDRAWAL"]["id"]
     await _ask(client, co, bk, [lid])
-    r = await client.post(f"{Q}/{lid}/answer", json={"answer": "rent", "contact_text": "Siam Landlord",
+    r = await client.post(f"{Q}/{lid}/answer", json={"answer": "rent", "contact_text": name,
                                                       "idempotency_key": B.key()}, headers=client_h)
     assert r.status_code == 200, r.text
     line = B.line_by_text(await B.groups(client, co, bk["id"]), "WITHDRAWAL")
@@ -723,3 +724,25 @@ async def test_a_replayed_ask_never_goes_to_an_address_the_member_no_longer_has(
     calls = _sent(monkeypatch)
     again = (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)).json()
     assert old not in [c["to"] for c in calls] and again["email"]["state"] == "unconfirmed", (calls, again)
+
+
+@pytest.mark.parametrize("url", ["", "https://books.example.com/"])
+async def test_the_ask_email_links_the_questions_only_where_the_install_has_an_address(client, session, monkeypatch,
+                                                                                         url):
+    """With a public address the email links the questions page; without one it says where to find
+    them, never a link to an address the install does not have."""
+    from celerp.config import settings
+    from celerp_accounting.statement_lines import QUESTIONS_URL
+    from ui.i18n import t
+    texts = []
+
+    async def fake(to, subject, body_html, body_text="", **kw):
+        texts.append(body_text)
+        return EmailResult(True, "sent")
+    monkeypatch.setattr("celerp.services.email.send_email", fake)
+    monkeypatch.setattr(settings, "celerp_public_url", url)
+    co, bk, client_h, lines = await _setup(client, session)
+    assert (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]])).status_code == 200
+    where = str(t("acct.recon_questions_where"))
+    assert texts and all((("https://books.example.com" + QUESTIONS_URL) in x) == bool(url) and (where in x) != bool(url)
+                         for x in texts), texts

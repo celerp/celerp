@@ -841,3 +841,11 @@ async def test_pruning_and_history_share_same_protection_rule(session, company, 
         session, company.id, user.id, limit=MAX_CONVERSATIONS_PER_USER,
     )
     assert protected_id in {c.id for c in history}
+
+
+def test_a_completed_actions_arguments_past_ascii_are_read_back_as_written():
+    """Thai arguments reach the model's history as written and within the length kept: their
+    escaped form would be six times as long, cut short and unreadable."""
+    from celerp.ai.conversations import _ARGUMENTS_IN_HISTORY, _brief
+    name = "ร้าน" * (_ARGUMENTS_IN_HISTORY // 10)
+    assert _brief({"name": name}) == '{"name":"' + name + '"}'

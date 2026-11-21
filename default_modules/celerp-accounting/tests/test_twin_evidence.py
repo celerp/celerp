@@ -867,3 +867,28 @@ async def test_near_twins_are_one_transaction_only_by_a_number_carried_once_in_e
                 assert lines["RECEIVED"] == "matched" and paid == [want], (case, lines, paid)
             assert not moved, (case, moved)
         assert runs[0][1:] == runs[1][1:], (case, runs)
+
+
+@pytest.mark.asyncio
+async def test_an_entry_carries_its_documents_number_only_while_it_pays_the_documents_only_payment(client, session):
+    """A payment entry of a document paid once carries the document's number; the entries of a
+    document paid twice carry none, even when only one of them is asked about."""
+    import uuid
+
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    from celerp_accounting import suggest
+    from celerp_accounting.bank_statements import _entry_identifiers
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    _once, once_number = await B.paid_invoice(client, co, bk, 100.0, "2026-01-08")
+    _twice, twice_number = await B.paid_invoice(client, co, bk, 160.0, "2026-01-08", payments=2)
+    je_ids = (await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == uuid.UUID(co["company_id"]), Projection.entity_type == "journal_entry"))).scalars().all()
+    carried = await _entry_identifiers(session, uuid.UUID(co["company_id"]), je_ids)
+    assert sorted(carried.values()) == [suggest.normalised(once_number)], (carried, twice_number)
+    for je_id in je_ids:
+        assert suggest.normalised(twice_number) not in (await _entry_identifiers(
+            session, uuid.UUID(co["company_id"]), [je_id])).values()
+

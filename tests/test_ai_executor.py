@@ -164,7 +164,7 @@ async def test_successful_confirmed_write_large_result_stays_successful():
         return {"payload": "x" * 5000}
 
     capability = {
-        "method": "POST", "path": "/write", "path_names": (), "query_names": (),
+        "encoding": "json", "method": "POST", "path": "/write", "path_names": (), "query_names": (),
         "expects_body": False, "key_field": None, "keyed": False, "requires_confirmation": True,
     }
     result = await execute_agent_capability(

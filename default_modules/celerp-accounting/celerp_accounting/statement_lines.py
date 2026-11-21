@@ -597,7 +597,7 @@ async def ask_plan(db: AsyncSession, *, company_id: uuid.UUID, lines: list[BankS
     members = await client_users(db, company_id)
     if not members:
         raise _no_client_user()
-    reminder = max((l.client_query or {}).get("asks", 0) if asked(l) else 0 for l in lines)
+    reminder = max(l.client_query["asks"] if asked(l) else 0 for l in lines)
     count = await _open_questions(db, company_id) + sum(1 for l in lines if not _open(l))
     return {"asked": [str(l.id) for l in lines], "note": note, "members": [str(m.id) for m in members],
             "body_key": "acct.recon_questions_reminder" if reminder else "acct.recon_questions_body",
@@ -734,10 +734,10 @@ async def _ask_outcome(db: AsyncSession, plan: dict, done: dict) -> dict:
     names = {str(u.id): u.name for u in (await db.execute(select(User).where(User.id.in_(ids)))).scalars()}
     now = datetime.now(timezone.utc)
     rows = []
-    for member in sorted(done["recipients"], key=lambda m: (names.get(m, ""), m)):
+    for member in sorted(done["recipients"], key=lambda m: (names[m], m)):
         record = done["recipients"][member]
         state = email_service.attempt_state(record, now)
-        rows.append({"name": names.get(member, ""), "state": state,
+        rows.append({"name": names[member], "state": state,
                      "reason": record.get("reason"), "detail": record.get("detail")})
     # No recipient left (each was left out before their email went) is its own state, never sent.
     worst = min((r["state"] for r in rows), key=_EMAIL_STATES.index) if rows else "not_sent"
@@ -753,7 +753,7 @@ async def _ask_outcome(db: AsyncSession, plan: dict, done: dict) -> dict:
         reason = as_sentence(str(t(first["reason"])) if first["reason"] else first["detail"] or "")
         outcome = t(_ASKED_NOT_SENT[first["state"]][one], count=count, name=", ".join(r["name"] for r in failed),
                     reason=reason)
-    if left_out := sorted(names.get(m, "") for m in done["left_out"]):
+    if left_out := sorted(names[m] for m in done["left_out"]):
         outcome = f"{outcome} {t('acct.recon_asked_left_out', names=', '.join(left_out))}"
     return {"asked": plan["asked"], "outcome": str(outcome),
             "email": {"state": worst, "recipients": [{"name": r["name"], "state": r["state"]} for r in rows]}}

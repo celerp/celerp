@@ -551,6 +551,30 @@ async def test_executor_bounds_json_result():
     assert result["error"]["code"] == "result_too_large"
 
 
+async def test_executor_measures_a_result_past_ascii_as_utf8():
+    """A Thai result is measured as it is kept, each character once in UTF-8: its escaped form
+    is twice as long and would refuse a result that fits."""
+    app = FastAPI()
+
+    @app.get("/thai", openapi_extra={"x-celerp-agent": True})
+    async def thai():
+        return {"value": "ก" * 20}
+
+    route = next(r for r in app.routes if getattr(getattr(r, "endpoint", None), "__name__", "") == "thai")
+    route.endpoint.__module__ = "celerp.routers.agent_test"
+    app.openapi_schema = None
+    cap = next(iter(ai_tools.compile_agent_capabilities(app, {}).values()))
+
+    result = await ai_tools.execute_agent_capability(
+        app, "Bearer user-token", cap, {}, "call-thai", result_max_bytes=100
+    )
+    assert "error" not in result and result["data"] == {"value": "ก" * 20}, result
+
+
+def test_a_tool_call_key_tells_apart_identities_that_differ_past_ascii():
+    assert ai_tools.tool_call_key("message:call-ก") != ai_tools.tool_call_key("message:call-ข")
+
+
 # ---------------------------------------------------------------------------
 # Every permission that shapes a capability's result is declared
 # ---------------------------------------------------------------------------

@@ -645,8 +645,7 @@ def _claimable(record: object, now: datetime, *, allow_unknown: bool = False) ->
         return False
     if _outcome_unknown(record, now):
         return allow_unknown
-    status = record.get("status", "pending")
-    return _still_pending(record, now) or status == "retryable" or _stale_executing(record, now)
+    return _still_pending(record, now) or record.get("status") == "retryable" or _stale_executing(record, now)
 
 
 class ActionOutcomeUnknown(Exception):

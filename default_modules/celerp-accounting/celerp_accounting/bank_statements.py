@@ -226,7 +226,7 @@ async def _known(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | No
         ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id))).scalars()}
     known = [{"fingerprint": l.fingerprint, "line_date": l.line_date, "description": l.description,
               "amount": l.amount, "raw_balance": l.raw_balance, "reference": l.reference, "fitid": l.fitid,
-              "statement": dates.get(l.reconciliation_id, "")} for l in lines]
+              "statement": dates[l.reconciliation_id]} for l in lines]
     held = {j for l in lines for j in (l.matched_je_ids or [])} | {_opening_je_id(bank.id)}
     counts: dict = {}
     for e in await _je_entries_for_account(db, company_id, bank):
@@ -270,7 +270,7 @@ def _parse_structured(content: bytes, meta: dict, column_map: dict | None) -> di
     dates = sorted(l["line_date"] for l in lines if l.get("line_date"))
     return {"header": {"period_start": dates[0] if dates else None, "period_end": dates[-1] if dates else None,
                        "opening_balance": None, "closing_balance": None},
-            "lines": lines, "needs_mapping": parsed.get("needs_mapping", False), "headers": parsed.get("headers") or []}
+            "lines": lines, "needs_mapping": parsed["needs_mapping"], "headers": parsed.get("headers") or []}
 
 
 def _saved_map(bank: BankAccount | None, headers: list[str]) -> dict | None:
@@ -1471,7 +1471,7 @@ async def _entry_identifiers(db: AsyncSession, company_id: uuid.UUID, je_ids) ->
         payments = ref["doc"].get("payments") or []
         only = payments[0] if len(payments) == 1 else {}
         ident = suggest.normalised(ref["numbers"].get(ref["doc_id"]))
-        if ref["trigger"] == "doc.payment.received" and ident and only.get("status", "active") == "active" \
+        if ref["trigger"] == "doc.payment.received" and ident and only.get("status") == "active" \
                 and not only.get("refunded") and not only.get("refund_count"):
             out[je_id] = ident
     once = await _carried_once(db, company_id, set(out.values()))

@@ -155,7 +155,7 @@ def _result_permissions(operation: dict[str, Any], route_permissions: tuple[str,
 
 def _agent_route_owner(endpoint: Any, company_settings: dict[str, Any]) -> str | None:
     """Return core/module owner when direct agent invocation is allowed, else None."""
-    endpoint_module = str(getattr(endpoint, "__module__", "") or "")
+    endpoint_module = str(endpoint.__module__ or "")
     if endpoint_module == "celerp" or endpoint_module.startswith("celerp."):
         return "celerp"
     # A module folded into core is wired at construction, never loaded, and always runs.
@@ -273,7 +273,7 @@ def _callees(fn: Any) -> tuple[Any, ...]:
                 except Exception:
                     continue
                 names.setdefault(alias.asname or alias.name, getattr(module, alias.name, None))
-    own = str(getattr(fn, "__module__", "") or "")
+    own = str(fn.__module__ or "")
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -563,8 +563,7 @@ def compile_agent_capabilities(
                     schema["description"] = parameter["description"]
                 if location == "path":
                     path_properties[name] = schema
-                    if parameter.get("required", True):
-                        path_required.append(name)
+                    path_required.append(name)  # OpenAPI: a path parameter is always required
                 elif location == "header":
                     header_properties[name] = schema
                 else:
@@ -889,7 +888,7 @@ async def execute_agent_capability(
             files.append((part, (str(meta.get("filename") or file_id), content,
                                  str(meta.get("content_type") or "application/octet-stream"))))
 
-    if capability.get("encoding", "json") == "json":
+    if capability["encoding"] == "json":
         sent: dict[str, Any] = {"json": body}
     else:
         form = {k: v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)

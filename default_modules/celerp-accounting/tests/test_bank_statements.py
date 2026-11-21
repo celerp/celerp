@@ -1425,3 +1425,25 @@ async def test_each_bank_refusal_answers_its_key_and_changes_nothing(client, ses
     assert refusal["message_key"] == key, r.text
     after = await _stored(session, co)
     assert after == before, (set(after[1]) ^ set(before[1]), [l for l in after[0] if l not in before[0]])
+
+
+async def test_a_search_past_ascii_finds_only_the_lines_that_hold_it():
+    from types import SimpleNamespace
+
+    from celerp_accounting.bank_statements import _searched
+    rent = SimpleNamespace(description="ค่าเช่า มกราคม", counterparty_key=None, reference=None)
+    assert _searched(rent, "ค่าเช่า") and not _searched(rent, "ค่าไฟ")
+
+
+async def test_a_spreadsheet_statement_keeps_text_past_ascii():
+    import io
+
+    from openpyxl import Workbook
+
+    from celerp_accounting.bank_statements import _statement_csv_bytes
+    wb = Workbook()
+    wb.active.append(["Date", "Description", "Amount"])
+    wb.active.append(["2026-01-05", "ค่าเช่า มกราคม", -200])
+    buf = io.BytesIO()
+    wb.save(buf)
+    assert "ค่าเช่า มกราคม" in _statement_csv_bytes(buf.getvalue(), "statement.xlsx", None).decode("utf-8")

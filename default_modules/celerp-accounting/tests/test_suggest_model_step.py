@@ -133,3 +133,14 @@ async def test_a_retry_on_changed_input_is_a_new_step_and_an_identical_one_the_s
     await suggest.ask_model(groups[1:], ["5100", "5200"])
     assert made.sent[0] == made.sent[1] != made.sent[2]
     assert usage == [(kind, op) for op in made.sent for kind in ("send", "settle")]
+
+
+def test_the_model_reads_text_past_ascii_as_written_and_each_text_is_its_own_step():
+    """A Thai sample reaches the model as written, never as escapes, and two samples that differ
+    only past ASCII are two steps: the identity hashes every character the model sees."""
+    groups = _groups(random.Random(3), 1)
+    groups[0]["sample"] = ["ค่าเช่า มกราคม"]
+    op, messages = suggest.model_step(_call(), groups, ["5100"])
+    assert "ค่าเช่า มกราคม" in messages[1]["content"]
+    groups[0]["sample"] = ["ค่าไฟ มกราคม"]
+    assert suggest.model_step(_call(), groups, ["5100"])[0] != op

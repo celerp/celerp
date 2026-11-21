@@ -481,3 +481,12 @@ def test_only_the_email_primitive_decides_a_replay():
         if rel != owner and (hits := set(re.findall(r"REPLAY_WINDOW|\brelay_identity\b|\"deduplicated\"", path.read_text()))):
             found[rel] = hits
     assert found == {w: {"relay_identity"} for w in writers}
+
+
+def test_an_emails_stored_form_keeps_text_past_ascii_and_its_digest_tells_it_apart():
+    """Thai text is stored as itself (a size limit counts each character once) and two emails
+    that differ only past ASCII have two digests, so a replay of one never matches the other."""
+    from celerp.services.email import payload_digest, payload_json
+    one, other = {"to": "a@example.com", "body_text": "ค่าเช่า"}, {"to": "a@example.com", "body_text": "ค่าไฟ"}
+    assert "ค่าเช่า" in payload_json(one)
+    assert payload_digest(one) != payload_digest(other)

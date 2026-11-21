@@ -126,7 +126,7 @@ async def test_tool_requests_forward_accept_language(thai):
     async def _echo(request: Request):
         return {"lang": request.headers.get("accept-language")}
 
-    capability = {"name": "echo", "method": "GET", "path": "/echo", "path_names": (),
+    capability = {"name": "echo", "encoding": "json", "method": "GET", "path": "/echo", "path_names": (),
                   "query_names": (), "expects_body": False, "key_field": None, "keyed": False}
     result = await execute_agent_capability(app, "Bearer tok", capability, {}, "c1")
     assert result["ok"] is True

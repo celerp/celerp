@@ -297,7 +297,7 @@ async def _executor_errors(monkeypatch) -> list[dict]:
         return {"error": "Not saved."}
 
     def cap(path, **extra):
-        return {"method": "GET", "path": path, "path_names": [], "query_names": [], "expects_body": False, **extra}
+        return {"encoding": "json", "method": "GET", "path": path, "path_names": [], "query_names": [], "expects_body": False, **extra}
 
     thing = cap("/thing/{item_id}", path_names=["item_id"])
     run = tools.execute_agent_capability

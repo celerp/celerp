@@ -136,7 +136,7 @@ async def test_signed_out_across_a_restart_then_signed_in_the_question_asked_aga
 def _gated_read(app) -> dict:
     """An agent capability over a real read the app refuses without manage_company_settings."""
     path = next(path for path, _, route in tools._api_routes(app) if route.name == "start_report")
-    return {"name": "start_report", "method": "GET", "path": path, "module": "celerp",
+    return {"name": "start_report", "encoding": "json", "method": "GET", "path": path, "module": "celerp",
             "path_names": (), "query_names": (), "expects_body": False, "key_field": None, "keyed": False,
             "requires_confirmation": False, "required_permissions": ("manage_company_settings",),
             "result_permissions": ("manage_company_settings",), "field_visibility": False,
