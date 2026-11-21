@@ -32141,5 +32141,13 @@
     "tests/test_ai_table_writers.py::test_only_the_owner_writes[AIJobStep]": 0.0024473669473081827,
     "tests/test_ai_table_writers.py::test_only_the_owner_writes[AIMessage]": 0.0024161870824173093,
     "tests/test_ai_table_writers.py::test_only_the_owner_writes[AIUsage]": 0.0023685749038122594,
-    "tests/test_ai_table_writers.py::test_only_the_owner_writes[BankStatementLine]": 0.0024020050186663866
+    "tests/test_ai_table_writers.py::test_only_the_owner_writes[BankStatementLine]": 0.0024020050186663866,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_an_answer_naming_two_contacts_of_one_name_suggests_neither": 1.286655667994637,
+    "default_modules/celerp-accounting/tests/test_suggest_model_step.py::test_the_step_settles_the_charge_the_service_reports_and_marks_an_unreported_one_unknown[3-settled0]": 0.003925632976461202,
+    "default_modules/celerp-accounting/tests/test_suggest_model_step.py::test_the_step_settles_the_charge_the_service_reports_and_marks_an_unreported_one_unknown[None-settled1]": 0.004472955944947898,
+    "tests/test_email_service.py::test_a_relay_refusal_whose_body_cannot_be_read_is_still_a_refusal_by_its_status[body0]": 0.004535960033535957,
+    "tests/test_email_service.py::test_a_relay_refusal_whose_body_cannot_be_read_is_still_a_refusal_by_its_status[body1]": 0.0037072780542075634,
+    "tests/test_email_service.py::test_a_relay_refusal_whose_body_cannot_be_read_is_still_a_refusal_by_its_status[text]": 0.003369203011970967,
+    "tests/test_reads_follow_view_permissions.py::test_every_donor_read_needs_view_contacts_and_view_payments[view_contacts]": 0.8979837930528447,
+    "tests/test_reads_follow_view_permissions.py::test_every_donor_read_needs_view_contacts_and_view_payments[view_payments]": 0.2947990669636056
 }
