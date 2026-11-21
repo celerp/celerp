@@ -167,6 +167,14 @@ def _send_key(statement: str, n: int) -> str:
     return f"{statement}:resend:{n}" if n else statement
 
 
+def _attempt(meta: dict | None) -> dict | None:
+    """The email attempt a send's STATEMENT_SENT record holds (metadata ``email``); None when it
+    holds none. A record the earlier build kept has only its answer (metadata ``result``), written
+    once the email had gone out, so it reads as an attempt settled in its answer's state (sent)."""
+    meta = meta or {}
+    return meta["email"] if "email" in meta else {"state": meta["result"]["state"]} if "result" in meta else None
+
+
 async def _taken(session: AsyncSession, company_id, statements: list[str]) -> dict[str, dict[int, str | None]]:
     """The sends recorded for each statement key, in order of their number (0 its first send, n
     resend n), each with how its email reads now (email.attempt_state)."""
@@ -178,7 +186,7 @@ async def _taken(session: AsyncSession, company_id, statements: list[str]) -> di
                 *(LedgerEntry.idempotency_key.startswith(f"{k}:resend:", autoescape=True) for k in statements))))).all():
         statement, _, n = key.rpartition(":resend:") if key not in taken else (key, "", "0")
         if statement in taken and n.isdecimal():
-            taken[statement][int(n)] = email_service.attempt_state((meta or {}).get("email"), now)
+            taken[statement][int(n)] = email_service.attempt_state(_attempt(meta), now)
     return {key: dict(sorted(sends.items())) for key, sends in taken.items()}
 
 
@@ -256,7 +264,7 @@ async def _send_statement(session: AsyncSession, company_id, user_id, payload: S
         n = n if n in taken or party in payload.resend or not taken else next(iter(taken))
         key = _send_key(statement, n)
         entry = await find_event_by_idempotency(s, company_id, key) if n in taken else None
-        record = (entry.metadata_ or {}).get("email") if entry is not None else None
+        record = _attempt(entry.metadata_) if entry is not None else None
         step = "new" if entry is None else email_service.next_step(record)
         if step not in ("new", "replay"):
             state = email_service.attempt_state(record, datetime.now(timezone.utc))
