@@ -1121,3 +1121,307 @@ async def test_a_statement_spans_its_earliest_to_latest_date_and_an_entry_names_
     state = {"entries": [{"account": "1010", "contact": "bank-side"}, {"account": "4000", "contact": "first"},
                          {"account": "5000", "contact": "second"}]}
     assert _contact(state, "1010") == "first"
+
+
+# ── Every refusal of the bank routes ────────────────────────────────────────
+# Each case sets a company up, then returns the one request that must be refused, with the
+# answer it must get. Where no route can bring the stored rows to the refused state (an entry
+# gone or changed under a posted line, a chart from elsewhere, a suspense account remapped
+# after posting, a reading job still running), the case gives the rows that state directly.
+
+async def _lines(client, rows, **bank):
+    co, bk = await _co_bank(client, **bank)
+    await _one_month(client, co, bk, rows)
+    return co, bk, sorted(B.all_lines(await B.groups(client, co, bk["id"])), key=lambda l: l["line_date"])
+
+
+def _decide(co, bk, **decision):
+    return lambda c: B.resolve(c, co, bk["id"], decisions=[decision])
+
+
+async def _settings(session, co, change):
+    import uuid
+
+    from sqlalchemy import select, update
+
+    from celerp.models.company import Company
+    cid = uuid.UUID(co["company_id"])
+    settings = dict((await session.execute(select(Company.settings).where(Company.id == cid))).scalar_one() or {})
+    change(settings)
+    await session.execute(update(Company).where(Company.id == cid).values(settings=settings))
+    await session.commit()
+
+
+async def _entry(session, co, je_id, change):
+    import uuid
+
+    from sqlalchemy import update
+
+    from celerp.models.projections import Projection
+    where = (Projection.company_id == uuid.UUID(co["company_id"]), Projection.entity_id == je_id)
+    state = await B.journal(session, co, je_id)
+    await session.execute(update(Projection).where(*where).values(state=change(state)))
+    await session.commit()
+
+
+async def _posted(client, co, bk, line, kind="post"):
+    extra = {"account_code": "5100"} if kind == "post" else {}
+    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": kind, **extra}])
+    assert r.json()["results"][0]["ok"], r.text
+    return r.json()["results"][0]["je_ids"][0]
+
+
+def _unmatch(co, bk, line):
+    return lambda c: c.post(f"{B.API}/bank/{bk['id']}/unmatch", json={"line_ids": [line["id"]], "idempotency_key": B.key()},
+                            headers=co["h"])
+
+
+def _reclassify(co, line):
+    return lambda c: c.post(f"{B.API}/lines/{line['id']}/reclassify", json={"account_code": "5100", "idempotency_key": B.key()},
+                            headers=co["h"])
+
+
+async def _read(client, rows=(("2026-01-05", "ACME LTD", "-40.00"),)):
+    co, bk = await _co_bank(client)
+    return co, bk, await B.read(client, co, [(B.csv_bytes(list(rows)), "jan.csv", "text/csv")], bank_id=bk["id"])
+
+
+def _import(co, preview, **body):
+    statements = [{"header": st["header"], "lines": st["lines"]} for st in preview["statements"]]
+    return lambda c: c.post(f"{B.API}/import-statement", headers=co["h"], json={
+        "job_id": preview["job_id"], "statements": statements, "idempotency_key": B.key(), **body})
+
+
+async def _refused_transfer_to_amount(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "FROM EUR", "100.00")])
+    eur = await B.bank(client, co["h"], name="Euro", currency="EUR")
+    return co, _decide(co, bk, line_ids=[line["id"]], kind="transfer", target_bank_id=eur["id"], rate=0.9)
+
+
+async def _refused_reclassify_after_suspense_remapped(client, session, monkeypatch):
+    from celerp.accounting_roles import ROLES_KEY
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "WITHDRAWAL", "-50.00")])
+    await _posted(client, co, bk, line, "suspense")
+    await _settings(session, co, lambda s: s.update({ROLES_KEY: {**(s.get(ROLES_KEY) or {}), "suspense": "1999"}}))
+    return co, _reclassify(co, line)
+
+
+async def _refused_unmatch_entry_gone(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "FEE", "-5.00")])
+    je = await _posted(client, co, bk, line)
+    import uuid
+
+    from sqlalchemy import update
+
+    from celerp.models.projections import Projection
+    await session.execute(update(Projection).where(Projection.company_id == uuid.UUID(co["company_id"]),
+                                                   Projection.entity_id == je).values(entity_type="doc"))
+    await session.commit()
+    return co, _unmatch(co, bk, line)
+
+
+async def _refused_unmatch_foreign_entry(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "FEE", "-5.00")])
+    je = await _posted(client, co, bk, line)
+    await _entry(session, co, je, lambda s: {**s, "je_type": "manual"})
+    return co, _unmatch(co, bk, line)
+
+
+async def _refused_withdraw_unasked(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "FEE", "-5.00")])
+    return co, lambda c: c.post(f"{B.API}/bank/{bk['id']}/withdraw-question", headers=co["h"],
+                                json={"line_ids": [line["id"]], "idempotency_key": B.key()})
+
+
+async def _refused_read_unknown_job(client, session, monkeypatch):
+    import uuid
+    co, bk = await _co_bank(client)
+    file_id = B.upload(co["company_id"], co["user_id"], B.csv_bytes([("2026-01-05", "FEE", "-5.00")]), "jan.csv")
+    return co, lambda c: c.post(f"{B.API}/read-statement", headers=co["h"], json={
+        "file_ids": [file_id], "job_id": str(uuid.uuid4()), "idempotency_key": B.key()})
+
+
+async def _refused_preview_unknown_job(client, session, monkeypatch):
+    import uuid
+    co, _bk = await _co_bank(client)
+    return co, lambda c: c.get(f"{B.API}/statement-preview/{uuid.uuid4()}", headers=co["h"])
+
+
+async def _refused_preview_while_reading(client, session, monkeypatch):
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+
+    from celerp.models.ai import AIBatchJob
+    co, _bk, preview = await _read(client)
+    await session.execute(update(AIBatchJob).where(AIBatchJob.id == uuid.UUID(preview["job_id"])).values(
+        status="running", lease_until=datetime.now(timezone.utc) + timedelta(minutes=5)))
+    await session.commit()
+    return co, lambda c: c.get(f"{B.API}/statement-preview/{preview['job_id']}", headers=co["h"])
+
+
+async def _refused_preview_statement_count(client, session, monkeypatch):
+    co, _bk, preview = await _read(client)
+    statements = [{"header": st["header"]} for st in preview["statements"]] * 2
+    return co, lambda c: c.post(f"{B.API}/statement-preview/{preview['job_id']}", headers=co["h"],
+                                json={"statements": statements})
+
+
+async def _refused_import_without_bank(client, session, monkeypatch):
+    co, _bk, preview = await _read(client)
+    return co, _import(co, preview)
+
+
+async def _refused_import_statement_count(client, session, monkeypatch):
+    co, bk, preview = await _read(client)
+    return co, _import(co, {**preview, "statements": preview["statements"] * 2}, bank_id=bk["id"])
+
+
+async def _refused_pay_doc_two_lines(client, session, monkeypatch):
+    co, bk, lines = await _lines(client, [("2026-01-05", "ACME LTD", "50.00"), ("2026-01-06", "ACME LTD", "50.00")])
+    inv = await _invoice(client, co["h"], 100.0)
+    return co, _decide(co, bk, line_ids=[l["id"] for l in lines], kind="pay_doc", docs=[{"doc_id": inv, "amount": 100.0}])
+
+
+async def _refused_suspense_on_a_chart_from_elsewhere(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "WITHDRAWAL", "-50.00")])
+    await _settings(session, co, lambda s: s.update(restored_backup=True))
+    return co, _decide(co, bk, line_ids=[line["id"]], kind="suspense")
+
+
+async def _refused_remember_without_account(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "WITHDRAWAL", "-50.00")])
+    return co, _decide(co, bk, line_ids=[line["id"]], kind="no_entry", remember=True)
+
+
+async def _refused_cash_without_cash_account(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "ATM WITHDRAWAL", "-200.00")])
+    return co, _decide(co, bk, line_ids=[line["id"]], kind="cash")
+
+
+async def _refused_transfer_two_lines(client, session, monkeypatch):
+    co, bk, lines = await _lines(client, [("2026-01-05", "TRANSFER", "-50.00"), ("2026-01-06", "TRANSFER", "-60.00")])
+    other = await B.bank(client, co["h"], name="Savings")
+    return co, _decide(co, bk, line_ids=[l["id"] for l in lines], kind="transfer", target_bank_id=other["id"])
+
+
+async def _refused_transfer_without_bank(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "TRANSFER", "-50.00")])
+    return co, _decide(co, bk, line_ids=[line["id"]], kind="transfer")
+
+
+async def _refused_transfer_of_another_banks_line(client, session, monkeypatch):
+    co, a, b, _la, (lb,) = await _transfer_banks(client, [("2026-01-06", "TRANSFER FROM CURRENT", "100.00")])
+    return co, _decide(co, a, line_ids=[lb["id"]], kind="transfer", target_bank_id=b["id"])
+
+
+async def _refused_transfer_of_a_posted_line(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "TRANSFER", "-50.00")])
+    other = await B.bank(client, co["h"], name="Savings")
+    await _posted(client, co, bk, line)
+    return co, _decide(co, bk, line_ids=[line["id"]], kind="transfer", target_bank_id=other["id"])
+
+
+async def _refused_pay_doc_without_documents(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "ACME LTD", "100.00")])
+    return co, _decide(co, bk, line_ids=[line["id"]], kind="pay_doc", docs=[])
+
+
+async def _refused_pay_doc_in_the_wrong_direction(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "ACME LTD", "-100.00")])
+    inv = await _invoice(client, co["h"], 100.0)
+    return co, _decide(co, bk, line_ids=[line["id"]], kind="pay_doc", docs=[{"doc_id": inv, "amount": 100.0}])
+
+
+async def _refused_post_without_account(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "FEE", "-5.00")])
+    return co, _decide(co, bk, line_ids=[line["id"]], kind="post")
+
+
+async def _refused_accept_of_a_suggestion_without_an_answer(client, session, monkeypatch):
+    from celerp_accounting import suggest
+    monkeypatch.setattr(suggest, "model_rung", None)  # no credits: the line keeps only why nothing was suggested
+    co, bk, _lines_ = await _lines(client, [("2026-01-05", "SOMETHING NEW CO", "-40.00")])
+    await client.post(f"{B.API}/bank/{bk['id']}/suggest", json={"idempotency_key": B.key()}, headers=co["h"])
+    table = await B.groups(client, co, bk["id"])
+    return co, lambda c: B.resolve(c, co, bk["id"], accept=B.accept(table, [g["key"] for g in table["groups"]]))
+
+
+async def _refused_reclassify_out_of_an_account(client, session, monkeypatch):
+    co, bk, (line,) = await _lines(client, [("2026-01-05", "FEE", "-5.00")])
+    await _posted(client, co, bk, line)
+    return co, _reclassify(co, line)
+
+
+async def _refused_answer_with_an_unknown_file(client, session, monkeypatch):
+    co, _bk, (line,) = await _lines(client, [("2026-01-05", "FEE", "-5.00")])
+    return co, lambda c: c.post(f"/accounting/bank-questions/{line['id']}/answer", headers=co["h"], json={
+        "answer": "Office paper", "file_ids": ["ai_up_missing"], "idempotency_key": B.key()})
+
+
+_REFUSALS = {  # case: (HTTP status, refusal key); 200 = the resolve answers that one decision refused
+    _refused_transfer_to_amount: (200, "acct.err_transfer_to_amount"),
+    _refused_reclassify_after_suspense_remapped: (409, "acct.err_recon_undo_entry_gone"),
+    _refused_unmatch_entry_gone: (409, "acct.err_recon_undo_entry_gone"),
+    _refused_unmatch_foreign_entry: (409, "acct.err_recon_undo_foreign"),
+    _refused_withdraw_unasked: (409, "reconciliation.line_not_asked"),
+    _refused_read_unknown_job: (404, "ai.err_job_not_found"),
+    _refused_preview_unknown_job: (404, "ai.err_job_not_found"),
+    _refused_preview_while_reading: (409, "acct.err_reading_not_finished"),
+    _refused_preview_statement_count: (422, "acct.err_import_statement_count"),
+    _refused_import_without_bank: (422, "acct.err_import_needs_bank"),
+    _refused_import_statement_count: (422, "acct.err_import_statement_count"),
+    _refused_pay_doc_two_lines: (200, "acct.err_recon_one_line"),
+    _refused_suspense_on_a_chart_from_elsewhere: (200, "acct.err_suspense_unmapped"),
+    _refused_remember_without_account: (200, "acct.err_recon_remember_kind"),
+    _refused_cash_without_cash_account: (200, "acct.err_recon_no_cash_account"),
+    _refused_transfer_two_lines: (200, "acct.err_recon_one_line"),
+    _refused_transfer_without_bank: (200, "acct.err_recon_transfer_needs_bank"),
+    _refused_transfer_of_another_banks_line: (200, "acct.err_statement_line_not_found"),
+    _refused_transfer_of_a_posted_line: (200, "acct.err_recon_line_state"),
+    _refused_pay_doc_without_documents: (200, "acct.err_recon_pay_needs_doc"),
+    _refused_pay_doc_in_the_wrong_direction: (200, "acct.err_recon_doc_direction"),
+    _refused_post_without_account: (200, "acct.err_recon_needs_account"),
+    _refused_accept_of_a_suggestion_without_an_answer: (409, "reconciliation.line_not_open"),
+    _refused_reclassify_out_of_an_account: (409, "acct.err_recon_not_suspense"),
+    _refused_answer_with_an_unknown_file: (404, "error.file_not_found"),
+}
+
+
+async def _stored(session, co) -> tuple:
+    """Everything a refused request must leave as it was: each line, each stored record's
+    version (but the request's own answer under its key), the rules."""
+    import uuid
+
+    from sqlalchemy import func, select
+
+    from celerp.models.projections import Projection
+    from celerp_accounting.models import BankStatementLine, ReconciliationRule
+    await session.rollback()
+    cid = uuid.UUID(co["company_id"])
+    lines = (await session.execute(select(BankStatementLine.id, BankStatementLine.status, BankStatementLine.matched_je_ids)
+                                   .where(BankStatementLine.company_id == cid).order_by(BankStatementLine.id))).all()
+    records = (await session.execute(select(Projection.entity_id, Projection.entity_type, Projection.version)
+                                     .where(Projection.company_id == cid, Projection.entity_type != "bank_operation")
+                                     .order_by(Projection.entity_id))).all()
+    rules = (await session.execute(select(func.count()).select_from(ReconciliationRule)
+                                   .where(ReconciliationRule.company_id == cid))).scalar_one()
+    return [tuple(r) for r in lines], [tuple(r) for r in records], rules
+
+
+@pytest.mark.parametrize("case", list(_REFUSALS), ids=lambda case: case.__name__.removeprefix("_refused_"))
+async def test_each_bank_refusal_answers_its_key_and_changes_nothing(client, session, monkeypatch, case):
+    """Every refusal the bank routes give, reached the way a user or the assistant reaches it:
+    the answer carries its status and key, and no line, entry, document or rule changes."""
+    status, key = _REFUSALS[case]
+    co, request = await case(client, session, monkeypatch)
+    before = await _stored(session, co)
+    r = await request(client)
+    assert r.status_code == status, r.text
+    refusal = r.json()["results"][0]["reason"] if status == 200 else r.json()["detail"]
+    if status == 200:
+        assert r.json()["results"][0]["ok"] is False, r.text
+    assert refusal["message_key"] == key, r.text
+    after = await _stored(session, co)
+    assert after == before, (set(after[1]) ^ set(before[1]), [l for l in after[0] if l not in before[0]])

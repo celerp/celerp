@@ -913,11 +913,7 @@ async def _remember(db: AsyncSession, company_id: uuid.UUID, line: BankStatement
                                   match_pattern=pattern, match_type="exact", match_amount=amount, origin="answer",
                                   is_active=True, times_applied=0)
         db.add(rule)
-    rule.target_account_code = d.account_code if d.kind == "post" else rule.target_account_code
-    rule.target_bank_id = d.target_bank_id if d.kind == "transfer" else None
-    rule.contact_id = d.contact
-    if rule.target_account_code is None:
-        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_remember_kind"))
+    rule.target_account_code, rule.target_bank_id, rule.contact_id = d.account_code, None, d.contact
 
 
 async def _pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, target: BankAccount,
@@ -1120,7 +1116,10 @@ async def _decide(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, 
                   key: str, instead: dict, book: "_Book") -> dict:
     """Carry out one decision; ``{line_id: je_ids}`` for each line it settled. A line that would
     post (an entry, a transfer, a payment) whose money is already keyed in the books is matched
-    to that entry instead, noted in ``instead`` (see _keyed_instead)."""
+    to that entry instead, noted in ``instead`` (see _keyed_instead). Only a post to one
+    account can be remembered: any other answer asked to be remembered is refused whole."""
+    if d.remember and (d.kind != "post" or not d.account_code):
+        raise _refused(422, "acct.err_recon_remember_kind")
     if d.kind in ("transfer", "cash"):
         return await _transfer(db, company_id, actor_id, bank, d, key, instead, book)
     if d.kind == "pay_doc":
