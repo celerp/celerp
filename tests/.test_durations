@@ -31967,5 +31967,8 @@
     "default_modules/celerp-ai/tests/test_ui_routes.py::test_the_run_button_reads_retry_only_for_a_retryable_change": 0.0026207920454908162,
     "tests/test_import_navigation.py::test_an_import_template_link_downloads_under_the_session_or_says_why_with_a_way_back[/accounting-/accounting]": 0.014935487997718155,
     "tests/test_import_navigation.py::test_an_import_template_link_downloads_under_the_session_or_says_why_with_a_way_back[/companies-/settings]": 0.017281754000578076,
-    "tests/test_browser/test_ai_chat_journey.py::test_bulk_card_wide_records_scroll_inside_their_own_box_not_the_page[chromium]": 8.658259185031056
+    "tests/test_browser/test_ai_chat_journey.py::test_bulk_card_wide_records_scroll_inside_their_own_box_not_the_page[chromium]": 8.658259185031056,
+    "default_modules/celerp-accounting/tests/test_bank_ladder.py::test_a_line_with_several_candidates_names_the_first_document_and_the_nearest_transfer": 0.05168667295947671,
+    "default_modules/celerp-accounting/tests/test_bank_statements.py::test_a_statement_spans_its_earliest_to_latest_date_and_an_entry_names_its_first_party": 0.007806948968209326,
+    "tests/test_ai_card_names.py::test_a_record_with_several_name_fields_is_named_by_the_first_that_holds_text": 0.007048404950182885
 }
