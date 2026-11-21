@@ -244,6 +244,8 @@ def serve_import_template(app, area: str, home: str) -> None:
         try:
             chunks, headers = await api.import_template(token, area)
         except api.APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
             return await base_shell(
                 page_header(t("btn.download_template"), import_back_link(home)),
                 flash(refusal_text(e.detail)),

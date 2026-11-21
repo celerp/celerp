@@ -203,3 +203,9 @@ async def test_an_import_template_link_downloads_under_the_session_or_says_why_w
         refused = await _ui_request("GET", url)
     assert refused.status_code == 200 and "Templates are for managers" in refused.text
     assert re.search(rf'<a [^>]*href="{home}"[^>]*class="btn btn--secondary"[^>]*>{re.escape(t("btn.back"))}<', refused.text)
+
+    # A session that dies between the cookie check and the API call (token revoked,
+    # not merely absent) converges to sign-in too, instead of a refusal page.
+    with patch("ui.api_client.import_template", AsyncMock(side_effect=APIError(401, "Session expired"))):
+        expired = await _ui_request("GET", url)
+    assert expired.status_code == 302 and expired.headers["location"].startswith("/login")
