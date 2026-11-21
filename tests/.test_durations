@@ -32149,5 +32149,8 @@
     "tests/test_email_service.py::test_a_relay_refusal_whose_body_cannot_be_read_is_still_a_refusal_by_its_status[body1]": 0.0037072780542075634,
     "tests/test_email_service.py::test_a_relay_refusal_whose_body_cannot_be_read_is_still_a_refusal_by_its_status[text]": 0.003369203011970967,
     "tests/test_reads_follow_view_permissions.py::test_every_donor_read_needs_view_contacts_and_view_payments[view_contacts]": 0.8979837930528447,
-    "tests/test_reads_follow_view_permissions.py::test_every_donor_read_needs_view_contacts_and_view_payments[view_payments]": 0.2947990669636056
+    "tests/test_reads_follow_view_permissions.py::test_every_donor_read_needs_view_contacts_and_view_payments[view_payments]": 0.2947990669636056,
+    "default_modules/celerp-accounting/tests/test_bank_statements.py::test_a_completed_first_statement_keeps_its_cleared_list_when_earlier_entries_are_keyed": 1.0850364739308134,
+    "tests/test_ai_card_names.py::test_a_card_looks_up_at_most_its_id_limit": 0.023141343030147254,
+    "tests/test_help_api.py::test_help_for_route_lists_pages_by_their_order_then_id": 0.17996004701126367
 }
