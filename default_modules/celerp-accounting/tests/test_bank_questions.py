@@ -255,6 +255,32 @@ async def test_ask_client_email_failure_keeps_question(client, session, monkeypa
     assert len(got["items"]) == 1
 
 
+
+async def test_an_ask_whose_emails_all_fail_gives_the_reason_of_the_first_recipient_by_name(client, session,
+                                                                                            monkeypatch):
+    """Each recipient's email failing for its own reason: the outcome names every one of them and
+    gives the reason of the first by name, the same recipient the list starts with."""
+    import uuid
+    from sqlalchemy import select, update
+    from celerp.models.company import User
+
+    async def refuse(to, subject, body_html, body_text="", **kw):
+        return EmailResult(False, f"refused for {to}")
+    monkeypatch.setattr("celerp.services.email.send_email", refuse)
+    co, bk, ids, lines = await _two_clients(client, session)
+    for user, name in zip(ids, ("Bea Client", "Al Client")):
+        await session.execute(update(User).where(User.id == uuid.UUID(user)).values(name=name))
+    await session.commit()
+    people = dict((await session.execute(select(User.name, User.email).where(
+        User.id.in_([uuid.UUID(i) for i in ids])))).all())
+    r = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]])
+    assert r.status_code == 200, r.text
+    out = r.json()
+    first = out["email"]["recipients"][0]["name"]
+    assert sorted(people) == sorted(p["name"] for p in out["email"]["recipients"]), out
+    assert f"refused for {people[first]}" in out["outcome"], out
+    assert all(f"refused for {e}" not in out["outcome"] for n, e in people.items() if n != first), out
+
 @pytest.mark.parametrize("lang,stop", [("en", "."), ("ja", "。")])
 @pytest.mark.parametrize("detail", ["The mail server refused the message", "The mail server refused the message."])
 async def test_a_failed_send_reason_reads_as_one_sentence_in_the_readers_language(client, session, monkeypatch,

@@ -64,13 +64,19 @@ async def test_second_statement_balances_without_rematching_first(client):
     await _post(client, co, bk, line)
     r = await client.post(f"{B.API}/bank/{bk['id']}/complete", json={"idempotency_key": B.key()}, headers=co["h"])
     assert r.status_code == 200, r.text
-    await _one_month(client, co, bk, [("2026-02-03", "SUPPLIER TWO", "-10.00")], opening="-40.00",
-                     start="2026-02-01", end="2026-02-28")
+    feb = await _one_month(client, co, bk, [("2026-02-03", "SUPPLIER TWO", "-10.00")], opening="-40.00",
+                           start="2026-02-01", end="2026-02-28")
     line2 = B.all_lines(await B.groups(client, co, bk["id"]))[0]
     await _post(client, co, bk, line2)
     r = await client.post(f"{B.API}/bank/{bk['id']}/complete", json={"idempotency_key": B.key()}, headers=co["h"])
     assert r.status_code == 200, r.text
     assert r.json()["completed"] and not r.json().get("stopped_at")
+    # A third statement carries forward the latest completed statement's list, not the first one's.
+    mar = await _one_month(client, co, bk, [("2026-03-03", "SUPPLIER THREE", "-1.00")], opening="-50.00",
+                           start="2026-03-01", end="2026-03-31")
+    cleared = [set((await client.get(f"{B.API}/{s['sessions'][0]['id']}", headers=co["h"])).json()["reconciled_je_ids"])
+               for s in (feb, mar)]
+    assert len(cleared[0]) == 2 and cleared[1] == cleared[0], cleared
 
 
 async def test_complete_from_the_bank_page_completes_the_statement(client):
@@ -110,6 +116,12 @@ async def test_first_session_untied_seeds_nothing_and_says_why(client):
     assert rec2["reconciled_je_ids"] == []
     table = await B.groups(client, co2, bk2["id"])
     assert "Book balance before 2026-01-01 is 400.00, statement opens at 450.00" in table["difference"]["notes"]
+    # A later open statement leaves the note and the difference on the first one, the one to work.
+    await _one_month(client, co2, bk2, [("2026-02-05", "FEE", "-7.00")], opening="445.00",
+                     start="2026-02-01", end="2026-02-28")
+    diff = (await B.groups(client, co2, bk2["id"]))["difference"]
+    assert diff["notes"] == table["difference"]["notes"], diff["notes"]
+    assert (diff["statement_date"], diff["statement_id"]) == ("2026-01-31", untied["sessions"][0]["id"]), diff
 
 
 # ── Suggest ─────────────────────────────────────────────────────────────────
@@ -612,11 +624,13 @@ async def test_transfer_retry_posts_once(client):
 async def test_cash_withdrawal_goes_to_cash_account(client):
     co, a = await _co_bank(client)
     cash = await B.bank(client, co["h"], name="Petty cash", bank_type="cash")
+    till = await B.bank(client, co["h"], name="Till", bank_type="cash")  # a later cash account is not the default
     await _one_month(client, co, a, [("2026-01-05", "ATM WITHDRAWAL", "-200.00")])
     line = B.all_lines(await B.groups(client, co, a["id"]))[0]
     r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [line["id"]], "kind": "cash"}])
     assert r.json()["results"][0]["ok"], r.text
     assert (await B.bank_row(client, co["h"], cash["id"]))["balance"] == 200.0
+    assert (await B.bank_row(client, co["h"], till["id"]))["balance"] == 0.0
 
 
 # ── Document payments ───────────────────────────────────────────────────────

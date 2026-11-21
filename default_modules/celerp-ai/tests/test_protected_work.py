@@ -305,6 +305,14 @@ async def test_retention_retrieval_and_deletion_follow_one_rule(session, seed, m
     assert {m.id for m in read} == set(newest) | expected_kept
     assert [m.id for m in read] == [m.id for m in sorted(read, key=lambda m: (m.created_at, m.id))]
 
+    # Protected work inside the newest window is read once there, never again as older work.
+    inside = await add_message(session, conv_id, "assistant", "inside", tools_called=[_record_of("pending", "inside")])
+    await add_message(session, conv_id, "user", "after")
+    await session.commit()
+    read, _ = await get_messages(session, conv_id, limit=cap)
+    ids = [m.id for m in read]
+    assert inside.id in ids and len(ids) == len(set(ids)), ids
+
     running = any(kinds & RUNNING for _, kinds in old)
     if running:
         with pytest.raises(ConversationBusy):

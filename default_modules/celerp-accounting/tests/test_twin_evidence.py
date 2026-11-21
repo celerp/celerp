@@ -88,6 +88,20 @@ async def test_the_same_supplier_keyed_after_import_is_a_candidate_never_a_match
     assert row["reason"]["message_key"] == "acct.recon_reason_looks_like", row
 
 
+@pytest.mark.asyncio
+async def test_the_reason_dates_the_candidate_shown_first(client):
+    """Of several candidates the one sharing the line's contact and account is shown first, and
+    the reason names its date, not the date of a nearer entry that shares nothing."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    a = await _contact(client, co, "Supplier A")
+    line = await _one_line(client, co, bk, [("2026-01-10", "SUPPLIER A", "-100.00")])
+    shared = await _keyed(client, co, bk, 100.0, "2026-01-07", account="5300", contact=a)
+    nearer = await _keyed(client, co, bk, 100.0, "2026-01-09")
+    row = await _post(client, co, bk, line, account_code="5300", contact=a)
+    assert not row["ok"] and row["candidates"] == [shared, nearer], row
+    assert row["reason"]["params"] == {"count": 2, "date": "2026-01-07"}, row
+
 async def _books(client, session, co) -> dict:
     """The trial balance by account, every journal entry's postings, and the rebuild check."""
     import uuid

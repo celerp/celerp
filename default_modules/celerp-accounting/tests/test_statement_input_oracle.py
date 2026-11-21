@@ -342,8 +342,9 @@ async def test_a_value_longer_than_its_stored_column_is_refused_by_name_and_neve
         assert r.status_code == 422, r.text
         detail = r.json()["detail"]
         named = [detail, *detail.get("also", [])]
-        keys = {d["message_key"] for d in named}
-        assert keys & {"acct.recon_block_too_long", "acct.recon_block_header_too_long"}, detail
+        # Every blocking reason once, in the order the preview showed them: the first leads.
+        assert [(d["message_key"], d["params"]) for d in named] == [
+            (f"acct.recon_block_{b['code']}", b["params"]) for b in checked.json()["statements"][0]["blocking"]], detail
         return
     assert r.status_code == 200, r.text
     [session] = r.json()["sessions"]

@@ -533,8 +533,22 @@ async def test_an_unconfirmed_statement_is_reported_and_a_failed_one_is_retried_
     retried = (await _send_all(client, auth, resend={mine: 1}))[mine]
     assert retried["state"] == "sent" and "repeat" not in retried and len(calls) == 1
     r = await client.get("/donors/statements/preview", headers=auth["headers"], params=PERIOD)
-    assert {row["contact_id"]: row for row in r.json()["donors"]}[mine]["sends"] == 2
+    preview = {row["contact_id"]: row for row in r.json()["donors"]}[mine]
+    assert preview["sends"] == 2 and preview["state"] == "sent", preview
     assert (await _send_all(client, auth, resend={mine: 1}))[mine]["repeat"] is True and len(calls) == 1
+
+
+async def test_a_send_for_all_answers_with_the_first_send_when_the_statement_has_several(client, auth, monkeypatch):
+    """Sends numbered from a page read under another wording leave the statement without a send
+    0; a Send for all then answers with the first send the statement has, as stored, and emails
+    no one."""
+    mine = (await _statement_donors(client, auth))["email"]
+    _transport(monkeypatch, lambda: EmailResult(False, "timeout", unconfirmed=True))
+    assert (await _send_all(client, auth, resend={mine: 1}))[mine]["state"] == "unconfirmed"
+    calls = _transport(monkeypatch)
+    assert (await _send_all(client, auth, resend={mine: 2}))[mine]["state"] == "sent" and len(calls) == 1
+    first = (await _send_all(client, auth))[mine]
+    assert first["state"] == "unconfirmed" and first["repeat"] is True and len(calls) == 1, first
 
 
 async def test_a_replayed_statement_never_goes_to_an_address_the_donor_no_longer_has(client, auth, monkeypatch):
