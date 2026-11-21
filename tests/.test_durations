@@ -32154,5 +32154,7 @@
     "tests/test_help_api.py::test_help_for_route_lists_pages_by_their_order_then_id": 0.17996004701126367,
     "default_modules/celerp-accounting/tests/test_bank_questions_races_pg.py::test_a_receipt_answered_while_a_line_attachment_is_saved_keeps_both": 1.878141981025692,
     "tests/test_email_service.py::test_subscription_send_never_falls_through_after_ambiguous_relay_error[operation_in_progress]": 0.026675969013012946,
-    "tests/test_email_service.py::test_subscription_send_never_falls_through_after_ambiguous_relay_error[server_error]": 0.003819040022790432
+    "tests/test_email_service.py::test_subscription_send_never_falls_through_after_ambiguous_relay_error[server_error]": 0.003819040022790432,
+    "tests/test_donors.py::test_a_statement_sent_by_the_earlier_build_is_never_sent_again[first-send]": 1.3420751149533316,
+    "tests/test_donors.py::test_a_statement_sent_by_the_earlier_build_is_never_sent_again[with-resend]": 0.7202211859403178
 }
