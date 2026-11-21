@@ -32135,5 +32135,11 @@
     "tests/test_refusal_way_out.py::test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[default_modules/celerp-inventory/celerp_inventory/services.py]": 0.07343726500403136,
     "tests/test_refusal_way_out.py::test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[default_modules/celerp-manufacturing/celerp_manufacturing/movements.py]": 0.035600603034254164,
     "tests/test_refusal_way_out.py::test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[default_modules/celerp-subscriptions/celerp_subscriptions/billing.py]": 0.03193776897387579,
-    "tests/test_refusal_way_out.py::test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[default_modules/celerp-subscriptions/celerp_subscriptions/collect.py]": 0.010717382014263421
+    "tests/test_refusal_way_out.py::test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[default_modules/celerp-subscriptions/celerp_subscriptions/collect.py]": 0.010717382014263421,
+    "tests/test_ai_table_writers.py::test_only_the_owner_writes[AIBatchJob]": 0.02611311402870342,
+    "tests/test_ai_table_writers.py::test_only_the_owner_writes[AIConversation]": 0.0027285950491204858,
+    "tests/test_ai_table_writers.py::test_only_the_owner_writes[AIJobStep]": 0.0024473669473081827,
+    "tests/test_ai_table_writers.py::test_only_the_owner_writes[AIMessage]": 0.0024161870824173093,
+    "tests/test_ai_table_writers.py::test_only_the_owner_writes[AIUsage]": 0.0023685749038122594,
+    "tests/test_ai_table_writers.py::test_only_the_owner_writes[BankStatementLine]": 0.0024020050186663866
 }
