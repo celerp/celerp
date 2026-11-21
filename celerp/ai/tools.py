@@ -802,8 +802,6 @@ async def execute_agent_capability(
     if not authorization:
         return _agent_error("missing_authorization", "ai.err_no_authorization",
                             "The user authorization context is unavailable.")
-    if not isinstance(arguments, dict):
-        return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Tool arguments must be a JSON object.")
 
     allowed_sections = {
         section for section, present in (

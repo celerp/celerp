@@ -774,3 +774,19 @@ def test_the_guard_passes_a_scoped_report_through_the_job_helpers():
               "rows = select(AIBatchJob).where(AIBatchJob.company_id == c, AIBatchJob.user_id == u, jobs.is_open())\n"
               "steps = select(AIJobStep.key).where(AIJobStep.job_id == j)\n")
     assert _bypasses(source) == []
+
+
+async def test_a_step_whose_claim_another_took_is_not_tried_again(monkeypatch, caplog):
+    """The claim that runs the job now owns the step: its old runner gives the step up at
+    once, without the retries an unexpected error gets and without logging it as one."""
+    tries = []
+
+    async def _taken(run, step_pk, file_id, operation_id):
+        tries.append(file_id)
+        raise jobs.ClaimTaken()
+    monkeypatch.setattr(jobs, "_document_step", _taken)
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0)
+    run = type("Run", (), {"job_id": uuid.uuid4(), "company_id": uuid.uuid4()})()
+    await jobs._supervised_step(run, uuid.uuid4(), "file-1", uuid.uuid4())
+    assert tries == ["file-1"]
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]

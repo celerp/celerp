@@ -193,3 +193,44 @@ async def test_matcher_and_bulk_void_of_one_bank_do_not_deadlock(real_engine, re
         held = (await s.execute(text("SELECT reconciled_je_ids FROM reconciliation_sessions WHERE id = :s"),
                                 {"s": sid})).scalar()
     assert set(ids[:2]) <= set(held)
+
+
+async def _refused_key(client, h, b, lines: list[dict], je_ids: list[str]) -> str:
+    r = await B.resolve(client, await B.co_of(client, h), b["id"],
+                        decisions=[{"line_ids": [l["id"] for l in lines], "kind": "match", "je_ids": je_ids}])
+    assert r.status_code == 200, r.text
+    res = r.json()["results"][0]
+    assert res["ok"] is False, r.text
+    return res["reason"]["message_key"]
+
+
+async def test_match_with_no_entry_is_refused_even_when_the_lines_cancel_out(client, session):
+    _, h = await admin(client)
+    b = await bank(client, h)
+    sid, lines = await _lines(client, h, b, [("2026-09-05", "In", "20.00"), ("2026-09-06", "Back out", "-20.00")])
+    assert await _refused_key(client, h, b, lines, []) == "acct.err_recon_match_needs_entry"
+    assert await _held(client, h, sid) == []
+
+
+async def test_match_to_an_entry_of_another_amount_is_refused_with_both_totals(client, session):
+    _, h = await admin(client)
+    b = await bank(client, h)
+    je = await deposit(client, h, b, "2026-09-05", 15.0)
+    sid, (line,) = await _lines(client, h, b, [("2026-09-05", "Deposit", "20.00")])
+    assert await _refused_key(client, h, b, [line], [je]) == "acct.err_recon_match_total"
+    assert je not in await _held(client, h, sid)
+
+
+async def test_an_entry_a_line_of_another_statement_date_holds_is_not_matched_again(client, session):
+    """Each statement counts the entries cleared up to its date, but one bank movement is
+    one line: an entry a September line is matched to cannot also settle an October line."""
+    _, h = await admin(client)
+    b = await bank(client, h)
+    je = await deposit(client, h, b, "2026-09-05", 20.0)
+    _, (september,) = await _lines(client, h, b, [("2026-09-05", "Deposit", "20.00")])
+    assert (await _match_line(client, h, b, september, je))["ok"] is True
+    sid, (october,) = await B.lines_on(client, await B.co_of(client, h), b["id"], [("2026-10-05", "Deposit", "20.00")],
+                                       opening=f"{OPENING + 20:.2f}", closing=f"{OPENING + 40:.2f}",
+                                       start="2026-10-01", end="2026-10-31")
+    assert await _refused_key(client, h, b, [october], [je]) == "acct.err_recon_book_entry_matched"
+    assert je not in await _held(client, h, sid)

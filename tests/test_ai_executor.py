@@ -205,10 +205,11 @@ def _refused_calls(cap: dict) -> tuple[dict, list[tuple[object, str]]]:
     uploads = tuple(cap.get("uploads") or ())
     if uploads:
         good["file_ids"] = ["f"] * len(uploads)
-    refused: list[tuple[object, str]] = [("not an object", "invalid_arguments"), ({**good, "other": {}}, "invalid_arguments")]
+    refused: list[tuple[object, str]] = [({**good, "other": {}}, "invalid_arguments")]
     for section, names in (("path", path_names), ("query", cap.get("query_names")), ("headers", cap.get("header_names"))):
         if names:
-            refused.append(({**good, section: ["x"]}, "invalid_arguments"))
+            # A list of the section's own names: every name is known, only the shape is wrong.
+            refused.append(({**good, section: list(names)}, "invalid_arguments"))
             refused.append(({**good, section: {**good.get(section, {}), "not_a_name": "1"}}, "invalid_arguments"))
     for name in cap.get("header_names") or ():
         refused.append(({**good, "headers": {name: 1}}, "invalid_arguments"))
@@ -281,3 +282,15 @@ async def test_every_tool_refuses_without_reaching_the_route_and_never_reports_a
     # A screen template naming a placeholder the call has no value for is refused, not sent
     # with the braces in it; screen_of then falls back to the list screen.
     assert ai_tools.filled_path("/items/{item_id}", [], {})["error"]["code"] == "invalid_path_parameter"
+
+
+@pytest.mark.parametrize("raw", [None, "{not json", "[]", '"text"', "null", "1"])
+def test_tool_arguments_that_are_not_one_json_object_are_refused_before_any_tool_runs(raw):
+    """The one check of the arguments' shape: a call whose arguments are missing, not JSON or
+    JSON but not an object is answered invalid_arguments and carries no arguments onward."""
+    from celerp.ai import service
+
+    caps = {"read_items": {"method": "GET", "path": "/items"}}
+    call = {"id": "c", "function": {"name": "read_items", "arguments": raw}}
+    _, _, _, arguments, error = service._parse_call(call, caps, {"read_items"})
+    assert arguments is None and error["error"]["code"] == "invalid_arguments"
