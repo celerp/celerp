@@ -324,6 +324,44 @@ async def test_a_start_up_claim_that_times_out_on_the_company_lock_is_tried_agai
     assert not jobs.held_operation_ids()
 
 
+async def test_a_stop_between_failing_start_up_claims_lets_the_held_operations_go(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """A company write holds the lock past the task's start-up claim, and the lease the
+    recovery wrote lapses before the task's next one. A Stop in that gap ends the job, so
+    the next claim finds nothing to run and the task ends. The operations the recovery
+    held back from the usage reconciler are let go with it: the next reconcile pass
+    settles the charge of the send the stopped process cut off."""
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 2.0)    # the gap between two claims
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud, end="cut")
+    await jobs.shutdown()                               # the process stops mid-step
+    _finish_cut_off(cloud, identity)
+    started, real_start = [], jobs.start_job
+    monkeypatch.setattr(jobs, "start_job", started.append)
+    assert await jobs.recover_on_start() == 1
+    monkeypatch.setattr(jobs, "start_job", real_start)
+    held = jobs.held_operation_ids()
+    assert held
+    errors = _lock_job_errors(monkeypatch)
+    async with _company_held(pg, company_id):
+        for job in started:
+            real_start(job)
+        await _alive_past_a_failed_claim(jobs._tasks[job_id], errors)
+    await _lapse(pg, job_id)                            # the recovery's lease runs out
+    assert await jobs.cancel(job_id, company_id, user_id) is True
+    assert (await _finished(real_client, tok, job_id))["status"] == "cancelled"
+    await until(lambda: not jobs.task_alive(job_id), 30.0)
+    assert len(errors) == 1                             # the Stop came before the second claim
+    assert not jobs.held_operation_ids()
+    async with maker(pg)() as s:
+        await s.execute(update(AIUsage).where(AIUsage.operation_id.in_(held)).values(   # time passes: the send
+            reconcile_at=datetime.now(timezone.utc) - timedelta(seconds=1)))            # has surely ended
+        await s.commit()
+        await usage.reconcile_usage(s)
+        rows = (await s.execute(select(AIUsage.pending).where(AIUsage.operation_id.in_(held)))).scalars().all()
+    assert rows == [False]
+
+
 async def test_a_claim_after_a_failed_run_that_times_out_on_the_company_lock_is_tried_again(
         real_client, pg, cloud, monkeypatch, tmp_path):
     """A company write holds the lock while a file's answer arrives: the step's write and

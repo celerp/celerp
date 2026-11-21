@@ -158,9 +158,9 @@ class ModelGate:
 
 gate = ModelGate(int(os.getenv("AI_MAX_CONCURRENT", "3")))
 
-# Operation ids a job in this process may still send; the usage reconcile pass
-# leaves their rows for later.
-_held_operations: set[uuid.UUID] = set()
+# Operation ids a job in this process may still send, by job; the usage reconcile
+# pass leaves their rows for later. A job's ids leave with its task (``_supervise``).
+_held_operations: dict[uuid.UUID, set[uuid.UUID]] = {}
 _tasks: dict[uuid.UUID, asyncio.Task] = {}
 # Jobs reopened while their task was ending: the task runs them once more.
 _again: set[uuid.UUID] = set()
@@ -292,7 +292,7 @@ async def reused_job(session, job_id: uuid.UUID, request: JobRequest):
 
 
 def held_operation_ids() -> set[uuid.UUID]:
-    return set(_held_operations)
+    return set().union(*_held_operations.values())
 
 
 def file_operation_id(job_id: uuid.UUID, file_id: str, generation: int = 0) -> uuid.UUID:
@@ -598,8 +598,10 @@ async def _supervise(job_id: uuid.UUID) -> None:
             _again.discard(job_id)
     finally:
         # No await between the decision to end and leaving ``_tasks``: a reopen either
-        # reached this task or finds none alive and starts another.
+        # reached this task or finds none alive and starts another. Whichever way the
+        # task ends, it sends nothing more: what it held goes to the usage reconciler.
         _again.discard(job_id)
+        _held_operations.pop(job_id, None)
         if _tasks.get(job_id) is asyncio.current_task():
             del _tasks[job_id]
         # Never cancelled mid-query: the renewal in flight ends, then the heartbeat does.
@@ -778,9 +780,9 @@ async def _recover_company(session, company_id: uuid.UUID) -> list[uuid.UUID]:
         ops = (await session.execute(
             select(AIJobStep.operation_id).where(AIJobStep.job_id == job.id, AIJobStep.state.in_(OPEN_STEPS))
         )).scalars().all()
-        _held_operations.update(op for op in ops if op is not None)
+        _held_operations[job.id] = {op for op in ops if op is not None}
         if job.kind == "question":
-            _held_operations.add(job.id)
+            _held_operations[job.id].add(job.id)
         hold(job)
         resumed.append(job.id)
     return resumed
@@ -885,7 +887,7 @@ async def _run_job(job_id: uuid.UUID, runner_id: str) -> None:
         await session.commit()
         run = _file_run(job, runner_id)
         steps = [(s.id, s.key, s.operation_id) for s in rows]
-    _held_operations.update(op for _, _, op in steps)
+    _held_operations[job_id] = {op for _, _, op in steps}
     try:
         # The group owns every step task: a cancelled or failed runner cancels and
         # drains them all before it ends, so no step outlives its job's runner.
@@ -893,7 +895,7 @@ async def _run_job(job_id: uuid.UUID, runner_id: str) -> None:
             for step in steps:
                 group.create_task(_supervised_step(run, *step))
     finally:
-        _held_operations.difference_update(op for _, _, op in steps)
+        _held_operations.pop(job_id, None)
     await _end_job(run)
 
 
@@ -920,7 +922,7 @@ async def _supervised_step(run, step_pk: uuid.UUID, file_id: str, operation_id: 
             await session.commit()
     except ClaimTaken:
         return      # the claim that runs the job now owns the step
-    _held_operations.discard(operation_id)
+    _held_operations.get(run.job_id, set()).discard(operation_id)
 
 
 async def _cancel_requested(job_id: uuid.UUID) -> bool:
@@ -970,7 +972,7 @@ async def _document_step(run, step_pk: uuid.UUID, file_id: str, operation_id: uu
             await usage.record_usage(session, company_id=run.company_id, user_id=run.user_id,
                                      operation_id=operation_id, credits=outcome.credits, known=outcome.known)
         await session.commit()
-    _held_operations.discard(operation_id)
+    _held_operations.get(run.job_id, set()).discard(operation_id)
     await batch.publish_progress(run, file_id, outcome.state)
 
 
@@ -1378,7 +1380,7 @@ async def _run_question(job_id: uuid.UUID, runner_id: str) -> None:
         job.started_at = job.started_at or datetime.now(timezone.utc)
         journal = _JobJournal(job_id, runner_id, job.company_id, job.user_id, steps)
         await session.commit()
-    _held_operations.add(job_id)
+    _held_operations[job_id] = {job_id}
     try:
         refusal = None
         try:
@@ -1388,7 +1390,7 @@ async def _run_question(job_id: uuid.UUID, runner_id: str) -> None:
         await _finish_question(job_id, result, refusal, runner_id)
     finally:
         journal.close()
-        _held_operations.discard(job_id)
+        _held_operations.pop(job_id, None)
 
 
 async def _finish_question(job_id: uuid.UUID, result, refusal, runner_id: str) -> None:
