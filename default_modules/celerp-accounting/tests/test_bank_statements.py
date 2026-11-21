@@ -823,17 +823,24 @@ async def test_reclassify_refused_in_locked_period(client, session):
     assert r.status_code in (409, 422) and "2026-01-31" in r.text
 
 
-async def test_reclassify_moves_suspense_to_answer(client):
+async def test_reclassify_moves_suspense_to_answer(client, session):
     co, bk = await _co_bank(client)
     await _one_month(client, co, bk, [("2026-01-05", "WITHDRAWAL", "-50.00")])
     line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
-    await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "suspense"}])
+    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "suspense"}])
+    suspense_je = await B.journal(session, co, r.json()["results"][0]["je_ids"][0])
+    suspense_leg = next(e for e in suspense_je["entries"] if e["account"] != bk["chart_account_code"])
     assert (await B.groups(client, co, bk["id"]))["suspense_count"] == 1
     r = await client.post(f"{B.API}/lines/{line['id']}/reclassify", json={"account_code": "5100", "idempotency_key": B.key()},
                           headers=co["h"])
     assert r.status_code == 200, r.text
     assert r.json()["je_id"] == f"je:recon:reclass:{line['id']}:1"
     assert (await B.groups(client, co, bk["id"]))["suspense_count"] == 0
+    reclass_je = await B.journal(session, co, r.json()["je_id"])
+    answer_leg = next(e for e in reclass_je["entries"] if e["account"] == "5100")
+    assert answer_leg["debit"] == suspense_leg["debit"] and answer_leg["credit"] == suspense_leg["credit"]
+    reversal_leg = next(e for e in reclass_je["entries"] if e["account"] == suspense_leg["account"])
+    assert reversal_leg["debit"] == suspense_leg["credit"] and reversal_leg["credit"] == suspense_leg["debit"]
 
 
 # ── Rules ───────────────────────────────────────────────────────────────────
