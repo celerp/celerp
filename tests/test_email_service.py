@@ -90,6 +90,27 @@ async def test_send_email_relay_quota_error_surfaces_detail():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("body", [ValueError("not JSON"), ["a list"], "text"])
+async def test_a_relay_refusal_whose_body_cannot_be_read_is_still_a_refusal_by_its_status(body):
+    """A refusal page that is not a JSON object (a proxy's HTML, a list) keeps the status as
+    its reason: the relay answered, so the send is refused, not of unknown outcome."""
+    factory, client = _mock_httpx(400)
+    reply = (await client.post("https://relay.test/email/send"))
+    reply.json = MagicMock(side_effect=body) if isinstance(body, Exception) else MagicMock(return_value=body)
+    with (
+        patch("celerp.config.settings.gateway_token", "api-key-123"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+        patch("celerp.config.settings.smtp_host", ""),
+    ):
+        from celerp.services import email as email_mod
+        result = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
+
+    assert (result.ok, result.detail, result.unconfirmed, result.reason) == (
+        False, "relay error 400", False, "email.err_relay_refused")
+
+
+@pytest.mark.asyncio
 async def test_send_email_relay_unreachable_falls_back_to_smtp():
     """Relay network failure falls back to SMTP when configured."""
     factory, client = _mock_httpx(200)

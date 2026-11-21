@@ -79,7 +79,8 @@ class _Client:
     an id must be sent again unchanged."""
 
     def __init__(self, waits: int = 0):
-        self.waits, self.sent, self.kept = waits, [], {}
+        self.waits, self.sent, self.kept, self.settled = waits, [], {}, []
+        self.operation_credits: int | None = 1
 
     async def complete(self, messages, *, operation_id, before_send, **_):
         from celerp.ai import jobs
@@ -95,18 +96,20 @@ class _Client:
         groups = json.loads(messages[-1]["content"])["groups"]
         reply = {g["key"]: {"account_code": "5100", "reason": "r"} for g in groups}
         return ModelResult(message={"content": json.dumps(reply)}, model_used="m", usage={"credits": 1},
-                           reservation_id=None, remaining=None, operation_credits=1)
+                           reservation_id=None, remaining=None, operation_credits=self.operation_credits)
 
 
 @pytest.fixture
 def client(monkeypatch):
     usage: list = []
+    made = _Client()
 
     async def _record(session, **kw):
         usage.append(("send" if kw.get("send_bytes") else "settle", kw["operation_id"]))
+        if not kw.get("send_bytes"):
+            made.settled.append((kw["credits"], kw["known"]))
 
     monkeypatch.setattr("celerp.ai.usage.record_usage", _record)
-    made = _Client()
     monkeypatch.setattr(llm, "complete", made.complete)
     token = suggest.current_call.set(_call())
     yield made, usage
@@ -133,6 +136,16 @@ async def test_a_retry_on_changed_input_is_a_new_step_and_an_identical_one_the_s
     await suggest.ask_model(groups[1:], ["5100", "5200"])
     assert made.sent[0] == made.sent[1] != made.sent[2]
     assert usage == [(kind, op) for op in made.sent for kind in ("send", "settle")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_credits,settled", [(3, (3, True)), (None, (1, False))])
+async def test_the_step_settles_the_charge_the_service_reports_and_marks_an_unreported_one_unknown(
+        client, operation_credits, settled):
+    made, _ = client
+    made.operation_credits = operation_credits
+    await suggest.ask_model(_groups(random.Random(3), 1), ["5100"])
+    assert made.settled == [settled]
 
 
 def test_the_model_reads_text_past_ascii_as_written_and_each_text_is_its_own_step():

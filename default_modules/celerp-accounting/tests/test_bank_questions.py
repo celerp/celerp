@@ -163,6 +163,24 @@ async def test_answer_naming_contact_suggests_without_model(client, session, mon
     assert not called
 
 
+async def test_an_answer_naming_two_contacts_of_one_name_suggests_neither(client, session, monkeypatch):
+    """Two contacts share the name: the answer cannot tell which one is meant, so the line waits."""
+    _sent(monkeypatch)
+    co, bk, client_h, lines = await _setup(client, session)
+    ids = [(await client.post("/crm/contacts", json={"name": "Siam Landlord", "contact_type": "vendor"},
+                              headers=co["h"])).json()["id"] for _ in range(2)]
+    for text, contact_id in zip(("BANK FEE", "TRANSFER"), ids):
+        r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [lines[text]["id"]], "kind": "post",
+                                                              "account_code": "6100", "contact": contact_id}])
+        assert r.json()["results"][0]["ok"]
+    lid = lines["WITHDRAWAL"]["id"]
+    await _ask(client, co, bk, [lid])
+    r = await client.post(f"{Q}/{lid}/answer", json={"answer": "rent", "contact_text": "siam landlord",
+                                                      "idempotency_key": B.key()}, headers=client_h)
+    assert r.status_code == 200, r.text
+    assert B.line_by_text(await B.groups(client, co, bk["id"]), "WITHDRAWAL")["suggestion"] is None
+
+
 async def test_free_text_answer_waits_for_firm_suggest(client, session, monkeypatch):
     _sent(monkeypatch)
     co, bk, client_h, lines = await _setup(client, session)

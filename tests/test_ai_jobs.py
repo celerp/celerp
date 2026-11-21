@@ -417,12 +417,21 @@ async def test_a_file_that_keeps_raising_ends_retryable_and_the_other_files_fini
     conv = await _conversation(client, token)
     file_ids = _files(company_id, user_id, 3)
     real_read = batch.read_file
-    tries = []
+    tries, failed_op, held_while_reading = [], [], []
 
     async def _read(run, file_id, operation_id, **kw):
         if file_id == file_ids[1]:
             tries.append(file_id)
+            failed_op.append(operation_id)
             raise RuntimeError("unexpected")
+        if file_id == file_ids[2]:
+            # The failed file's charge is no longer held once it ends, while this file still reads.
+            for _ in range(300):
+                if len(tries) == jobs.STEP_ATTEMPTS and failed_op[0] not in jobs.held_operation_ids():
+                    break
+                await asyncio.sleep(0.01)
+            held_while_reading.append((failed_op[0] in jobs.held_operation_ids(),
+                                       operation_id in jobs.held_operation_ids()))
         return await real_read(run, file_id, operation_id, **kw)
     monkeypatch.setattr(batch, "read_file", _read)
     r = await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token), json={
@@ -430,6 +439,7 @@ async def test_a_file_that_keeps_raising_ends_retryable_and_the_other_files_fini
     job = await _finished(client, token, uuid.UUID(r.json()["job_id"]))
 
     assert len(tries) == jobs.STEP_ATTEMPTS
+    assert held_while_reading == [(False, True)]
     files = _by_file(job)
     assert [files[f]["status"] for f in file_ids] == ["success", "error", "success"]
     assert files[file_ids[1]]["error"] == "Something went wrong while reading this file. Retry it to read it again."

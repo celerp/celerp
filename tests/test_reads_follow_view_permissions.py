@@ -131,3 +131,19 @@ def test_no_read_answers_every_role_beside_view_gated_siblings():
     from test_helpers import real_agent_app
 
     assert _ungated_reads_beside_view_siblings(real_agent_app()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("permission", ["view_contacts", "view_payments"])
+async def test_every_donor_read_needs_view_contacts_and_view_payments(client, session, permission):
+    """A donor read joins people to their gifts, so every one needs both permissions; the
+    routes come from the live app, so a donor read added later is held to the same rule."""
+    from celerp.main import app
+    s = await perm_setup(client, session)
+    cid = (await _ok(await client.post("/crm/contacts", json={"name": "Alice"}, headers=s["admin_h"])))["id"]
+    paths = sorted(path.replace("{contact_id}", cid) for path, ops in app.openapi()["paths"].items()
+                   if path.startswith("/donors") and "get" in ops)
+    assert len(paths) >= 5
+    await grant_permission(client, s["admin_h"], permission, "manager")
+    got = {p: (await client.get(p, headers=s["operator_h"])).status_code for p in paths}
+    assert got == {p: 403 for p in paths}
