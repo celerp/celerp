@@ -32003,5 +32003,6 @@
     "tests/test_refusal_way_out.py::test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[ui/routes/sync_accounts.py]": 0.010434310999698937,
     "tests/test_refusal_way_out.py::test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[ui/routes/system_update.py]": 0.003574236936401576,
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_a_line_entry_id_already_held_by_another_record_or_a_live_entry_is_refused": 0.32457462698221207,
-    "default_modules/celerp-accounting/tests/test_reconciliation_v2.py::test_a_rule_onto_an_unknown_or_archived_account_is_refused_and_nothing_is_stored": 1.0400673139374703
+    "default_modules/celerp-accounting/tests/test_reconciliation_v2.py::test_a_rule_onto_an_unknown_or_archived_account_is_refused_and_nothing_is_stored": 1.0400673139374703,
+    "tests/test_ai_executor.py::test_every_tool_refuses_without_reaching_the_route_and_never_reports_a_failed_answer_done": 43.13047661399469
 }
