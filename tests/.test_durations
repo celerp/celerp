@@ -31966,5 +31966,6 @@
     "default_modules/celerp-ai/tests/test_ui_routes.py::test_the_older_actions_button_carries_its_cursor_whole": 0.0026564949948806316,
     "default_modules/celerp-ai/tests/test_ui_routes.py::test_the_run_button_reads_retry_only_for_a_retryable_change": 0.0026207920454908162,
     "tests/test_import_navigation.py::test_an_import_template_link_downloads_under_the_session_or_says_why_with_a_way_back[/accounting-/accounting]": 0.014935487997718155,
-    "tests/test_import_navigation.py::test_an_import_template_link_downloads_under_the_session_or_says_why_with_a_way_back[/companies-/settings]": 0.017281754000578076
+    "tests/test_import_navigation.py::test_an_import_template_link_downloads_under_the_session_or_says_why_with_a_way_back[/companies-/settings]": 0.017281754000578076,
+    "tests/test_browser/test_ai_chat_journey.py::test_bulk_card_wide_records_scroll_inside_their_own_box_not_the_page[chromium]": 8.658259185031056
 }
