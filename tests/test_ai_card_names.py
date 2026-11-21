@@ -227,6 +227,8 @@ async def test_a_card_names_an_assistant_upload_and_a_reading_by_their_file_name
                                {"file_ids": [march], "body": {"job_id": str(job.id)}})
     assert names == {march: "march-statement.pdf", str(job.id): "march-statement.pdf, april-statement.pdf"}
     assert await record_names(session, uuid.uuid4(), uuid.uuid4(), {}, "owner", {"file_ids": [march]}) == {}
+    nameless = files.save_upload(company_id, ids["user_id"], None, "application/pdf", b"%PDF-1.4")
+    assert await record_names(session, company_id, ids["user_id"], {}, "owner", {"file_ids": [nameless]}) == {}
 
 
 async def test_another_user_of_the_same_company_never_reads_a_file_or_reading_name(

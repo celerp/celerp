@@ -219,6 +219,20 @@ async def test_remind_renotifies_once_per_key(client, session, monkeypatch):
     assert await _notices(session, co["company_id"]) == 2
 
 
+async def test_a_second_ask_counts_the_question_still_waiting_from_the_first(client, session, monkeypatch):
+    """A question asked and not yet answered stays open, so the notice of a later Ask about
+    another line counts both."""
+    from celerp.models.notification import Notification
+    _sent(monkeypatch)
+    co, bk, client_h, lines = await _setup(client, session)
+    await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]])
+    await _ask(client, co, bk, [lines["TRANSFER"]["id"]])
+    session.expire_all()
+    notes = (await session.execute(select(Notification).where(
+        Notification.company_id == co["company_id"], Notification.category == "bank_questions"))).scalars().all()
+    assert sorted(n.i18n["params"]["count"] for n in notes) == [1, 2]
+
+
 async def test_ask_notice_rolls_back_with_question(client, session, monkeypatch):
     _sent(monkeypatch)
     co, bk, client_h, lines = await _setup(client, session)

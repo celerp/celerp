@@ -139,7 +139,8 @@ async def test_suggest_never_matches(client):
 async def test_bank_reversal_pair_no_entry(client):
     co, bk = await _co_bank(client)
     await _one_month(client, co, bk, [("2026-01-05", "ACME LTD", "-40.00"), ("2026-01-07", "ACME LTD", "40.00")])
-    await client.post(f"{B.API}/bank/{bk['id']}/suggest", json={"idempotency_key": B.key()}, headers=co["h"])
+    r = await client.post(f"{B.API}/bank/{bk['id']}/suggest", json={"idempotency_key": B.key()}, headers=co["h"])
+    assert r.json()["model_ran"] is False, r.text  # the ladder answered both lines: nothing went to the model
     kinds = {l["suggestion"]["kind"] for l in B.all_lines(await B.groups(client, co, bk["id"]))}
     assert kinds == {"no_entry"}
 
@@ -809,6 +810,7 @@ async def test_set_opening_once_then_adjustment(client, session):
     r = await client.put(url, json={"amount": 500.0, "date": "2026-01-01", "idempotency_key": B.key()}, headers=co["h"])
     assert r.status_code == 200, r.text
     first = r.json()["je_id"]
+    assert first == f"je:opening:{bk['id']}"  # no opening entry yet: this is the opening, not an adjustment
     r = await client.put(url, json={"amount": 520.0, "date": "2026-01-01", "idempotency_key": B.key()}, headers=co["h"])
     assert r.status_code == 200, r.text
     adj = r.json()["je_id"]
@@ -1082,11 +1084,13 @@ async def test_posting_under_a_key_whose_derived_entry_key_is_taken_is_refused(c
 
 async def test_a_statement_spans_its_earliest_to_latest_date_and_an_entry_names_its_first_party():
     """Each of these picks one element of a list that can hold several: the period runs from
-    the earliest dated line to the latest, whatever order the file lists them in, and an
-    entry's party is the first non-bank entry that names one."""
+    the earliest dated line to the latest, whatever order the file lists them in (a line with
+    a blank date is not one of them), and an entry's party is the first non-bank entry that
+    names one."""
     from celerp_accounting.bank_statements import _contact, _parse_structured
 
-    rows = [("2026-01-20", "WIRE", "50.00"), ("2026-01-05", "FEE", "-5.00"), ("2026-01-12", "FEE", "-5.00")]
+    rows = [("", "NOTE", "1.00"), ("2026-01-20", "WIRE", "50.00"), ("2026-01-05", "FEE", "-5.00"),
+            ("2026-01-12", "FEE", "-5.00")]
     header = _parse_structured(B.csv_bytes(rows), {"filename": "jan.csv", "content_type": "text/csv"}, None)["header"]
     assert (header["period_start"], header["period_end"]) == ("2026-01-05", "2026-01-20")
     state = {"entries": [{"account": "1010", "contact": "bank-side"}, {"account": "4000", "contact": "first"},

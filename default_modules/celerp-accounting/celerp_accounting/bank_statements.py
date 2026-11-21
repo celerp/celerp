@@ -1531,7 +1531,7 @@ async def _open_docs(db: AsyncSession, company_id: uuid.UUID, currency: str, bas
         state = state or {}
         if state.get("doc_type") not in ("invoice", "bill") or state.get("status") in ("draft", "void"):
             continue
-        if (state.get("currency") or base) != currency or not state.get("amount_outstanding"):
+        if (state.get("currency") or base) != currency:
             continue
         out.append({"doc_id": doc_id, "doc_type": state["doc_type"], "contact_id": state.get("contact_id"),
                     "open_balance": _money_text(state["amount_outstanding"], currency), "ref": state.get("ref_id"),
