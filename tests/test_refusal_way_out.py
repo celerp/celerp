@@ -125,17 +125,24 @@ def test_the_ui_judges_the_way_out_by_the_signed_in_reader(cookie, links):
 
 _ROOT = Path(__file__).resolve().parents[1]
 _ROUTE = re.compile(r"^\s*@\w*(?:router|app|rt)\.(?:get|post|put|patch|delete)\(", re.M)
-# Every file a person's refusal can come from: the files that declare routes, and the AI
-# package, whose jobs, files and model calls raise straight to the assistant's reader.
+# Every file a person's refusal can come from: the files that declare routes, the AI package,
+# whose jobs, files and model calls raise straight to the assistant's reader, and every file that
+# builds an HTTPException, which a route raises on unchanged whoever called it.
 _AI = _ROOT / "celerp" / "ai"
 _REFUSING_FILES = sorted(
     str(path.relative_to(_ROOT)) for root in APP_ROOTS for path in (_ROOT / root).rglob("*.py")
-    if "tests" not in path.parts and (_AI in path.parents or _ROUTE.search(path.read_text(encoding="utf-8"))))
+    if "tests" not in path.parts and (_AI in path.parents or _ROUTE.search(text := path.read_text(encoding="utf-8"))
+                                      or "HTTPException(" in text))
 # A detail a program reads, never a person, and who reads it.
 _READ_BY_A_PROGRAM = {
     "direct_connection_limit": "the sign-in page, which answers it in the reader's language",
     "Invalid refresh token": "the client renewing its session: one neutral answer for every failure",
+    "Invalid token": "the client, which answers any 401 by signing the reader in again",
+    "Not authenticated": "the client, which answers any 401 by signing the reader in again",
 }
+# Files whose refusals answer another installation's sync request: its connector
+# (celerp/connectors/celerp.py) reads only the status code, never the detail.
+_SYNC_ANSWERS = {"celerp/services/peer_identity.py", "celerp/services/peer_inventory.py", "celerp/services/peer_journals.py"}
 
 
 def _details(path: str) -> list[tuple[int, ast.expr | None]]:
@@ -165,12 +172,14 @@ def test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_i
     page, never as a dict written by hand."""
     details = _details(path)
     bare = [line for line, detail in details if detail is None]
-    english = [line for line, detail in details if isinstance(detail, ast.JoinedStr)
-               or isinstance(detail, ast.Constant) and detail.value not in _READ_BY_A_PROGRAM]
+    english = [line for line, detail in details if path not in _SYNC_ANSWERS and (isinstance(detail, ast.JoinedStr)
+               or isinstance(detail, ast.Constant) and detail.value not in _READ_BY_A_PROGRAM)]
     assert (bare, english, _hand_built(path)) == ([], [], []), path
 
 
 def test_every_detail_read_by_a_program_is_still_raised():
-    raised = {detail.value for path in _REFUSING_FILES for _line, detail in _details(path)
-              if isinstance(detail, ast.Constant)}
+    raised = {detail.value for path in _REFUSING_FILES if path not in _SYNC_ANSWERS
+              for _line, detail in _details(path) if isinstance(detail, ast.Constant)}
     assert raised == set(_READ_BY_A_PROGRAM)
+    assert {path for path in _SYNC_ANSWERS if any(isinstance(detail, ast.Constant) and not detail.value.startswith(
+        tuple("abcdefghijklmnopqrstuvwxyz")) for _line, detail in _details(path))} == _SYNC_ANSWERS
