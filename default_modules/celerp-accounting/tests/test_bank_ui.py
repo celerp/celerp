@@ -624,3 +624,49 @@ async def test_a_page_that_waits_less_than_its_emails_can_take_shows_the_stored_
         assert stored in shown, (call, shown[-600:])
         assert api.timeout_message() not in shown and "error" not in shown, (call, shown[-600:])
     assert len(waits) == len(_DURABLE_SENDS)
+
+
+async def test_a_bank_list_whose_session_ended_goes_to_sign_in(ui_client):
+    from ui.api_client import APIError
+    _signed_in(ui_client)
+    with patch("ui.api_client.get_bank_accounts", AsyncMock(side_effect=APIError(401, "Session expired"))):
+        r = await ui_client.get("/accounting/reconcile/start")
+    assert r.status_code == 302 and r.headers["location"] == "/login"
+
+
+async def test_a_refusal_in_any_script_reaches_the_bank_list_whole(ui_client):
+    """The reason travels in the address: letters outside ASCII and the characters an
+    address reads as its own (&, #, +) arrive as written."""
+    from ui.api_client import APIError
+    reason = "Konto für Söhne & Töchter #1 + 2 ไม่พบ"
+    _signed_in(ui_client)
+    with patch("ui.api_client.get_bank_account", AsyncMock(side_effect=APIError(404, reason))):
+        r = await ui_client.get("/accounting/reconcile/bank/b9")
+    assert r.headers["location"] == "/accounting/reconcile/start?msg=" + quote(reason, safe="")
+    page = await _get(ui_client, r.headers["location"], _TABLE)
+    assert reason.replace("&", "&amp;") in page.text
+
+
+async def test_post_ticked_names_matched_entries_only_when_there_are_some(ui_client):
+    from ui.i18n import t
+    r, _ = await _post_ticked(ui_client, {"group_key": ["SPARSE:WITHDRAWAL:out"], "line_id": ["l1"], "version": ["v1"],
+                                          "idempotency_key": "k1"}, {"results": [{"line_id": "l1", "ok": True}]})
+    assert r.status_code == 200, r.text
+    assert t("bank.posted_outcome", n=1) in r.text and t("bank.matched_instead", n=0) not in r.text
+
+
+async def test_the_bank_page_reads_the_view_and_search_it_was_asked_for_and_leads_back(ui_client):
+    """A view the page does not have opens the lines still to do; the search reaches
+    the read; Back goes to the bank list."""
+    from ui.i18n import t
+    patches = _api(_TABLE)
+    mocks = [p.start() for p in patches]
+    try:
+        _signed_in(ui_client)
+        r = await ui_client.get("/accounting/reconcile/bank/b1", params={"view": "everything", "q": " rent "})
+    finally:
+        for p in patches:
+            p.stop()
+    assert r.status_code == 200, r.text
+    assert mocks[2].await_args.kwargs == {"view": "open", "q": "rent"}
+    assert re.search(rf'<a [^>]*href="/accounting/reconcile/start"[^>]*>{re.escape(t("btn.back"))}<', r.text)

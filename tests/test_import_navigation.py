@@ -173,3 +173,33 @@ async def test_once_a_system_is_chosen_only_its_export_steps_show():
     assert r.status_code == 200, r.text
     shown = {m.group(1) for m in re.finditer(r'<p[^>]*data-export-help="([a-z_]+)"(?![^>]*hidden)[^>]*>', r.text)}
     assert shown == {"odoo"}
+
+
+def _template_file():
+    async def chunks():
+        yield b"code,name\n"
+    return chunks(), {"content-type": "text/csv", "content-disposition": 'attachment; filename="template.csv"'}
+
+
+@pytest.mark.parametrize("area,home", [("/accounting", "/accounting"), ("/companies", "/settings")])
+async def test_an_import_template_link_downloads_under_the_session_or_says_why_with_a_way_back(area, home):
+    """The link the assistant answers with opens in the browser: the file as the API names
+    it, sign-in when the session is gone, and a refusal on a page that leads back."""
+    from ui.api_client import APIError
+    from ui.app import app as ui_app
+    url = f"{area}/import/template"
+    served = AsyncMock(return_value=_template_file())
+    with patch("ui.api_client.import_template", served):
+        r = await _ui_request("GET", url)
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as signed_out:
+            away = await signed_out.get(url)
+    assert r.status_code == 200 and r.content == b"code,name\n"
+    assert r.headers["content-type"].startswith("text/csv")
+    assert r.headers["content-disposition"] == 'attachment; filename="template.csv"'
+    assert [c.args[1] for c in served.await_args_list] == [area]  # nothing is fetched without a session
+    assert away.status_code == 302 and away.headers["location"].startswith("/login")
+
+    with patch("ui.api_client.import_template", AsyncMock(side_effect=APIError(403, "Templates are for managers"))):
+        refused = await _ui_request("GET", url)
+    assert refused.status_code == 200 and "Templates are for managers" in refused.text
+    assert re.search(rf'<a [^>]*href="{home}"[^>]*class="btn btn--secondary"[^>]*>{re.escape(t("btn.back"))}<', refused.text)

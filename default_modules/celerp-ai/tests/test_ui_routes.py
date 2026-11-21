@@ -1227,3 +1227,78 @@ def test_a_reloaded_thread_keeps_the_multi_bill_notice_under_the_reply():
     assert text["upsell"] in page and text["action"] in page
     other = {**reply, "id": "m10"}
     assert "flash--warning" not in "".join(to_xml(ft) for ft in _thread([other], [job], "conv-1", "en", "cloud"))
+
+
+# ── The edges of the routes: session, refusals, what is sent on ─────────────
+
+@pytest.mark.asyncio
+async def test_older_actions_follow_the_session_and_say_why_a_load_failed(ui_client):
+    """No session: sign-in, and nothing is read. A session the API no longer takes is
+    never shown as a failed load. Any other failure says why above the button."""
+    older = AsyncMock(side_effect=[APIError(401, "Session expired"), APIError(500, "The read failed")])
+    ui_client.cookies.clear()
+    with patch("celerp_ai.ui_routes.api.ai_older_actions", older):
+        away = await ui_client.get("/ai/older-actions-ui", params={"conversation": "c1"})
+        assert away.status_code in (302, 401) and "/login" in (away.headers.get("HX-Redirect") or away.headers["location"])
+        older.assert_not_called()
+        ui_client.cookies.update(_authed())
+        ended = await ui_client.get("/ai/older-actions-ui", params={"conversation": "c1"})
+        failed = await ui_client.get("/ai/older-actions-ui", params={"conversation": "c1"})
+    assert ended.status_code != 200 and "Show older actions" not in ended.text
+    assert failed.status_code == 200 and "Show older actions" in failed.text
+    assert 'class="ai-older-actions__notice">The read failed<' in failed.text
+
+
+def test_the_older_actions_button_carries_its_cursor_whole():
+    """The cursor's time has a + and a conversation may be named in any script: the
+    address the button loads reads back as the same three values."""
+    import html
+    from urllib.parse import parse_qs, urlsplit
+    from celerp_ai.ui_routes import _older_actions_button
+    cursor = {"before_at": "2026-11-01T10:00:00+00:00", "before_id": "ก&b#1"}
+    address = re.search(r'hx-get="([^"]+)"', to_xml(_older_actions_button("c é&1", cursor, "en"))).group(1)
+    assert parse_qs(urlsplit(html.unescape(address)).query) == {
+        "conversation": ["c é&1"], "before_at": [cursor["before_at"]], "before_id": [cursor["before_id"]]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("form,again", [({}, False), ({"run_again": "1"}, True)])
+async def test_confirm_runs_a_change_again_only_when_the_form_says_so(ui_client, form, again):
+    confirm = AsyncMock(return_value={"ok": True, "status": 200, "title": "Create item", "data": {}, "error": None})
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_confirm_action", confirm):
+        r = await ui_client.post("/ai/confirm-action-ui", data={
+            "conversation_id": "conv-1", "message_id": "m2", "tool_call_id": "call-1", **form})
+    assert r.status_code == 200
+    assert confirm.await_args.kwargs == {"run_again": again}
+
+
+def test_the_run_button_reads_retry_only_for_a_retryable_change():
+    from celerp_ai.ui_routes import _action_buttons
+    first = to_xml(_action_buttons("c", "m", "call-1", "pending", "en"))
+    retry = to_xml(_action_buttons("c", "m", "call-1", "retryable", "en"))
+    assert f'>{t("btn.confirm")}<' in first and f'>{t("btn.retry")}<' not in first
+    assert f'>{t("btn.retry")}<' in retry and f'>{t("btn.confirm")}<' not in retry
+
+
+@pytest.mark.asyncio
+async def test_chat_links_each_file_the_answer_offers(ui_client):
+    result = {"answer": "Here is the template.", "model_used": "m", "tools_called": [], "pending_actions": [],
+              "downloads": ["/accounting/import/template"]}
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_conversation_query", AsyncMock(return_value=result)):
+        r = await ui_client.post("/ai/chat", data={"query": "template?", "conversation_id": "conv-1"})
+    assert r.status_code == 200
+    assert re.search(rf'<a [^>]*href="/accounting/import/template"[^>]*>{re.escape(t("ai.download_file"))}<', r.text)
+
+
+@pytest.mark.asyncio
+async def test_an_upload_is_kept_by_the_kind_its_name_says_not_the_one_the_browser_sent(ui_client):
+    sent = AsyncMock(return_value={"file_ids": ["f1"]})
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_upload", sent):
+        r = await ui_client.post("/ai/upload", files=[("files", ("bill.PDF", b"%PDF-1.4", "application/octet-stream")),
+                                                      ("files", ("note.bin", b"x", "application/x-thing"))])
+    assert r.status_code == 201, r.text
+    assert [(name, kind) for name, _, kind in sent.await_args.args[2]] == [
+        ("bill.PDF", "application/pdf"), ("note.bin", "application/x-thing")]
