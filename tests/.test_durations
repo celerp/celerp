@@ -27084,7 +27084,6 @@
     "tests/test_company_backup_lifecycle.py::test_restored_legacy_subscription_is_upgraded_before_activation[keeps-unmigratable-unmoved]": 1.0421877569897333,
     "tests/test_company_backup_lifecycle.py::test_restored_legacy_subscription_is_upgraded_before_activation[migrates]": 1.0276168239943217,
     "tests/test_email_service.py::test_durable_send_identity_forwarded_to_transport": 0.006800147006288171,
-    "tests/test_email_service.py::test_subscription_send_never_falls_through_after_ambiguous_relay_error": 0.009163256996544078,
     "tests/test_email_service.py::test_subscription_smtp_ambiguous_failure_is_not_retriable_as_definite_failure": 0.027262207004241645,
     "tests/test_i18n_subscriptions.py::test_schedule_section_translates_options_and_labels": 0.007522360989241861,
     "tests/test_messages_subscriptions.py::test_subscription_messages_say_what_to_do[subscriptions.err_custom_interval-Enter a custom interval]": 0.008828524994896725,
@@ -32153,5 +32152,7 @@
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_a_completed_first_statement_keeps_its_cleared_list_when_earlier_entries_are_keyed": 1.0850364739308134,
     "tests/test_ai_card_names.py::test_a_card_looks_up_at_most_its_id_limit": 0.023141343030147254,
     "tests/test_help_api.py::test_help_for_route_lists_pages_by_their_order_then_id": 0.17996004701126367,
-    "default_modules/celerp-accounting/tests/test_bank_questions_races_pg.py::test_a_receipt_answered_while_a_line_attachment_is_saved_keeps_both": 1.878141981025692
+    "default_modules/celerp-accounting/tests/test_bank_questions_races_pg.py::test_a_receipt_answered_while_a_line_attachment_is_saved_keeps_both": 1.878141981025692,
+    "tests/test_email_service.py::test_subscription_send_never_falls_through_after_ambiguous_relay_error[operation_in_progress]": 0.026675969013012946,
+    "tests/test_email_service.py::test_subscription_send_never_falls_through_after_ambiguous_relay_error[server_error]": 0.003819040022790432
 }
