@@ -156,6 +156,21 @@ async def test_a_name_is_kept_only_for_a_record_the_asker_may_read(client, auth,
     assert await record_names(session, uuid.uuid4(), uuid.uuid4(), {}, "owner", args) == {}
 
 
+async def test_a_card_looks_up_at_most_its_id_limit(session, monkeypatch):
+    """A model that sends thousands of ids costs at most _MAX_IDS lookups per card."""
+    from celerp.ai import names
+
+    asked: list[int] = []
+
+    async def _count(_session, _company, *rest):
+        asked.append(len(rest[-1]))
+        return {}
+    monkeypatch.setattr(names, "_reading_names", _count)
+    monkeypatch.setattr(names, "_projection_names", _count)
+    args = {"body": {"line_ids": [str(uuid.uuid4()) for _ in range(names._MAX_IDS + 1)]}}
+    assert await names.record_names(session, uuid.uuid4(), uuid.uuid4(), {}, "owner", args) == {}
+    assert asked and max(asked) == names._MAX_IDS
+
 def test_a_card_shows_a_named_id_by_its_name_and_never_shows_an_unnamed_one():
     from fasthtml.common import to_xml
     from celerp_ai.ui_routes import _action_card

@@ -79,6 +79,27 @@ async def test_second_statement_balances_without_rematching_first(client):
     assert len(cleared[0]) == 2 and cleared[1] == cleared[0], cleared
 
 
+
+async def test_a_completed_first_statement_keeps_its_cleared_list_when_earlier_entries_are_keyed(client):
+    """While the first statement is open its carry-in follows the books; once completed its list
+    is final. A statement whose end date is not an ISO date bounds no protected period, so
+    entries dated before it can still be keyed afterwards; they do not join its list."""
+    co, bk = await _co_bank(client)
+    jan = await _one_month(client, co, bk, [("2026-01-05", "SUPPLIER ONE", "-40.00")], opening="0.00",
+                           end="31/01/2026")
+    await _post(client, co, bk, B.all_lines(await B.groups(client, co, bk["id"]))[0])
+    r = await client.post(f"{B.API}/bank/{bk['id']}/complete", json={"idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 200 and r.json()["completed"], r.text
+    url = f"{B.API}/{jan['sessions'][0]['id']}"
+    cleared = (await client.get(url, headers=co["h"])).json()["reconciled_je_ids"]
+    for debit, credit in (("5100", bk["chart_account_code"]), (bk["chart_account_code"], "4100")):
+        r = await client.post("/accounting/journal-entries", headers=co["h"], json={
+            "ts": "2025-12-20", "memo": "keyed late", "idempotency_token": B.key(),
+            "entries": [{"account": debit, "debit": 25.0, "credit": 0.0},
+                        {"account": credit, "debit": 0.0, "credit": 25.0}]})
+        assert r.status_code == 200, r.text
+    assert (await client.get(url, headers=co["h"])).json()["reconciled_je_ids"] == cleared
+
 async def test_complete_from_the_bank_page_completes_the_statement(client):
     co, bk = await _co_bank(client)
     await _one_month(client, co, bk, [("2026-01-05", "SUPPLIER ONE", "-40.00")], opening="0.00")

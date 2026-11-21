@@ -203,6 +203,8 @@ async def test_bank_value_fields_refuse_invalid_values(client, bad):
          '{"idempotency_key": "%s", "decisions": [{"line_ids": ["%s"], "kind": "teleport"}]}' % (B.key(), line["id"])),
         ("POST", f"{B.API}/bank/{bk['id']}/ask",
          '{"idempotency_key": "%s", "line_ids": ["%s"], "note": "%s"}' % (B.key(), line["id"], "x" * 5001)),
+        ("POST", f"{B.API}/bank/{bk['id']}/ask",  # a request key is at most 200 characters
+         '{"idempotency_key": "%s", "line_ids": ["%s"], "note": "fine"}' % ("k" * 201, line["id"])),
     ]:
         r = await client.request(method, path, content=body, headers=h)
         assert r.status_code == 422, (path, r.text)

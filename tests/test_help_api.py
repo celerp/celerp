@@ -30,10 +30,10 @@ def _step(text: str, labels: dict | None = None) -> dict:
 
 def _page(page_id: str, title: str, *, module: str = "celerp-inventory", source: str = "first_party",
           summary: str = "A page.", steps: list | None = None, routes: list | None = None,
-          permission: str | None = None, keywords: list | None = None) -> HelpPage:
+          permission: str | None = None, keywords: list | None = None, order: int = 1) -> HelpPage:
     return HelpPage(
         id=page_id, title=title, summary=summary, keywords=keywords or [], routes=routes or ["/inventory"],
-        permission=permission, order=1, steps=steps or [_step("Open the list.")], related=[],
+        permission=permission, order=order, steps=steps or [_step("Open the list.")], related=[],
         help_dir=_GOOD, source=source, module=module, module_display=module,
     )
 
@@ -234,6 +234,14 @@ async def test_help_for_route_keeps_typed_lists_apart(client, monkeypatch):
     assert await ids("/docs?type=production_order") == []
     assert await ids("/docs?q=x") == ["docs.all"]
 
+
+
+async def test_help_for_route_lists_pages_by_their_order_then_id(client, monkeypatch):
+    found = [_page("docs.c", "C", routes=["/docs"], order=1), _page("docs.z", "Z", routes=["/docs"], order=2),
+             _page("docs.b", "B", routes=["/docs"], order=1)]
+    monkeypatch.setattr(registry, "_index", registry.Index(pages={p.id: p for p in found}))
+    r = await client.get("/help/for-route", params={"path": "/docs"}, headers=await _headers(client))
+    assert [p["id"] for p in r.json()["pages"]] == ["docs.b", "docs.c", "docs.z"]
 
 @pytest.mark.parametrize(("query", "page_id"), [
     ("release restricted money", "accounting.funds"),

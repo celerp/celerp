@@ -62,9 +62,10 @@ async def test_two_users_sending_one_operation_record_one_charge_row_attributed_
         await a.commit()
         await later
         await b.commit()
-        await usage.record_usage(b, company_id=company, user_id=second, operation_id=op, credits=3, known=True)
-        await b.commit()
         await usage.record_usage(a, company_id=company, user_id=first, operation_id=op, credits=3, known=True)
         await a.commit()
+        # The second user writes last: the row still names the first sender.
+        await usage.record_usage(b, company_id=company, user_id=second, operation_id=op, credits=3, known=True)
+        await b.commit()
 
     assert await _rows(committed_engine, company) == [(first, op, 3, False)]
