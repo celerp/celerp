@@ -280,8 +280,11 @@ async def test_durable_send_identity_forwarded_to_transport():
 
 
 @pytest.mark.asyncio
-async def test_subscription_send_never_falls_through_after_ambiguous_relay_error():
-    factory, _ = _mock_httpx(503, detail="The email service did not confirm this send")
+@pytest.mark.parametrize("status", [503, 409], ids=["server_error", "operation_in_progress"])
+async def test_subscription_send_never_falls_through_after_ambiguous_relay_error(status):
+    """A relay error, or a 409 saying the same operation is already under way there, may
+    still deliver: the send stays unconfirmed and never falls through to SMTP."""
+    factory, _ = _mock_httpx(status, detail="The email service did not confirm this send")
     async with SmtpStub() as stub:
         with (
             smtp_settings(stub.port, gateway_token="api-key-123"),
