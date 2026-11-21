@@ -32004,5 +32004,12 @@
     "tests/test_refusal_way_out.py::test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[ui/routes/system_update.py]": 0.003574236936401576,
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_a_line_entry_id_already_held_by_another_record_or_a_live_entry_is_refused": 0.32457462698221207,
     "default_modules/celerp-accounting/tests/test_reconciliation_v2.py::test_a_rule_onto_an_unknown_or_archived_account_is_refused_and_nothing_is_stored": 1.0400673139374703,
-    "tests/test_ai_executor.py::test_every_tool_refuses_without_reaching_the_route_and_never_reports_a_failed_answer_done": 43.13047661399469
+    "tests/test_ai_executor.py::test_every_tool_refuses_without_reaching_the_route_and_never_reports_a_failed_answer_done": 43.13047661399469,
+    "default_modules/celerp-ai/tests/test_batch.py::test_a_permission_taken_away_after_the_jobs_check_leaves_the_file_unsent_and_the_job_failed": 0.21829145000083372,
+    "tests/test_ai_capabilities.py::test_a_route_whose_agent_markers_do_not_fit_it_stops_the_tool_list_from_compiling[any_permission-x-celerp-agent-any-permission must list permission keys]": 0.003974471939727664,
+    "tests/test_ai_capabilities.py::test_a_route_whose_agent_markers_do_not_fit_it_stops_the_tool_list_from_compiling[download-x-celerp-agent-download on a POST route: /a]": 0.003982115013059229,
+    "tests/test_ai_capabilities.py::test_a_route_whose_agent_markers_do_not_fit_it_stops_the_tool_list_from_compiling[key_field-agent marker names a field the body does not have: 'request_key']": 0.004289583943318576,
+    "tests/test_ai_capabilities.py::test_a_route_whose_agent_markers_do_not_fit_it_stops_the_tool_list_from_compiling[no_body-agent marker names a body field on a route with no body: /a]": 0.00260656897444278,
+    "tests/test_ai_capabilities.py::test_a_route_whose_agent_markers_do_not_fit_it_stops_the_tool_list_from_compiling[no_operation_id-duplicate or missing agent operationId: '']": 0.002567610004916787,
+    "tests/test_ai_capabilities.py::test_a_tool_with_two_upload_parts_refuses_a_call_with_one_file_and_sends_nothing": 0.0043803080334328115
 }
