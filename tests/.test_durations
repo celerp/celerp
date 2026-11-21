@@ -31981,5 +31981,6 @@
     "tests/test_ai_capabilities.py::test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty[file_ids-value4]": 0.0027859160327352583,
     "tests/test_ai_capabilities.py::test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty[headers-value2]": 0.0027497299597598612,
     "tests/test_ai_capabilities.py::test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty[path-value0]": 0.0033352299942635,
-    "tests/test_ai_capabilities.py::test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty[query-value1]": 0.002789541962556541
+    "tests/test_ai_capabilities.py::test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty[query-value1]": 0.002789541962556541,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_a_second_ask_counts_the_question_still_waiting_from_the_first": 1.050370108045172
 }
