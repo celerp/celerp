@@ -241,7 +241,7 @@ async def test_every_tool_refuses_without_reaching_the_route_and_never_reports_a
         raise FileNotFoundError(file_id)
 
     oversized = json.dumps({"detail": refusal("ai.err_invalid_arguments", "x" * 400)}).encode()
-    monkeypatch.setattr(deadlines, "TOOL_STEP_S", 0.05)
+    step_s = deadlines.TOOL_STEP_S
     problems: list[str] = []
     caps = ai_tools.compile_agent_capabilities(real_agent_app(), {})
     assert caps
@@ -270,6 +270,9 @@ async def test_every_tool_refuses_without_reaching_the_route_and_never_reports_a
                 ("result_too_large", (500, oversized, b"application/json", 0.0)),
                 ("capability_timeout", (200, b"{}", b"application/json", 0.5))):
             app, seen = _recording_app(status, body, ctype, delay)
+            # Only the answer that never comes runs against a short deadline: over every tool
+            # the step budget is paid once per tool, so it is kept far below the stub's delay.
+            monkeypatch.setattr(deadlines, "TOOL_STEP_S", 0.01 if delay else step_s)
             got = await ai_tools.execute_agent_capability(app, "Bearer t", cap, good, "c", load_file=loaded,
                                                           result_max_bytes=200)
             if got.get("ok") is not False or got["error"]["code"] != code or not seen:
