@@ -144,8 +144,8 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
     # A phone stacks the group table.
     page.set_viewport_size({"width": 390, "height": 800})
     page.reload()
-    box = page.locator("[data-group]").first.bounding_box()
-    assert box and box["width"] <= 390
+    row = page.locator(".bank-group .bank-row--group").first
+    assert row.evaluate("e => getComputedStyle(e).display") == "block"
     page.set_viewport_size({"width": 1280, "height": 900})
 
     # Questions print with "--" for an empty field.
