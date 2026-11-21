@@ -483,8 +483,6 @@ async def unmatch_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, rol
             if row is None or row.entity_type != "journal_entry":
                 raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_entry_gone"))
             state = row.state or {}
-            if state.get("status") == "void":
-                continue
             if (paid := await _doc_payment(db, company_id, je_id, state)) is not None:
                 await _delete_payment(db, company_id, actor_id, role, line, *paid)
                 continue
