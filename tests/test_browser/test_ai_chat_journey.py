@@ -379,6 +379,30 @@ def test_bulk_card_lists_every_record_in_a_scrolling_box(page: Page, ui_server, 
     expect(rows.last).to_contain_text("RENT-0199")
 
 
+def test_bulk_card_wide_records_scroll_inside_their_own_box_not_the_page(page: Page, ui_server, agent_caps):
+    """A for_each table with enough columns to need horizontal scrolling scrolls inside
+    its own box; it never pushes the page itself wider than the viewport."""
+    rule = agent_caps[("PATCH", "/accounting/rules/{rule_id}")]["name"]
+    long = "x" * 120
+    records = [{"path": {"rule_id": str(uuid.uuid4())},
+                "body": {"match_pattern": f"{long}-{n}", "match_amount": 1000 + n,
+                         "note_a": long, "note_b": long, "note_c": long}}
+               for n in range(5)]
+    _SCRIPT.append(_tool_call(ai_service.PROPOSE_FOR_EACH, {"tool": rule, "records": records},
+                              "I'll change these rules once you confirm."))
+    _open_chat(page, ui_server)
+    _send(page, "update the rent rules")
+
+    box = page.locator(".ai-action__card .ai-action__records")
+    expect(box).to_be_visible()
+    assert box.evaluate("e => e.scrollWidth > e.clientWidth")
+    assert box.evaluate("e => getComputedStyle(e).overflowX") == "auto", \
+        "the records box must scroll its own overflow, not clip it"
+    overflow = page.evaluate(
+        "() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
+    assert overflow <= 0, f"horizontal overflow of {overflow}px"
+
+
 def test_bulk_confirm_updates_only_the_selected_row_whatever_the_call_ids_hold(page: Page, ui_server, item_create_cap,
                                                                                agent_caps, monkeypatch):
     """A model may name its tool calls with spaces and selector characters; the review
