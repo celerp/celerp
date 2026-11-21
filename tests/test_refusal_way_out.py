@@ -5,8 +5,11 @@ default role, links to that page only for a role that may take the step there, a
 otherwise names the roles that can, never a link to a page the reader cannot use."""
 from __future__ import annotations
 
+import ast
 import json
+import re
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 from fasthtml.common import to_xml
@@ -14,6 +17,7 @@ from fasthtml.common import to_xml
 from celerp.accounting_roles import REFUSAL_FIXES, REQUEST_COMPANY_SETTINGS, refusal
 from celerp.services.auth import ROLE_LEVELS
 from celerp.services.permissions import role_has_permission
+from shipped_sources import APP_ROOTS
 from ui.api_client import APIError
 from ui.components.shell import error_flash, refusal_fix, toast_header
 from ui.i18n import _reader_role, refusal_text, t
@@ -117,3 +121,53 @@ def test_the_ui_judges_the_way_out_by_the_signed_in_reader(cookie, links):
     body = TestClient(app).get("/", headers=headers).json()
     assert (body["link"] is not None) is links
     assert (t("settings.owner") in body["text"]) is not links
+
+
+_ROOT = Path(__file__).resolve().parents[1]
+_ROUTE = re.compile(r"^\s*@\w*(?:router|app|rt)\.(?:get|post|put|patch|delete)\(", re.M)
+_ROUTER_FILES = sorted(
+    str(path.relative_to(_ROOT)) for root in APP_ROOTS for path in (_ROOT / root).rglob("*.py")
+    if "tests" not in path.parts and _ROUTE.search(path.read_text(encoding="utf-8")))
+# A detail a program reads, never a person, and who reads it.
+_READ_BY_A_PROGRAM = {
+    "direct_connection_limit": "the sign-in page, which answers it in the reader's language",
+    "Invalid refresh token": "the client renewing its session: one neutral answer for every failure",
+}
+
+
+def _details(path: str) -> list[tuple[int, ast.expr | None]]:
+    """Every HTTPException a file builds, by line, with the detail it carries."""
+    tree = ast.parse((_ROOT / path).read_text(encoding="utf-8"))
+    return [(call.lineno, next((k.value for k in call.keywords if k.arg == "detail"),
+                               call.args[1] if len(call.args) > 1 else None))
+            for call in ast.walk(tree) if isinstance(call, ast.Call)
+            and getattr(call.func, "attr", getattr(call.func, "id", None)) == "HTTPException"]
+
+
+def _hand_built(path: str) -> list[int]:
+    """Every dict a file writes by hand under the key of a refusal one page resolves."""
+    tree = ast.parse((_ROOT / path).read_text(encoding="utf-8"))
+    return [node.lineno for node in ast.walk(tree) if isinstance(node, ast.Dict)
+            for key, value in zip(node.keys, node.values)
+            if isinstance(key, ast.Constant) and key.value == "message_key"
+            and isinstance(value, ast.Constant) and value.value in REFUSAL_FIXES]
+
+
+@pytest.mark.parametrize("path", _ROUTER_FILES)
+def test_every_refusal_a_router_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out(path):
+    """Class guard, one row per file that declares routes: a refusal is never a bare status
+    (the reader would get no reason and no next step), never English written where it is
+    raised (it goes through the catalog; tests/test_refusal_keys_in_catalog.py proves each
+    key), and a refusal one page resolves is built by ``refusal``, which attaches that
+    page, never as a dict written by hand."""
+    details = _details(path)
+    bare = [line for line, detail in details if detail is None]
+    english = [line for line, detail in details if isinstance(detail, ast.JoinedStr)
+               or isinstance(detail, ast.Constant) and detail.value not in _READ_BY_A_PROGRAM]
+    assert (bare, english, _hand_built(path)) == ([], [], []), path
+
+
+def test_every_detail_read_by_a_program_is_still_raised():
+    raised = {detail.value for path in _ROUTER_FILES for _line, detail in _details(path)
+              if isinstance(detail, ast.Constant)}
+    assert raised == set(_READ_BY_A_PROGRAM)
