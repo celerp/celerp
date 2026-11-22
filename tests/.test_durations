@@ -32161,5 +32161,9 @@
     "tests/test_donors_page.py::test_a_donors_activity_reads_not_confirmed_while_the_statement_email_is_with_the_mail_server": 0.7942113018943928,
     "tests/test_donors_page.py::test_a_donors_activity_reads_sent_only_when_the_statement_email_went_out[False]": 0.5677330060279928,
     "tests/test_donors_page.py::test_a_donors_activity_reads_sent_only_when_the_statement_email_went_out[True]": 0.5597139830351807,
-    "tests/test_donors_page.py::test_a_statement_the_earlier_build_recorded_reads_sent_in_activity": 0.00395619694609195
+    "tests/test_donors_page.py::test_a_statement_the_earlier_build_recorded_reads_sent_in_activity": 0.00395619694609195,
+    "tests/test_ai_usage_pending.py::test_a_settled_charge_replaces_the_larger_pending_charge_of_its_operation[reconcile]": 0.23894404497696087,
+    "tests/test_ai_usage_pending.py::test_a_settled_charge_replaces_the_larger_pending_charge_of_its_operation[reply]": 0.10770339093869552,
+    "tests/test_migrations/test_x7c8d9e0f1a2_ai_usage_one_row_per_operation.py::test_the_writers_settled_charge_wins_over_its_larger_pending_charge[SQL_ASCII]": 0.5910315919318236,
+    "tests/test_migrations/test_x7c8d9e0f1a2_ai_usage_one_row_per_operation.py::test_the_writers_settled_charge_wins_over_its_larger_pending_charge[UTF8]": 0.4690229269908741
 }
