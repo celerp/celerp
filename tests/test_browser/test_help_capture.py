@@ -488,10 +488,11 @@ def _sign_in(api_server: str, email: str) -> str:
         clear_session_registry()
 
 
-def capture_company(api_server: str, api, email: str) -> dict:
+def capture_company(api_server: str, api, email: str, *, connect_store: bool = False) -> dict:
     """The capture company, filled with the same demo data every run, and an access token of
     its owner: a member named _CAPTURE_NAME who belongs to no other company, so a picture shows
-    the same company, person and company list wherever it is taken."""
+    the same company, person and company list wherever it is taken. A store connects to one
+    company of an installation, so only the shared capture company is given one."""
     r = api.post("/companies/me/users", json={"email": email, "name": _CAPTURE_NAME, "role": "viewer",
                                               "password": _CAPTURE_PASSWORD})
     assert r.status_code == 200, r.text
@@ -558,7 +559,8 @@ def capture_company(api_server: str, api, email: str) -> dict:
             await seed_company_details(client, auth, date.fromisoformat(today))
             company_id = (await _ok(await client.get("/companies/me", headers=auth)))["id"]
             await seed_ai_usage(company_id, user_id)
-            await seed_store_connection(company_id)
+            if connect_store:
+                await seed_store_connection(company_id)
             await seed_company_copies(company_id)
             # The default label templates are created through their write route, so no
             # page's first read seeds them: which labels page reads first depends on test order.
@@ -669,7 +671,7 @@ def _mock_get_modules_default():
 
 @pytest.fixture(scope="session")
 def demo_company(api_server, api):
-    return capture_company(api_server, api, _CAPTURE_EMAIL)
+    return capture_company(api_server, api, _CAPTURE_EMAIL, connect_store=True)
 
 
 @pytest.fixture(scope="session")
