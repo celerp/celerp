@@ -18,10 +18,11 @@ import io
 import json
 import os
 import random
+import re
 import sys
 import threading
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -34,6 +35,7 @@ from celerp.help.bundle import MAX_IMAGE_BYTES
 from celerp.help.checks import CAPTURE_MARKER, shipped_pages
 from celerp.services.business_time import business_today
 from celerp_ai.ui_routes import QUESTION_POLL_S
+from celerp_subscriptions import billing as subscription_billing
 from celerp_labels.presets import PRESET_TEMPLATES
 from test_helpers import grant_permission
 from ui.i18n import t
@@ -62,6 +64,7 @@ _CAPTURE_PASSWORD = "ExampleTrading1!"
 # The business day the company is seeded on and every picture is taken on, whatever day the
 # capture runs: the app's "today" (business_time) is frozen to it, as the agreement tests do.
 _CAPTURE_DAY = date(2026, 6, 15)
+_CAPTURE_NOON = datetime(2026, 6, 15, 12, tzinfo=timezone.utc)
 _PAGES = [p for p in shipped_pages() if isinstance(p.data, dict)]
 # The app's own components for a screen with nothing to show: an empty list or report, the
 # Remote Access and Connect sales pages and banners, the AI page shown without an account, and
@@ -384,8 +387,11 @@ async def seed_company_details(client: httpx.AsyncClient, auth: dict, today: dat
 
 @contextlib.contextmanager
 def _capture_clock():
+    """The business day is _CAPTURE_DAY and the wall clock subscriptions read (what their
+    summary looks back from) is that day's evening, after every record _date_records dates."""
     with pytest.MonkeyPatch.context() as mp:
         freeze_day(mp, _CAPTURE_DAY.isoformat())
+        mp.setattr(subscription_billing, "now", lambda: _CAPTURE_NOON + timedelta(hours=6))
         yield
 
 
@@ -417,6 +423,7 @@ def capture_company(api_server: str, api, email: str) -> dict:
     r = api.patch(f"/companies/me/users/{user_id}", json={"is_active": False})
     assert r.status_code == 200, r.text
     token = _sign_in(api_server, email)
+    started = datetime.now(timezone.utc)
 
     async def seed():
         auth = {"Authorization": f"Bearer {token}"}
@@ -497,7 +504,72 @@ def capture_company(api_server: str, api, email: str) -> dict:
         raise error[0]
     r = httpx.get(f"{api_server}/companies/me", headers={"Authorization": f"Bearer {token}"}, timeout=10)
     assert r.status_code == 200, r.text
+    _date_records(r.json()["id"], started)
     return {"token": token, "id": r.json()["id"]}
+
+
+_ISO = re.compile(r"\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?(Z|[+-]\d{2}:?\d{2})?")
+
+
+def _run_days(started: datetime) -> set[date]:
+    """The days the run's real time falls on, in UTC and in local time."""
+    return {started.date(), datetime.now(timezone.utc).date(), started.astimezone().date(), date.today()}
+
+
+def _dated(value, started: datetime, until: datetime):
+    """``value`` with every date or time the run wrote at its real time (from ``started`` to
+    ``until``) moved to _CAPTURE_DAY."""
+    if isinstance(value, dict):
+        return {k: _dated(v, started, until) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_dated(v, started, until) for v in value]
+    if not isinstance(value, str) or not _ISO.fullmatch(value):
+        return value
+    try:
+        when = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    if len(value) == 10:
+        return _CAPTURE_DAY.isoformat() if when.date() in _run_days(started) else value
+    when = when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    return _CAPTURE_NOON.isoformat() if started <= when <= until else value
+
+
+def _date_records(company_id: str, started: datetime) -> None:
+    """Dates what the seed wrote at the run's real time (record times, upload, receipt and
+    approval times in the records' data) on _CAPTURE_DAY, so no picture depends on the day the
+    capture ran. Record times keep their order: the n-th becomes noon plus n seconds."""
+    until = datetime.now(timezone.utc)
+    conn = _test_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT c.table_name, c.column_name, c.data_type FROM information_schema.columns c"
+                        " JOIN information_schema.columns k ON k.table_schema = c.table_schema"
+                        "  AND k.table_name = c.table_name AND k.column_name = 'company_id'"
+                        " JOIN information_schema.tables t ON t.table_schema = c.table_schema"
+                        "  AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'"
+                        " WHERE c.table_schema = 'public' AND c.data_type IN"
+                        " ('timestamp with time zone', 'timestamp without time zone', 'date', 'json', 'jsonb')")
+            for table, column, kind in cur.fetchall():
+                where = f"company_id::text = %s AND {column} IS NOT NULL"
+                if kind.startswith("timestamp"):
+                    aware = kind.endswith("with time zone")
+                    noon, start, end = ((t if aware else t.replace(tzinfo=None)) for t in (_CAPTURE_NOON, started, until))
+                    cur.execute(f"UPDATE {table} SET {column} = %s + n * interval '1 second' FROM"
+                                f" (SELECT ctid AS row, row_number() OVER (ORDER BY {column}, ctid) AS n"
+                                f"  FROM {table} WHERE {where} AND {column} BETWEEN %s AND %s) d"
+                                f" WHERE {table}.ctid = d.row", (noon, company_id, start, end))
+                elif kind == "date":
+                    cur.execute(f"UPDATE {table} SET {column} = %s WHERE {where} AND {column} = ANY(%s)",
+                                (_CAPTURE_DAY, company_id, list(_run_days(started))))
+                else:
+                    cur.execute(f"SELECT ctid, {column} FROM {table} WHERE {where}", (company_id,))
+                    for row, value in cur.fetchall():
+                        if (moved := _dated(value, started, until)) != value:
+                            cur.execute(f"UPDATE {table} SET {column} = %s::{kind} WHERE ctid = %s",
+                                        (json.dumps(moved), row))
+    finally:
+        conn.close()
 
 
 @pytest.fixture
@@ -668,7 +740,7 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[s
     if step_id not in _SHOWS_EMPTY_STATE and (shown := _empty_state_shown(target)):
         return shown
     text = _pictured_text(target)
-    if dated := sorted(d for d in _today_written(date.today()) if d in text):
+    if dated := sorted(d for day in _run_days(datetime.now(timezone.utc)) for d in _today_written(day) if d in text):
         return [f"the day the capture ran: {dated}"]
     if named := sorted(n for n in foreign if n in text):
         return [f"not the capture company or user: {named}"]
