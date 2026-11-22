@@ -21,7 +21,7 @@
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     },
     {
-      "text": "A run that ended with materials still held asks to be reconciled: its page lists what it holds so you can record what was used, returned or lost.",
+      "text": "Each row shows the run's priority and due date, which you change by double-clicking them, and links to its run sheet: a page to print listing the materials and quantities the run needs. A run from an older release whose materials' value its history cannot prove asks to be reconciled before it moves on.",
       "labels": {},
       "image": "img/production-3.webp",
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}

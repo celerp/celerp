@@ -21,7 +21,7 @@
   ],
   "permission": "manage_accounting",
   "order": 3,
-  "checked": "93d88d722abc096d5e66e56a0d003eb03fc9fd26510c0541109260672e95aaf3",
+  "checked": "83cfb9b19922a8fe316ffabf158a2fc16d13ae1cd48212045653a9596b473ba3",
   "steps": [
     {
       "text": "Open {rec} from the sidebar. Each bank account is listed with its balance. Click a bank to open its page, where the lines of all its statements sit together.",

@@ -15,7 +15,7 @@
       "capture": {"route": "/setup/cloud", "selector": ".auth-container", "actions": []}
     },
     {
-      "text": "Once you subscribe, the same page links to the billing portal, where you change your card, see your invoices or cancel the subscription.",
+      "text": "Once you subscribe, this page shows Celerp Connect as active with your team's address. To change your card, see your invoices or cancel the subscription, ask the assistant for a link to the billing portal.",
       "labels": {},
       "image": "img/web-access-2.webp",
       "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}

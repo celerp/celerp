@@ -6,7 +6,7 @@
   "routes": ["/settings/accounting", "/settings/accounting/bank-accounts/new", "/settings/accounting/bank-accounts/{bank_id}/edit", "/settings/accounting/chart/new", "/settings/accounting/chart/{code}/edit"],
   "permission": "manage_module_settings",
   "order": 4,
-  "checked": "07d1042fa082e3018b1fd9b3c05a0f29c8a6bdfbd1923c5060c4dc1d49f7d56f",
+  "checked": "522362479358a96bd5df1dc37f82d5c244c043a5b400481ee81be3b26384b1e0",
   "steps": [
     {
       "text": "On {title}, the tabs cover {bank}, {chart}, {rules}, {lock}, {posting}, {older}, {funds} and {recognition}.",

@@ -1,17 +1,17 @@
 {
-  "celerp-accounting": "7b9e8ec4b5a65b475f4c460d610a969e54fa2f89e2c69ffede516c2619915bcb",
+  "celerp-accounting": "19193b8770d5329db171865daec0e0d172be5dfc35847f31a562e44491bf4f7d",
   "celerp-admin": "a645dad03b4fc8c6099b74e5235c56e862a361cf032b05944f1ff5cb7eaae2a1",
   "celerp-ai": "1d38ffb6723679117e4f0ea9e0c538f72a8523e4fa271d879ee1ac7e94bd791f",
   "celerp-backup": "2010058896b6ea8721683afca860689af3df3481985c2005ef901433234158a0",
-  "celerp-connectors": "5c608aa3341aa4ac53c27206fa2bb36a8787d1c155773d10efea35733858e65b",
+  "celerp-connectors": "4915366f502e151e4c372501dd95495fecab22919e4a098b2da61e0272610e95",
   "celerp-contacts": "fe4ccd0ba40cb5cdfbbdc21064db4e03b29f26feaa718cb7d32198a834494259",
   "celerp-dashboard": "71281cf1de39ed983b17b5c8c02b64989d3a0c03266ff6e3ab80265b3fcaef9f",
-  "celerp-docs": "cfdb8026e15ed579018d5a3a0d2f5435df803a28daa2a4c1041a025afb54c103",
-  "celerp-fixed-assets": "1632fa49c4f8726a9577ba4df5450f54ea23d8f800d27f013590761dc048ed70",
-  "celerp-inventory": "76a706d739c478789944d5bec2865dc6c6e76fe1268502937b1f9b5ac89918e6",
-  "celerp-labels": "52856495fb26ca3192758f4b80a0b6efbfd040f4595ac8b273786d9e827427f5",
-  "celerp-manufacturing": "1b44ffcfaa14c12baaf1e4c4f3ce64bb2772e0f2170d43959e4da0ea66050d48",
+  "celerp-docs": "1605c0fc8e66409c1394decccfd7a1cd41cc90d7497f3591eaab03f81da5c623",
+  "celerp-fixed-assets": "ca064e5975e45e2e7950c1fe78e265fa11b5be0fc4183602817f063c6495a40b",
+  "celerp-inventory": "93bd9a5df20c7dc2c17b332e70f815811474331a3899a803ba5fe2ef121c4658",
+  "celerp-labels": "fd0d48834959328bfa94939768eaa3b1b1b529f0646525273e33655d90d1b464",
+  "celerp-manufacturing": "07cb8aab1f21cd8e3674b2ac7c6a85211192beb5774620c1c61ac983c5a1f7b8",
   "celerp-reports": "93713122af50fd62edd2de9a1da2f7a368ec518b8af802a58c383fa46af65077",
   "celerp-subscriptions": "857be04812982dc25dc1e6fe12a67e41487c6cd98f598f85d4fa6af752903341",
-  "celerp-verticals": "c5bca17d7bc79793278a6fe1f79161bd9f4398bc9a84bcfe7d88369eff9a6d1f"
+  "celerp-verticals": "3165c07737982eaf55eebd8b8a4cca5246b6d10b5fffbd73ebc53dea1c2d3e58"
 }

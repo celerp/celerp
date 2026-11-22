@@ -6,7 +6,7 @@
   "routes": ["/fixed-assets/checks", "/fixed-assets/checks/not-seen/print"],
   "permission": "view_fixed_assets",
   "order": 5,
-  "checked": "125b47c43bde8f37c3a7dec4713a58d9b8ae892a66d264021ce8156786b11817",
+  "checked": "d32cea71b0ec4d8b3eb12f6b07a46afee042c4413362b824a733ef72bba64e9c",
   "steps": [
     {
       "text": "Scan or type an asset's {tag} and choose {rec} to record that it was seen today.",

@@ -12,6 +12,7 @@ capture marker, the only way a help image is made.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import importlib.util
 import io
@@ -122,8 +123,24 @@ _ACTIVE_RELAY = {"connected": True, "relay_status": "active", "public_url": "htt
                  "gateway_token_set": True, "entitlement_known": True, "entitled": True}
 _AI_ACCOUNT = {"allowed": True, "used": 0, "base_limit": 200, "topup_balance": 0, "remaining": 200,
                "limit": 200, "topup_credits": 0, "resets_at": None, "tier": "ai"}
-_CONNECT, _AI = "connect", "ai"
+_CONNECT, _AI, _COPIES = "connect", "ai", "copies"
+
+
+async def _backup_status(_token):
+    """The backup schedule an active subscription shows: last backup at the capture day's 02:00
+    UTC, the next one due six hours after the page reads it (the page shows the time until it)."""
+    due = datetime.now(timezone.utc) + timedelta(hours=6, seconds=30)
+    return {"db": {"ok": True, "error": None, "size_bytes": 4_200_000,
+                   "last_run": f"{_CAPTURE_DAY.isoformat()}T02:00:00+00:00"},
+            "next_db_utc": due.isoformat()}
+# A company copy sent to an accountant, as the cloud lists it to the account that sent it.
+_SENT_COPY_ID, _SENT_LINK_ID = uuid.UUID(int=0x1C0), uuid.UUID(int=0x11C)
+_SENT_COPY = {"id": str(_SENT_COPY_ID), "link_id": str(_SENT_LINK_ID), "status": "sent", "stored": True,
+              "can_restore": False, "opened": True, "downloaded": False, "company_opened": False,
+              "sent_at": "2026-06-12T09:30:00+00:00", "expires_at": "2026-06-26T09:30:00+00:00",
+              "firm_name": "Example Accounting"}
 _SUBSCRIBED: dict[str, str] = {
+    "core.company-handoff#2": _COPIES, "core.company-handoff#4": _COPIES,
     "core.web-access#2": _CONNECT,
     "backup.cloud-backup#2": _CONNECT, "backup.cloud-backup#3": _CONNECT,
     "connectors.connect-store#3": _CONNECT, "connectors.connect-store#4": _CONNECT,
@@ -139,11 +156,19 @@ def _subscription(kind: str | None):
     from celerp.gateway.state import set_session_token
 
     with contextlib.ExitStack() as stack:
-        if kind == _CONNECT:
-            stack.enter_context(patch("ui.api_client.get_relay_status", AsyncMock(return_value=_ACTIVE_RELAY)))
-        elif kind == _AI:
+        if kind:
+            # Both subscriptions sign this installation in to Celerp, as connecting an account does.
             set_session_token("help-capture-session-token")
             stack.callback(set_session_token, "")
+        if kind == _CONNECT:
+            stack.enter_context(patch("ui.api_client.get_relay_status", AsyncMock(return_value=_ACTIVE_RELAY)))
+            stack.enter_context(patch("ui.api_client.get_backup_status", _backup_status))
+        elif kind == _COPIES:
+            async def cloud(method, path, *, params=None, **_kw):
+                assert (method, path) == ("GET", "/handoffs"), (method, path)
+                return httpx.Response(200, json={"items": [{**_SENT_COPY, "company_id": params["company_id"]}]})
+            stack.enter_context(patch("celerp.services.cloud_entitlement.authenticated_request", cloud))
+        elif kind == _AI:
             stack.enter_context(patch("celerp.ai.quota.get_quota_status", AsyncMock(return_value=_AI_ACCOUNT)))
             stack.enter_context(patch.object(ai_service, "complete", _scripted_model()))
             # The answer lands at the question's next poll, after the API schema is built.
@@ -423,6 +448,23 @@ async def seed_store_connection(company_id: str) -> None:
         await session.commit()
 
 
+async def seed_company_copies(company_id: str) -> None:
+    """What this installation keeps of the copy in _SENT_COPY (who it went to, its link's key),
+    as sending records it, and a copy of the company saved when a copy replaced it."""
+    from celerp.services import company_backup, company_backup_files
+
+    company_backup_files.remember_sent_copy(company_id, _SENT_COPY_ID, {
+        "recipient": "client@example.com", "key": base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")})
+
+    class _Noon(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _CAPTURE_NOON
+
+    with patch.object(company_backup, "datetime", _Noon):
+        await company_backup._keep_backup(uuid.UUID(company_id), _CAPTURE_COMPANY)
+
+
 @contextlib.contextmanager
 def _capture_clock():
     """The business day is _CAPTURE_DAY and the wall clock subscriptions read (what their
@@ -517,6 +559,7 @@ def capture_company(api_server: str, api, email: str) -> dict:
             company_id = (await _ok(await client.get("/companies/me", headers=auth)))["id"]
             await seed_ai_usage(company_id, user_id)
             await seed_store_connection(company_id)
+            await seed_company_copies(company_id)
             # The default label templates are created through their write route, so no
             # page's first read seeds them: which labels page reads first depends on test order.
             for preset in PRESET_TEMPLATES:
@@ -732,6 +775,9 @@ def _run(page, action: dict) -> None:
         page.locator(action["click"]).first.click()
     elif "fill" in action:
         page.locator(action["fill"]).first.fill(action["value"])
+    elif "upload" in action:
+        page.locator(action["upload"]).first.set_input_files(
+            {"name": "import.csv", "mimeType": "text/csv", "buffer": action["value"].encode()})
     elif "press" in action:
         page.keyboard.press(action["press"])
     else:

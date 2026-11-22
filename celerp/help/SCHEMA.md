@@ -46,6 +46,7 @@ No other keys are allowed, and a page file is at most 64 KB.
 ```json
 {"click": "<selector>"}
 {"fill": "<selector>", "value": "<text>"}
+{"upload": "<file input selector>", "value": "<text of a CSV file to choose>"}
 {"press": "Escape"}
 {"wait": "<selector>"}
 ```

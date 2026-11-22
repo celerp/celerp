@@ -21,8 +21,9 @@ PAGE_KEYS = frozenset({"id", "title", "summary", "keywords", "routes", "permissi
 OPTIONAL_PAGE_KEYS = frozenset({"checked"})
 STEP_KEYS = frozenset({"text", "labels", "image", "capture"})
 CAPTURE_KEYS = frozenset({"route", "selector", "actions"})
-# One verb per action; "fill" also carries the text to type.
-ACTION_VERBS = frozenset({"click", "fill", "press", "wait"})
+# One verb per action; "fill" also carries the text to type, "upload" the text of the file.
+ACTION_VERBS = frozenset({"click", "fill", "upload", "press", "wait"})
+_VALUED_VERBS = frozenset({"fill", "upload"})
 
 MAX_FILE_BYTES = 64 * 1024
 
@@ -83,9 +84,10 @@ def _capture_errors(where: str, capture) -> list[str]:
         verbs = set(action) & ACTION_VERBS if isinstance(action, dict) else set()
         extra = set(action) - ACTION_VERBS - {"value"} if isinstance(action, dict) else set()
         if (len(verbs) != 1 or extra or not all(isinstance(v, str) for v in action.values())
-                or ("value" in action) != ("fill" in action)):
+                or ("value" in action) != bool(verbs & _VALUED_VERBS)):
             errors.append(f"{where}capture action {n} must be one of "
                           '{"click": selector}, {"fill": selector, "value": text}, '
+                          '{"upload": file input selector, "value": file text}, '
                           '{"press": key} or {"wait": selector}')
     return errors
 

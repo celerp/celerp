@@ -6,7 +6,7 @@
   "routes": ["/manufacturing", "/docs?type=production_order", "/manufacturing/requirements"],
   "permission": "manage_manufacturing",
   "order": 1,
-  "checked": "2c2bcdddd3a3fe0b3609b6347889890e1df051074b95ba7405728a9271a69105",
+  "checked": "556369023d1589f046e37e7ea74559748c6e4246a7e043cfca257ba98b7a4281",
   "steps": [
     {
       "text": "Open {dp} from the sidebar to see every open order that needs something made.",

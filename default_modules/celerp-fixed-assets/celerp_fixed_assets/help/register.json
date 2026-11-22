@@ -6,7 +6,7 @@
   "routes": ["/fixed-assets", "/fixed-assets/intake", "/fixed-assets/assets/new", "/fixed-assets/assets/{asset_id}", "/fixed-assets/assets/{asset_id}/add", "/fixed-assets/assets/{asset_id}/correct", "/fixed-assets/assets/{asset_id}/place-in-service", "/fixed-assets/assets/{asset_id}/reclassify", "/fixed-assets/assets/{asset_id}/remeasure", "/fixed-assets/assets/{asset_id}/transfer", "/fixed-assets/intake/line"],
   "permission": "view_fixed_assets",
   "order": 1,
-  "checked": "83a4e5be48792dae5d72ec52474e7727ce30399e4af5077c07762ffaa3f64ecb",
+  "checked": "89fa984666336c6ebf64fab0bfe60972ef42bd0cf99199a898bffd00932f4368",
   "steps": [
     {
       "text": "Open {fa} from the sidebar to see every registered asset.",

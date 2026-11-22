@@ -26,7 +26,7 @@
   ],
   "permission": "manage_accounting",
   "order": 6,
-  "checked": "0222c5932da0510345c546d56125c7b6c281e1b64b5087378a8d60a9b104137b",
+  "checked": "328e6f11b561c4ee3d087349754915b4bc6a4d2fead318b64e0973f427b510b4",
   "steps": [
     {
       "text": "A fund is a pot of money you track on its own. A restricted fund holds gifts a donor limited to a purpose. An unrestricted fund holds money you set aside for a use of your own, and you can spend or move it as you decide. Money on no fund shows as {unres}.",

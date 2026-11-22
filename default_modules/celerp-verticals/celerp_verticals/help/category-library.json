@@ -6,7 +6,7 @@
   "routes": ["/settings/inventory"],
   "permission": "manage_module_settings",
   "order": 2,
-  "checked": "7da9687585440c133c50e3fe3129a90039fa165582df0d7ffe8862ea1a805830",
+  "checked": "cf849cbd644bfeb05ad12fdd0ac9ec3e09e5a723562b6c7b34d662ee4b744eb6",
   "steps": [
     {
       "text": "Open {settings} and go to the Categories tab; your applied categories are listed under {yours}.",
