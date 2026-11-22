@@ -28,7 +28,7 @@
       "labels": {
         "rec": "nav.reconcile"
       },
-      "image": null,
+      "image": "img/reconcile-1.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": ".bank-list",
@@ -38,7 +38,7 @@
     {
       "text": "On a bank with no statement yet, drop the statement file on its page. Celerp reads PDF, CSV, Excel, OFX and QFX files and photos of a statement, then shows every line before anything is imported. If it doesn't recognise a CSV's columns, it asks which column holds the date, the description and the amount.",
       "labels": {},
-      "image": null,
+      "image": "img/reconcile-2.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": ".bank-list",
@@ -50,7 +50,7 @@
       "labels": {
         "another": "bank.drop_another"
       },
-      "image": null,
+      "image": "img/reconcile-3.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": "main",
@@ -73,7 +73,7 @@
         "posted": "bank.view_posted",
         "all": "bank.view_all"
       },
-      "image": null,
+      "image": "img/reconcile-4.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": ".bank-views",
@@ -92,10 +92,10 @@
       "labels": {
         "suggest": "bank.suggest"
       },
-      "image": null,
+      "image": "img/reconcile-5.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": "main",
+        "selector": "main div.bank-groups",
         "actions": [
           {
             "click": "a.bank-list__name"
@@ -113,10 +113,10 @@
         "postbtn": "btn.post",
         "split": "bank.split"
       },
-      "image": null,
+      "image": "img/reconcile-6.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": "main",
+        "selector": "main div.bank-groups",
         "actions": [
           {
             "click": "a.bank-list__name"
@@ -138,10 +138,10 @@
       "labels": {
         "ask": "bank.ask_client"
       },
-      "image": null,
+      "image": "img/reconcile-7.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": "main",
+        "selector": "main div.bank-groups",
         "actions": [
           {
             "click": "a.bank-list__name"
@@ -157,10 +157,10 @@
       "labels": {
         "complete": "bank.complete"
       },
-      "image": null,
+      "image": "img/reconcile-8.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": "main",
+        "selector": "main div.bank-actions-bar",
         "actions": [
           {
             "click": "a.bank-list__name"
@@ -176,7 +176,7 @@
       "labels": {
         "rules": "page.reconciliation_rules"
       },
-      "image": null,
+      "image": "img/reconcile-9.webp",
       "capture": {
         "route": "/settings/accounting?tab=rules",
         "selector": "main",
@@ -188,7 +188,7 @@
       "labels": {
         "history": "recon.history"
       },
-      "image": null,
+      "image": "img/reconcile-10.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": ".bank-list",
@@ -198,7 +198,7 @@
     {
       "text": "The assistant can read a statement, suggest answers and settle lines for you. It shows what it proposes on one card, and nothing is posted until you confirm. The card links to the bank page, where you can change what is ticked.",
       "labels": {},
-      "image": null,
+      "image": "img/reconcile-11.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": ".bank-list",

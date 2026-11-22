@@ -11,13 +11,13 @@
     {
       "text": "On {title}, the tabs cover payment terms, {prices}, {tags} and {defaults} for new contacts.",
       "labels": {"title": "settings_contacts.page_header", "prices": "page.price_lists", "tags": "page.tags", "defaults": "settings_contacts.tab_defaults"},
-      "image": null,
+      "image": "img/settings-1.webp",
       "capture": {"route": "/settings/contacts", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to change the payment terms, price lists, tags or contact defaults. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/settings-2.webp",
       "capture": {"route": "/settings/contacts", "selector": "main", "actions": []}
     }
   ],

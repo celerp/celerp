@@ -11,25 +11,25 @@
     {
       "text": "Open {wip} from the sidebar to see production runs on the floor.",
       "labels": {"wip": "manufacturing.work_in_progress"},
-      "image": null,
+      "image": "img/production-1.webp",
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     },
     {
       "text": "Status cards split the queue by stage, from {planned} to {hold} to {done}; tick runs and choose an action from the bulk actions above the table to move them along.",
       "labels": {"planned": "enum.mfg_run_status.planned", "hold": "enum.mfg_run_status.on_hold", "done": "enum.mfg_run_status.completed"},
-      "image": null,
+      "image": "img/production-2.webp",
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     },
     {
       "text": "A run that ended with materials still held asks to be reconciled: its page lists what it holds so you can record what was used, returned or lost.",
       "labels": {},
-      "image": null,
+      "image": "img/production-3.webp",
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant how a work order stands, or to start, hold, issue materials to, receive or complete it. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/production-4.webp",
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     }
   ],

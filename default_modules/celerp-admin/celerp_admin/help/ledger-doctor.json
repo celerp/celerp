@@ -11,25 +11,25 @@
     {
       "text": "Open {doctor} from the sidebar. It never changes anything: everything here is a read-only report.",
       "labels": {"doctor": "nav.doctor"},
-      "image": null,
+      "image": "img/ledger-doctor-1.webp",
       "capture": {"route": "/doctor", "selector": "main", "actions": []}
     },
     {
       "text": "{start} explains why the last start held your records back, if it did, with each failed step and its error.",
       "labels": {"start": "doctor.last_start"},
-      "image": null,
+      "image": "img/ledger-doctor-2.webp",
       "capture": {"route": "/doctor", "selector": "main", "actions": []}
     },
     {
       "text": "{checks} lists each automatic scan Admin Tools runs over your records and how many problems it found in the current count.",
       "labels": {"checks": "doctor.record_checks"},
-      "image": null,
+      "image": "img/ledger-doctor-3.webp",
       "capture": {"route": "/doctor", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to run the record check for you. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/ledger-doctor-4.webp",
       "capture": {"route": "/doctor", "selector": "main", "actions": []}
     }
   ],

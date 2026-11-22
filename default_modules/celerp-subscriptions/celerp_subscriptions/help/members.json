@@ -22,7 +22,7 @@
       "labels": {
         "nav": "nav.members"
       },
-      "image": null,
+      "image": "img/members-1.webp",
       "capture": {
         "route": "/members",
         "selector": "main",
@@ -37,7 +37,7 @@
         "days": "subscriptions.grace_days",
         "lapsed": "enum.member_standing.lapsed"
       },
-      "image": null,
+      "image": "img/members-2.webp",
       "capture": {
         "route": "/members",
         "selector": "main",
@@ -50,7 +50,7 @@
         "ended": "enum.member_standing.ended",
         "status": "th.status"
       },
-      "image": null,
+      "image": "img/members-3.webp",
       "capture": {
         "route": "/members",
         "selector": "main",
@@ -62,7 +62,7 @@
       "labels": {
         "life": "enum.member_standing.lifetime"
       },
-      "image": null,
+      "image": "img/members-4.webp",
       "capture": {
         "route": "/members",
         "selector": "main",
@@ -74,7 +74,7 @@
       "labels": {
         "new": "page.new_membership"
       },
-      "image": null,
+      "image": "img/members-5.webp",
       "capture": {
         "route": "/members",
         "selector": "main",
@@ -84,7 +84,7 @@
     {
       "text": "You can also ask the assistant which members are in good standing or overdue, or to send, skip or reopen a period. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/members-6.webp",
       "capture": {
         "route": "/members",
         "selector": "main",

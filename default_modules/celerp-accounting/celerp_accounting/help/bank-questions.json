@@ -23,7 +23,7 @@
       "labels": {
         "nav": "nav.bank_questions"
       },
-      "image": null,
+      "image": "img/bank-questions-1.webp",
       "capture": {
         "route": "/accounting/questions",
         "selector": "main",
@@ -37,10 +37,10 @@
         "receipt": "bank.receipt",
         "save": "btn.save"
       },
-      "image": null,
+      "image": "img/bank-questions-2.webp",
       "capture": {
         "route": "/accounting/questions",
-        "selector": "main",
+        "selector": "main form.screen-only",
         "actions": []
       }
     },
@@ -51,7 +51,7 @@
         "answered": "bank.questions_answered",
         "all": "bank.questions_all"
       },
-      "image": null,
+      "image": "img/bank-questions-3.webp",
       "capture": {
         "route": "/accounting/questions",
         "selector": "main",
@@ -61,7 +61,7 @@
     {
       "text": "Anyone with the permission to answer bank questions sees this page, so a client can answer without seeing the rest of the books. Your accountant gives that permission in Settings under Users.",
       "labels": {},
-      "image": null,
+      "image": "img/bank-questions-4.webp",
       "capture": {
         "route": "/accounting/questions",
         "selector": "main",

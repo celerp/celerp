@@ -11,43 +11,43 @@
     {
       "text": "Open {rep} from the sidebar for a list of every report.",
       "labels": {"rep": "nav.reports"},
-      "image": null,
+      "image": "img/financial-reports-1.webp",
       "capture": {"route": "/reports", "selector": "main", "actions": []}
     },
     {
       "text": "Click {pnl} to see income and expenses for the period, or pick another statement from the same list; each carries your date range to the next.",
       "labels": {"pnl": "acct.tab_pnl"},
-      "image": null,
+      "image": "img/financial-reports-2.webp",
       "capture": {"route": "/reports/pnl", "selector": "main", "actions": []}
     },
     {
       "text": "Click an account on a statement to open its ledger: every entry on that account in the period, with a running balance.",
       "labels": {},
-      "image": null,
+      "image": "img/financial-reports-3.webp",
       "capture": {"route": "/reports/trial-balance", "selector": "main", "actions": []}
     },
     {
       "text": "{soa} shows a customer's, supplier's or account's movements and balance; {pick}",
       "labels": {"soa": "acct.soa_title", "pick": "acct.soa_pick_contact"},
-      "image": null,
+      "image": "img/financial-reports-4.webp",
       "capture": {"route": "/reports/statement", "selector": "main", "actions": []}
     },
     {
       "text": "{ej} lists every journal entry in the period, line by line.",
       "labels": {"ej": "acct.tab_extended_journal"},
-      "image": null,
+      "image": "img/financial-reports-5.webp",
       "capture": {"route": "/reports/extended-journal", "selector": "main", "actions": []}
     },
     {
       "text": "{tie} compares your opening balances with the documents you imported, so a move from another system can be checked.",
       "labels": {"tie": "rpt.opening_tie_out"},
-      "image": null,
+      "image": "img/financial-reports-6.webp",
       "capture": {"route": "/reports/opening-tie-out", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to read these reports for you, such as the profit for last quarter, the cash position at month end or the balance of one account.",
       "labels": {},
-      "image": null,
+      "image": "img/financial-reports-7.webp",
       "capture": {"route": "/reports", "selector": "main", "actions": []}
     }
   ],

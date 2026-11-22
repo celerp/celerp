@@ -11,19 +11,19 @@
     {
       "text": "On {title}, set the run schedule and convention, and add or archive asset classes.",
       "labels": {"title": "fixed_assets.settings_title"},
-      "image": null,
+      "image": "img/settings-1.webp",
       "capture": {"route": "/settings/fixed-assets", "selector": "main", "actions": []}
     },
     {
       "text": "Each asset class offers more actions: apply the class's current depreciation settings to the assets that still follow older ones, fix a posting account by moving existing balances or for future postings only, and revalue every asset of a class that uses the revaluation model.",
       "labels": {},
-      "image": null,
+      "image": "img/settings-2.webp",
       "capture": {"route": "/settings/fixed-assets", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to change the run schedule or the convention, or to add or edit an asset class. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/settings-3.webp",
       "capture": {"route": "/settings/fixed-assets", "selector": "main", "actions": []}
     }
   ],

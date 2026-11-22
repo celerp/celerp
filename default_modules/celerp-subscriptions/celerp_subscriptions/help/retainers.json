@@ -20,7 +20,7 @@
       "labels": {
         "nav": "nav.retainers"
       },
-      "image": null,
+      "image": "img/retainers-1.webp",
       "capture": {
         "route": "/retainers",
         "selector": "main",
@@ -32,7 +32,7 @@
       "labels": {
         "new": "page.new_retainer"
       },
-      "image": null,
+      "image": "img/retainers-2.webp",
       "capture": {
         "route": "/retainers",
         "selector": "main",
@@ -44,7 +44,7 @@
       "labels": {
         "gen": "btn.generate_all_due"
       },
-      "image": null,
+      "image": "img/retainers-3.webp",
       "capture": {
         "route": "/retainers",
         "selector": "main",
@@ -54,7 +54,7 @@
     {
       "text": "You can also ask the assistant to generate the retainer invoices that are due, bill one early or skip a period. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/retainers-4.webp",
       "capture": {
         "route": "/retainers",
         "selector": "main",

@@ -11,19 +11,19 @@
     {
       "text": "{title} lists the modules this company can use. Turn one on to add its screens to the side menu, or off to hide them; turning a module off keeps its records.",
       "labels": {"title": "modules.title"},
-      "image": null,
+      "image": "img/modules-1.webp",
       "capture": {"route": "/modules", "selector": "main", "actions": []}
     },
     {
       "text": "{market} lists more modules to add. {community} lists modules others have shared and explains how to write your own on the same public API.",
       "labels": {"market": "modules.tab_marketplace", "community": "modules.tab_community"},
-      "image": null,
+      "image": "img/modules-2.webp",
       "capture": {"route": "/modules", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant which modules are on, or to turn one on or off. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/modules-3.webp",
       "capture": {"route": "/modules", "selector": "main", "actions": []}
     }
   ],

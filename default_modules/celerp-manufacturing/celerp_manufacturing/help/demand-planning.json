@@ -11,31 +11,31 @@
     {
       "text": "Open {dp} from the sidebar to see every open order that needs something made.",
       "labels": {"dp": "manufacturing.demand_planning"},
-      "image": null,
+      "image": "img/demand-planning-1.webp",
       "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     },
     {
       "text": "The board breaks demand down by document type, including {po}; tick the lines you are ready to build and choose Make from the bulk actions above the table.",
       "labels": {"po": "manufacturing.dtype_production_orders"},
-      "image": null,
+      "image": "img/demand-planning-2.webp",
       "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     },
     {
       "text": "To track the demand as its own order instead of a run, open {so} from the sidebar.",
       "labels": {"so": "documents.page_stock_orders"},
-      "image": null,
+      "image": "img/demand-planning-3.webp",
       "capture": {"route": "/docs?type=production_order", "selector": "main", "actions": []}
     },
     {
       "text": "With products ticked, print the component requirements: the raw materials and sub-assemblies their shortfall needs, worked out through the recipes.",
       "labels": {},
-      "image": null,
+      "image": "img/demand-planning-4.webp",
       "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant what needs making and to create the work orders for it. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/demand-planning-5.webp",
       "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     }
   ],

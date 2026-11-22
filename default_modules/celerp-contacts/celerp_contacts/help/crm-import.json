@@ -11,13 +11,13 @@
     {
       "text": "On {title}, upload a spreadsheet of contacts, match its columns to Celerp's fields and check the rows before they are created.",
       "labels": {"title": "contacts.import_contacts"},
-      "image": null,
+      "image": "img/crm-import-1.webp",
       "capture": {"route": "/crm/import/contacts", "selector": "main", "actions": []}
     },
     {
       "text": "You can also give the assistant a spreadsheet of contacts: it previews the rows and shows the import as a card that runs only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/crm-import-2.webp",
       "capture": {"route": "/crm/import/contacts", "selector": "main", "actions": []}
     }
   ],

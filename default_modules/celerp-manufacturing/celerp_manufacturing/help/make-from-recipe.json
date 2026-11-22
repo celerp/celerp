@@ -11,43 +11,43 @@
     {
       "text": "Open the item and choose its {tab} tab. The recipe there lists the components and the quantity of each that one unit takes, so a recipe for pressed rapeseed oil lists the seed.",
       "labels": {"tab": "nav.manufacturing"},
-      "image": null,
+      "image": "img/make-from-recipe-1.webp",
       "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     },
     {
       "text": "Say what to make and how many: add the item and quantity to a production order from {so} and finalize it. The line then shows on {dp}.",
       "labels": {"so": "documents.page_stock_orders", "dp": "manufacturing.demand_planning"},
-      "image": null,
+      "image": "img/make-from-recipe-2.webp",
       "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     },
     {
       "text": "On {dp}, tick the line and choose Make selected from the Action list. This creates the work order for that item and quantity.",
       "labels": {"dp": "manufacturing.demand_planning"},
-      "image": null,
+      "image": "img/make-from-recipe-3.webp",
       "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     },
     {
       "text": "Open {wip}, tick the work order and choose {issue}. The components leave stock and are held as work in progress, and a work order that was still planned starts.",
       "labels": {"wip": "manufacturing.work_in_progress", "issue": "manufacturing.action_issue"},
-      "image": null,
+      "image": "img/make-from-recipe-4.webp",
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     },
     {
       "text": "When the product is made, tick the work order and choose {complete}. The finished item is received into stock and the components held for it are used up.",
       "labels": {"complete": "manufacturing.action_complete"},
-      "image": null,
+      "image": "img/make-from-recipe-5.webp",
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     },
     {
       "text": "A work order makes one product. A second product from the same batch, such as oil cake from pressing rapeseed, is not part of the run: add it to stock as its own item with {add}.",
       "labels": {"add": "btn.add_item"},
-      "image": null,
+      "image": "img/make-from-recipe-6.webp",
       "capture": {"route": "/inventory", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to create the work order, issue its components or complete it. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/make-from-recipe-7.webp",
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     }
   ],

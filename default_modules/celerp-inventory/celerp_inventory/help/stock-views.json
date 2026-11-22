@@ -11,25 +11,25 @@
     {
       "text": "The sidebar also lists {sold}, {arch} and {disp}: the same inventory screen filtered to that status.",
       "labels": {"sold": "nav.sold_inventory", "arch": "nav.archived_inventory", "disp": "nav.disposed_inventory"},
-      "image": null,
+      "image": "img/stock-views-1.webp",
       "capture": {"route": "/inventory", "selector": "main", "actions": []}
     },
     {
       "text": "Open {audits} to count stock on hand and compare it against the system quantities.",
       "labels": {"audits": "nav.audits"},
-      "image": null,
+      "image": "img/stock-views-2.webp",
       "capture": {"route": "/lists?type=audit", "selector": "main", "actions": []}
     },
     {
       "text": "To start a count, open {title}, pick the {loc} to count and choose {start}. The count lists the stocked items at that location; scan barcodes to confirm stock and adjust it.",
       "labels": {"title": "documents.new_audit_title", "loc": "label.location", "start": "documents.start_audit"},
-      "image": null,
-      "capture": {"route": "/lists/new-audit", "selector": "main", "actions": []}
+      "image": "img/stock-views-3.webp",
+      "capture": {"route": "/lists/new-audit", "selector": "main form.form-card", "actions": []}
     },
     {
       "text": "You can also ask the assistant what was sold, archived or disposed of, or to restore an item or start a stock audit. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/stock-views-4.webp",
       "capture": {"route": "/inventory", "selector": "main", "actions": []}
     }
   ],

@@ -20,7 +20,7 @@
       "labels": {
         "nav": "nav.plans"
       },
-      "image": null,
+      "image": "img/plans-1.webp",
       "capture": {
         "route": "/plans",
         "selector": "main",
@@ -32,7 +32,7 @@
       "labels": {
         "new": "page.new_plan"
       },
-      "image": null,
+      "image": "img/plans-2.webp",
       "capture": {
         "route": "/plans",
         "selector": "main",
@@ -42,7 +42,7 @@
     {
       "text": "You can also ask the assistant which plans you offer, who is on each, or to change a subscription's price or quantity. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/plans-3.webp",
       "capture": {
         "route": "/plans",
         "selector": "main",

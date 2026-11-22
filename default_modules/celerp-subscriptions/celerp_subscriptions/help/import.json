@@ -11,13 +11,13 @@
     {
       "text": "On the {hdr} screen, choose {dl} for the column layout, or upload your own file directly.",
       "labels": {"hdr": "subscriptions_import.hdr_import", "dl": "btn.download_template"},
-      "image": null,
-      "capture": {"route": "/subscriptions/import", "selector": "main", "actions": []}
+      "image": "img/import-1.webp",
+      "capture": {"route": "/subscriptions/import", "selector": "#import-dropzone", "actions": []}
     },
     {
       "text": "You can also ask the assistant which subscriptions are due or how many are active; importing a file stays with you on this page.",
       "labels": {},
-      "image": null,
+      "image": "img/import-2.webp",
       "capture": {"route": "/subscriptions/import", "selector": "main", "actions": []}
     }
   ],

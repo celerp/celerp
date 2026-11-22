@@ -3,9 +3,9 @@
 One case per page: each step's capture recipe opens its route on a company filled
 with demo data, runs its actions, and the step's selector and the English text of
 every label it names must be visible (as text or as a field's placeholder; a hidden
-copy elsewhere on the page, such as in a closed menu, does not count). With HELP_CAPTURE_WRITE=1 each step that
-declares an image is written as a cropped webp carrying the capture marker, the
-only way a help image is made.
+copy elsewhere on the page, such as in a closed menu, does not count). With HELP_CAPTURE_WRITE=1 each step
+is written as a webp of the selector's element (its top 800 pixels when taller) carrying the
+capture marker, the only way a help image is made.
 """
 from __future__ import annotations
 
@@ -41,6 +41,7 @@ _spec.loader.exec_module(seed_demo)
 
 _WRITE = os.environ.get("HELP_CAPTURE_WRITE") == "1"
 _MAX_WIDTH = 1000
+_MAX_HEIGHT = 800  # CSS pixels: a taller element is cut to its top, where its screen starts
 _EXIF_DESCRIPTION = 0x010E
 _PAGES = [p for p in shipped_pages() if isinstance(p.data, dict)]
 
@@ -242,6 +243,7 @@ def _write_image(target, path: Path) -> None:
 
     with Image.open(io.BytesIO(target.screenshot())) as shot:
         image = shot.convert("RGB")
+    image = image.crop((0, 0, image.width, min(image.height, _MAX_HEIGHT)))
     if image.width > _MAX_WIDTH:
         image = image.resize((_MAX_WIDTH, round(image.height * _MAX_WIDTH / image.width)))
     exif = Image.Exif()
@@ -270,5 +272,5 @@ def test_help_capture_every_page(demo_page, help_page):
             if label:
                 shown = demo_page.get_by_text(label).or_(demo_page.get_by_placeholder(label))
                 expect(shown.filter(visible=True).first).to_be_visible()
-        if _WRITE and step["image"]:
+        if _WRITE:
             _write_image(target, help_page.help_dir / step["image"])

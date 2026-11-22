@@ -22,7 +22,7 @@
       "labels": {
         "nav": "nav.revenue"
       },
-      "image": null,
+      "image": "img/revenue-1.webp",
       "capture": {
         "route": "/revenue",
         "selector": "main",
@@ -36,7 +36,7 @@
         "to": "subscriptions.metrics_to",
         "cur": "label.currency"
       },
-      "image": null,
+      "image": "img/revenue-2.webp",
       "capture": {
         "route": "/revenue",
         "selector": "main",
@@ -48,7 +48,7 @@
       "labels": {
         "coh": "subscriptions.cohorts_heading"
       },
-      "image": null,
+      "image": "img/revenue-3.webp",
       "capture": {
         "route": "/revenue",
         "selector": "main",
@@ -60,7 +60,7 @@
       "labels": {
         "defs": "subscriptions.definitions_heading"
       },
-      "image": null,
+      "image": "img/revenue-4.webp",
       "capture": {
         "route": "/revenue",
         "selector": "main",
@@ -70,7 +70,7 @@
     {
       "text": "You can also ask the assistant to read these figures for you, such as recurring revenue this month or churn over the last quarter.",
       "labels": {},
-      "image": null,
+      "image": "img/revenue-5.webp",
       "capture": {
         "route": "/revenue",
         "selector": "main",

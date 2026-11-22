@@ -11,13 +11,13 @@
     {
       "text": "On {title}, upload a spreadsheet of accounts and match its columns. {hint}",
       "labels": {"title": "accounting_import.header_chart", "hint": "accounting_import.chart_hint"},
-      "image": null,
-      "capture": {"route": "/accounting/import/chart", "selector": "main", "actions": []}
+      "image": "img/accounting-import-1.webp",
+      "capture": {"route": "/accounting/import/chart", "selector": "main div.import-panel", "actions": []}
     },
     {
       "text": "You can also give the assistant a spreadsheet of accounts: it previews the rows and shows the import as a card that runs only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/accounting-import-2.webp",
       "capture": {"route": "/accounting/import/chart", "selector": "main", "actions": []}
     }
   ],

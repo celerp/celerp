@@ -11,13 +11,13 @@
     {
       "text": "{title} lists the periods automatic billing held back because each is further behind than its agreement's catch-up window. Bill the ticked periods, or skip them with a reason; each agreement bills its oldest period first.",
       "labels": {"title": "subscriptions.catchup_title"},
-      "image": null,
+      "image": "img/catch-up-1.webp",
       "capture": {"route": "/subscriptions/catch-up", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant which periods are waiting, or to bill or skip them. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/catch-up-2.webp",
       "capture": {"route": "/subscriptions/catch-up", "selector": "main", "actions": []}
     }
   ],

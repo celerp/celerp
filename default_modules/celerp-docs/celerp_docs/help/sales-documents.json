@@ -11,13 +11,13 @@
     {
       "text": "The sidebar groups sales documents into {inv}, {cn} and {co}. Each opens the same document list filtered to that type.",
       "labels": {"inv": "nav.invoices", "cn": "nav.credit_notes", "co": "nav.consignment_out"},
-      "image": null,
+      "image": "img/sales-documents-1.webp",
       "capture": {"route": "/docs?type=invoice", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to create, send, finalize or void an invoice or credit note, or record a payment against it. It shows each change as a card and makes it only when you confirm. A card that sends a document outside Celerp says so.",
       "labels": {},
-      "image": null,
+      "image": "img/sales-documents-2.webp",
       "capture": {"route": "/docs?type=invoice", "selector": "main", "actions": []}
     }
   ],

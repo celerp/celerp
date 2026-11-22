@@ -11,31 +11,31 @@
     {
       "text": "Open {runs} to run a month's depreciation; each run shows its journal before it posts.",
       "labels": {"runs": "fixed_assets.runs_title"},
-      "image": null,
+      "image": "img/depreciation-and-disposals-1.webp",
       "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": []}
     },
     {
       "text": "Tick assets on the register, then use {move} from the toolbar to relocate them.",
       "labels": {"move": "fixed_assets.move"},
-      "image": null,
+      "image": "img/depreciation-and-disposals-2.webp",
       "capture": {"route": "/fixed-assets/move", "selector": "main", "actions": []}
     },
     {
       "text": "Or use {dispose} from the same toolbar to retire them.",
       "labels": {"dispose": "fixed_assets.dispose"},
-      "image": null,
+      "image": "img/depreciation-and-disposals-3.webp",
       "capture": {"route": "/fixed-assets/dispose", "selector": "main", "actions": []}
     },
     {
       "text": "Click a month on {runs} to open that run: each asset's charge, the total and the journal it posted.",
       "labels": {"runs": "fixed_assets.runs_title"},
-      "image": null,
+      "image": "img/depreciation-and-disposals-4.webp",
       "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to run depreciation, or to move, sell or dispose of assets. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/depreciation-and-disposals-5.webp",
       "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": []}
     }
   ],

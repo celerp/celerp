@@ -21,7 +21,7 @@
       "labels": {
         "nav": "nav.subscribers"
       },
-      "image": null,
+      "image": "img/subscribers-1.webp",
       "capture": {
         "route": "/subscribers",
         "selector": "main",
@@ -36,10 +36,10 @@
         "seats": "subscriptions.seats",
         "trial": "subscriptions.trial_end"
       },
-      "image": null,
+      "image": "img/subscribers-2.webp",
       "capture": {
         "route": "/subscribers",
-        "selector": "main",
+        "selector": "#new-subscriber",
         "actions": []
       }
     },
@@ -49,10 +49,10 @@
         "chg": "btn.change_quantities",
         "qty": "subscriptions.quantities_heading"
       },
-      "image": null,
+      "image": "img/subscribers-3.webp",
       "capture": {
         "route": "/subscribers",
-        "selector": "main",
+        "selector": "#sub-quantities",
         "actions": [
           {
             "click": "main table a[href^='/subscriptions/']"
@@ -66,7 +66,7 @@
     {
       "text": "You can also ask the assistant to change a subscriber's seats, pause or cancel a subscription. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/subscribers-4.webp",
       "capture": {
         "route": "/subscribers",
         "selector": "main",

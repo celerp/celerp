@@ -11,31 +11,31 @@
     {
       "text": "Open {sales} or {purch} from the sidebar to see sales and purchasing subscriptions separately.",
       "labels": {"sales": "nav.subscriptions_sales", "purch": "nav.subscriptions_purchasing"},
-      "image": null,
+      "image": "img/overview-1.webp",
       "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
     },
     {
       "text": "Choose {new} to create a subscription, or {imp} to bring in many at once from a file.",
       "labels": {"new": "page.new_subscription", "imp": "btn.import"},
-      "image": null,
+      "image": "img/overview-2.webp",
       "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
     },
     {
       "text": "The status cards above the list, including {all}, let you filter by stage with one click.",
       "labels": {"all": "status.all_issued"},
-      "image": null,
+      "image": "img/overview-3.webp",
       "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
     },
     {
       "text": "Click a subscription to open it: its lines, its {sched} of billing periods and the invoices each period produced.",
       "labels": {"sched": "subscriptions.schedule_heading"},
-      "image": null,
-      "capture": {"route": "/subscriptions", "selector": "main", "actions": [{"click": "table tbody tr a"}]}
+      "image": "img/overview-4.webp",
+      "capture": {"route": "/subscriptions", "selector": "#sub-schedule", "actions": [{"click": "table tbody tr a"}]}
     },
     {
       "text": "You can also ask the assistant to generate the invoices that are due, or to pause, resume, cancel or change a subscription. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/overview-5.webp",
       "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
     }
   ],

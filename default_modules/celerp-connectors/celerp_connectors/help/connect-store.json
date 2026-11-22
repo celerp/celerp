@@ -11,31 +11,31 @@
     {
       "text": "Open {access} from Settings. Celerp Connect adds {website} to bring in orders, products and customers from Shopify and WooCommerce on a schedule.",
       "labels": {"access": "settings_cloud.web_access", "website": "cloud.feature_website_title"},
-      "image": null,
+      "image": "img/connect-store-1.webp",
       "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
     },
     {
       "text": "The same subscription adds {accounting} to push invoices and contacts to QuickBooks or Xero and reconcile the bank feed, so nothing is entered twice.",
       "labels": {"accounting": "cloud.feature_accounting_title"},
-      "image": null,
+      "image": "img/connect-store-2.webp",
       "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
     },
     {
       "text": "Once Celerp Connect is active, this page gains a Website tab and an Accounting tab, where you connect a store or books app and choose how often it syncs, and an Online Payments tab, where you connect Stripe so customers can pay your invoices online.",
       "labels": {},
-      "image": null,
+      "image": "img/connect-store-3.webp",
       "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
     },
     {
       "text": "Each connected store or accounting system has its own page with its status, sync now and disconnect. Before the first sync, a preview reads both sides without changing either, so you can check what will happen, set the directions and the date orders are imported from, then start it.",
       "labels": {},
-      "image": null,
+      "image": "img/connect-store-4.webp",
       "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to run a sync now, show what a sync would change, or set which way a connection syncs. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/connect-store-5.webp",
       "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
     }
   ],

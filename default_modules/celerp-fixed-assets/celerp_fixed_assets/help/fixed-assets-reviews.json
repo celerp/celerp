@@ -11,13 +11,13 @@
     {
       "text": "{title} lists the assets whose impairment review falls due, with {over} ones first. Open an asset to revalue or impair it.",
       "labels": {"title": "fixed_assets.reviews_due_title", "over": "fixed_assets.overdue"},
-      "image": null,
+      "image": "img/reviews-1.webp",
       "capture": {"route": "/fixed-assets/reviews", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant which impairment reviews are due.",
       "labels": {},
-      "image": null,
+      "image": "img/reviews-2.webp",
       "capture": {"route": "/fixed-assets/reviews", "selector": "main", "actions": []}
     }
   ],

@@ -33,10 +33,10 @@
       "labels": {
         "unres": "label.unrestricted"
       },
-      "image": null,
+      "image": "img/funds-1.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
-        "selector": "main",
+        "selector": "main table.data-table",
         "actions": []
       }
     },
@@ -47,7 +47,7 @@
         "funds": "funds.title",
         "off": "funds.turn_off"
       },
-      "image": null,
+      "image": "img/funds-2.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
@@ -63,7 +63,7 @@
         "archive": "funds.archive",
         "unarchive": "funds.unarchive"
       },
-      "image": null,
+      "image": "img/funds-3.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
@@ -76,10 +76,10 @@
         "fund": "th.fund",
         "unres": "label.unrestricted"
       },
-      "image": null,
+      "image": "img/funds-4.webp",
       "capture": {
         "route": "/docs?type=invoice",
-        "selector": "main",
+        "selector": "main table.data-table",
         "actions": [
           {
             "click": "main a[href^='/docs/doc:']"
@@ -96,7 +96,7 @@
         "opening": "funds.opening_title",
         "date": "funds.opening_date"
       },
-      "image": null,
+      "image": "img/funds-5.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
@@ -108,7 +108,7 @@
       "labels": {
         "transfer": "funds.transfer_title"
       },
-      "image": null,
+      "image": "img/funds-6.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
@@ -120,7 +120,7 @@
       "labels": {
         "release": "funds.release_title"
       },
-      "image": null,
+      "image": "img/funds-7.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
@@ -133,7 +133,7 @@
         "realloc": "funds.reallocate_title",
         "auth": "funds.donor_authorization"
       },
-      "image": null,
+      "image": "img/funds-8.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
@@ -153,7 +153,7 @@
         "movements": "fund_reports.movements",
         "reverse": "fund_reports.reverse"
       },
-      "image": null,
+      "image": "img/funds-9.webp",
       "capture": {
         "route": "/reports/funds/activity",
         "selector": "main",
@@ -163,7 +163,7 @@
     {
       "text": "Records that arrive from a connection, a file import or your accountant wait for a fund choice until you pick one. To skip the wait, set default funds on the connection under Settings, Connectors: its records then take that fund when they arrive.",
       "labels": {},
-      "image": null,
+      "image": "img/funds-10.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
@@ -173,7 +173,7 @@
     {
       "text": "If a record from outside already posted on the wrong fund, open it and change its fund, giving a reason. Its entries are voided and posted again on the new fund.",
       "labels": {},
-      "image": null,
+      "image": "img/funds-11.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
@@ -187,7 +187,7 @@
         "act": "rpt.fund_activity",
         "rec": "rpt.fund_reconciliation"
       },
-      "image": null,
+      "image": "img/funds-12.webp",
       "capture": {
         "route": "/reports/funds/balance-sheet",
         "selector": "main",
@@ -197,7 +197,7 @@
     {
       "text": "You can also ask the assistant to create or archive a fund, move money between funds, release restricted money or read a fund report. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/funds-13.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",

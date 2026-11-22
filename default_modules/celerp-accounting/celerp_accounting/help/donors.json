@@ -21,7 +21,7 @@
       "labels": {
         "nav": "nav.donors"
       },
-      "image": null,
+      "image": "img/donors-1.webp",
       "capture": {
         "route": "/donors",
         "selector": "main",
@@ -33,10 +33,10 @@
       "labels": {
         "wording": "donors.wording_title"
       },
-      "image": null,
+      "image": "img/donors-2.webp",
       "capture": {
         "route": "/donors",
-        "selector": "main",
+        "selector": "#donor-wording",
         "actions": []
       }
     },
@@ -45,10 +45,10 @@
       "labels": {
         "pdf": "donors.pdf"
       },
-      "image": null,
+      "image": "img/donors-3.webp",
       "capture": {
         "route": "/donors",
-        "selector": "main",
+        "selector": "main table.data-table",
         "actions": []
       }
     },
@@ -59,7 +59,7 @@
         "confirm": "donors.confirm_send",
         "btn": "donors.btn_send"
       },
-      "image": null,
+      "image": "img/donors-4.webp",
       "capture": {
         "route": "/donors",
         "selector": "main",
@@ -69,7 +69,7 @@
     {
       "text": "You can also ask the assistant who gave in a period, for one donor's history, or to prepare and send donor statements. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/donors-5.webp",
       "capture": {
         "route": "/donors",
         "selector": "main",

@@ -11,19 +11,19 @@
     {
       "text": "Open {vend} from the sidebar to see the vendor list.",
       "labels": {"vend": "nav.vendors"},
-      "image": null,
+      "image": "img/add-vendor-1.webp",
       "capture": {"route": "/contacts/vendors", "selector": "main", "actions": []}
     },
     {
       "text": "Click {new} to create a blank vendor, the same way as a customer.",
       "labels": {"new": "contacts.new_vendor"},
-      "image": null,
+      "image": "img/add-vendor-2.webp",
       "capture": {"route": "/contacts/vendors", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to add or update vendors, add a note, a person or an address, tag or merge contacts. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/add-vendor-3.webp",
       "capture": {"route": "/contacts/vendors", "selector": "main", "actions": []}
     }
   ],

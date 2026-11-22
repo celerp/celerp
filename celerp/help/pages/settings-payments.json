@@ -11,8 +11,8 @@
     {
       "text": "{title} lets customers pay your invoices online. {how}",
       "labels": {"title": "nav.payments", "how": "pay.upgrade_desc"},
-      "image": null,
-      "capture": {"route": "/settings/payments", "selector": "main", "actions": []}
+      "image": "img/settings-payments-1.webp",
+      "capture": {"route": "/settings/payments", "selector": "main div.upgrade-banner", "actions": []}
     }
   ],
   "related": ["docs.payments", "core.web-access"]

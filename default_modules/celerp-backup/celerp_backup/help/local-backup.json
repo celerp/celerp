@@ -11,19 +11,19 @@
     {
       "text": "Open {recovery} from the installation owner's account; its {local} section works with no Celerp Connect subscription.",
       "labels": {"recovery": "system_recovery.title", "local": "page.local_backup"},
-      "image": null,
+      "image": "img/local-backup-1.webp",
       "capture": {"route": "/settings/system-recovery", "selector": "main", "actions": []}
     },
     {
       "text": "Choose {download} to save every company and setting to one file, or {import} to replace this installation with a file saved earlier.",
       "labels": {"download": "settings.download_backup", "import": "btn.import_backup"},
-      "image": null,
-      "capture": {"route": "/settings/system-recovery", "selector": "main", "actions": []}
+      "image": "img/local-backup-2.webp",
+      "capture": {"route": "/settings/system-recovery", "selector": "main div.settings-card", "actions": []}
     },
     {
       "text": "You can also ask the assistant for a backup file of your company to download; restoring one stays with you on this page.",
       "labels": {},
-      "image": null,
+      "image": "img/local-backup-3.webp",
       "capture": {"route": "/settings/system-recovery", "selector": "main", "actions": []}
     }
   ],
