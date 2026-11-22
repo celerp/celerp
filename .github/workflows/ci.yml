@@ -505,7 +505,9 @@ jobs:
       # pin that cannot actually serve the app would otherwise reach a release unnoticed.
       - name: Install the prod extra
         run: uv pip install --system ".[prod]" -c constraints.txt
-      - name: Apply migrations
+      - name: Tune the throwaway Postgres
+        run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp
+      - name: Run database migrations
         env:
           ALLOW_INSECURE_JWT: "true"
         run: celerp migrate --db-url postgresql+asyncpg://celerp:celerp@localhost:5432/celerp
