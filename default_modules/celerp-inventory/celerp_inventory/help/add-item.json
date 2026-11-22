@@ -24,7 +24,7 @@
       "text": "On an item's page, its history lists every change to it, newest first. Where the item is linked to an online store, a page for that store lets you publish it, set it to draft there or pause its sync; nothing is ever deleted in the store.",
       "labels": {},
       "image": "img/add-item-3.webp",
-      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+      "capture": {"route": "/inventory", "selector": "main div.doc-section:has(.history-table)", "actions": [{"click": "main tr:has-text('Whiteboard 90x60') a.table-link"}, {"click": "main a.category-tab[href$='?tab=activity']"}, {"wait": "main .history-table"}]}
     },
     {
       "text": "You can also ask the assistant to find items, add an item or change items' prices, status or location, many at once if you like. It shows each change as a card and makes it only when you confirm.",
