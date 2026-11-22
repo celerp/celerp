@@ -3,7 +3,9 @@
 One case per page: each step's capture recipe opens its route on a company filled
 with demo data, runs its actions, and the step's selector and the English text of
 every label it names must be visible (as text or as a field's placeholder; a hidden
-copy elsewhere on the page, such as in a closed menu, does not count). With HELP_CAPTURE_WRITE=1 each step
+copy elsewhere on the page, such as in a closed menu, does not count). The pictured part of the
+screen must not show the app's own empty-list, Connect sales or nothing-selected components unless
+the step is listed in _SHOWS_EMPTY_STATE. With HELP_CAPTURE_WRITE=1 each step
 is written as a webp of the selector's element (its top 800 pixels when taller) carrying the
 capture marker, the only way a help image is made.
 """
@@ -44,6 +46,16 @@ _MAX_WIDTH = 1000
 _MAX_HEIGHT = 800  # CSS pixels: a taller element is cut to its top, where its screen starts
 _EXIF_DESCRIPTION = 0x010E
 _PAGES = [p for p in shipped_pages() if isinstance(p.data, dict)]
+# The app's own components for a screen with nothing to show: an empty list or report, the
+# Remote Access and Connect sales pages and banners, the AI page shown without an account, and
+# a bulk page opened with no rows selected. A step whose picture shows one would show the
+# reader a different screen from the one its text describes.
+_EMPTY_STATE_SELECTOR = ", ".join((
+    ".empty-state", ".empty-state-msg", ".empty-state-cta",
+    ".cloud-hero", ".upgrade-banner", ".module-license-upsell", ".ai-showcase__headline",
+))
+# Steps whose text is about that empty or sales screen itself: "<page id>#<step>": why.
+_SHOWS_EMPTY_STATE: dict[str, str] = {}
 
 
 async def _ok(response: httpx.Response) -> dict:
@@ -238,6 +250,17 @@ def _visible_label(key: str) -> str:
     return t(key, "en").split("{", 1)[0].strip()
 
 
+def _empty_state_shown(target) -> list[str]:
+    """The empty-state components visible in the part of ``target`` a picture keeps."""
+    return target.evaluate("""(el, [sel, maxHeight]) => {
+        const top = el.getBoundingClientRect().top;
+        return [el, ...el.querySelectorAll(sel)]
+            .filter(e => e.matches(sel) && e.checkVisibility()
+                         && e.getBoundingClientRect().top - top < maxHeight)
+            .map(e => `${e.className}: ${e.innerText.trim().slice(0, 80)}`);
+    }""", [_EMPTY_STATE_SELECTOR, _MAX_HEIGHT])
+
+
 def _write_image(target, path: Path) -> None:
     from PIL import Image
 
@@ -259,6 +282,7 @@ def _write_image(target, path: Path) -> None:
 
 @pytest.mark.parametrize("help_page", _PAGES, ids=[p.data.get("id", p.path.name) for p in _PAGES])
 def test_help_capture_every_page(demo_page, help_page):
+    empty_states = []
     for n, step in enumerate(help_page.data["steps"], 1):
         capture = step["capture"]
         response = demo_page.goto(capture["route"])
@@ -267,6 +291,10 @@ def test_help_capture_every_page(demo_page, help_page):
             _run(demo_page, action)
         target = demo_page.locator(capture["selector"]).first
         expect(target).to_be_visible()
+        step_id = f"{help_page.data['id']}#{n}"
+        if step_id not in _SHOWS_EMPTY_STATE and (shown := _empty_state_shown(target)):
+            empty_states.append(f"{step_id} {shown}")
+            continue
         for key in step["labels"].values():
             label = _visible_label(key)
             if label:
@@ -274,3 +302,4 @@ def test_help_capture_every_page(demo_page, help_page):
                 expect(shown.filter(visible=True).first).to_be_visible()
         if _WRITE:
             _write_image(target, help_page.help_dir / step["image"])
+    assert not empty_states, "steps picturing an empty state:\n" + "\n".join(empty_states)

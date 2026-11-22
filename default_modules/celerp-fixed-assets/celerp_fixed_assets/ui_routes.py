@@ -2991,7 +2991,7 @@ def setup_ui_routes(app) -> None:
         form = _op_form("move", *[Input(type="hidden", name="asset_ids", value=a["id"]) for a in assets],
                         P(t("fixed_assets.move_hint"), cls="settings-hint"), listed, *fields)
         return await _page(request, crumbs, page_header(t("fixed_assets.move_several_title", n=len(assets))),
-                           *[_left_use_notice(a) for a in assets], form if assets else P(t("label.select_rows_first"), cls="form-hint"),
+                           *[_left_use_notice(a) for a in assets], form if assets else P(t("label.select_rows_first"), cls="empty-state"),
                            title_key="fixed_assets.move")
 
     @app.get("/fixed-assets/assets/{asset_id}/reclassify")
@@ -3459,7 +3459,7 @@ def setup_ui_routes(app) -> None:
                         P(t("fixed_assets.dispose_several_hint"), cls="settings-hint"), listed,
                         *_disposal_fields(None, setup["today"]))
         return await _page(request, crumbs, page_header(t("fixed_assets.dispose_several_title", n=len(assets))),
-                           form if assets else P(t("label.select_rows_first"), cls="form-hint"),
+                           form if assets else P(t("label.select_rows_first"), cls="empty-state"),
                            title_key="fixed_assets.dispose")
 
     @app.post("/fixed-assets/assets/{asset_id}/request-correction")
