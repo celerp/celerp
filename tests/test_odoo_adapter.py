@@ -35,7 +35,7 @@ from celerp.importers.schema import CIFMode, CoverageClass, ReconciliationMeasur
 from fixtures.manager_io.support import BASIC, artifact
 from fixtures.odoo_backup import build
 from migration_support import count, load_run, maker, real_engine, recognition_peak, scan_upload  # noqa: F401
-from test_helpers import fastest_cpu_seconds
+from test_helpers import fastest_cpu_seconds, in_language
 from test_migration_e2e import _passing, migrate_set
 from ui.i18n import t
 from shipped_sources import CORE_ROOT, REPO, shipped_sources
@@ -502,7 +502,7 @@ async def test_a_manifest_without_the_modules_is_refused_as_a_damaged_odoo_backu
         manifest["modules"] = modules
     r = await scan_upload(client, build.backup(17, manifest_=manifest), name="harbour.zip", source=source)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("migration.err_odoo_dump_damaged", "en")
+    assert in_language("en", r.json()["detail"]) == t("migration.err_odoo_dump_damaged", "en")
 
 
 def _damage(tables: build.Tables, table: str, column: str, value: str | None, row_id: int | None = None) -> None:
@@ -561,7 +561,7 @@ async def test_a_field_that_does_not_convert_refuses_the_backup_as_damaged(clien
     _books.cache_clear()
     r = await scan_upload(client, build.backup(17, tables), name="harbour.zip", source="odoo")
     assert r.status_code == 422, r.text[:300]
-    assert r.json()["detail"] == t("migration.err_odoo_dump_damaged", "en")
+    assert in_language("en", r.json()["detail"]) == t("migration.err_odoo_dump_damaged", "en")
     assert _books.cache_info().currsize == 0
 
 
@@ -750,7 +750,7 @@ async def test_a_backup_that_cannot_be_read_is_refused_with_its_reason(client, m
     data, message = _unreadable()[damage]
     r = await scan_upload(client, data, name="harbour.zip", source="odoo")
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == (t(message, "en") if message else
+    assert in_language("en", r.json()["detail"]) == (t(message, "en") if message else
                                   '"harbour.zip" is not a Odoo file. Accepted: Odoo backup (.zip).')
 
 
@@ -792,7 +792,7 @@ async def test_a_damaged_index_of_the_zip_is_refused_whether_odoo_was_chosen_or_
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     r = await scan_upload(client, _misindexed(damage), name="harbour.zip", source=source)
     assert r.status_code == 422, r.text
-    detail = r.json()["detail"]
+    detail = in_language("en", r.json()["detail"])
     if damage != "a name that differs from its header":  # the zip names no manifest: not recognisable as Odoo's
         assert detail == t("migration.err_odoo_backup_damaged", "en")
     elif source:
@@ -855,7 +855,7 @@ async def test_a_dump_packed_with_a_method_odoo_does_not_use_is_refused_before_i
     peaks = recognition_peak(monkeypatch)
     r = await scan_upload(client, data, name="harbour.zip", source=source)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("migration.err_odoo_backup_damaged", "en") and not opened
+    assert in_language("en", r.json()["detail"]) == t("migration.err_odoo_backup_damaged", "en") and not opened
     assert peaks and max(peaks) < 16 * MI, peaks
 
 
@@ -893,7 +893,7 @@ async def test_a_dump_that_unpacks_far_larger_than_its_zip_is_refused_before_it_
     monkeypatch.setattr(dump.Backup, "tables", lambda *a, **k: opened.append(a) or {})
     r = await scan_upload(client, _packed(padded), name="harbour.zip", source="odoo")
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("migration.err_file_too_large", "en") and not opened
+    assert in_language("en", r.json()["detail"]) == t("migration.err_file_too_large", "en") and not opened
 
 
 def _many_entries(count: int, name=lambda k: f"filestore/{k:08d}", backup: bool = True) -> bytes:
@@ -931,7 +931,7 @@ async def test_a_zip_whose_directory_lists_more_than_the_server_holds_is_refused
     peaks = recognition_peak(monkeypatch)
     r = await scan_upload(client, data, name="harbour.zip", source=source)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("migration.err_file_too_large", "en")
+    assert in_language("en", r.json()["detail"]) == t("migration.err_file_too_large", "en")
     assert peaks and max(peaks) < 16 * MI, f"{len(data) / MI:.0f} MiB upload, peaks {peaks}"
 
 
@@ -1579,7 +1579,7 @@ async def test_a_long_value_copied_into_every_record_is_refused_before_the_copie
     finally:
         tracemalloc.stop()
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("migration.err_odoo_backup_too_large", "th")
+    assert in_language("th", r.json()["detail"]) == t("migration.err_odoo_backup_too_large", "th")
     assert peak < 2.5 * dump.MAX_HELD
     if measured:
         print(f"peak RSS {_peak_rss() / 2**20:.0f} MiB, {(_peak_rss() - before) / 2**20:.0f} MiB above the start")
@@ -1606,7 +1606,7 @@ async def test_a_stock_valuation_spread_far_past_its_upload_is_refused_before_it
     finally:
         tracemalloc.stop()
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("migration.err_odoo_backup_too_large", "th")
+    assert in_language("th", r.json()["detail"]) == t("migration.err_odoo_backup_too_large", "th")
     assert peak < 2.5 * dump.MAX_HELD
 
 
@@ -1654,7 +1654,7 @@ async def test_running_out_of_memory_while_reading_is_refused_as_too_large(clien
     monkeypatch.setattr(*((dump, "_field", exhausted) if stage == "the dump" else (book.steps, "roles_from_ledger", exhausted)))
     r = await scan_upload(client, _backup(17), name="harbour.zip", source="odoo")
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("migration.err_odoo_backup_too_large", "en")
+    assert in_language("en", r.json()["detail"]) == t("migration.err_odoo_backup_too_large", "en")
 
 
 @pytest.mark.parametrize("step, where", [
@@ -1742,7 +1742,7 @@ async def test_the_too_large_refusal_is_built_after_what_ran_out_is_freed(client
     assert held, "the step never ran"
     assert r.status_code == 422, r.text
     assert "th" in read
-    assert r.json()["detail"] == t("migration.err_odoo_backup_too_large", "th")
+    assert in_language("th", r.json()["detail"]) == t("migration.err_odoo_backup_too_large", "th")
 
 
 def _longest_line(version: int) -> int:

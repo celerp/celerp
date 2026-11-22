@@ -39,7 +39,7 @@ from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import db_catalog
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import catalog_refusal, field_refusal, refusal, refusal_detail
 from celerp.importers.adapters.base import (
     Artifact,
     MigrationDecisions,
@@ -96,7 +96,8 @@ from celerp.services.lot_origin import place_company_stock
 from celerp.services.csv_export import csv_safe
 from celerp.services.permissions import act_for, role_has_permission
 from celerp.services.provisioning import add_missing_required_defaults, hold_owner
-from ui.i18n import current_lang, set_lang, t
+from ui.i18n import current_lang, refusal_text, set_lang, t
+from celerp.accounting_roles import Refused
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,7 @@ _BLOCKER_REASONS = {
     CoverageClass.UNCLASSIFIED: "Celerp does not recognise this record type yet.",
     CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER: "Celerp cannot import these records yet.",
 }
-_MODE_LABELS = {CIFMode.FULL_HISTORY: "Full history", CIFMode.CUTOVER: "Cutover"}
+_MODE_LABELS = {CIFMode.FULL_HISTORY: "migration.full_history", CIFMode.CUTOVER: "migration.cutover"}
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _PREPARED_BY_MAX = 200
 COMPANY_NAME_MAX = 200
@@ -168,11 +169,11 @@ COMPANY_NAME_MAX = 200
 def company_name_error(name: str) -> str | None:
     """Why a trimmed company name cannot be used, or None when it can."""
     if not name:
-        return "Enter a company name."
+        return t("migration.err_company_name_empty")
     if len(name) > COMPANY_NAME_MAX:
-        return f"The company name must be at most {COMPANY_NAME_MAX} characters."
+        return t("migration.err_company_name_too_long", max=COMPANY_NAME_MAX)
     if "\x00" in name:
-        return "The company name contains a character that cannot be saved."
+        return t("migration.err_company_name_bad_character")
     return None
 
 
@@ -192,87 +193,89 @@ def validate_prepared_by(value) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise MigrationError(422, {"prepared_by": "Enter a name for Prepared by."})
+        raise Refused("migration.err_prepared_by_text")
     value = value.strip()
     if not value:
         return None
     if len(value) > _PREPARED_BY_MAX:
-        raise MigrationError(422, {"prepared_by": t("migration.err_prepared_by_too_long", max=_PREPARED_BY_MAX)})
+        raise Refused("migration.err_prepared_by_too_long", max=_PREPARED_BY_MAX)
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
-        raise MigrationError(422, {"prepared_by": t("migration.err_prepared_by_one_line")})
+        raise Refused("migration.err_prepared_by_one_line")
     return value
 
 
 def _cutover_date(scan: store.ScanSession, value) -> date:
     if value is None or value == "":
-        raise ValueError(t("migration.err_choose_cutover"))
+        raise Refused("migration.err_choose_cutover")
     if not isinstance(value, str) or not _DATE_RE.fullmatch(value):
-        raise ValueError(t("migration.err_cutover_format"))
+        raise Refused("migration.err_cutover_format")
     try:
         chosen = date.fromisoformat(value)
     except ValueError:
-        raise ValueError(t("migration.err_cutover_format")) from None
+        raise Refused("migration.err_cutover_format") from None
     start, end = scan.scan.period_start, scan.scan.period_end
     if start is not None and chosen < start:
-        raise ValueError(t("migration.err_cutover_before_start", date=start.isoformat()))
+        raise Refused("migration.err_cutover_before_start", date=start.isoformat())
     if end is not None and chosen > end:
-        raise ValueError(t("migration.err_cutover_after_end", date=end.isoformat()))
+        raise Refused("migration.err_cutover_after_end", date=end.isoformat())
     return chosen
 
 
-def _mappings(scan: store.ScanSession, value, errors: dict) -> dict[str, str]:
+def _mappings(scan: store.ScanSession, value, errors: list) -> dict[str, str]:
     if value is None:
         value = {}
     if not isinstance(value, dict):
-        errors["mappings"] = "Mappings must be a set of answers keyed by question."
+        errors.append(field_refusal("mappings", t("migration.err_mappings_shape")))
         return {}
     questions = {q.key: q for q in scan.scan.questions}
     for key in value:
         if key not in questions:
-            errors[str(key)] = "This question is not part of this source."
+            errors.append(field_refusal(str(key), t("migration.err_question_unknown")))
     chosen: dict[str, str] = {}
     by_record: dict[tuple[str, str], str] = {}
     for key, question in questions.items():
         answer = value.get(key, question.suggested)
         if answer is None:
-            errors[key] = f"Choose an answer for {question.label}."
+            errors.append(field_refusal(key, t("migration.err_answer_missing", question=question.label)))
             continue
         if not isinstance(answer, str) or answer not in question.options:
-            errors[key] = f"Choose one of the listed answers for {question.label}."
+            errors.append(field_refusal(key, t("migration.err_answer_unlisted", question=question.label)))
             continue
         record = (question.source_type, question.source_external_id)
         if by_record.setdefault(record, answer) != answer:
-            errors[key] = f"{question.label} needs the same answer as the other question about this record."
+            errors.append(field_refusal(key, t("migration.err_answer_differs", question=question.label)))
             continue
         chosen[key] = answer
     return chosen
 
 
 def validate_decisions(scan: store.ScanSession, body: dict) -> MigrationDecisions:
-    """Validate a decision set against its scan; every problem is returned at once, keyed by field."""
-    errors: dict[str, str] = {}
+    """Validate a decision set against its scan; every problem is refused at once, one
+    field_refusal per field."""
+    errors: list[dict] = []
     try:
         mode = CIFMode(body.get("mode"))
     except ValueError:
         mode = None
-        errors["mode"] = "Choose Full history or Cutover."
+        errors.append(field_refusal("mode", t("migration.err_choose_mode")))
     if mode is not None:
         blocked = _blockers(scan.scan.coverage, mode)
         if blocked:
             listed = ", ".join(f"{c.source_type} ({c.count})" for c in blocked)
-            errors["mode"] = f"{_MODE_LABELS[mode]} cannot run while the source has records Celerp cannot import: {listed}."
+            errors.append(field_refusal("mode", t("migration.err_mode_blocked", mode=t(_MODE_LABELS[mode]),
+                                                  records=listed)))
     cutover = None
     if mode == CIFMode.CUTOVER:
         try:
             cutover = _cutover_date(scan, body.get("cutover_date"))
-        except ValueError as exc:
-            errors["cutover_date"] = str(exc)
+        except Refused as exc:
+            errors.append(field_refusal("cutover_date", exc.detail))
     mappings = _mappings(scan, body.get("mappings"), errors)
     prepared_by = None
     try:
         prepared_by = validate_prepared_by(body.get("prepared_by"))
-    except MigrationError as exc:
-        errors.update(exc.detail)
+    except Refused as exc:
+        errors.append(field_refusal("prepared_by", exc.detail))
     decisions = MigrationDecisions(mode=mode, cutover_date=cutover, mappings=mappings, prepared_by=prepared_by)
     if mode == CIFMode.CUTOVER and not errors:
         # Dry run: the source decides whether it can carry its books at this date.
@@ -280,9 +283,9 @@ def validate_decisions(scan: store.ScanSession, body: dict) -> MigrationDecision
         try:
             adapter.build_manifest(scan.artifacts, decisions)
         except (ScanError, SourceRevisionError) as exc:
-            errors["cutover_date"] = str(exc)
+            errors.append(field_refusal("cutover_date", refusal_detail(exc)))
     if errors:
-        raise MigrationError(422, errors)
+        raise MigrationError(422, {"errors": errors})
     return decisions
 
 
@@ -326,7 +329,7 @@ def prepare_start(scan: store.ScanSession) -> StartPlan:
     receive it. A module this installation does not have or cannot run refuses the start;
     a bundled one that is merely off becomes a preparation step. Blocking: run in a thread."""
     if scan.decisions is None:
-        raise MigrationError(422, {"mode": "Choose how to move the books before starting."})
+        raise MigrationError(422, {"errors": [field_refusal("mode", t("migration.err_choose_mode_first"))]})
     decisions = validate_decisions(scan, store.decisions_json(scan.decisions))
     if sum(scan.scan.object_counts.values()) == 0:
         raise MigrationError(422, t(NOTHING_TO_MIGRATE))
@@ -335,7 +338,7 @@ def prepare_start(scan: store.ScanSession) -> StartPlan:
         manifest = adapter.build_manifest(scan.artifacts, decisions)
         adapter.source_expectations(scan.artifacts, decisions)
     except (ScanError, SourceRevisionError) as exc:
-        raise MigrationError(422, str(exc)) from None
+        raise MigrationError(422, refusal_detail(exc)) from None
     plan = requirements.plan_requirements(dict.fromkeys(_unserved_modules(manifest)))
     unavailable = plan.blocked + plan.needs_consent
     if unavailable:
@@ -413,8 +416,12 @@ async def started_run_id(session: AsyncSession, claim: str, user_id: uuid.UUID) 
         MigrationRun.scan_claim_sha256 == claim, MigrationRun.created_by_user_id == user_id))
 
 
+_ILLEGAL = {"start": "migration.err_cannot_start", "cancel": "migration.err_cannot_cancel",
+            "finalize": "migration.err_cannot_finalize"}
+
+
 def _illegal(action: str, run: MigrationRun) -> MigrationError:
-    return MigrationError(409, t(f"migration.err_cannot_{action}"))
+    return MigrationError(409, t(_ILLEGAL[action]))
 
 
 def staged_settings(modules: Sequence[str]) -> dict:
@@ -732,7 +739,7 @@ class IncompleteMigrationError(Exception):
 def _failure_details(exc: Exception) -> tuple[int, dict]:
     """The failed batch's rejected-record count and the extra error summary a failure carries."""
     if isinstance(exc, MigrationBatchError):
-        return len(exc.errors), {}
+        return len(exc.errors), {k: exc.refusal[k] for k in ("message_key", "params", "also") if k in exc.refusal}
     if isinstance(exc, IncompleteMigrationError):
         return 0, {"missing": record_identities(exc.missing)}
     return 0, {}
@@ -1117,7 +1124,7 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
         raise
     except ScanError as exc:  # the source is gone, changed, or no longer reads: nothing to finish against
         await session.rollback()
-        raise MigrationError(409, str(exc)) from None
+        raise MigrationError(409, catalog_refusal("error.refusal_as_written", text=str(exc))) from None
     except Exception:
         await session.rollback()
         logger.exception("Migration %s could not be finalized", run_id)
@@ -1335,7 +1342,7 @@ def _error_view(run: MigrationRun) -> dict | None:
     the exception, cursor or module behind it."""
     summary = run.error_summary or {}
     # A keyed message is worded at read time, in the reader's language.
-    message = (t(summary["message_key"], **summary.get("params", {})) if summary.get("message_key")
+    message = (refusal_text({"message": "", **summary}) if summary.get("message_key")
                else summary.get("message"))
     if not message:
         return None
@@ -1446,7 +1453,7 @@ def reconciliation_pack_csv(run: MigrationRun) -> str:
     for label, value in (
         ("Run id", str(run.id)),
         ("Source", adapter.display_name if adapter else run.source_system),
-        ("Mode", _MODE_LABELS[CIFMode(run.mode)]),
+        ("Mode", t(_MODE_LABELS[CIFMode(run.mode)])),
         ("Cutover date", decisions.get("cutover_date") or "--"),
         ("Lock date", run.source_lock_date.isoformat() if run.source_lock_date else "--"),
         ("Source hash", run.source_artifact_sha256),

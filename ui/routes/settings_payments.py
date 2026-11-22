@@ -25,11 +25,11 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
-from ui.api_client import APIError
+from ui.api_client import APIError, error_message
 from ui.components.cloud_gate import upgrade_banner
 from ui.components.encode import as_js
 from ui.components.module_off import module_off_page
-from ui.components.shell import base_shell, page_header, page_title, flash
+from ui.components.shell import base_shell, page_header, page_title, flash, error_flash
 from ui.components.table import (
     EMPTY, add_new_option, bank_account_options, display_cell, editable_cell, fmt_money,
 )
@@ -145,9 +145,7 @@ def _invoice_editor(reference: str, invoices: list[dict], value: str = "") -> FT
 
 def _refusal(error: APIError) -> str:
     """Why the payment was not recorded, in the user's language."""
-    reason = (error.data or {}).get("reason")
-    key = f"pay.unmatched_refused_{reason}"
-    return t(key) if reason and t(key) != key else str(error.detail)
+    return error_message(error)
 
 
 def _unmatched_payments(payments: list[dict]) -> FT | str:
@@ -320,7 +318,7 @@ def setup_routes(app):
                 return off
             relay_ok, enabled, deposit, banks, state, unmatched = await _load(token)
         except APIError as e:
-            return await base_shell(flash(str(e.detail)), title=page_title("nav.payments"),
+            return await base_shell(error_flash(e), title=page_title("nav.payments"),
                                     nav_active="web-access", request=request)
         has_team = _has_team_features(await _commercial_state(request))
         return await base_shell(

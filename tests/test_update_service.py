@@ -258,10 +258,12 @@ def test_unreadable_state_fails_closed(cfg_dir, body):
 
 @pytest.mark.parametrize("pending", [{"step": "migrate"}, {"from": "1.0.0", "step": "migrate"},
                                      {"from": "1.0.0", "to": "1.1.0"}, {"from": 1, "to": "1.1.0", "step": "x"},
-                                     "migrate", ["1.0.0", "1.1.0"]], ids=repr)
+                                     "migrate", ["1.0.0", "1.1.0"], {}, [], "", 0, None, "x"], ids=repr)
 def test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed(cfg_dir, pending):
     update.write_state({"in_progress": pending})
     steps = FakeSteps()
+    with pytest.raises(update.UpdateStateError, match="unfinished update"):
+        update.read_state()
     with pytest.raises(update.UpdateStateError, match="unfinished update"):
         update.reconcile(steps)
     with pytest.raises(update.UpdateStateError):
@@ -272,6 +274,12 @@ def test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed(c
 
 def test_missing_state_is_no_update(cfg_dir):
     assert update.read_state() == {}
+
+
+def test_a_record_without_an_unfinished_update_is_no_update(cfg_dir):
+    update.write_state({"failed_versions": ["1.1.0"]})
+    assert update.read_state() == {"failed_versions": ["1.1.0"]}
+    assert update.update_in_progress() is False
 
 
 # ── reconcile ────────────────────────────────────────────────────────────────

@@ -130,7 +130,7 @@ async def test_postpone_needs_a_later_date_and_a_reason_and_edits_are_kept(fa):
     r = await fa.post(f"{path}/postpone", {"to": "2026-11-20"})
     assert r.status_code == 422 and "Say why" in refusal_text(r.json()["detail"])
     r = await fa.post(f"{path}/postpone", {"to": "2026-10-01", "reason": "Broker away"})
-    assert r.status_code == 422 and "after 2026-11-01" in refusal_text(r.json()["detail"])
+    assert r.status_code == 422 and "after 1 Nov 2026" in refusal_text(r.json()["detail"])
     moved = await fa.ok(await fa.post(f"{path}/postpone", {"to": "2026-11-20", "reason": "Broker away"}))
     assert moved["due"] == "2026-11-20"
     edited = await fa.ok(await fa.patch(path, {"changes": {"policy": "P-9", "insured_value": "9000"}}))

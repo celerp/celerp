@@ -16,7 +16,8 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from test_reconciliation_history import admin, bank, match, start
+import bank_statement_helpers as B
+from test_reconciliation_history import admin, bank, match
 from ui.i18n import refusal_text
 from shipped_sources import SHIPPED_ROOTS
 
@@ -101,10 +102,10 @@ async def test_every_bank_writer_posts_in_the_bank_currency_and_the_account_reco
 
     # Transfers in and out.
     r = await client.post("/accounting/transfers", headers=h, json={
-        "from_bank_id": usd["id"], "to_bank_id": b["id"], "amount": 54.0, "date": DAY, "to_amount": 50})
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": usd["id"], "to_bank_id": b["id"], "amount": 54.0, "date": DAY, "to_amount": 50})
     assert r.status_code == 200, r.text
     r = await client.post("/accounting/transfers", headers=h, json={
-        "from_bank_id": b["id"], "to_bank_id": usd["id"], "amount": 20, "date": DAY, "rate": rate})
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": b["id"], "to_bank_id": usd["id"], "amount": 20, "date": DAY, "rate": rate})
     assert r.status_code == 200, r.text
 
     # A payment, a refund of part of it, and a second payment voided.
@@ -132,24 +133,24 @@ async def test_every_bank_writer_posts_in_the_bank_currency_and_the_account_reco
         "ts": DAY, "memo": "Cash sale", "idempotency_token": uuid.uuid4().hex, "entries": lines})
     assert r.status_code == 200, r.text
 
-    # Statement lines booked from the workspace, and a write-off of what is left.
+    # Statement lines posted from the bank page, and a write-off of what is left.
     cid = uuid.UUID(_claims(tok)["company_id"])
     booked = sum((line.get("fx_debit") or 0) - (line.get("fx_credit") or 0)
                  for _, line in await _bank_lines(session, cid, code))
-    statement = round(booked + 25 + 30 + 1, 2)
-    sid = (await start(client, h, b["id"], "2026-09-30", statement)).json()["id"]
-    r = await client.post(f"/accounting/reconciliation/{sid}/import-csv", headers=h, files={"file": (
-        "s.csv", b"Date,Description,Amount\n2026-09-20,Interest,25\n2026-09-21,Mixed,30\n", "text/csv")})
-    assert r.status_code == 200, r.text
-    items = {line["description"]: line for line in (await client.get(
-        f"/accounting/reconciliation/{sid}/statement-lines", headers=h)).json()["items"]}
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{items['Interest']['id']}/create", headers=h,
-                          json={"account_code": "4100", "rate": rate})
-    assert r.status_code == 200, r.text
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{items['Mixed']['id']}/split", headers=h,
-                          json={"rate": rate, "splits": [{"account_code": "4100", "amount": 20},
-                                                         {"account_code": "4100", "amount": 10}]})
-    assert r.status_code == 200, r.text
+    places = 0 if currency == "JPY" else 2
+    money = lambda v: f"{v:.{places}f}"  # noqa: E731
+    co = {"h": h, "company_id": str(cid), "user_id": str(_claims(tok)["sub"])}
+    opening = round(booked + 1, places)
+    await B.statement(client, co, b["id"], [("2026-09-20", "Interest", money(25)), ("2026-09-21", "Mixed", money(30))],
+                      opening=money(opening), closing=money(opening + 55), start="2026-09-01", end="2026-09-30")
+    table = await B.groups(client, co, b["id"])
+    interest, mixed = B.line_by_text(table, "Interest"), B.line_by_text(table, "Mixed")
+    r = await B.resolve(client, co, b["id"], decisions=[
+        {"line_ids": [interest["id"]], "kind": "post", "account_code": "4100", "rate": rate},
+        {"line_ids": [mixed["id"]], "kind": "post", "rate": rate, "splits": [
+            {"account_code": "4100", "amount": money(20)}, {"account_code": "4100", "amount": money(10)}]}])
+    assert r.status_code == 200 and all(x["ok"] for x in r.json()["results"]), r.text
+    sid = interest["statement_id"]
     recon = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
     open_ids = [e["je_id"] for e in recon["unreconciled_entries"]]
     assert all(e["amount"] is not None for e in recon["unreconciled_entries"]), recon["unreconciled_entries"]
@@ -162,17 +163,18 @@ async def test_every_bank_writer_posts_in_the_bank_currency_and_the_account_reco
     for je_id, line in posted:
         assert line.get("fx_currency") == currency, (je_id, line)
         assert (line.get("fx_debit") or line.get("fx_credit")), (je_id, line)
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 200 and r.json()["status"] == "completed", r.text
+    r = await client.post(f"{B.API}/bank/{b['id']}/complete", headers=h, json={"idempotency_key": B.key()})
+    assert r.status_code == 200, r.text
+    assert (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["status"] == "completed"
 
 
 # Every function that posts a journal entry touching a bank account, with how its bank
 # line carries the amount in the account's own currency.
 _BANK_WRITERS: dict[tuple[str, str], str] = {
-    ("default_modules/celerp-accounting/celerp_accounting/routes.py", "create_bank_account"): "_bank_entries",
+    ("default_modules/celerp-accounting/celerp_accounting/routes.py", "post_opening"): "_bank_entries",
     ("default_modules/celerp-accounting/celerp_accounting/routes.py", "create_transfer"): "_bank_entries",
-    ("default_modules/celerp-accounting/celerp_accounting/routes.py", "create_je_from_line"): "_bank_entries",
-    ("default_modules/celerp-accounting/celerp_accounting/routes.py", "split_stmt_line"): "_bank_entries",
+    ("default_modules/celerp-accounting/celerp_accounting/projections.py", "apply_accounting_event"):
+        "applies stored events to projections; posts nothing",
     ("default_modules/celerp-accounting/celerp_accounting/routes.py", "write_off_difference"): "_bank_entries",
     ("default_modules/celerp-accounting/celerp_accounting/routes.py", "create_manual_journal_entry"):
         "the author enters the line in the account's currency; refused otherwise (acct.err_je_bank_currency)",

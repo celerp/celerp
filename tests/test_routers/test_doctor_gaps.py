@@ -19,6 +19,7 @@ import uuid
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+from ui.i18n import refusal_text
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +85,7 @@ async def test_doctor_invalid_check(client: "AsyncClient"):
     tok, _ = await _reg(client)
     r = await client.post("/admin/doctor?checks=nonexistent_check", headers=_h(tok))
     assert r.status_code == 422
-    assert "Unknown checks" in r.json()["detail"]
+    assert "Unknown checks" in refusal_text(r.json()["detail"])
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ is completed tells the person trying to change it that it can be reopened, and w
 from __future__ import annotations
 
 import asyncio
+import html
 from contextlib import asynccontextmanager
 from unittest.mock import patch
 
@@ -19,10 +20,12 @@ from celerp.main import app
 from celerp.models.ledger import LedgerEntry
 from company_backup_support import token
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
+import bank_statement_helpers as B
+from bank_statement_helpers import bank_complete, complete
 from test_company_reset_payments import _harbor, _waiting_on_a_lock
 from test_helpers import invite_user, register_admin
 from ui.app import app as ui_app
-from ui.i18n import refusal_text
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -40,9 +43,26 @@ async def _completed(client, headers) -> str:
         "statement_balance": _OPENING}, headers=headers)
     assert r.status_code == 200, r.text
     sid = r.json()["id"]
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=headers)
-    assert r.status_code == 200 and r.json()["status"] == "completed", r.text
+    await complete(client, headers, sid)
     return sid
+
+
+async def _completed_with_a_line(client, headers) -> tuple[str, str]:
+    """A completed reconciliation holding one posted statement line: its id and the line's."""
+    r = await client.post("/accounting/bank-accounts", json={
+        "bank_name": "Harbor Bank", "account_number": "0001", "bank_type": "checking",
+        "currency": "USD", "opening_balance": _OPENING}, headers=headers)
+    assert r.status_code == 200, r.text
+    r = await client.post("/accounting/reconciliation/start", json={
+        "bank_account_id": r.json()["id"], "statement_date": "2026-09-30",
+        "statement_balance": _OPENING - 25}, headers=headers)
+    assert r.status_code == 200, r.text
+    got = await B.import_into(client, headers, r.json()["id"], B.csv_bytes([("2026-09-15", "Bank fee", "-25.00")]))
+    sid, line = got["session_id"], got["lines"][0]["id"]
+    r = await B.decide(client, headers, sid, line, "post", account_code="6100", memo="Bank fee")
+    assert r.status_code == 200, r.text
+    await complete(client, headers, sid)
+    return sid, line
 
 
 async def _journal_count(session) -> int:
@@ -85,9 +105,7 @@ async def test_a_reopened_reconciliation_can_be_changed_and_completed_again(clie
     assert (await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)).status_code == 200
     r = await client.post(f"/accounting/reconciliation/{sid}/match", json={"je_ids": []}, headers=h)
     assert r.status_code == 200, r.text
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 200 and r.json()["status"] == "completed", r.text
-    assert r.json()["completed_at"]
+    assert (await complete(client, h, sid))["completed_at"]
     # A second cycle is recorded as a second reopening.
     assert (await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)).status_code == 200
     assert len(await _reopen_events(session, sid)) == 2
@@ -119,20 +137,24 @@ async def test_reopen_refused_while_another_reconciliation_of_that_statement_is_
     assert (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["status"] == "completed"
 
 
-@pytest.mark.parametrize("path, body", [
-    ("match", {"je_ids": []}),
-    ("auto-match", None),
-    ("bulk-confirm", None),
-    ("write-off", {}),
-])
-async def test_changing_a_completed_reconciliation_says_it_can_be_reopened_and_where(client, session, path, body):
+@pytest.mark.parametrize("change", ["match", "resolve", "unmatch", "write-off"])
+async def test_changing_a_completed_reconciliation_says_it_can_be_reopened_and_where(client, session, change):
     h = {"Authorization": f"Bearer {await register_admin(client)}"}
-    sid = await _completed(client, h)
-    r = await client.post(f"/accounting/reconciliation/{sid}/{path}", json=body, headers=h)
-    assert r.status_code == 409, r.text
-    detail = refusal_text(r.json()["detail"])
+    sid, line = await _completed_with_a_line(client, h)
+    if change == "resolve":
+        r = await B.decide(client, h, sid, line, "no_entry")
+        assert r.status_code == 200 and r.json()["refused"] == 1, r.text
+        detail = refusal_text(r.json()["results"][0]["reason"])
+    elif change == "unmatch":
+        r = await B.undo(client, h, sid, [line])
+    else:
+        r = await client.post(f"/accounting/reconciliation/{sid}/{change}",
+                              json={"je_ids": []} if change == "match" else {}, headers=h)
+    if change != "resolve":
+        assert r.status_code == 409, r.text
+        detail = refusal_text(r.json()["detail"])
     assert "completed" in detail and "Reopen" in detail
-    assert "top of this reconciliation" in detail
+    assert "under Statements on its bank's page" in detail
 
 
 @asynccontextmanager
@@ -151,16 +173,15 @@ async def test_completed_reconciliation_page_offers_reopen_and_reopening_returns
     tok = await register_admin(client)
     h = {"Authorization": f"Bearer {tok}"}
     sid = await _completed(client, h)
+    bank_id = await B.bank_of(client, h, sid)
+    reopen = f"/accounting/reconcile/bank/{bank_id}/statement/{sid}/reopen"
     async with _ui_as(tok) as ui:
-        # The page a completion lands on leads back to the reconciliation.
-        r = await ui.post(f"/accounting/reconcile/{sid}/complete")
-        assert f'href="/accounting/reconcile/{sid}"' in r.text
-        page = (await ui.get(f"/accounting/reconcile/{sid}")).text
-        assert f'hx-post="/accounting/reconcile/{sid}/reopen"' in page
-        assert "reopening changes nothing in your books" in page
-        r = await ui.post(f"/accounting/reconcile/{sid}/reopen")
+        page = (await ui.get(f"/accounting/reconcile/bank/{bank_id}")).text
+        assert f'hx-post="{reopen}"' in page
+        assert t("recon.reopen_confirm") in html.unescape(page)
+        r = await ui.post(reopen, data={"idempotency_key": B.key()})
         assert r.status_code == 200, r.text
-        assert f'hx-post="/accounting/reconcile/{sid}/reopen"' not in r.text
+        assert f'hx-post="{reopen}"' not in r.text
     assert (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["status"] == "open"
 
 
@@ -180,17 +201,17 @@ async def test_a_reopen_that_arrives_while_completing_waits_and_reopens_the_comp
     sid = r.json()["id"]
 
     reached, release = asyncio.Event(), asyncio.Event()
-    real_entries = routes._recon_bank_and_entries
+    real_difference = routes._settled_difference
 
-    async def held_entries(*args, **kw):
-        out = await real_entries(*args, **kw)
+    async def held_difference(*args, **kw):
+        out = await real_difference(*args, **kw)
         if not release.is_set():
             reached.set()
             await release.wait()
         return out
-    monkeypatch.setattr(routes, "_recon_bank_and_entries", held_entries)
+    monkeypatch.setattr(routes, "_settled_difference", held_difference)
 
-    completing = asyncio.create_task(real_client.post(f"/accounting/reconciliation/{sid}/complete", headers=h))
+    completing = asyncio.create_task(bank_complete(real_client, h, sid))
     await asyncio.wait_for(reached.wait(), 10)
     reopening = asyncio.create_task(real_client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h))
     try:
@@ -205,7 +226,7 @@ async def test_a_reopen_that_arrives_while_completing_waits_and_reopens_the_comp
     finally:
         release.set()
     done, reopened = await completing, await reopening
-    assert done.status_code == 200 and done.json()["status"] == "completed", done.text
+    assert done["completed"] == ["2026-09-30"] and done["stopped_at"] is None, done
     assert reopened.status_code == 200 and reopened.json()["status"] == "open", reopened.text
     async with maker(real_engine)() as s:
         status = (await s.execute(text("SELECT status FROM reconciliation_sessions WHERE id = :i"),
@@ -232,8 +253,7 @@ async def _start(client, headers, bank):
 
 async def _complete_one(client, headers, bank) -> str:
     sid = (await _start(client, headers, bank)).json()["id"]
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=headers)
-    assert r.json()["status"] == "completed", r.text
+    await complete(client, headers, sid)
     return sid
 
 

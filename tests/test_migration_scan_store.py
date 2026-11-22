@@ -262,7 +262,7 @@ async def test_scan_token_is_scoped_expiring_and_tamper_safe(client, session, mi
             waited = time.monotonic() - t0
     finally:
         release()
-    assert (exc.value.status_code, exc.value.detail) == (409, store.BUSY)
+    assert (exc.value.status_code, exc.value.detail) == (409, "This scan is being updated. Try again in a moment.")
     assert 0.4 <= waited < 2.0, f"did not wait for the test budget (waited {waited:.2f}s)"
     assert (directory / "scan.json").read_bytes() == saved
     assert store.load_scan(token, owner=bootstrap).token == token

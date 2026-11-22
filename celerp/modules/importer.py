@@ -63,7 +63,12 @@ PREMIUM_MARKER = ".celerp-premium"
 
 
 class ModuleImportError(Exception):
-    """User-facing import failure. Message is safe to show in the UI."""
+    """User-facing import failure, raised with a t() text: ``detail`` is that text, which a
+    route answers as its key's refusal (refusal_detail), so it reads in the reader's language."""
+
+    @property
+    def detail(self):
+        return self.args[0]
 
 
 def _validate_name_chars(name: str) -> None:
@@ -92,12 +97,9 @@ def _validate_name(name: str, *, official: bool = False) -> None:
     # reserved for Marketplace modules: an upload or folder import may not use
     # one, and an official Marketplace install uses only the celerp- form.
     if official and not name.startswith(_RESERVED_PREFIX):
-        raise ModuleImportError("Official module packages must use the 'celerp-' name prefix.")
+        raise ModuleImportError(t("module_import.official_prefix"))
     if not official and is_reserved_name(name):
-        raise ModuleImportError(
-            "Names starting with 'celerp-' or 'celerp_', in any letter case, are reserved "
-            "for Marketplace modules. A module of your own needs a different name."
-        )
+        raise ModuleImportError(t("module_import.reserved_prefix"))
 
 
 def _bound_names(node) -> list[str]:
@@ -139,9 +141,7 @@ def _manifest_node(tree: ast.Module):
     if node is None and not uses:
         return None
     if node is None or len(node.targets) != 1 or uses != [node.targets[0]]:
-        raise ModuleImportError(
-            "PLUGIN_MANIFEST must be bound once, as one top-level literal, "
-            "and never changed or used elsewhere in __init__.py.")
+        raise ModuleImportError(t("module_import.manifest_bound_once"))
     return node
 
 
@@ -213,10 +213,7 @@ def _check_min_version(manifest: dict) -> None:
     if "dev" in current or current.startswith("0.0.0"):
         return  # dev builds bypass the gate
     if _version_tuple(current) < _version_tuple(str(wanted)):
-        raise ModuleImportError(
-            f"This module requires Celerp {wanted} or newer (you run {current}). "
-            "Update Celerp first."
-        )
+        raise ModuleImportError(t("module_import.needs_newer_celerp", wanted=wanted, current=current))
 
 
 def installed_table_prefixes(exclude: str) -> dict[str, str]:
@@ -384,7 +381,7 @@ def _validate_table_prefix(name: str, manifest: dict) -> None:
         return
     problem = table_prefix_problem(name, manifest["table_prefix"])
     if problem:
-        raise ModuleImportError(problem)
+        raise ModuleImportError(t("module_import.table_prefix_bad", problem=problem))
 
 
 # A Postgres table name as Celerp creates them: lower case, at most 63 characters.

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -22,6 +23,7 @@ from fasthtml.common import to_xml
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
+from celerp_ai.ui_routes import _action_dom_id
 from ui.api_client import APIError
 from ui.i18n import t
 from test_helpers import assert_not_permitted_redirect, make_test_token
@@ -38,7 +40,7 @@ _CLOUD_STATUS = {"tier": "ai", "remaining": 50, "used": 10, "base_limit": 200}
 _ACTION = {
     "id": "call-1",
     "name": "create_item_items_post",
-    "arguments": {"body": {"sku": "AGENT-1", "name": "Agent Widget"}},
+    "shown": {"body": {"sku": "AGENT-1", "name": "Agent Widget"}},
 }
 
 
@@ -173,6 +175,48 @@ async def test_ai_page_renders_thread_with_action_card(ui_client):
     assert 'data-capability="create_item_items_post"' in r.text
     assert "create_item_items_post</" not in r.text  # the raw name is never visible text
     assert 'value="11111111-1111-4111-8111-111111111111"' in r.text  # hidden conversation_id seeded
+
+
+@pytest.mark.asyncio
+async def test_older_actions_are_reached_from_the_thread_page_by_page(ui_client):
+    """A conversation whose older messages still carry actions beyond the first read opens
+    with Show older actions; each click loads the next page's action cards in place, with
+    the button for the page after it until none remain."""
+    conv_id = "11111111-1111-4111-8111-111111111111"
+    first = {"before_at": "2026-11-01T10:00:00+00:00", "before_id": "22222222-2222-4222-8222-222222222222"}
+    second = {"before_at": "2026-10-01T10:00:00+00:00", "before_id": "33333333-3333-4333-8333-333333333333"}
+    detail = {"id": conv_id, "older_actions": first,
+              "messages": [{"id": "m9", "role": "assistant", "content": "Newest reply"}]}
+    older = AsyncMock(side_effect=[
+        {"messages": [{"id": "m5", "role": "assistant", "content": "Older proposal",
+                       "pending_actions": [_ACTION]}], "older_actions": second},
+        {"messages": [{"id": "m1", "role": "assistant", "content": "Oldest proposal",
+                       "pending_actions": [_ACTION]}], "older_actions": None},
+        APIError(500, "boom"),
+    ])
+    patches = _patch_page(ai_conversation_get=AsyncMock(return_value=detail), ai_older_actions=older)
+    _apply(patches)
+    ui_client.cookies.update(_authed())
+    try:
+        page = await ui_client.get(f"/ai?conversation={conv_id}")
+        one = await ui_client.get("/ai/older-actions-ui", params={"conversation": conv_id, **first})
+        two = await ui_client.get("/ai/older-actions-ui", params={"conversation": conv_id, **second})
+        failed = await ui_client.get("/ai/older-actions-ui", params={"conversation": conv_id, **second})
+    finally:
+        _stop(patches)
+    assert page.status_code == 200
+    assert "Show older actions" in page.text and "/ai/older-actions-ui?" in page.text
+    assert page.text.index("Show older actions") < page.text.index("Newest reply")
+    assert [c.args[2:] for c in older.call_args_list[:2]] == [
+        (conv_id, first["before_at"], first["before_id"]),
+        (conv_id, second["before_at"], second["before_id"]),
+    ]
+    assert "Older proposal" in one.text and "ai-action__card" in one.text
+    assert "Show older actions" in one.text and "before_id=33333333" in one.text
+    assert "Oldest proposal" in two.text and "ai-action__card" in two.text
+    assert "Show older actions" not in two.text
+    # A failed load says so and keeps the button to try the same page again.
+    assert "Show older actions" in failed.text and "before_id=33333333" in failed.text
 
 
 # ── POST /ai/chat ─────────────────────────────────────────────────────────────
@@ -401,7 +445,7 @@ def test_action_card_falls_back_to_readable_name_without_title():
 def test_action_card_hides_id_when_name_sibling_present_and_nests_lines():
     action = {
         "id": "prop_1", "name": "create_bill_bills_post", "title": "Create bill from receipt.jpg",
-        "arguments": {"body": {
+        "shown": {"body": {
             "contact_id": "c-1", "contact_name": "Supplier Co", "total": 842.0,
             "lines": [{"item_name": "Widget", "quantity": 2, "amount": 10.5}],
             "notes": None,
@@ -414,6 +458,29 @@ def test_action_card_hides_id_when_name_sibling_present_and_nests_lines():
     assert "Item name: Widget" in html
     assert "Quantity: 2" in html
     assert "Notes" in html and "--" in html
+
+
+def test_action_card_reads_records_nested_at_any_depth():
+    """A record inside a list inside a record reads as labelled lines, never as raw data."""
+    action = {"id": "prop_1", "name": "import_statement", "title": "Import", "shown": {"body": {
+        "statements": [{"header": {"period_start": "2026-03-01", "currency": "USD"},
+                        "lines": [{"line_date": "2026-03-02", "raw_csv_row": {"memo": "BANK FEE"},
+                                   "tags": ["a", "b"], "ticked": True}]}]}}}
+    html = _card_html(action)
+    assert "{" not in html.split("ai-action__lines", 1)[1] and "[" not in html.split("ai-action__lines", 1)[1]
+    assert "Period start: 2026-03-01" in html and "Memo: BANK FEE" in html and "a, b" in html
+
+
+def test_bulk_preview_keeps_a_field_name_that_two_sections_share():
+    """The same field name in the path and the body is two columns, each headed with its
+    section; names held by one section keep the plain header."""
+    records = [{"path": {"warehouse": "Path Shelf"}, "body": {"warehouse": "Body Shelf", "note": "n1"}},
+               {"path": {"warehouse": "Path Two"}, "body": {"warehouse": "Body Two", "note": "n2"}}]
+    html = _card_html({"id": "p", "name": "t", "title": "T", "for_each": True, "shown": {"records": records}})
+    for value in ("Path Shelf", "Body Shelf", "Path Two", "Body Two"):
+        assert value in html
+    assert "Warehouse (Record)" in html and "Warehouse (Change)" in html
+    assert "<th>Notes</th>" in html
 
 
 def test_action_card_lists_warnings_before_the_buttons():
@@ -441,7 +508,7 @@ def test_failed_record_card_has_no_buttons_and_says_why():
 def test_action_card_formats_amounts_and_quantities():
     action = {
         "id": "prop_1", "name": "create_doc_docs_post", "title": "Create bill from Quick Parts Ltd",
-        "arguments": {"body": {
+        "shown": {"body": {
             "currency": "THB", "subtotal": 15.0, "tax": 1.5, "total": 20.0,
             "line_items": [{"name": "Bolt M6", "quantity": 1.0, "unit_price": 10.0, "line_total": 10.0}],
         }},
@@ -471,10 +538,21 @@ def test_action_group_offers_confirm_all_only_for_several_open_cards():
 def _bills(n: int, *, flagged: set[int] = frozenset()) -> list[dict]:
     return [{
         "id": f"p{i}", "name": "create_bill_docs_post", "title": f"Create bill from r{i}.jpg",
-        "arguments": {"body": {"contact_name": f"Vendor {i}", "issue_date": f"2026-09-0{i}",
+        "shown": {"body": {"contact_name": f"Vendor {i}", "issue_date": f"2026-09-0{i}",
                                "currency": "THB", "total": 10 * i}},
         "warnings": ["No date was found."] if i in flagged else [],
     } for i in range(1, n + 1)]
+
+
+def _dom(n: int) -> str:
+    return _action_dom_id("m2", f"p{n}")
+
+
+def test_action_dom_id_is_css_safe_and_unique_per_message_and_call():
+    ids = {_action_dom_id(m, c) for m in ("m1", "m 2#.:") for c in ("a b#c.d:e", "a b#c.d:f", "p1", "")}
+    assert len(ids) == 8
+    assert all(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", i) for i in ids)
+    assert _action_dom_id("m1", "p1") == _action_dom_id("m1", "p1")
 
 
 def _group_html(actions: list[dict]) -> str:
@@ -488,9 +566,9 @@ def test_action_group_renders_review_table_past_five_proposals():
     assert 'id="ai-actions-m2"' in html and "ai-action-table" in html
     assert html.count('class="bulk-select"') == 6
     # Flagged rows start unticked with the reason in the Checks column.
-    row2 = html[html.index('id="ai-act-m2-p2"'):html.index('id="ai-act-m2-p3"')]
+    row2 = html[html.index(f'id="{_dom(2)}"'):html.index(f'id="{_dom(3)}"')]
     assert "checked" not in row2 and "No date was found." in row2
-    row1 = html[html.index('id="ai-act-m2-p1"'):html.index('id="ai-act-m2-p2"')]
+    row1 = html[html.index(f'id="{_dom(1)}"'):html.index(f'id="{_dom(2)}"')]
     assert "checked" in row1
     assert "Vendor 3" in html and "฿30.00" in html and "2026-09-03" in html
     # The shared bulk toolbar posts the ticked ids to the chunked confirm route.
@@ -514,7 +592,7 @@ def test_action_table_failed_record_has_no_checkbox():
     actions[0] = {**actions[0], "status": "failed", "error": "The model stopped."}
     html = _group_html(actions)
     assert html.count('class="bulk-select"') == 5
-    row = html[html.index('id="ai-act-m2-p1"'):html.index('id="ai-act-m2-p2"')]
+    row = html[html.index(f'id="{_dom(1)}"'):html.index(f'id="{_dom(2)}"')]
     assert "Failed" in row and "The model stopped." in row
 
 
@@ -522,7 +600,7 @@ def test_action_table_retryable_is_actionable_but_not_preselected():
     actions = _bills(6)
     actions[0] = {**actions[0], "status": "retryable", "error": "Result was uncertain."}
     html = _group_html(actions)
-    row = html[html.index('id="ai-act-m2-p1"'):html.index('id="ai-act-m2-p2"')]
+    row = html[html.index(f'id="{_dom(1)}"'):html.index(f'id="{_dom(2)}"')]
     assert 'class="bulk-select"' in row
     assert "checked" not in row
     assert "Retry" in row and "Result was uncertain." in row
@@ -557,10 +635,10 @@ async def test_confirm_all_runs_the_first_chunk_and_chains_the_rest(ui_client):
     assert 'name="completed" value="10"' in r.text
     assert 'name="doc_ids" value="doc:1,doc:2,doc:3,doc:4,doc:5,doc:6,doc:7,doc:8,doc:9,doc:10"' in r.text
     # Each finished row loses its checkbox and gains a status badge with a record link.
-    assert 'hx-swap-oob="true" id="ai-act-m2-p1-pick"' in r.text
-    assert 'id="ai-act-m2-p1-status"' in r.text and "Applied" in r.text
+    assert f'hx-swap-oob="true" id="{_dom(1)}-pick"' in r.text
+    assert f'id="{_dom(1)}-status"' in r.text and "Applied" in r.text
     assert 'href="/docs/doc:1"' in r.text and 'href="/docs/doc:10"' in r.text
-    assert "ai-act-m2-p11" not in r.text
+    assert _dom(11) not in r.text
 
 
 @pytest.mark.asyncio
@@ -599,7 +677,7 @@ async def test_confirm_all_cards_view_replaces_each_card(ui_client):
     assert call.await_args.kwargs["tool_call_ids"] == ["p1", "p2"]
     assert r.status_code == 200
     assert t("ai.confirm_all_result", "en", completed=1, failed=1) in r.text
-    assert 'hx-swap-oob="true" id="ai-act-m2-p1"' in r.text
+    assert f'hx-swap-oob="true" id="{_dom(1)}"' in r.text
     assert "Add vendor Supplier Co" in r.text and "ai-action__done" in r.text
     assert 'href="/contacts/contact:1"' in r.text
     assert "Create bill from receipt.jpg" in r.text and "total is required" in r.text
@@ -1149,3 +1227,78 @@ def test_a_reloaded_thread_keeps_the_multi_bill_notice_under_the_reply():
     assert text["upsell"] in page and text["action"] in page
     other = {**reply, "id": "m10"}
     assert "flash--warning" not in "".join(to_xml(ft) for ft in _thread([other], [job], "conv-1", "en", "cloud"))
+
+
+# ── The edges of the routes: session, refusals, what is sent on ─────────────
+
+@pytest.mark.asyncio
+async def test_older_actions_follow_the_session_and_say_why_a_load_failed(ui_client):
+    """No session: sign-in, and nothing is read. A session the API no longer takes is
+    never shown as a failed load. Any other failure says why above the button."""
+    older = AsyncMock(side_effect=[APIError(401, "Session expired"), APIError(500, "The read failed")])
+    ui_client.cookies.clear()
+    with patch("celerp_ai.ui_routes.api.ai_older_actions", older):
+        away = await ui_client.get("/ai/older-actions-ui", params={"conversation": "c1"})
+        assert away.status_code in (302, 401) and "/login" in (away.headers.get("HX-Redirect") or away.headers["location"])
+        older.assert_not_called()
+        ui_client.cookies.update(_authed())
+        ended = await ui_client.get("/ai/older-actions-ui", params={"conversation": "c1"})
+        failed = await ui_client.get("/ai/older-actions-ui", params={"conversation": "c1"})
+    assert ended.status_code != 200 and "Show older actions" not in ended.text
+    assert failed.status_code == 200 and "Show older actions" in failed.text
+    assert 'class="ai-older-actions__notice">The read failed<' in failed.text
+
+
+def test_the_older_actions_button_carries_its_cursor_whole():
+    """The cursor's time has a + and a conversation may be named in any script: the
+    address the button loads reads back as the same three values."""
+    import html
+    from urllib.parse import parse_qs, urlsplit
+    from celerp_ai.ui_routes import _older_actions_button
+    cursor = {"before_at": "2026-11-01T10:00:00+00:00", "before_id": "ก&b#1"}
+    address = re.search(r'hx-get="([^"]+)"', to_xml(_older_actions_button("c é&1", cursor, "en"))).group(1)
+    assert parse_qs(urlsplit(html.unescape(address)).query) == {
+        "conversation": ["c é&1"], "before_at": [cursor["before_at"]], "before_id": [cursor["before_id"]]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("form,again", [({}, False), ({"run_again": "1"}, True)])
+async def test_confirm_runs_a_change_again_only_when_the_form_says_so(ui_client, form, again):
+    confirm = AsyncMock(return_value={"ok": True, "status": 200, "title": "Create item", "data": {}, "error": None})
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_confirm_action", confirm):
+        r = await ui_client.post("/ai/confirm-action-ui", data={
+            "conversation_id": "conv-1", "message_id": "m2", "tool_call_id": "call-1", **form})
+    assert r.status_code == 200
+    assert confirm.await_args.kwargs == {"run_again": again}
+
+
+def test_the_run_button_reads_retry_only_for_a_retryable_change():
+    from celerp_ai.ui_routes import _action_buttons
+    first = to_xml(_action_buttons("c", "m", "call-1", "pending", "en"))
+    retry = to_xml(_action_buttons("c", "m", "call-1", "retryable", "en"))
+    assert f'>{t("btn.confirm")}<' in first and f'>{t("btn.retry")}<' not in first
+    assert f'>{t("btn.retry")}<' in retry and f'>{t("btn.confirm")}<' not in retry
+
+
+@pytest.mark.asyncio
+async def test_chat_links_each_file_the_answer_offers(ui_client):
+    result = {"answer": "Here is the template.", "model_used": "m", "tools_called": [], "pending_actions": [],
+              "downloads": ["/accounting/import/template"]}
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_conversation_query", AsyncMock(return_value=result)):
+        r = await ui_client.post("/ai/chat", data={"query": "template?", "conversation_id": "conv-1"})
+    assert r.status_code == 200
+    assert re.search(rf'<a [^>]*href="/accounting/import/template"[^>]*>{re.escape(t("ai.download_file"))}<', r.text)
+
+
+@pytest.mark.asyncio
+async def test_an_upload_is_kept_by_the_kind_its_name_says_not_the_one_the_browser_sent(ui_client):
+    sent = AsyncMock(return_value={"file_ids": ["f1"]})
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_upload", sent):
+        r = await ui_client.post("/ai/upload", files=[("files", ("bill.PDF", b"%PDF-1.4", "application/octet-stream")),
+                                                      ("files", ("note.bin", b"x", "application/x-thing"))])
+    assert r.status_code == 201, r.text
+    assert [(name, kind) for name, _, kind in sent.await_args.args[2]] == [
+        ("bill.PDF", "application/pdf"), ("note.bin", "application/x-thing")]

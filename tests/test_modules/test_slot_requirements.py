@@ -45,6 +45,7 @@ _CODE = {
         "async def short_import_rows(*, session, company_id, user_id, rows, as_at, source):\n    return {}\n"
         "async def preflight(*, session, company_id):\n    return {'blocking': [], 'listed': []}\n"
         "async def loose_preflight(*, session):\n    return {}\n"
+        "async def record_names(*, session, company_id, settings, role, ids):\n    return {}\n"
     ),
 }
 
@@ -52,7 +53,8 @@ _CODE = {
 _VALID = {
     "nav": [{"key": "acme", "label": "Acme", "href": "/acme", "order": 40.5, "group": None},
             {"key": "acme-more", "label_key": "nav.acme", "href": "/acme/more", "order": 41,
-             "group": "Acme"},
+             "group": "Acme", "help": "acme.more", "settings_href": "/settings/acme",
+             "settings_help": "acme.settings"},
             {"key": "acme-mine", "label": "Mine", "href": "/acme/mine", "order": 42,
              "probe_href": "/acme/mine/nav"}],
     "search_provider": {"handler": "{inner}.search:find", "result_key": "items",
@@ -94,6 +96,7 @@ _VALID = {
     "import_target": [{"kind": "acme_register", "handler": "{inner}.lineage:import_rows",
                        "href": "/acme/import"}],
     "turn_off_preflight": [{"handler": "{inner}.lineage:preflight"}],
+    "record_names": [{"handler": "{inner}.lineage:record_names"}],
 }
 
 # (slot, the entry's wrong key and value, the text the refusal names).
@@ -105,6 +108,8 @@ _WRONG = [
     ("nav", {"key": 7}, "key"),
     ("nav", {"group": {"a": 1}}, "group"),
     ("nav", {"group": 3}, "group"),
+    ("nav", {"help": ["acme.more"]}, "help"),
+    ("nav", {"settings_help": 7}, "settings_help"),
     ("nav", {"label": 5}, "label"),
     ("nav", {"label_key": ["nav.acme"]}, "label_key"),
     ("bulk_action", {"action_type": "navgate"}, "action_type"),
@@ -145,6 +150,7 @@ _WRONG = [
     ("import_target", {"handler": "{inner}.lineage:short_import_rows"},
      "session, company_id, user_id, rows, as_at, source, body"),
     ("turn_off_preflight", {"handler": "{inner}.lineage:loose_preflight"}, "session, company_id"),
+    ("record_names", {"handler": "{inner}.lineage:label_rows"}, "session, company_id, settings, role, ids"),
     ("periodic_operation", {"module": 3}, "module"),
     ("periodic_operation", {"handler": "{inner}.lineage:loose_preflight"}, "session, company_id, today, budget"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:sync_guard"}, "must be async"),

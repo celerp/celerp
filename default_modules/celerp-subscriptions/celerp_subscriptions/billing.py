@@ -11,9 +11,7 @@ backlog older than the agreement's catch-up window. Sending is requested after c
 """
 from __future__ import annotations
 
-import asyncio
 import copy
-import hashlib
 import json
 import logging
 import uuid
@@ -63,22 +61,11 @@ MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit
 # Automatic billing covers every setting its decision reads (unattended_due, outside_window).
 CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods", *SCHEDULE_FIELDS), "sending": ("auto_send",),
                  "collection": ("generation_mode",)}
-# The longest a send waits for the mail server, and the longest a send can take with recording its
-# answer: a "sending" record younger than SEND_TIMEOUT may still be with the mail server (send_state).
-TRANSPORT_TIMEOUT = timedelta(minutes=4)
-SEND_TIMEOUT = TRANSPORT_TIMEOUT + timedelta(minutes=1)
 # The agreement write_agreement is writing: the one writer allowed to change an agreement's
 # status (guard_agreement_status), set by nothing else (consent_census holds it).
 _WRITING: ContextVar[str | None] = ContextVar("agreement_write", default=None)
 MAX_EMAIL_PAYLOAD_BYTES = 2 * 1024 * 1024
 EMAIL_ATTEMPT_RETENTION = timedelta(days=2)
-RECOVERY_RETRY_AGE = timedelta(hours=12)
-
-
-def _payload_json(message: dict) -> str:
-    """The stored form of an email a send gives the relay, and the text its digest is taken
-    of: every character past ASCII written as itself, so the size limit counts it once."""
-    return json.dumps(message, sort_keys=True, ensure_ascii=False)
 
 
 def now() -> datetime:
@@ -101,12 +88,11 @@ def stamp_time(at) -> datetime | None:
         return None
 
 
-def retryable_attempt_time(created_at: datetime | None) -> bool:
-    """Refuse old unknown-outcome retries even after extended downtime."""
-    if created_at is None:
-        return False
-    when = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
-    return when > datetime.now(timezone.utc) - RECOVERY_RETRY_AGE
+def replays(send: dict | None, began: datetime | None) -> bool:
+    """A cut-off send whose attempt was stored at ``began`` goes out again as the same message
+    under its operation id (email.next_step decides, from the relay and the replay window)."""
+    return email.next_step({"state": "unconfirmed", "began": began.isoformat() if began else None,
+                            "relay": (send or {}).get("relay")}) == "replay"
 
 
 def doc_kind(state: dict) -> str:
@@ -529,8 +515,9 @@ async def billing_doc(session, company_id, doc_id: str) -> None:
     (finalize it, or Reopen), or void or gone (Reopen)."""
     doc = await doc_state(session, company_id, doc_id)
     if not bills(doc):
-        key = "subscriptions.err_period_draft" if (doc or {}).get("status") == "draft" else "subscriptions.err_period_void"
-        raise HTTPException(status_code=409, detail=t(key, ref=(doc or {}).get("ref_id") or doc_id))
+        ref = (doc or {}).get("ref_id") or doc_id
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_period_draft", ref=ref)
+                            if (doc or {}).get("status") == "draft" else t("subscriptions.err_period_void", ref=ref))
 
 
 async def guard_bill_status(*, session, entry, transition) -> None:
@@ -1028,25 +1015,23 @@ def period_status(state: str | None, doc: dict | None, bill_date: date, today: d
     return "overdue" if bill_date < today else "due" if bill_date == today else "upcoming"
 
 
-async def replayable_operations(session, company_id) -> set[str]:
-    """The email attempts whose durable payload is still inside the transport's retry window."""
+async def attempt_times(session, company_id) -> dict[str, datetime]:
+    """When each stored email attempt of the company began, by operation id."""
     attempts = (await session.execute(select(
         SubscriptionEmailAttempt.operation_id, SubscriptionEmailAttempt.created_at).where(
             SubscriptionEmailAttempt.company_id == company_id))).all()
-    return {str(operation_id) for operation_id, created_at in attempts if retryable_attempt_time(created_at)}
+    return {str(operation_id): created_at for operation_id, created_at in attempts}
 
 
-def sends_again(status: str | None, send: dict | None, replayable: set[str]) -> bool:
+def sends_again(status: str | None, send: dict | None, began: dict[str, datetime]) -> bool:
     """A cut-off send (send_status "unconfirmed") is sent again as a new message, behind a confirm
     that it may already have arrived, unless the relay replays the same message (it cannot arrive
     twice)."""
-    send = send or {}
-    return status == "unconfirmed" and not (
-        send.get("deduplicated") and email.relay_send_is_idempotent() and send.get("operation_id") in replayable)
+    return status == "unconfirmed" and not replays(send, began.get((send or {}).get("operation_id")))
 
 
 async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: int, today: date,
-                      replayable: set[str]) -> dict:
+                      began: dict[str, datetime]) -> dict:
     """Period ``k`` as the Periods table lists it: dates, claim, status, document, the earlier
     documents it let go, send state, and whether sending it again is a new message."""
     entry = schedule.periods.get(k) or {}
@@ -1061,7 +1046,7 @@ async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: i
             "doc_id": doc_id, "ref_id": ((doc or {}).get("ref_id") or doc_id) if doc_id else None,
             "reason": entry.get("reason"), "history": bool(entry.get("history")), "released": released,
             "send": send, "attempt": int((entry.get("send") or {}).get("n") or 0),
-            "again": sends_again(send, entry.get("send"), replayable)}
+            "again": sends_again(send, entry.get("send"), began)}
 
 
 async def period_list(session: AsyncSession, company_id, state: dict, today: date, *,
@@ -1087,7 +1072,7 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
         ended = t("subscriptions.err_bill_ended")
     nxt = None if ended else schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()
-    replayable = await replayable_operations(session, company_id)
+    began = await attempt_times(session, company_id)
     rows = []
     if first is not None:
         top = max([schedule.current(today) + 1, *schedule.periods])
@@ -1099,14 +1084,14 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
         k = min(top, before - 1) if before is not None else top
         while k >= first and len(rows) < limit:
             if schedule.exists(k):
-                rows.append(await _listed_row(session, company_id, state, schedule, k, today, replayable))
+                rows.append(await _listed_row(session, company_id, state, schedule, k, today, began))
             k -= 1
     older_before = rows[-1]["period_index"] if rows and first is not None and k >= first else None
     oldest_open = schedule.oldest_open(floor=review_floor(state))
     oldest_due_row = None
     if (before is None and not ended and oldest_open is not None and oldest_open not in
             {r["period_index"] for r in rows} and schedule.bill_date(oldest_open) <= today):
-        oldest_due_row = await _listed_row(session, company_id, state, schedule, oldest_open, today, replayable)
+        oldest_due_row = await _listed_row(session, company_id, state, schedule, oldest_open, today, began)
     review = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id")),
                "candidates": [period_row(schedule, c) for c in r.get("candidates") or []]}
               for r in state.get("history_review") or []]
@@ -1239,7 +1224,7 @@ def send_state(send: dict | None, now: datetime, *, emailed: bool = False,
     The state is "sent" once the record or the document says it went (``emailed``: the
     document's own page can send it), "waiting" while the next pass sends it (``waits``),
     "not_sent" when nothing will send it unless someone does, "failed", "sending" while it may
-    still be with the mail server (recorded as sending less than SEND_TIMEOUT ago), or
+    still be with the mail server (recorded as sending less than email.SEND_TIMEOUT ago), or
     "unconfirmed" (it may not have arrived). Since is when that state began: the time the
     record was written, except that a send cut off by age reads "unconfirmed" from the moment
     it could no longer be with the mail server. A readable time is given in UTC (stamp_time), so
@@ -1257,7 +1242,7 @@ def send_state(send: dict | None, now: datetime, *, emailed: bool = False,
     if recorded == "sending":
         if began is None:
             return "unconfirmed", at
-        cut_off = began + SEND_TIMEOUT
+        cut_off = began + email.SEND_TIMEOUT
         return ("sending", at) if cut_off > now else ("unconfirmed", cut_off.isoformat())
     return recorded, at
 
@@ -1456,7 +1441,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
     from celerp_docs.routes import DocSendBody, doc_email, mark_doc_sent
 
-    relay_idempotent = email.relay_send_is_idempotent()
+    relay = email.relay_identity()
     async with factory() as session:
         proj = await locked_agreement(session, company_id, template_id)
         company = await session.get(Company, company_id)
@@ -1480,8 +1465,6 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             return send
 
         uncertain = reads == "unconfirmed" and not again
-        if uncertain and not (relay_idempotent and send.get("deduplicated")):
-            raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         doc_id = entry["doc_id"]
         doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
         via = emailed(doc.state if doc is not None else None)
@@ -1506,10 +1489,10 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             except ValueError:
                 attempt = None
             if (attempt is None or attempt.doc_id != doc_id or attempt.attempt_number != n
-                    or not retryable_attempt_time(attempt.created_at)):
+                    or not replays(send, attempt.created_at)):
                 raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
             message = json.loads(attempt.payload_json)
-            digest = hashlib.sha256(_payload_json(message).encode()).hexdigest()
+            digest = email.payload_digest(message)
             if digest != send.get("payload_digest"):
                 raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         else:
@@ -1531,7 +1514,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                     message = await doc_email(session, company_id, doc_id, doc.state, to, actor)
                     html, body = email._with_footer(message["body_html"], message["body_text"])
                     message = {**message, "body_html": html, "body_text": body, "branded": False}
-                    payload_json = _payload_json(message)
+                    payload_json = email.payload_json(message)
                     if len(payload_json.encode()) > MAX_EMAIL_PAYLOAD_BYTES:
                         raise ValueError("email too large")
             except Exception as exc:
@@ -1544,22 +1527,16 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
 
             operation_id = str(uuid.uuid5(
                 uuid.NAMESPACE_URL, f"subscription-email:{company_id}:{doc_id}:{n}"))
-            digest = hashlib.sha256(payload_json.encode()).hexdigest()
+            digest = email.payload_digest(message)
             record_send(periods, k, retry_by, state="sending", n=n, operation_id=operation_id,
-                        deduplicated=relay_idempotent, payload_digest=digest)
+                        relay=relay, payload_digest=digest)
             await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
             session.add(SubscriptionEmailAttempt(
                 company_id=company_id, operation_id=uuid.UUID(operation_id), doc_id=doc_id,
                 attempt_number=n, payload_json=payload_json))
             await session.commit()
 
-    try:
-        result = await asyncio.wait_for(email.send_email(**message, operation_id=operation_id,
-                                                         fail_closed_on_uncertain=True),
-                                        TRANSPORT_TIMEOUT.total_seconds())
-    except Exception as exc:
-        log.warning("Sending subscription email failed (%s)", type(exc).__name__)
-        result = email.EmailResult(False, "delivery outcome unknown", unconfirmed=True)
+    result, = await email.transmit([email.Attempt(operation_id, message)])
     async with factory() as session:
         proj = await locked_agreement(session, company_id, template_id)
         periods = periods_of(proj.state)
@@ -1578,7 +1555,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
 
         outcome = "sent" if result.ok else ("unconfirmed" if uncertain or result.unconfirmed else "failed")
         send = record_send(periods, k, retry_by, state=outcome, n=n, operation_id=operation_id,
-                           deduplicated=relay_idempotent, payload_digest=digest,
+                           relay=relay, payload_digest=digest,
                            **({"error_key": result.reason} if outcome == "failed" else {}))
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
         if result.ok:

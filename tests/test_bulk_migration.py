@@ -109,7 +109,7 @@ async def test_bulk_migration(real_client, real_engine, runner):
     assert await _companies(real_engine) == before + 2
 
     r = await real_client.post(f"{BASE}/{rows[0]['id']}/open", headers=headers)
-    assert r.status_code == 422 and r.json()["detail"] == rows[0]["error"], r.text
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == rows[0]["error"], r.text
 
 
 async def test_bulk_migration_keeps_every_file(real_client, real_engine):

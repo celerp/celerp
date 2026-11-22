@@ -6,10 +6,17 @@
   "routes": ["/subscriptions/import"],
   "permission": "import_export_data",
   "order": 2,
+  "checked": "35eca1ea22bb1cbd30472e6a914fe20183e5f10bde19a344195811118c86d9ea",
   "steps": [
     {
       "text": "On the {hdr} screen, choose {dl} for the column layout, or upload your own file directly.",
       "labels": {"hdr": "subscriptions_import.hdr_import", "dl": "btn.download_template"},
+      "image": null,
+      "capture": {"route": "/subscriptions/import", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which subscriptions are due or how many are active; importing a file stays with you on this page.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/subscriptions/import", "selector": "main", "actions": []}
     }

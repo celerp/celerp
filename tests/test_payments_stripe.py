@@ -251,7 +251,9 @@ async def test_an_invoice_stripe_cannot_charge_exactly_does_not_open_a_payment(c
     r = await client.get(f"/pay/{token}", follow_redirects=False)
 
     assert r.status_code == 409
-    assert "CLP" in r.json()["detail"] and "online" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "error.stripe_amount" and detail["params"]["code"] == "CLP", detail
+    assert "online" in detail["message"]
     assert opened == []
 
 

@@ -21,11 +21,13 @@ from fastapi.responses import FileResponse
 from celerp.services.attachments import local_attachment_path
 from celerp.services.auth import get_current_company_id
 from ui.components.encode import inert_media_type
+from celerp.agent_markers import agent_excluded
+from ui.i18n import t
 
 router = APIRouter(prefix="/static/attachments", tags=["attachments"])
 
 
-@router.get("/{company_id}/{filename}")
+@router.get("/{company_id}/{filename}", openapi_extra=agent_excluded("internal"))
 async def get_attachment(
     company_id: str,
     filename: str,
@@ -37,8 +39,8 @@ async def get_attachment(
     directory, is indistinguishable from a missing file to this caller: 404.
     """
     if company_id != str(ctx_company_id):
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.err_not_found"))
     path = local_attachment_path(str(ctx_company_id), filename)
     if path is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.err_not_found"))
     return FileResponse(path, media_type=inert_media_type(mimetypes.guess_type(str(path))[0]))

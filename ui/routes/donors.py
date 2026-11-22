@@ -20,7 +20,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, error_message
 from ui.components.encode import safe_url
-from ui.components.report_kit import plain_error_response
+from ui.components.report_kit import date_params, plain_error_response
 from ui.components.shell import base_shell, page_header
 from ui.components.table import EMPTY, doc_href, empty_state_cta, fmt_money
 from ui.config import get_token as _token
@@ -40,8 +40,11 @@ def _page_url(date_from: str, date_to: str) -> str:
     return f"{PAGE}?{urlencode({'from': date_from, 'to': date_to})}"
 
 
+PERIOD_NAMES = ("from", "to")
+
+
 def _period_vals(date_from: str, date_to: str) -> dict:
-    return {"from": date_from, "to": date_to}
+    return dict(zip(PERIOD_NAMES, (date_from, date_to)))
 
 
 def _gift_line(gift: dict, currency: str | None) -> FT:
@@ -51,11 +54,17 @@ def _gift_line(gift: dict, currency: str | None) -> FT:
 
 
 def _statement_cell(row: dict, period: tuple[str, str]) -> FT:
-    """Sent or not; Send again names the number of the send it asks for, so the same press arriving
-    twice sends once."""
+    """The statement as its last send is stored: still being sent (with Check again, which reads
+    the page again), not sent, sent, or possibly sent when the email service never confirmed it.
+    Send again names the number of the send it asks for, so the same press arriving twice sends once."""
+    if row.get("state") == "sending":
+        return Td(t("donors.statement_sending"), " ",
+                  A(t("btn.check_again"), href=_page_url(*period), cls="btn btn--ghost btn--sm"))
     if not row["sends"]:
         return Td(t("donors.statement_not_sent"))
-    return Td(Span(t("donors.statement_sent"), cls="badge badge--paid"), " ",
+    sent = (t("donors.statement_unconfirmed") if row.get("state") == "unconfirmed"
+            else Span(t("donors.statement_sent"), cls="badge badge--paid"))
+    return Td(sent, " ",
               Button(t("btn.send_again"), hx_post=SEND_URL, hx_swap="none",
                      hx_vals={**_period_vals(*period), "confirm": "on", "resend": row["contact_id"],
                               "seen": row["sends"]},
@@ -111,8 +120,10 @@ def send_card(period: tuple[str, str]) -> FT:
 
 def _sent_message(results: list[dict], resend: list[str]) -> tuple[str, str]:
     """The toast after a send, read from each donor's result: how many went out, how many were
-    skipped for no email or already sent, and who could not be reached."""
-    by_state = {state: [r for r in results if r.get("state") == state] for state in ("sent", "no_email", "failed")}
+    skipped for no email or already sent, who could not be reached and whose email may have gone out
+    unconfirmed. It is a success only when a statement reads as sent and none failed or is unconfirmed."""
+    by_state = {state: [r for r in results if r.get("state") == state]
+                for state in ("sent", "no_email", "failed", "unconfirmed")}
     fresh = [r for r in by_state["sent"] if not r.get("repeat")]
     if resend:
         parts = [sentence("donors.done_resent", name=r["name"]) for r in fresh]
@@ -122,7 +133,24 @@ def _sent_message(results: list[dict], resend: list[str]) -> tuple[str, str]:
         parts.append(sentence("donors.done_already", already=already))
     if by_state["failed"]:
         parts.append(sentence("donors.done_failed", names=", ".join(r["name"] for r in by_state["failed"])))
-    return " ".join(parts), "warning" if by_state["failed"] else "success"
+    if by_state["unconfirmed"]:
+        parts.append(sentence("donors.done_unconfirmed", names=", ".join(r["name"] for r in by_state["unconfirmed"])))
+    delivered = by_state["sent"] and not by_state["failed"] and not by_state["unconfirmed"]
+    return " ".join(parts or [sentence("donors.done_none")]), "success" if delivered else "warning"
+
+
+async def _pending_message(token: str, d_from: str, d_to: str) -> str:
+    """The toast for a send whose answer did not come back: it may still be running, and whose
+    statement reads as still being sent, from the stored sends. It never says the send failed."""
+    try:
+        rows = (await api.donor_statements_preview(token, {"from": d_from, "to": d_to})).get("donors") or []
+    except APIError as e:
+        api.raise_if_signed_out(e)
+        return " ".join([sentence("donors.done_pending"), error_message(e)])
+    parts = [sentence("donors.done_pending")]
+    if sending := [r["name"] for r in rows if r.get("state") == "sending"]:
+        parts.append(sentence("donors.done_sending", names=", ".join(sending)))
+    return " ".join(parts)
 
 
 async def _signed_in_with(request: Request) -> Response | None:
@@ -147,12 +175,15 @@ def setup_routes(app):
         try:
             company = await _get_company(token)
             d_from, d_to, preset = _parse_dates(request, company)
-            data = await api.donor_statements_preview(token, d_from, d_to)
+            data = await api.donor_statements_preview(token, date_params(d_from, d_to, PERIOD_NAMES))
             rows = data.get("donors") or []
+            # An open end ("All time") is dated by the API, so the send and each statement
+            # cover the dates the list was read for.
+            period = (data["period"]["from"], data["period"]["to"])
             body = Div(
-                donors_table(rows, (d_from, d_to), company.get("currency")),
+                donors_table(rows, period, company.get("currency")),
                 wording_card(data["wording"]),
-                send_card((d_from, d_to)) if rows else "",
+                send_card(period) if rows else "",
             )
             bar = _date_filter_bar(PAGE, d_from, d_to, preset, settings_link="/settings/general?tab=company", lang=lang)
         except APIError as e:
@@ -167,7 +198,8 @@ def setup_routes(app):
             return away
         q = request.query_params
         try:
-            pdf = await api.donor_statement_pdf(_token(request), contact_id, q.get("from", ""), q.get("to", ""))
+            pdf = await api.donor_statement_pdf(_token(request), contact_id,
+                                                date_params(q.get("from", ""), q.get("to", ""), PERIOD_NAMES))
         except APIError as e:
             return plain_error_response(e)
         return Response(content=pdf, media_type="application/pdf",
@@ -186,7 +218,11 @@ def setup_routes(app):
         try:
             answer = await api.send_donor_statements(token, d_from, d_to, form.get("confirm") == "on", resend)
         except APIError as e:
-            return _refused(e)
+            if (e.data or {}).get("code") != api.NO_RESPONSE:
+                return _refused(e)
+            # A batch can take longer than this page waits and may still be running: each
+            # statement reads as stored, on the page and in what the toast names.
+            return _done(_page_url(d_from, d_to), await _pending_message(token, d_from, d_to), "info")
         return _done(_page_url(d_from, d_to), *_sent_message(answer.get("results") or [], resend))
 
     @app.put(WORDING_URL)

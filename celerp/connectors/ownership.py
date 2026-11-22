@@ -216,9 +216,7 @@ async def _take_connector_key(session: AsyncSession, connector: str, exclusive: 
     except DBAPIError as exc:
         from celerp.db import sqlstate
         if sqlstate(exc) == _LOCK_NOT_AVAILABLE:
-            raise ConnectorBusyError(
-                f"{connector} is busy syncing; try again in a moment"
-            ) from exc
+            raise ConnectorBusyError(t("error.connector_busy_changing", service=_service(connector))) from exc
         raise
     await session.execute(sa.text("SET LOCAL lock_timeout = DEFAULT"))
 
@@ -414,9 +412,7 @@ async def connected_connector_platforms(
             == OWNERSHIP_OWNED
         }
     except DBAPIError as exc:
-        raise ConnectorOwnershipError(
-            "Could not read this company's connectors"
-        ) from exc
+        raise ConnectorOwnershipError(t("error.connector_unreadable")) from exc
 
 
 async def connector_owned_by_company(

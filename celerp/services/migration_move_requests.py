@@ -15,15 +15,17 @@ import uuid
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refusal_detail
 from celerp.importers.adapters.base import SourceRevisionError
 from celerp.importers.adapters.registry import get_adapter
 from celerp.services import migration_scan_store as store
 from celerp.services.company_handoff_sender import cloud_json
 from celerp.services.migration_export_requests import required_email, required_text
+from ui.i18n import t
 
-ACCOUNT_NEEDED = "Sign in to a free Celerp account to ask us to move a client."
-UNCONFIRMED = "Could not confirm the move request. Retry the same step"
-NO_SET = "Add the export files on this page first, then ask us to move this client."
+ACCOUNT_NEEDED = "migration.move_account_needed"
+UNCONFIRMED = "migration.move_unconfirmed"
+NO_SET = "migration.err_no_export_set"
 UPLOAD_S = 600
 
 
@@ -39,19 +41,19 @@ async def send(*, operation_id: uuid.UUID, firm_name: str, client_name: str, rep
     payload = {"operation_id": str(operation_id), "firm_name": required_text(firm_name, "firm name"),
                "client_name": required_text(client_name, "client name"), "reply_to": required_email(reply_to, "reply-to email")}
     if not (draft_token or "").strip():
-        raise HTTPException(status_code=422, detail=NO_SET)
+        raise HTTPException(status_code=422, detail=t(NO_SET))
     adapter_key, artifacts = await asyncio.to_thread(store.draft_files, draft_token, owner=owner)
     adapter = get_adapter(adapter_key)
     check = getattr(adapter, "check", None)
     if check is None or not artifacts:
-        raise HTTPException(status_code=422, detail=NO_SET)
+        raise HTTPException(status_code=422, detail=t(NO_SET))
     try:
         checked = await asyncio.to_thread(check, artifacts)
     except SourceRevisionError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        raise HTTPException(status_code=422, detail=refusal_detail(exc)) from None
     if not checked.complete:
-        raise HTTPException(status_code=422, detail=(
-            "Finish the export set before asking us to move this client: " + " ".join(checked.problems)))
+        raise HTTPException(status_code=422, detail=t(
+            "migration.err_finish_export_set", problems=" ".join(checked.problems)))
     created = await _cloud("POST", "/move-requests", payload={**payload, "source": adapter.key}, expected=201)
     request_id = uuid.UUID(str(created.get("id")))
     if created.get("status") == "uploading":
@@ -75,7 +77,7 @@ async def _row(request_id: uuid.UUID) -> dict:
     for row in await list_requests():
         if row.get("id") == str(request_id):
             return row
-    raise HTTPException(status_code=404, detail="Move request not found")
+    raise HTTPException(status_code=404, detail=t("migration.err_move_request_not_found"))
 
 
 async def withdraw(request_id: uuid.UUID) -> dict:

@@ -550,7 +550,8 @@ async def test_a_delivery_the_connection_can_no_longer_run_is_dropped(stub, monk
     from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
 
     cid = await _connected(stub)
-    answer = {"connect_ended": ConnectRequired(), "upgrade_required": ConnectorUpgradeRequired(),
+    answer = {"connect_ended": ConnectRequired("connectors.connect_lapsed", service="WooCommerce"),
+              "upgrade_required": ConnectorUpgradeRequired("error.connector_update_needed", service="WooCommerce"),
               "not_this_company": ConnectorOwnershipError("not here")}[final]
     monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(side_effect=answer))
     await _webhook(stub, cid)

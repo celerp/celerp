@@ -330,8 +330,16 @@ def build_wheels(work: Path, names: set[str]) -> dict[str, Path]:
             _require_pg(tree, new)
         print(f"  building {name} {VERSIONS[name]}")
         run([sys.executable, "-m", "pip", "wheel", "--no-deps", "-q", "-w", out, tree],
-            env={**os.environ, "SETUPTOOLS_SCM_PRETEND_VERSION": VERSIONS[name]})
+            env=_wheel_build_env(VERSIONS[name]))
     return dirs
+
+
+def _wheel_build_env(version: str) -> dict[str, str]:
+    """Build environment that stamps a wheel with `version`; setuptools_scm prefers a
+    package-specific pin (as CI sets) over the generic one, so that pin is dropped."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SETUPTOOLS_SCM_PRETEND_VERSION_FOR_")}
+    env["SETUPTOOLS_SCM_PRETEND_VERSION"] = version
+    return env
 
 
 # ── One install ───────────────────────────────────────────────────────────────

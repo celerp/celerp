@@ -465,7 +465,7 @@ async def test_health_readiness_db_error(client):
         assert r.status_code == 503
         # The public readiness probe reports a generic status and never leaks the
         # internal failure reason (F13); the specific cause goes to the server log.
-        detail = r.json()["detail"]
+        detail = refusal_text(r.json()["detail"])
         assert detail == "Service not ready."
         assert "DB" not in detail and "database" not in detail.lower()
     finally:

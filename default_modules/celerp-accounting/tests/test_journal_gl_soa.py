@@ -592,7 +592,7 @@ async def test_journal_source_typing(client):
     assert r.status_code == 200, r.text
     to_id = r.json()["id"]
     r = await client.post("/accounting/transfers", headers=_h(tok), json={
-        "from_bank_id": from_id, "to_bank_id": to_id, "amount": 40.0, "date": "2026-01-12"})
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": from_id, "to_bank_id": to_id, "amount": 40.0, "date": "2026-01-12"})
     assert r.status_code == 200, r.text
     manual = (await _post_manual_je(client, tok, _bal(5.0))).json()["je_id"]
 
@@ -2593,7 +2593,7 @@ async def test_an_imported_line_naming_an_unknown_contact_is_refused(client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 0, "the entry was imported despite naming no real contact"
-    assert any("contact:nobody" in e for e in body["errors"]), body["errors"]
+    assert any("contact:nobody" in refusal_text(e) for e in body["errors"]), body["errors"]
     assert (await _journal(client, tok))["entries"] == start["entries"]
 
 

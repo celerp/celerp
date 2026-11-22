@@ -38,7 +38,9 @@ async def test_backdated_journal_form_shows_the_reconciliation_refusal(owner_ui)
     r = await api.post("/accounting/reconciliation/start", json={
         "bank_account_id": bank["id"], "statement_date": "2026-09-30", "statement_balance": 1000.0})
     sid = r.json()["id"]
-    assert (await api.post(f"/accounting/reconciliation/{sid}/complete")).status_code == 200
+    r = await api.post(f"/accounting/reconciliation/bank/{bank['id']}/complete", json={"idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200 and r.json()["stopped_at"] is None, r.text
+    assert (await api.get(f"/accounting/reconciliation/{sid}")).json()["status"] == "completed"
     page = await owner_ui.post("/accounting/journal/new",
                                data=_form("2026-09-15", bank["chart_account_code"], "10", uuid.uuid4().hex))
     body = html.unescape(page.text)

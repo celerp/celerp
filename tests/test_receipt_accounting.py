@@ -26,6 +26,7 @@ from test_money_stock_and_contact_invariants import (
     _seed_item,
     _seed_user,
 )
+from ui.i18n import refusal_text
 
 
 _OPENING = 100.0  # the lot each test starts with, booked as opening stock when it was created
@@ -129,7 +130,7 @@ async def test_stock_nothing_prices_is_refused(client, session, auth, doc_type):
     before = await _books(session, auth, "1130-P", "2110")
     r = await _receive(client, auth, doc, {"sku": "UNLISTED", "name": "Unlisted", "quantity_received": 2})
     assert r.status_code == 422, r.text
-    assert "is not on this" in r.json()["detail"]
+    assert "is not on this" in refusal_text(r.json()["detail"])
     assert (await _state(session, auth, doc)).get("received_item_ids") in (None, [])
     assert await _books(session, auth, "1130-P", "2110") == before
 
@@ -268,7 +269,7 @@ async def test_a_receipt_cost_other_than_the_document_line_is_refused(client, se
     r = await _receive(client, auth, doc, {"po_line_index": 0, "sku": "PRICED", "name": "Priced",
                                            "quantity_received": 1, "cost_price": 120})
     assert r.status_code == 422, r.text
-    assert "landed cost" in r.json()["detail"]
+    assert "landed cost" in refusal_text(r.json()["detail"])
     assert (await _state(session, auth, doc)).get("received_item_ids") in (None, [])
     assert await _books(session, auth, "1130-P", "2110") == before
 

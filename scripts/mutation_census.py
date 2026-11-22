@@ -70,6 +70,10 @@ READ_SAFE = {
     "ui.api_client.memo_tax_rate_preview": "POST /docs/{id}/tax-rate with dry_run returns the preview; it writes nothing",
     "ui.api_client.get_billing_portal_url": "POST /settings/cloud/billing-portal asks the relay for a portal link; "
                                             "nothing is saved",
+    "ui.api_client.statement_preview": "POST /accounting/reconciliation/statement-preview/{job_id} checks a reading "
+                                       "job's statements again with the edits in the body; it writes nothing",
+    "celerp.ai.files.keep_uploads": "keeps uploaded files in the upload store on disk, not in the database; it holds "
+                                    "the company only so a company reset waits for the files, then rolls back",
 }
 
 

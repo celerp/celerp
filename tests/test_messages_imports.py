@@ -150,13 +150,14 @@ def test_unreadable_backup_version_says_nothing_changed():
 # -- Moving a company into Celerp ---------------------------------------------
 
 def test_prepared_by_limits_say_how_to_fix():
-    from celerp.services.migrations import MigrationError, validate_prepared_by
-    with pytest.raises(MigrationError) as ei:
+    from celerp.accounting_roles import Refused, catalog_refusal
+    from celerp.services.migrations import validate_prepared_by
+    with pytest.raises(Refused) as ei:
         validate_prepared_by("x" * 201)
-    assert ei.value.detail == {"prepared_by": t("migration.err_prepared_by_too_long", "en", max=200)}
-    with pytest.raises(MigrationError) as ei:
+    assert ei.value.detail == catalog_refusal("migration.err_prepared_by_too_long", max=200)
+    with pytest.raises(Refused) as ei:
         validate_prepared_by("a\nb")
-    assert ei.value.detail == {"prepared_by": t("migration.err_prepared_by_one_line", "en")}
+    assert ei.value.detail == catalog_refusal("migration.err_prepared_by_one_line")
 
 
 def test_illegal_action_names_no_status_the_progress_page_moves_past(thai):
@@ -170,11 +171,13 @@ def test_illegal_action_names_no_status_the_progress_page_moves_past(thai):
 
 def test_cutover_before_records_names_the_first_day():
     from datetime import date
+    from celerp.accounting_roles import catalog_refusal
     from celerp.services.migrations import _cutover_date
     scan = SimpleNamespace(scan=SimpleNamespace(period_start=date(2026, 1, 1), period_end=date(2026, 3, 31)))
     with pytest.raises(ValueError) as ei:
         _cutover_date(scan, "2025-12-31")
-    assert str(ei.value) == t("migration.err_cutover_before_start", "en", date="2026-01-01")
+    assert ei.value.detail == catalog_refusal("migration.err_cutover_before_start", date="2026-01-01")
+    assert "1 Jan 2026" in str(ei.value)
     with pytest.raises(ValueError) as ei:
         _cutover_date(scan, "31/12/2025")
     assert str(ei.value) == t("migration.err_cutover_format", "en")

@@ -121,8 +121,8 @@ def read_state() -> dict:
     if not isinstance(state, dict):
         raise UpdateStateError(f"{path} does not hold an update record; repair or remove it")
     pending = state.get("in_progress")
-    if pending and not (isinstance(pending, dict)
-                        and all(isinstance(pending.get(k), str) for k in ("from", "to", "step"))):
+    if "in_progress" in state and not (isinstance(pending, dict)
+                                       and all(isinstance(pending.get(k), str) for k in ("from", "to", "step"))):
         raise UpdateStateError(f"{path} records an unfinished update without its versions and step; "
                                "repair or remove it")
     return state

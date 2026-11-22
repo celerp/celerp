@@ -15,6 +15,7 @@
   ],
   "permission": "view_financial_reports",
   "order": 7,
+  "checked": "255ed2f1ea9d46eaa18b89360fb30bfd01eb2a63263cbbb7ce355526387f262d",
   "steps": [
     {
       "text": "Open {nav} from the sidebar to see MRR, ARR and churn for each month.",
@@ -59,6 +60,16 @@
       "labels": {
         "defs": "subscriptions.definitions_heading"
       },
+      "image": null,
+      "capture": {
+        "route": "/revenue",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "You can also ask the assistant to read these figures for you, such as recurring revenue this month or churn over the last quarter.",
+      "labels": {},
       "image": null,
       "capture": {
         "route": "/revenue",

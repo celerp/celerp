@@ -1,0 +1,25 @@
+{
+  "id": "dashboard.history",
+  "title": "Activity history",
+  "summary": "Search every change made in the company, newest first.",
+  "keywords": ["history", "activity", "audit trail", "who changed", "events"],
+  "routes": ["/history"],
+  "permission": "view_dashboards",
+  "order": 2,
+  "checked": "cf1ab96b2cd552f1f689ecb7cb21192b97ec0aaa46d0391d79256a92331db374",
+  "steps": [
+    {
+      "text": "{title} lists every change made in the company, newest first. Type in {search} to find the events about a record, a person or a word.",
+      "labels": {"title": "dashboard.activity_history", "search": "dashboard.search_events"},
+      "image": null,
+      "capture": {"route": "/history", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant who changed a record, or what happened on a day.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/history", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["dashboard.overview"]
+}

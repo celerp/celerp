@@ -19,6 +19,7 @@ from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_journal_reversal_invariant import _ledger_rows
 from test_peer_accounts import _add, _chart, _fix, _holds, _lines, _sent_journal
 from test_peer_sync_end_to_end import _company_of, _route_to_app
+from ui.i18n import refusal_text
 from test_peer_two_way_sync import ADJUSTED, _journals, _notices, _pair_journals, _post_journal, _two_way
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.timeout(120)]
@@ -179,7 +180,7 @@ async def test_a_linked_account_claimed_as_something_else_is_held(real_client, r
     assert await _ledger_rows(real_engine, firm_company) == rows
     [held] = [h for h in await _holds(real_client, firm_tok) if h["label"] == "Linked claim"]
     assert held["fix"]["kind"] == next(iter(claim)).replace("account_", ""), held
-    assert "6200" in held["reason"], held
+    assert "6200" in refusal_text(held["reason"]), held
 
     monkeypatch.undo()
     _route_to_app(monkeypatch, [])
@@ -206,7 +207,7 @@ async def test_the_receivers_role_account_is_never_matched_by_code_alone(real_cl
     await _two_way(client_company, credential)
     assert await _ledger_rows(real_engine, firm_company) == rows
     [held] = [h for h in await _holds(real_client, firm_tok) if h["label"] == "Sundry"]
-    assert held["fix"]["kind"] == "collision" and "General expense" in held["reason"], held
+    assert held["fix"]["kind"] == "collision" and "General expense" in refusal_text(held["reason"]), held
     await _fix(real_client, firm_tok, held, action="use", account="6955")
     await _two_way(client_company, credential)
     assert ("6955", 3.0, 0.0) in _lines(_sent_journal(await _journals(real_engine, firm_company), costs))

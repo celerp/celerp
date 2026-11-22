@@ -151,7 +151,7 @@ async def test_a_only_login_keeps_its_login_and_starts_a_new_company(real_engine
 
     login = await real_client.post("/auth/login", json={"email": SOLO_EMAIL, "password": SOLO_PASSWORD})
     assert login.status_code == 401
-    assert login.json()["detail"] == "No active company membership"
+    assert refusal_text(login.json()["detail"]) == "No active company membership"
     started = await real_client.post("/auth/start-company", json={
         "email": SOLO_EMAIL, "password": SOLO_PASSWORD, "company_name": "Fresh Start Ltd"})
     assert started.status_code == 200, started.text
@@ -302,8 +302,8 @@ async def test_a_table_it_cannot_place_stops_the_reset_before_any_write(real_eng
         before = await snapshot(real_engine)
         r = await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"}, headers=auth(tok))
         assert r.status_code == 409
-        assert "zz_unplaced" in r.json()["detail"]
-        assert r.json()["detail"].endswith("Nothing was deleted.")
+        assert "zz_unplaced" in refusal_text(r.json()["detail"])
+        assert refusal_text(r.json()["detail"]).endswith("Nothing was deleted.")
         assert await snapshot(real_engine) == before
         assert _folder(tmp_path, a).exists()
     finally:
@@ -324,7 +324,7 @@ async def test_a_connected_store_must_be_disconnected_first(real_engine, real_cl
     r = await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"}, headers=auth(tok))
 
     assert r.status_code == 409
-    assert r.json()["detail"] == ("Disconnect shopify before resetting this company. Nothing was deleted.")
+    assert refusal_text(r.json()["detail"]) == ("Disconnect shopify before resetting this company. Nothing was deleted.")
     assert await snapshot(real_engine) == before
 
 

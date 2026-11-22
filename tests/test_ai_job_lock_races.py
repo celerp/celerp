@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select, text, update
+from sqlalchemy.exc import DBAPIError
 
 from ai_fake_cloud import answer, cloud  # noqa: F401
 from celerp.ai import deadlines, jobs, usage
@@ -204,6 +205,278 @@ async def test_a_stalled_heartbeat_never_sends_the_question_again_under_a_new_id
     assert cloud.executions[str(qid)] == 1
     assert [m["role"] for m in await _messages(real_client, tok, conv)] == ["user", "assistant"]
     assert await count(pg, "ai_usage", "company_id = :c", c=str(company_id)) == 1
+
+
+def _pause_renewal_commit(monkeypatch):
+    """Hold a lease renewal between its UPDATE and its commit, once ``armed["on"]``,
+    until ``release``; ``reached`` tells that one is held."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.sql.dml import Update
+    armed, reached, release = {"on": False}, asyncio.Event(), asyncio.Event()
+    real_execute, real_commit = AsyncSession.execute, AsyncSession.commit
+
+    async def traced_execute(self, stmt, *a, **kw):
+        result = await real_execute(self, stmt, *a, **kw)
+        if isinstance(stmt, Update) and "lease_until" in str(stmt):
+            self._renewal_sent = True
+        return result
+
+    async def pausing_commit(self):
+        if armed["on"] and getattr(self, "_renewal_sent", False):
+            armed["on"], self._renewal_sent = False, False
+            reached.set()
+            await release.wait()
+        return await real_commit(self)
+    monkeypatch.setattr(AsyncSession, "execute", traced_execute)
+    monkeypatch.setattr(AsyncSession, "commit", pausing_commit)
+    return armed, reached, release
+
+
+async def test_running_tasks_keeps_a_lease_renewal_visible_past_its_jobs_own_task(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """A renewal already sent to the database when the job's run finishes can still be
+    mid-transaction a moment after the job's own task leaves ``_tasks`` (the ordering
+    that keeps a reopen from being lost). ``running_tasks()`` is what every drain waits
+    on for "nothing of this job's is still mid-write", so it must stay non-empty for as
+    long as that renewal is open, not just for as long as the job's own task is."""
+    monkeypatch.setattr(jobs, "LEASE_RENEW_S", 0.05)
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+
+    # Patched before the job starts, not after: `_supervise` looks up `_run` as soon as
+    # its task runs, so a patch applied once the run is already under way (as it would be
+    # by the time `_reading_job` returns, which waits for the model call to arrive) would
+    # wrap nothing - the in-flight call already closed over the original function.
+    real_run, held, let_return = jobs._run, asyncio.Event(), asyncio.Event()
+
+    async def delayed_run(job_id_, runner_id):
+        await real_run(job_id_, runner_id)
+        held.set()
+        await let_return.wait()
+    monkeypatch.setattr(jobs, "_run", delayed_run)
+
+    # The run's own write is let all the way to its commit before a renewal is let race
+    # it for the row: the real window is between that write and `_supervise` leaving
+    # `_tasks`, never a contest for the row itself.
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud)
+
+    armed, reached, release = _pause_renewal_commit(monkeypatch)
+
+    cloud.release(identity)
+    await asyncio.wait_for(held.wait(), 5.0)                # the run's own write has committed
+    armed["on"] = True
+    await asyncio.wait_for(reached.wait(), 5.0)              # a renewal is now mid-transaction
+    let_return.set()                                        # `_supervise` may now leave `_tasks`
+    await until(lambda: not jobs.task_alive(job_id))         # the job's own task has left `_tasks`
+    assert jobs.running_tasks(), "a renewal still open must keep the job visible to a drain"
+
+    release.set()
+    await until(lambda: not jobs.running_tasks())
+    assert (await _finished(real_client, tok, job_id))["status"] == "completed"
+
+
+def _lock_job_errors(monkeypatch, fail_first: int = 0) -> list[Exception]:
+    """The errors ``jobs._lock_job`` raised, kept as they happen. Its first ``fail_first``
+    calls raise a database error of their own, as a dropped connection would."""
+    errors, real = [], jobs._lock_job
+
+    async def _watched(session, job_id):
+        try:
+            if len(errors) < fail_first:
+                raise DBAPIError("SELECT", {}, Exception("the connection dropped"))
+            return await real(session, job_id)
+        except Exception as exc:
+            errors.append(exc)
+            raise
+    monkeypatch.setattr(jobs, "_lock_job", _watched)
+    return errors
+
+
+async def _alive_past_a_failed_claim(task, errors) -> None:
+    """The job's task met a claim that raised (the company lock timed out) and lives on."""
+    await until(lambda: bool(errors) or task.done(), 30.0)
+    await asyncio.sleep(0.3)
+    assert not task.done(), f"the job's task ended while its job is open: {errors}"
+
+
+async def test_a_start_up_claim_that_times_out_on_the_company_lock_is_tried_again(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """Another company write gets in between the commit that hands a job to this process
+    (here the start-up recovery) and the task's first claim, and holds the lock past the
+    request lock timeout. The task claims again once the lock is free, the job ends, and
+    the operations the recovery held back from the usage reconciler are let go."""
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.05)
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud, end="cut")
+    await jobs.shutdown()                               # the process stops mid-step
+    _finish_cut_off(cloud, identity)
+    started, real_start = [], jobs.start_job
+    monkeypatch.setattr(jobs, "start_job", started.append)
+    assert await jobs.recover_on_start() == 1           # the next start takes the job, committed
+    monkeypatch.setattr(jobs, "start_job", real_start)
+    assert jobs.held_operation_ids()
+    errors = _lock_job_errors(monkeypatch)
+    async with _company_held(pg, company_id):
+        for job in started:
+            real_start(job)
+        await _alive_past_a_failed_claim(jobs._tasks[job_id], errors)
+    assert (await _finished(real_client, tok, job_id))["status"] == "completed"
+    assert cloud.executions[identity] == 1
+    assert not jobs.held_operation_ids()
+
+
+async def test_a_stop_between_failing_start_up_claims_lets_the_held_operations_go(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """A company write holds the lock past the task's start-up claim, and the lease the
+    recovery wrote lapses before the task's next one. A Stop in that gap ends the job, so
+    the next claim finds nothing to run and the task ends. The operations the recovery
+    held back from the usage reconciler are let go with it: the next reconcile pass
+    settles the charge of the send the stopped process cut off."""
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 2.0)    # the gap between two claims
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud, end="cut")
+    await jobs.shutdown()                               # the process stops mid-step
+    _finish_cut_off(cloud, identity)
+    started, real_start = [], jobs.start_job
+    monkeypatch.setattr(jobs, "start_job", started.append)
+    assert await jobs.recover_on_start() == 1
+    monkeypatch.setattr(jobs, "start_job", real_start)
+    held = jobs.held_operation_ids()
+    assert held
+    errors = _lock_job_errors(monkeypatch)
+    async with _company_held(pg, company_id):
+        for job in started:
+            real_start(job)
+        await _alive_past_a_failed_claim(jobs._tasks[job_id], errors)
+    await _lapse(pg, job_id)                            # the recovery's lease runs out
+    assert await jobs.cancel(job_id, company_id, user_id) is True
+    assert (await _finished(real_client, tok, job_id))["status"] == "cancelled"
+    await until(lambda: not jobs.task_alive(job_id), 30.0)
+    assert len(errors) == 1                             # the Stop came before the second claim
+    assert not jobs.held_operation_ids()
+    async with maker(pg)() as s:
+        await s.execute(update(AIUsage).where(AIUsage.operation_id.in_(held)).values(   # time passes: the send
+            reconcile_at=datetime.now(timezone.utc) - timedelta(seconds=1)))            # has surely ended
+        await s.commit()
+        await usage.reconcile_usage(s)
+        rows = (await s.execute(select(AIUsage.pending).where(AIUsage.operation_id.in_(held)))).scalars().all()
+    assert rows == [False]
+
+
+async def test_a_claim_after_a_failed_run_that_times_out_on_the_company_lock_is_tried_again(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """A company write holds the lock while a file's answer arrives: the step's write and
+    its failed-write time out, the run raises, and the claim that follows times out too.
+    The task lives on and the job ends once the lock is free, with one model run."""
+    monkeypatch.setattr(jobs, "STEP_ATTEMPTS", 1)
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.05)
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud)
+    errors = _lock_job_errors(monkeypatch)
+    async with _company_held(pg, company_id):
+        cloud.release(identity)             # the model answers; the step write now needs the company lock
+        await _alive_past_a_failed_claim(jobs._tasks[job_id], errors)
+    assert (await _finished(real_client, tok, job_id))["status"] == "completed"
+    assert cloud.executions[identity] == 1
+    assert not jobs.held_operation_ids()
+
+
+async def test_a_claim_that_raises_once_is_tried_again_and_the_job_runs_once(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """Any database error at the claim counts as a failed run: the task claims again after
+    the delay and the job ends with one model run. Nothing ran under the failed claim, so
+    there is no failure of a run to record for it."""
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.05)
+    recorded, real_after = [], jobs._after_failure
+
+    async def _after(job_id_, runner_id):
+        recorded.append(runner_id)
+        await real_after(job_id_, runner_id)
+    monkeypatch.setattr(jobs, "_after_failure", _after)
+    errors = _lock_job_errors(monkeypatch, fail_first=1)
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud)
+    cloud.release(identity)
+    assert (await _finished(real_client, tok, job_id))["status"] == "completed"
+    assert cloud.executions[identity] == 1
+    assert len(errors) == 1 and recorded == []
+    assert not jobs.held_operation_ids()
+
+
+async def test_a_company_gone_at_a_reopens_claim_ends_the_job_without_reusing_the_old_claim(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """A reopen's claim meets a company already gone: the task ends there, never reusing
+    the finished run's claim for another one. (It never gets the chance to: a stale claim
+    reused from the finished run would reach the job's own claim inside the second run.)"""
+    calls, real_lock = [], jobs._lock_job
+
+    async def _lock(session, job_id_):
+        calls.append(job_id_)
+        if len(calls) == 3:                             # the reopen's own claim check
+            raise jobs.CompanyGone()
+        return await real_lock(session, job_id_)
+    monkeypatch.setattr(jobs, "_lock_job", _lock)
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud)
+    jobs.start_job(job_id)                              # a reopen while the first run is held
+    cloud.release(identity)
+    await until(lambda: not jobs.task_alive(job_id))
+    assert (await _finished(real_client, tok, job_id))["status"] == "completed"
+    assert cloud.executions[identity] == 1
+    assert len(calls) == 3
+
+
+async def _open_renewals(engine) -> int:
+    """The lease renewals whose transaction is still open, as the database sees them."""
+    async with engine.connect() as conn:
+        return (await conn.execute(text(
+            "select count(*) from pg_stat_activity where datname = current_database() "
+            "and pid <> pg_backend_pid() and state like 'idle in transaction%' and query ilike '%lease_until%'"))).scalar_one()
+
+
+async def test_the_apps_shutdown_waits_for_a_renewal_in_flight_and_leaves_no_transaction(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """The app's shutdown (the lifespan's stop of ``jobs.shutdown()`` within its grace) meets
+    a renewal already sent whose job's task has left ``_tasks``: it waits for the renewal's
+    commit instead of cancelling it mid-transaction, then leaves no transaction open and the
+    job's row as the run wrote it."""
+    import celerp.main as main
+    monkeypatch.setattr(jobs, "LEASE_RENEW_S", 0.05)
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+    real_run, held, let_return = jobs._run, asyncio.Event(), asyncio.Event()
+
+    async def delayed_run(job_id_, runner_id):
+        await real_run(job_id_, runner_id)
+        held.set()
+        await let_return.wait()
+    monkeypatch.setattr(jobs, "_run", delayed_run)
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud)
+
+    armed, reached, release = _pause_renewal_commit(monkeypatch)
+
+    cloud.release(identity)
+    await asyncio.wait_for(held.wait(), 5.0)                # the run's own write has committed
+    armed["on"] = True
+    await asyncio.wait_for(reached.wait(), 5.0)              # a renewal is now mid-transaction
+    let_return.set()
+    await until(lambda: not jobs.task_alive(job_id))         # the job's own task has left `_tasks`
+    (renewal,) = jobs.running_tasks()
+    before = await _row(pg, job_id)
+    assert await _open_renewals(pg) == 1
+
+    stop = asyncio.ensure_future(main._stop_background_tasks(
+        [], finishing=[asyncio.create_task(jobs.shutdown())]))
+    try:
+        await asyncio.sleep(0.4)
+        assert not stop.done(), "the shutdown returned with a renewal's transaction still open"
+    finally:
+        release.set()
+        await asyncio.wait_for(stop, 5.0)
+    assert renewal.done() and not renewal.cancelled()
+    assert not jobs.running_tasks()
+    assert await _open_renewals(pg) == 0
+    after = await _row(pg, job_id)
+    assert (after.status, after.runner_id, after.lease_until) == (before.status, before.runner_id, before.lease_until)
+    assert after.status == "completed"
 
 
 # ── A reset ───────────────────────────────────────────────────────────────────

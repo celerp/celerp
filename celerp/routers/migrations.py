@@ -35,6 +35,7 @@ from python_multipart.multipart import MultipartParser, parse_options_header
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import field_refusal
 from celerp.db import get_session
 from celerp.importers.adapters.registry import get_adapter, list_adapters
 from celerp.models.company import Company, User
@@ -60,16 +61,22 @@ from celerp.services.auth import (
     request_caller,
     validate_password,
 )
-from celerp.services.business_time import business_timezone
+from celerp.services.business_time import InvalidTimezoneError, business_timezone
 from celerp.services.permissions import role_has_permission
 from celerp.services.provisioning import create_install_owner, provision_migration_company
 from ui.i18n import t
+from celerp.agent_markers import agent_excluded
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/migrations", tags=["migrations"])
 
 OWNER_ONLY = "migration.err_owner_only"
+
+# Why every role reaches the run routes: a run answers only to its creator while they may
+# manage its company (get_owned_migration_run), whichever company the session is on.
+OWN_RUNS = "the caller's own migrations, judged by their role in each migration's company"
+
 BOOTSTRAPPED = "migration.err_bootstrapped"
 MODULES_NOT_SAVED = "migration.err_modules_not_saved"
 BOOTSTRAP: store.ScanOwner = ("bootstrap", None)
@@ -188,44 +195,50 @@ async def user_owner(ctx: AuthContext = Depends(get_auth_context)) -> AuthContex
     return ctx
 
 
+# Read by the agent compiler as require_permission's guard is, so a role without the
+# permission never sees these tools.
+user_owner.required_permission = "manage_company_lifecycle"
+
+
 async def ensure_not_bootstrapped(session: AsyncSession) -> None:
     if await session.scalar(select(User.id).limit(1)) is not None:
         raise HTTPException(status_code=409, detail=t(BOOTSTRAPPED))
 
 
-def _company_name(value: str, errors: dict) -> str:
+def _company_name(value: str, errors: list) -> str:
     name = value.strip()
     if (error := migrations.company_name_error(name)) is not None:
-        errors["company_name"] = error
+        errors.append(field_refusal("company_name", error))
     return name
 
 
-def _company_timezone(value: str, errors: dict) -> str:
+def _company_timezone(value: str, errors: list) -> str:
     """The moved-in company's timezone, checked as the company settings check it."""
     try:
         return business_timezone(value).key
-    except ValueError as exc:
-        errors["timezone"] = str(exc)
+    except InvalidTimezoneError as exc:
+        errors.append(field_refusal("timezone", exc.detail))
         return ""
 
 
 _EMAIL_MAX = 320  # users.email is String(320)
 
 
-def owner_account(name: str, email: str, password: str, errors: dict) -> tuple[str, str]:
+def owner_account(name: str, email: str, password: str, errors: list) -> tuple[str, str]:
     """Check the first owner's name, email and password, recording each problem in
-    ``errors``; returns the trimmed name and email."""
+    ``errors`` (field_refusal); returns the trimmed name and email."""
     name, email = name.strip(), email.strip()
     if not name:
-        errors["name"] = "Enter your name."
+        errors.append(field_refusal("name", t("migration.err_owner_name_empty")))
     elif "\x00" in name:
-        errors["name"] = "Your name contains a character that cannot be saved."
+        errors.append(field_refusal("name", t("migration.err_owner_name_bad_character")))
     if "@" not in email or "\x00" in email or len(email) > _EMAIL_MAX:
-        errors["email"] = "Enter a valid email address."
+        errors.append(field_refusal("email", t("migration.err_owner_email_invalid")))
     try:
         validate_password(password)
     except ValueError:
-        errors["password"] = f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+        errors.append(field_refusal("password", t("auth.err_password_must_at_least_min_password",
+                                                   min_password_length=MIN_PASSWORD_LENGTH)))
     return name, email
 
 
@@ -296,7 +309,7 @@ async def _owned_run(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext)
 
 # ── Sources ──────────────────────────────────────────────────────────────────
 
-@router.get("/sources")
+@router.get("/sources", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": "the systems any company can move its data in from"}, summary="List the systems the company can move its data in from, such as Xero, QuickBooks or a spreadsheet.")
 async def sources() -> list[dict]:
     return [{
         "key": a.key, "display_name": a.display_name, "accepts": a.accepts,
@@ -315,7 +328,7 @@ def _scan_result(result: store.ScanSession | store.DraftSession) -> dict:
 
 # ── Bootstrap (no user exists yet) ───────────────────────────────────────────
 
-@router.post("/bootstrap/scan")
+@router.post("/bootstrap/scan", openapi_extra=agent_excluded("session"))
 @limiter.limit("5/minute")
 async def bootstrap_scan(request: Request, session: AsyncSession = Depends(get_session),
                          x_setup_code: str | None = Header(None)) -> dict:
@@ -324,19 +337,19 @@ async def bootstrap_scan(request: Request, session: AsyncSession = Depends(get_s
     return _scan_result(await store.create_scan(_upload_parts(request), owner=BOOTSTRAP))
 
 
-@router.post("/bootstrap/scan/read")
+@router.post("/bootstrap/scan/read", openapi_extra=agent_excluded("session"))
 async def bootstrap_scan_read(payload: ScanTokenIn, session: AsyncSession = Depends(get_session)) -> dict:
     await ensure_not_bootstrapped(session)
     return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=BOOTSTRAP))}
 
 
-@router.post("/bootstrap/decisions")
+@router.post("/bootstrap/decisions", openapi_extra=agent_excluded("session"))
 async def bootstrap_decisions(payload: DecisionsIn, session: AsyncSession = Depends(get_session)) -> dict:
     await ensure_not_bootstrapped(session)
     return await _save_decisions(BOOTSTRAP, payload)
 
 
-@router.post("/bootstrap/start", status_code=201)
+@router.post("/bootstrap/start", status_code=201, openapi_extra=agent_excluded("session"))
 async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Depends(get_session),
                           x_setup_code: str | None = Header(None)) -> dict:
     """Create the first owner, the staged company and a preparing run in one commit, then
@@ -354,12 +367,12 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
         await ensure_not_bootstrapped(session)
         scan = store.load_scan(payload.scan_token, owner=BOOTSTRAP)
         plan = await _prepare(scan)
-        errors: dict[str, str] = {}
+        errors: list[dict] = []
         company_name = _company_name(payload.company_name, errors)
         timezone = _company_timezone(payload.timezone, errors)
         name, email = owner_account(payload.name, payload.email, payload.password, errors)
         if errors:
-            raise HTTPException(status_code=422, detail=errors)
+            raise HTTPException(status_code=422, detail={"errors": errors})
         awaiting = await _turn_on_modules(plan)
         user = await create_install_owner(session, name=name, email=email, password=payload.password)
         run = await _stage(session, user=user, company_name=company_name, timezone=timezone, scan=scan, plan=plan,
@@ -379,7 +392,7 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
 
 # ── Company owner ────────────────────────────────────────────────────────────
 
-@router.post("/scan")
+@router.post("/scan", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Scan uploaded export files from another system to see what they hold before moving anything.")
 async def scan(request: Request, ctx: AuthContext = Depends(user_owner)) -> dict:
     return _scan_result(await store.create_scan(_upload_parts(request), owner=("user", ctx.user.id)))
 
@@ -389,11 +402,11 @@ def _user_scan_owner(scan_token: str, ctx: AuthContext) -> store.ScanOwner:
     companies upload. Anyone else's reads as expired."""
     owner = store.scan_owner(scan_token)
     if owner not in (("user", ctx.user.id), (store.SEVERAL, ctx.user.id)):
-        raise store.ScanStoreError(410, store.EXPIRED)
+        raise store.ScanStoreError(410, t(store.EXPIRED))
     return owner
 
 
-@router.post("/scan/read")
+@router.post("/scan/read", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Read the result of a scan of export files, or the migration already started from it.")
 async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(user_owner),
                     session: AsyncSession = Depends(get_session)) -> dict:
     """The scan's view, or ``{"run_id"}`` of the run the caller already started from it,
@@ -405,12 +418,12 @@ async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(user_owner)
     return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=owner))}
 
 
-@router.post("/scan/decisions")
+@router.post("/scan/decisions", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Save the choices made on a scan, such as which files to include and how to treat duplicates.")
 async def scan_decisions(payload: DecisionsIn, ctx: AuthContext = Depends(user_owner)) -> dict:
     return await _save_decisions(_user_scan_owner(payload.scan_token, ctx), payload)
 
 
-@router.post("/start-from-scan", status_code=201)
+@router.post("/start-from-scan", status_code=201, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Start moving the company's data in from a scanned set of export files.")
 async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: AuthContext = Depends(user_owner),
                           session: AsyncSession = Depends(get_session)) -> dict:
     """Start a migration from a scan, 201. A repeated start from the same scan answers 200
@@ -420,11 +433,11 @@ async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: Aut
         if run is None:
             scan = store.load_scan(payload.scan_token, owner=_user_scan_owner(payload.scan_token, ctx))
             plan = await _prepare(scan)
-            errors: dict[str, str] = {}
+            errors: list[dict] = []
             company_name = _company_name(payload.company_name, errors)
             timezone = _company_timezone(payload.timezone, errors)
             if errors:
-                raise HTTPException(status_code=422, detail=errors)
+                raise HTTPException(status_code=422, detail={"errors": errors})
             awaiting = await _turn_on_modules(plan)
             run = await _stage(session, user=ctx.user, company_name=company_name, timezone=timezone, scan=scan,
                                plan=plan, awaiting=awaiting)
@@ -451,11 +464,11 @@ _basic = HTTPBasic(auto_error=False)
 def _start_company_owner(scan_token: str) -> store.ScanOwner:
     owner = store.scan_owner(scan_token)
     if owner[0] != START_COMPANY:
-        raise store.ScanStoreError(410, store.EXPIRED)
+        raise store.ScanStoreError(410, t(store.EXPIRED))
     return owner
 
 
-@router.post("/start-company/scan")
+@router.post("/start-company/scan", openapi_extra=agent_excluded("no_company"))
 @limiter.limit("5/minute")
 async def start_company_scan(request: Request, credentials: HTTPBasicCredentials | None = Depends(_basic),
                              session: AsyncSession = Depends(get_session)) -> dict:
@@ -467,18 +480,18 @@ async def start_company_scan(request: Request, credentials: HTTPBasicCredentials
     return _scan_result(await store.create_scan(_upload_parts(request), owner=(START_COMPANY, user_id)))
 
 
-@router.post("/start-company/scan/read")
+@router.post("/start-company/scan/read", openapi_extra=agent_excluded("no_company"))
 async def start_company_scan_read(payload: ScanTokenIn) -> dict:
     owner = _start_company_owner(payload.scan_token)
     return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=owner))}
 
 
-@router.post("/start-company/decisions")
+@router.post("/start-company/decisions", openapi_extra=agent_excluded("no_company"))
 async def start_company_decisions(payload: DecisionsIn) -> dict:
     return await _save_decisions(_start_company_owner(payload.scan_token), payload)
 
 
-@router.post("/start-company/start", status_code=201)
+@router.post("/start-company/start", status_code=201, openapi_extra=agent_excluded("no_company"))
 @limiter.limit("5/minute")
 async def start_company_start(request: Request, payload: StartCompanyStartIn,
                               session: AsyncSession = Depends(get_session)) -> dict:
@@ -498,11 +511,11 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
             raise migrations.MigrationError(409, t(migrations.SCAN_ALREADY_STARTED))
         scan = store.load_scan(payload.scan_token, owner=(START_COMPANY, user.id))
         plan = await _prepare(scan)
-        errors: dict[str, str] = {}
+        errors: list[dict] = []
         company_name = _company_name(payload.company_name, errors)
         timezone = _company_timezone(payload.timezone, errors)
         if errors:
-            raise HTTPException(status_code=422, detail=errors)
+            raise HTTPException(status_code=422, detail={"errors": errors})
         awaiting = await _turn_on_modules(plan)
         run = await _stage(session, user=user, company_name=company_name, timezone=timezone, scan=scan, plan=plan,
                            awaiting=awaiting)
@@ -536,18 +549,18 @@ class AddExportFilesIn(BaseModel):
     draft_token: str | None = None
 
 
-@router.get("/export-requests")
+@router.get("/export-requests", openapi_extra={"x-celerp-agent": True}, summary="List the export checklists sent to clients and whether they uploaded their files.")
 async def export_requests(ctx: AuthContext = Depends(user_owner)) -> dict:
     return {"items": await sender.as_http(export_requests_service.list_requests())}
 
 
-@router.post("/export-requests", status_code=201)
+@router.post("/export-requests", status_code=201, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Email a client the checklist of files to export from their old system, with a link to upload them.")
 async def send_export_request(payload: ExportRequestIn, ctx: AuthContext = Depends(user_owner)) -> dict:
     """Email a client the export checklist of a source; the files they upload are added here."""
     return await sender.as_http(export_requests_service.send_request(**payload.model_dump()))
 
 
-@router.post("/export-requests/{request_id}/add")
+@router.post("/export-requests/{request_id}/add", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Add the files a client uploaded for an export request to the migration.")
 async def add_export_files(request_id: uuid.UUID, payload: AddExportFilesIn,
                            ctx: AuthContext = Depends(user_owner)) -> dict:
     """The client's files, read and added to the upload or to the open draft."""
@@ -555,7 +568,7 @@ async def add_export_files(request_id: uuid.UUID, payload: AddExportFilesIn,
         request_id, payload.draft_token, owner=("user", ctx.user.id))))
 
 
-@router.post("/export-requests/{request_id}/revoke")
+@router.post("/export-requests/{request_id}/revoke", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Cancel an export request so its upload link stops working.")
 async def revoke_export_request(request_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)) -> dict:
     return await sender.as_http(export_requests_service.revoke(request_id))
 
@@ -570,30 +583,30 @@ class MoveRequestIn(BaseModel):
     draft_token: str = ""
 
 
-@router.get("/move-requests")
+@router.get("/move-requests", openapi_extra={"x-celerp-agent": True}, summary="List the requests sent to the Celerp team to move a client's data, with their status.")
 async def move_requests(ctx: AuthContext = Depends(user_owner)) -> dict:
     return {"items": await sender.as_http(move_requests_service.list_requests())}
 
 
-@router.post("/move-requests", status_code=201)
+@router.post("/move-requests", status_code=201, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Ask the Celerp team to move a client's data in from the export files collected so far.")
 async def send_move_request(payload: MoveRequestIn, ctx: AuthContext = Depends(user_owner)) -> dict:
     """Send the open export set to Celerp's team, who move the client and send back a company copy."""
     return await sender.as_http(move_requests_service.send(**payload.model_dump(), owner=("user", ctx.user.id)))
 
 
-@router.post("/move-requests/{request_id}/withdraw")
+@router.post("/move-requests/{request_id}/withdraw", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Withdraw a request sent to the Celerp team to move a client's data.")
 async def withdraw_move_request(request_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)) -> dict:
     return await sender.as_http(move_requests_service.withdraw(request_id))
 
 
 # ── Move several companies ───────────────────────────────────────────────────
 
-@router.get("/several")
+@router.get("/several", openapi_extra={"x-celerp-agent": True}, summary="List the uploaded files that are each being moved in as their own company.")
 async def several(ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)) -> dict:
     return {"items": await batches.items(session, ctx.user.id)}
 
 
-@router.post("/several", status_code=201)
+@router.post("/several", status_code=201, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Upload several export files, each to be moved in as its own company.")
 async def upload_several(request: Request, ctx: AuthContext = Depends(user_owner),
                          session: AsyncSession = Depends(get_session)) -> dict:
     """Keep each file of the upload as its own company to move, then list them all."""
@@ -601,20 +614,20 @@ async def upload_several(request: Request, ctx: AuthContext = Depends(user_owner
     return {"items": await batches.items(session, ctx.user.id)}
 
 
-@router.post("/several/{file_id}/open")
+@router.post("/several/{file_id}/open", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Open one uploaded file of a multi-company upload to start its migration.")
 async def open_several(file_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
                        session: AsyncSession = Depends(get_session)) -> dict:
     return await batches.open_file(session, ctx.user.id, file_id)
 
 
-@router.delete("/several/{file_id}", status_code=204)
+@router.delete("/several/{file_id}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company"}, summary="Remove one file from a multi-company upload.")
 async def remove_several(file_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
                          session: AsyncSession = Depends(get_session)) -> Response:
     await batches.remove(session, ctx.user.id, file_id)
     return Response(status_code=204)
 
 
-@router.delete("/templates/{source_system}", status_code=204)
+@router.delete("/templates/{source_system}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": "the posting accounts the caller's own migrations saved"}, summary="Forget the posting accounts saved from earlier migrations out of one source system.")
 async def forget_template(source_system: str, ctx: AuthContext = Depends(get_auth_context),
                           session: AsyncSession = Depends(get_session)) -> Response:
     """Forget the posting accounts this person's migrations from ``source_system`` saved."""
@@ -624,14 +637,14 @@ async def forget_template(source_system: str, ctx: AuthContext = Depends(get_aut
     return Response(status_code=204)
 
 
-@router.get("/open")
+@router.get("/open", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="List the user's migrations that are still in progress.")
 async def get_open_runs(ctx: AuthContext = Depends(get_auth_context),
                         session: AsyncSession = Depends(get_session)) -> dict:
     """This person's moves still in progress, so any page can lead back to them."""
     return {"items": await migrations.open_runs(session, ctx.user.id)}
 
 
-@router.get("/staged")
+@router.get("/staged", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Show the latest migration of the staged company this session is working on.")
 async def get_staged_run(ctx: AuthContext = Depends(get_auth_context),
                          session: AsyncSession = Depends(get_session)) -> dict:
     """The latest run of the staged company this session is scoped to: where the session belongs."""
@@ -644,13 +657,13 @@ async def get_staged_run(ctx: AuthContext = Depends(get_auth_context),
     return await _run_view(session, run_id, ctx)
 
 
-@router.get("/{run_id}")
+@router.get("/{run_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Read one migration with its status, progress and what it found.")
 async def get_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                   session: AsyncSession = Depends(get_session)) -> dict:
     return await _run_view(session, run_id, ctx)
 
 
-@router.get("/{run_id}/reconciliation")
+@router.get("/{run_id}/reconciliation", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Compare a migration's totals with the source system's figures to show what matches and what differs.")
 async def get_reconciliation(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                              session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
@@ -659,7 +672,7 @@ async def get_reconciliation(run_id: uuid.UUID, ctx: AuthContext = Depends(get_a
     return run.reconciliation
 
 
-@router.get("/{run_id}/reconciliation/pack")
+@router.get("/{run_id}/reconciliation/pack", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"], "x-celerp-agent-download": "/migrations/{run_id}/pack"}, summary="Download the reconciliation pack of a migration as a file.")
 async def get_reconciliation_pack(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                   session: AsyncSession = Depends(get_session)) -> Response:
     run = await _owned_run(session, run_id, ctx)
@@ -674,7 +687,7 @@ async def get_reconciliation_pack(run_id: uuid.UUID, ctx: AuthContext = Depends(
                     headers={"Content-Disposition": f'attachment; filename="reconciliation-{run.id}.csv"'})
 
 
-@router.post("/{run_id}/start", status_code=202)
+@router.post("/{run_id}/start", status_code=202, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Start a migration that is ready to run.")
 async def start_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                     session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
@@ -688,7 +701,7 @@ async def start_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_conte
     return await migrations.run_view(session, run)
 
 
-@router.post("/{run_id}/cancel", status_code=202)
+@router.post("/{run_id}/cancel", status_code=202, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Cancel a migration that is running.")
 async def cancel_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                      session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
@@ -700,7 +713,7 @@ async def cancel_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_cont
     return await migrations.run_view(session, run)
 
 
-@router.get("/{run_id}/posting-accounts")
+@router.get("/{run_id}/posting-accounts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="List the posting accounts a migration will set when it finishes and the choices for each.")
 async def get_posting_accounts(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                session: AsyncSession = Depends(get_session)) -> dict:
     """The posting accounts finishing this migration will set, and the choices for each."""
@@ -709,7 +722,7 @@ async def get_posting_accounts(run_id: uuid.UUID, ctx: AuthContext = Depends(get
     return {"roles": await posting_readiness.readiness(session, run.company_id, previous) or []}
 
 
-@router.post("/{run_id}/finalize")
+@router.post("/{run_id}/finalize", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Finish a migration and make its data the company's live records.")
 async def finalize_run(run_id: uuid.UUID, body: FinalizeIn | None = None,
                        ctx: AuthContext = Depends(get_auth_context),
                        session: AsyncSession = Depends(get_session)) -> dict:
@@ -725,7 +738,7 @@ async def finalize_run(run_id: uuid.UUID, body: FinalizeIn | None = None,
     return await migrations.run_view(session, run)
 
 
-@router.post("/{run_id}/discard")
+@router.post("/{run_id}/discard", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Discard a migration and everything it brought in.")
 async def discard_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                       session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
@@ -741,14 +754,14 @@ async def discard_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_con
 
 # ── Xero attachments ─────────────────────────────────────────────────────────
 
-@router.get("/{run_id}/xero-attachments")
+@router.get("/{run_id}/xero-attachments", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Show the progress of fetching the files attached to documents in Xero for a migration.")
 async def get_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                session: AsyncSession = Depends(get_session)) -> dict:
     """The fetch of the files attached to this Xero migration's documents in Xero."""
     return await xero_attachments.view(session, await _owned_run(session, run_id, ctx))
 
 
-@router.post("/{run_id}/xero-attachments")
+@router.post("/{run_id}/xero-attachments", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Start fetching the files attached to documents in Xero for a migration.")
 async def start_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                  session: AsyncSession = Depends(get_session)) -> dict:
     """Start fetching them, or return the fetch under way with its Xero sign-in link."""
@@ -760,14 +773,14 @@ async def start_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(g
         raise
 
 
-@router.post("/{run_id}/xero-attachments/confirm")
+@router.post("/{run_id}/xero-attachments/confirm", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Confirm which Xero organisation to fetch the attached files from.")
 async def confirm_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                    session: AsyncSession = Depends(get_session)) -> dict:
     """Fetch from the organisation the Xero sign-in chose, as the owner saw it."""
     return await xero_attachments.confirm(session, await _owned_run(session, run_id, ctx))
 
 
-@router.post("/{run_id}/xero-attachments/stop")
+@router.post("/{run_id}/xero-attachments/stop", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Stop fetching files from Xero for a migration, keeping the files already attached.")
 async def stop_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                 session: AsyncSession = Depends(get_session)) -> dict:
     """End the fetch and close its Xero access; files already attached stay."""

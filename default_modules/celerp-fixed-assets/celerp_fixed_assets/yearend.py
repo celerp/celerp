@@ -25,14 +25,16 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import catalog_refusal, refusal
 from celerp.services.business_time import business_today, company_today
 
 from celerp_fixed_assets import recon, remeasure, runs, setup, taxbooks
+from celerp_fixed_assets.calc import rules
 from celerp.services.periods import month_index, period_label
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import conflict
 from celerp_fixed_assets.store import _emit, _entities, _state
+from ui.i18n import t
 
 MARK_STATES = ("open", "noted", "accepted")
 
@@ -122,9 +124,9 @@ async def waiting_corrections(session, company_id) -> list[dict]:
 def _remedy(found: dict) -> str:
     """What sets a missing tax figure right."""
     if found["status"] == "no_category":
-        return "Set its tax category on its class or its tax book."
+        return t("fixed_assets.err_remedy_no_category")
     if found["status"] == "error":
-        return f"{found.get('reason') or ''} Check the regime's module, then work the year out again.".strip()
+        return t("fixed_assets.err_remedy_tax_error", reason=found.get("reason") or "").strip()
     return found.get("reason") or ""
 
 
@@ -194,20 +196,19 @@ async def mark(session, company_id, user_id, year, body: dict) -> dict:
     await lock_company(session, company_id)
     key, state = str(body.get("key") or ""), body.get("state")
     if state not in MARK_STATES:
-        raise setup.unprocessable("Choose open, noted or accepted.")
+        raise setup.refuse("fixed_assets.err_choose_open_noted_accepted")
     reason = str(body.get("reason") or "").strip()
     effect = str(body.get("effect") or "").strip()
     if state != "open" and not reason:
-        raise setup.unprocessable("A reason is required to note or accept a year-end item.")
+        raise setup.refuse("fixed_assets.err_reason_required_note_accept_year_end")
     if state == "accepted" and not effect:
-        raise setup.unprocessable("Describe the effect of accepting this item on the figures.")
+        raise setup.refuse("fixed_assets.err_describe_effect_accepting_item_figures")
     found = next((i for i in (await report(session, company_id, year))["items"] if i["key"] == key), None)
     if found is None:
         raise HTTPException(status_code=404, detail=refusal(
             "fixed_assets.err_no_year_end_item", "There is no such year-end item. Select Try again."))
     if state == "accepted" and found["kind"] == "tax":
-        raise conflict(f"{found['label']}. A tax year keeps its figures for the years after it, so a missing "
-                       f"figure cannot be accepted. {found['remedy']} Note it while it waits.")
+        raise setup.refused(409, "fixed_assets.err_label_tax_year_keeps_its_figures", label=found['label'], remedy=found['remedy'])
     saved = await _state(session, company_id, yearend_id(year)) or {}
     marks = dict(saved.get("marks") or {})
     if state == "open":
@@ -236,9 +237,8 @@ async def _year(session, company_id, user_id, regime_key: str, year):
     await lock_company(session, company_id)
     regime = taxbooks.regime_for(settings, regime_key)
     year = taxbooks.check_year(year)
-    reason = taxbooks.unavailable(settings, regime_key)
-    if reason:
-        raise conflict(reason)
+    if taxbooks.unavailable(settings, regime_key):
+        raise conflict(rules.unavailable_refusal("tax_regime", regime_key))
     saved = await _state(session, company_id, taxbooks.taxyear_id(regime_key, year)) or {}
     return settings, regime, year, saved
 
@@ -247,25 +247,26 @@ async def close(session, company_id, user_id, regime_key: str, year) -> dict:
     """Close tax ``year`` under the regime, keeping its figures as they stand."""
     settings, regime, year, saved = await _year(session, company_id, user_id, regime_key, year)
     if saved.get("status") == "closed":
-        raise conflict(f"Tax year {year} is already closed.")
+        raise setup.refused(409, "fixed_assets.err_tax_year_year_already_closed", year=year)
     start, end = regime.tax_year(taxbooks.tax_year_end(settings), year)
     if end >= business_today(settings.get("timezone")):
-        raise conflict(f"Tax year {year} ends on {end.isoformat()}, so it cannot close yet.")
+        raise setup.refused(409, "fixed_assets.err_tax_year_year_ends_isoformat_so", year=year, isoformat=end.isoformat())
     years = await taxbooks.years(session, company_id, settings, regime, year)
     earlier = [y for y, f in sorted(years.items()) if y < year and f.get("status") != "closed"
                and (f.get("rows") or f.get("pools"))]
     if earlier:
-        raise conflict(f"Close tax year {earlier[0]} first.")
+        raise setup.refused(409, "fixed_assets.err_close_tax_year_value_first", value=earlier[0])
     figures = years.get(year) or {"rows": [], "pools": []}
     unworked = _unworked(figures)
     # Another regime's missing figures wait on that regime's own close.
     waiting = [i["key"] for i in (await report(session, company_id, year))["items"]
                if i["state"] != "accepted" and i["kind"] != "tax"]
-    refusals = [*([f"Tax year {year} cannot close while it has no tax figure for "
-                   + "; ".join(f"{name} ({_remedy(found)})" for _, name, found in unworked)] if unworked else []),
-                *([f"These year-end items are not accepted: {', '.join(waiting)}."] if waiting else [])]
-    if refusals:
-        raise conflict(" ".join(refusals))
+    not_accepted = catalog_refusal("fixed_assets.err_year_end_not_accepted", items=", ".join(waiting))
+    if unworked:
+        raise conflict({**catalog_refusal("fixed_assets.err_tax_year_no_figure", year=year, items="; ".join(
+            f"{name} ({_remedy(found)})" for _, name, found in unworked)), "also": [not_accepted] if waiting else []})
+    if waiting:
+        raise conflict(not_accepted)
     data = {"regime": regime_key, "year": year, "status": "closed", "start": start.isoformat(),
             "end": end.isoformat(), "rows": figures["rows"], "pools": figures["pools"],
             "history": _history(saved, settings, "closed", user_id)}
@@ -279,13 +280,13 @@ async def reopen(session, company_id, user_id, regime_key: str, year, body: dict
     settings, regime, year, saved = await _year(session, company_id, user_id, regime_key, year)
     reason = str(body.get("reason") or "").strip()
     if not reason:
-        raise setup.unprocessable("A reason is required to reopen a tax year.")
+        raise setup.refuse("fixed_assets.err_reason_required_reopen_tax_year")
     if saved.get("status") != "closed":
-        raise conflict(f"Tax year {year} is not closed.")
+        raise setup.refused(409, "fixed_assets.err_tax_year_year_not_closed", year=year)
     later = sorted(int(s["year"]) for _, s in await _entities(session, company_id, "fa_taxyear")
                    if s.get("regime") == regime_key and s.get("status") == "closed" and int(s["year"]) > year)
     if later:
-        raise conflict(f"Reopen tax year {later[-1]} first.")
+        raise setup.refused(409, "fixed_assets.err_reopen_tax_year_value_first", value=later[-1])
     data = {**saved, "status": "open", "rows": [], "pools": [],
             "history": _history(saved, settings, "reopened", user_id, reason)}
     await _emit(session, company_id, user_id, taxbooks.taxyear_id(regime_key, year), "fa_taxyear",

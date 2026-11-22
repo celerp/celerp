@@ -32,6 +32,10 @@ _ALLOWED = {
         "decides per request: only the asset's custodian, whatever their role",
     ("POST", "celerp_labels.routes:print_source"):
         "decides per request: the permission the chosen record kind names",
+    ("POST", "celerp_accounting.bank_statements:answer_question"):
+        "decides per request: manage_accounting or answer_bank_questions, either one",
+    ("POST", "celerp_accounting.bank_statements:bank_files"):
+        "decides per request: manage_accounting or answer_bank_questions, either one",
 }
 
 

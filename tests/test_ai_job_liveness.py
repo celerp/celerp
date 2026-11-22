@@ -478,20 +478,32 @@ async def test_a_runner_whose_lease_lapsed_never_writes_over_the_stop_that_ended
         assert (await _seen(client, token, company_id, user_id, case))[0] == "failed"
 
 
-async def _ended_by_a_competing_claim(session, case: Case) -> str:
+async def _taken_by_a_competing_claim(session, case: Case) -> str:
     """The job's lease lapses while its runner waits on the service, and a second claim
-    of this same process takes it and ends it: a reading job with its file read, a
-    question answered. Returns the competitor's runner id."""
-    from celerp.ai import service
-    from celerp.models.ai import AIJobStep
+    of this same process takes it. Returns the competitor's runner id."""
     await _lapse(session, case.job_id)
     async with jobs.SessionLocal() as s:
         await jobs._lock_job(s, case.job_id)
         competitor = await jobs._claim(s, case.job_id)
         await s.commit()
     assert competitor is not None and competitor[:len(jobs.RUNNER_ID)] == jobs.RUNNER_ID
+    assert (await _row(session, case.job_id)).runner_id == competitor
+    return competitor
+
+
+def _answered(text: str):
+    from celerp.ai import service
+    return service.RunTally().result(answer=text, model_used="m", tools_called=[], pending_actions=[],
+                                     error=None, error_code=None)
+
+
+async def _ended_by_a_competing_claim(session, case: Case) -> str:
+    """A second claim takes the job (``_taken_by_a_competing_claim``) and ends it: a
+    reading job with its file read, a question answered. Returns the competitor's
+    runner id."""
+    from celerp.models.ai import AIJobStep
+    competitor = await _taken_by_a_competing_claim(session, case)
     row = await _row(session, case.job_id)
-    assert row.runner_id == competitor
     if case.shape == "documents":
         run = jobs._file_run(row, competitor)
         (step,) = (await session.execute(select(AIJobStep.id).where(AIJobStep.job_id == case.job_id))).scalars()
@@ -501,9 +513,7 @@ async def _ended_by_a_competing_claim(session, case: Case) -> str:
             await s.commit()
         await jobs._end_job(run)
     else:
-        answered = service.RunTally().result(answer="Theirs.", model_used="m", tools_called=[], pending_actions=[],
-                                             error=None, error_code=None)
-        await jobs._finish_question(case.job_id, answered, None, competitor)
+        await jobs._finish_question(case.job_id, _answered("Theirs."), None, competitor)
     return competitor
 
 
@@ -518,6 +528,44 @@ async def _written(session, case: Case) -> tuple:
         select(AIMessage.role, AIMessage.content).where(AIMessage.conversation_id == uuid.UUID(case.conv))
         .order_by(AIMessage.created_at))).all()
     return (row.status, row.error, row.results, row.completed_at, row.runner_id), list(steps), list(messages)
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+async def test_the_final_write_of_a_runner_whose_claim_another_holds_is_refused_while_the_job_is_open(
+        client, owner, cloud, session, monkeypatch, shape):
+    """The final write has a fence of its own. A second claim took the job and still
+    runs it (the job is open) when the first runner, which no step write stopped, comes
+    to store how the job ended: nothing is written, and the job stays the second
+    claim's to end."""
+    token, company_id, user_id = owner
+    case = await _start(client, token, company_id, user_id, cloud, monkeypatch, shape, failing=False)
+    first = (await _row(session, case.job_id)).runner_id
+    competitor = await _taken_by_a_competing_claim(session, case)
+    held = await _written(session, case)
+    assert held[0][-1] == competitor != first and jobs.liveness(await _row(session, case.job_id)) == "running"
+    if shape == "documents":
+        await jobs._end_job(jobs._file_run(await _row(session, case.job_id), first))
+    else:
+        await jobs._finish_question(case.job_id, _answered("Mine."), None, first)
+    assert await _written(session, case) == held
+    _let_go(cloud, case)
+    await until(lambda: not jobs.running_tasks(), 20.0)
+
+
+async def test_a_job_a_runner_holds_is_never_taken_by_another_claim(client, owner, cloud, session, monkeypatch):
+    """A claim takes only a job nobody runs: while a runner's lease lasts, a second claim
+    takes nothing and writes nothing, so the job stays its runner's."""
+    token, company_id, user_id = owner
+    case = await _start(client, token, company_id, user_id, cloud, monkeypatch, "one_off", failing=False)
+    held = await _written(session, case)
+    assert held[0][-1] is not None and jobs.liveness(await _row(session, case.job_id)) == "running"
+    async with jobs.SessionLocal() as s:
+        await jobs._lock_job(s, case.job_id)
+        assert await jobs._claim(s, case.job_id) is None
+        await s.commit()
+    assert await _written(session, case) == held
+    _let_go(cloud, case)
+    await until(lambda: not jobs.running_tasks(), 20.0)
 
 
 async def _reopened_by_the_user(client, token, session, case: Case) -> None:
@@ -726,3 +774,19 @@ def test_the_guard_passes_a_scoped_report_through_the_job_helpers():
               "rows = select(AIBatchJob).where(AIBatchJob.company_id == c, AIBatchJob.user_id == u, jobs.is_open())\n"
               "steps = select(AIJobStep.key).where(AIJobStep.job_id == j)\n")
     assert _bypasses(source) == []
+
+
+async def test_a_step_whose_claim_another_took_is_not_tried_again(monkeypatch, caplog):
+    """The claim that runs the job now owns the step: its old runner gives the step up at
+    once, without the retries an unexpected error gets and without logging it as one."""
+    tries = []
+
+    async def _taken(run, step_pk, file_id, operation_id):
+        tries.append(file_id)
+        raise jobs.ClaimTaken()
+    monkeypatch.setattr(jobs, "_document_step", _taken)
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0)
+    run = type("Run", (), {"job_id": uuid.uuid4(), "company_id": uuid.uuid4()})()
+    await jobs._supervised_step(run, uuid.uuid4(), "file-1", uuid.uuid4())
+    assert tries == ["file-1"]
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]

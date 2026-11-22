@@ -36,6 +36,7 @@ from celerp.services.auth import require_install_owner
 from celerp.services.backup import BackupResult
 from ui.i18n import t
 from ui.components.encode import call, html_response
+from celerp.agent_markers import agent_excluded
 
 router = APIRouter(dependencies=[Depends(require_install_owner)])
 
@@ -189,7 +190,7 @@ def _backup_table(items: list[dict]):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/trigger")
+@router.post("/trigger", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"}, summary="Start a cloud backup of the company's database and files now.")
 async def trigger_backup():
     """Run a cloud snapshot (database + files). Returns flash + HX-Trigger to refresh list."""
     from celerp.services import backup_repo, backup_scheduler
@@ -197,14 +198,15 @@ async def trigger_backup():
     backup_scheduler.record_db_result(result.ok, result.error, result.size_bytes or 0)
 
     if not result.ok:
-        raise HTTPException(status_code=422, detail=result.error or t("error.backup_failed_unknown"))
+        raise HTTPException(status_code=422, detail=t("error.backup_failed_detail", detail=result.error)
+                            if result.error else t("error.backup_failed_unknown"))
 
     resp = _flash(f"Backup complete ({_fmt_size(result.size_bytes)} uploaded)")
     resp.headers["HX-Trigger"] = "backupDone"
     return resp
 
 
-@router.get("/list")
+@router.get("/list", openapi_extra={"x-celerp-agent": True}, summary="List the cloud backups of this installation, newest first.")
 async def list_backups(request: Request):
     """List cloud snapshots.
 
@@ -227,7 +229,7 @@ async def list_backups(request: Request):
     try:
         data = await backup_repo.list_snapshots()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=t("error.relay_unreachable")) from exc
 
     if not request.headers.get("HX-Request"):
         return data
@@ -239,7 +241,7 @@ async def list_backups(request: Request):
     return html_response(_backup_table(items))
 
 
-@router.post("/restore/{backup_id}")
+@router.post("/restore/{backup_id}", openapi_extra=agent_excluded("company"))
 async def restore_backup(backup_id: str):
     """Restore a cloud snapshot (database + files) via the canonical importer."""
     from celerp.services import backup_repo
@@ -247,14 +249,15 @@ async def restore_backup(backup_id: str):
     return _recovery_response(result, t("system_recovery.restored"))
 
 
-@router.get("/export")
+@router.get("/export", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/backup/export"}, summary="Download a full local backup of this installation as a backup file.")
 async def export_local() -> FileResponse:
     """Export full local backup as .celerp-backup download."""
+    from celerp.services.backup import BackupFailed
     from celerp.services.backup_export import export_full
     try:
         path = await export_full()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+    except BackupFailed as exc:
+        raise HTTPException(status_code=422, detail=refusal_detail(exc))
     return _archive_download(path, f"{datetime.now():%Y-%m-%d-%H%M}")
 
 
@@ -266,18 +269,18 @@ def _archive_download(path: Path, label: str) -> FileResponse:
                         background=BackgroundTask(path.unlink, missing_ok=True))
 
 
-@router.get("/export/{backup_id}")
+@router.get("/export/{backup_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/backup/export/{backup_id}"}, summary="Download one cloud backup as a backup file.")
 async def export_cloud(backup_id: str) -> FileResponse:
     """Download a cloud snapshot, rebuilt as a .celerp-backup archive."""
     from celerp.services.backup_repo import reassemble_snapshot
     try:
         path = await reassemble_snapshot(backup_id)
     except RuntimeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=t("error.backup_download_failed", detail=exc.args[0] if exc.args else ""))
     return _archive_download(path, backup_id)
 
 
-@router.post("/import")
+@router.post("/import", openapi_extra=agent_excluded("company"))
 async def import_backup(
     request: Request,
     file: UploadFile = File(...),
@@ -300,7 +303,7 @@ async def import_backup(
         tmp_path.unlink(missing_ok=True)
 
 
-@router.post("/import/continue")
+@router.post("/import/continue", openapi_extra=agent_excluded("company"))
 async def continue_import(
     confirmation_id: str = Form(...),
     digest: str = Form(...),
@@ -320,7 +323,7 @@ public_router = APIRouter()
 
 
 
-@public_router.post("/import-bootstrap")
+@public_router.post("/import-bootstrap", openapi_extra=agent_excluded("session"))
 async def import_backup_bootstrap(
     file: UploadFile = File(...),
     setup_code: str | None = Form(None),

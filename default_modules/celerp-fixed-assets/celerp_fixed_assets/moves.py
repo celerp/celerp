@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from celerp_fixed_assets import setup
 from celerp_fixed_assets.operations import _date, _effects, _run, in_use
 from celerp_fixed_assets.store import _emit
+from ui.i18n import t
 
 KEYS = ("manage_fixed_assets",)
 # An asset that has left the books stays where it was last placed.
@@ -30,7 +31,7 @@ async def _location(session, company_id, value) -> dict | None:
     except ValueError:
         loc = None
     if loc is None or loc.company_id != company_id:
-        raise setup.unprocessable("Choose one of this company's locations.")
+        raise setup.refuse("fixed_assets.err_choose_one_company_s_locations")
     return {"id": str(loc.id), "name": loc.name}
 
 
@@ -65,16 +66,15 @@ async def _custodian(session, company_id, value) -> dict | None:
     if value in (None, ""):
         return None
     if not isinstance(value, dict):
-        raise setup.unprocessable("Choose the custodian.")
+        raise setup.refuse("fixed_assets.err_choose_custodian")
     if value.get("user_id"):
         name = await member_name(session, company_id, value["user_id"])
         if not name:
-            raise setup.unprocessable("The custodian is not a member of this company. Choose a member, or name a "
-                                      "person who is not a user.")
+            raise setup.refuse("fixed_assets.err_custodian_not_member_company_choose_member")
         return {"user_id": str(uuid.UUID(str(value["user_id"]))), "name": name}
     name = str(value.get("name") or "").strip()
     if not name:
-        raise setup.unprocessable("Name the custodian.")
+        raise setup.refuse("fixed_assets.err_name_custodian")
     return {"name": name, "not_user": True}
 
 
@@ -83,13 +83,13 @@ async def _locked_assets(session, company_id, asset_ids) -> list[tuple[str, dict
 
     ids = list(dict.fromkeys(str(a) for a in asset_ids or []))
     if not ids:
-        raise setup.unprocessable("Choose the assets to move.")
+        raise setup.refuse("fixed_assets.err_choose_assets_move")
     rows = await lock_projections(session, company_id, ids)
     out = []
     for asset_id in ids:
         row = rows.get(asset_id)
         if row is None or row.entity_type != "fa_asset":
-            raise HTTPException(status_code=404, detail="No such asset.")
+            raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
         out.append((asset_id, row.state))
     return out
 
@@ -105,11 +105,11 @@ async def move(session, company_id, user_id, body: dict, asset_ids=None) -> dict
         location = await _location(session, company_id, body.get("location_id"))
         custodian = await _custodian(session, company_id, body.get("custodian"))
         if location is None and custodian is None:
-            raise setup.unprocessable("Choose a location or a custodian to move to.")
+            raise setup.refuse("fixed_assets.err_choose_location_custodian_move")
         for _, asset in assets:
             last = (asset.get("placements") or [{}])[-1].get("date")
             if last and day < last:
-                raise setup.unprocessable(f"{asset['number']} was last moved on {last}. Date the move on or after it.")
+                raise setup.refuse("fixed_assets.err_number_was_last_moved_last_date", number=asset['number'], last=last)
         shown = {"assets": [{"id": a, "number": s["number"], "name": s.get("name")} for a, s in assets],
                  "date": day, "location": location, "custodian": custodian}
         return shown, {"assets": assets, "day": day, "location": location, "custodian": custodian,
@@ -138,7 +138,7 @@ async def undo_move(session, company_id, user_id, asset_id: str, body: dict) -> 
         in_use(asset_id, asset, "undo_move")
         placements = asset.get("placements") or []
         if not placements:
-            raise setup.unprocessable(f"{asset['number']} has not been moved.")
+            raise setup.refuse("fixed_assets.err_number_has_not_been_moved", number=asset['number'])
         latest = placements[-1]
         shown = {"assets": [{"id": asset_id, "number": asset["number"], "name": asset.get("name")}],
                  "date": latest["date"], **await _placed(session, latest["previous"]),

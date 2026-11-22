@@ -279,7 +279,7 @@ async def test_a_run_key_reused_for_a_different_run_is_refused(client, session, 
     assert (await _create(client, auth, [(raw, 2)], made, qty=1, key="k")).status_code == 200
     inputs, output, qty = {"component": ([(other, 2)], made, 1), "quantity": ([(raw, 3)], made, 1),
                            "output": ([(raw, 2)], made2, 1), "output_quantity": ([(raw, 2)], made, 5)}[change]
-    refusal(await _create(client, auth, inputs, output, qty=qty, key="k"), 409, "key_reused")
+    refusal(await _create(client, auth, inputs, output, qty=qty, key="k"), 409, "key_reused_run")
     assert await _count(session, auth, entity_type="mfg_order") == 1
 
 
@@ -296,7 +296,7 @@ async def test_a_build_key_reused_for_another_product_is_refused(client, session
     raw = await _item(client, auth, 100.0, qty=10)
     made, made2 = await product(client, auth, [(raw, 1)]), await product(client, auth, [(raw, 2)])
     assert (await _build(client, auth, made, 1, "b")).status_code == 200
-    refusal(await _build(client, auth, made2, 1, "b"), 409, "key_reused")
+    refusal(await _build(client, auth, made2, 1, "b"), 409, "key_reused_run")
     assert await _count(session, auth, entity_type="mfg_order") == 1
 
 
@@ -304,8 +304,8 @@ async def test_a_build_key_reused_for_another_quantity_is_refused(client, sessio
     raw = await _item(client, auth, 100.0, qty=10)
     made = await product(client, auth, [(raw, 1)])
     assert (await _build(client, auth, made, 1, "b")).status_code == 200
-    refusal(await _build(client, auth, made, 3, "b"), 409, "key_reused")
-    refusal(await _build(client, auth, made, 1, "b", complete_it=True), 409, "key_reused")
+    refusal(await _build(client, auth, made, 3, "b"), 409, "key_reused_run")
+    refusal(await _build(client, auth, made, 1, "b", complete_it=True), 409, "key_reused_run")
     assert await _count(session, auth, entity_type="mfg_order") == 1
     assert await _count(session, auth, event_type="item.consumed") == 0
 

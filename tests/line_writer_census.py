@@ -90,8 +90,9 @@ ROWS: dict[str, tuple[str, str]] = {
     f"{_ACC}/funds.py::post_fund_movement": ("LOCAL-JE", "movement templates; never on a marked line"),
     f"{_ACC}/import_service.py::import_journal_records": (
         "ARRIVAL-JE", "file_import (batch route) or migration (sink)"),
-    **_many(f"{_ACC}/routes.py", "create_manual_journal_entry create_bank_account create_transfer create_je_from_line "
-            "split_stmt_line write_off_difference", "LOCAL-JE", "a user's own entry"),
+    **_many(f"{_ACC}/routes.py", "create_manual_journal_entry post_opening create_transfer write_off_difference",
+            "LOCAL-JE", "a user's own entry"),
+    f"{_ACC}/statement_lines.py::post_entry": ("LOCAL-JE", "a user's own entry"),
     "default_modules/celerp-admin/celerp_admin/routes.py::_check_inverted_doc_dates": (
         "LOCAL", "the integrity doctor correcting dates on stored lines"),
     **_many("default_modules/celerp-connectors/celerp_connectors/routes.py", "set_item_sync", "NON-LINE"),
@@ -142,7 +143,7 @@ ROWS: dict[str, tuple[str, str]] = {
     "default_modules/celerp-subscriptions/celerp_subscriptions/demo.py::seed_demo_agreements": (
         "LOCAL", "demo data of an empty company"),
     "celerp/services/demo.py::follow_books_currency": ("LOCAL", "demo data of an empty company"),
-    "default_modules/celerp-accounting/celerp_accounting/donors.py::send_statements": (
+    "default_modules/celerp-accounting/celerp_accounting/donors.py::begin": (
         "NON-LINE", "records the statement sent on the donor contact"),
     f"{_CORE}/collection.py::record_binding": ("NON-LINE", "records the payer's card on file on the contact"),
     f"{_CORE}/collection.py::set_attempt": ("NO-LINE-CHANGE", "records the invoice's automatic collection state"),

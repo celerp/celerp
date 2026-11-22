@@ -36,12 +36,12 @@ _BATCH_BILLS_CLAIMS = [
 ]
 
 _RECONCILE_CLAIMS = [
-    ("Imported 48 lines", ("capability", "POST", "/accounting/reconciliation/{session_id}/import-file")),
-    ("match recorded payments", ("capability", "POST", "/accounting/reconciliation/{session_id}/auto-match")),
+    ("Imported 48 lines", ("capability", "POST", "/accounting/reconciliation/import-statement")),
+    ("match recorded payments", ("capability", "POST", "/accounting/reconciliation/bank/{bank_id}/suggest")),
     ("proposed marking them paid", ("capability", "POST", "/docs/{entity_id}/payment")),
     ("proposed new bills", ("capability", "POST", "/docs")),
     ("proposed write-off", ("capability", "POST", "/accounting/reconciliation/{session_id}/write-off")),
-    ("card you confirm or dismiss", ("symbol", ai_ui._action_card, 'hx_post="/ai/dismiss-action-ui"')),
+    ("card you confirm or dismiss", ("symbol", ai_ui._action_buttons, '"/ai/dismiss-action-ui"')),
     ("Nothing changes until you confirm", ("route", *_CONFIRM)),
 ]
 

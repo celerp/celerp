@@ -229,8 +229,11 @@ def test_unfinished_action_says_retry_is_safe():
     from celerp.ai.conversations import EXECUTING_STALE_S, pending_actions
     from ui.i18n import refusal_text
     since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 1)).isoformat()
-    stale = {"id": "a", "name": "create_contact", "status": "executing", "executing_since": since}
+    stale = {"id": "a", "name": "create_contact", "status": "executing", "executing_since": since, "keyed": True}
     assert refusal_text(pending_actions([stale])[0]["error"]) == t("ai.action_unfinished", "en")
+    unkeyed = pending_actions([{**stale, "keyed": False}])[0]
+    assert unkeyed["status"] == "unknown"
+    assert refusal_text(unkeyed["error"]).startswith(t("ai.action_outcome_unknown", "en"))
 
 
 def test_batch_limit_says_remove_some():

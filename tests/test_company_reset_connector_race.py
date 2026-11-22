@@ -16,6 +16,7 @@ from celerp.services.company_lock import hold_company
 from company_backup_support import snapshot, token
 from migration_support import auth, count, maker, real_client, real_engine  # noqa: F401
 from test_company_reset import RESET, _local_files, _two_companies
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -54,7 +55,7 @@ async def test_a_connector_connected_while_the_reset_waits_makes_it_refuse(
         await connecting.close()
 
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == "Disconnect shopify before resetting this company. Nothing was deleted."
+    assert refusal_text(r.json()["detail"]) == "Disconnect shopify before resetting this company. Nothing was deleted."
     # The connect itself wrote its config and its pending first-sync record; the reset
     # changed nothing.
     connect_rows = {"connector_configs", "connector_first_syncs"}

@@ -185,7 +185,7 @@ async def test_backdated_movement_cannot_take_what_later_spending_used(client, s
         "bank_name": "Harbor Bank", "account_number": "0001", "bank_type": "checking", "currency": "USD",
         "opening_balance": 0, "account_code": "1111"})
     r = await client.post("/accounting/transfers", headers=auth["headers"], json={
-        "from_bank_id": source.json()["id"], "to_bank_id": bank.json()["id"], "amount": 100.0, "date": DATE,
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": source.json()["id"], "to_bank_id": bank.json()["id"], "amount": 100.0, "date": DATE,
         "allocation": [{"fund": f["R"], "amount": 100}]})
     assert r.status_code == 422 and _key(r) == "posting.fund.movement_exceeds_balance", r.text
     assert r.json()["detail"]["params"]["available"] == "30.00"
@@ -514,7 +514,7 @@ async def test_transfer_bank_to_bank_keeps_fund_split(client, session, auth):
 
     async def transfer(amount, **extra):
         return await client.post("/accounting/transfers", headers=auth["headers"], json={
-            "from_bank_id": a["id"], "to_bank_id": b["id"], "amount": amount, "date": DATE, **extra})
+            "idempotency_key": uuid.uuid4().hex, "from_bank_id": a["id"], "to_bank_id": b["id"], "amount": amount, "date": DATE, **extra})
 
     await _gift(session, auth, f["R"])
     r = await transfer(100.0)

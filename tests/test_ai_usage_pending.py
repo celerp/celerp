@@ -287,5 +287,30 @@ async def test_a_charge_named_later_resolves_an_unresolved_row(session, owner):
     assert await _state(session, op) == (3, False, False)
 
 
+@pytest.mark.parametrize("settle", ["reply", "reconcile"])
+async def test_a_settled_charge_replaces_the_larger_pending_charge_of_its_operation(session, owner, monkeypatch, settle):
+    """The charge the service names settles the operation's row with that whole charge,
+    never the sum or the larger of it and what the replies reported while it was pending,
+    whether a reply names it or the background pass reads it. The ai_usage merge migration
+    keeps a settled row's charge over a larger pending one on this contract."""
+    _, company_id, user_id = owner
+    op = uuid.uuid4()
+    for credits in (3, 4):  # the replies of the first turn report 7 while the charge is unnamed
+        await usage.record_usage(session, company_id=company_id, user_id=user_id, operation_id=op, credits=credits)
+        await session.commit()
+    await session.execute(update(AIUsage).where(AIUsage.operation_id == op)
+                          .values(reconcile_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
+    await session.commit()
+    assert await _state(session, op) == (7, True, False)
+    if settle == "reply":
+        await usage.record_usage(session, company_id=company_id, user_id=user_id, operation_id=op,
+                                 credits=5, known=True)
+        await session.commit()
+    else:
+        _batch(monkeypatch, lambda ids: [_status(op, "charged", 5)])
+        await usage.reconcile_usage(session)
+    assert await _state(session, op) == (5, False, False)
+
+
 def _utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)

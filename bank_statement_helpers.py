@@ -1,0 +1,326 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
+"""Shared steps for the bank statement tests: a company with banks, a statement read
+from an uploaded file and imported, the group table, and resolve."""
+
+from __future__ import annotations
+
+import json
+import uuid as _uuid
+import weakref
+from contextlib import asynccontextmanager
+from unittest.mock import patch
+
+from httpx import ASGITransport, AsyncClient
+
+from celerp.ai.files import upload_dir
+from test_helpers import until
+
+API = "/accounting/reconciliation"
+
+
+def key() -> str:
+    return f"k-{_uuid.uuid4().hex}"
+
+
+_owners: "weakref.WeakKeyDictionary[AsyncClient, dict]" = weakref.WeakKeyDictionary()
+
+
+async def company(client: AsyncClient, currency: str = "USD") -> dict:
+    """A fresh company's headers, its id and its user id: the first registers its owner
+    (the install takes one registration), the next are that owner's further companies."""
+    from celerp.services.auth import decode_access_token
+    owner = _owners.get(client)
+    if owner is None:
+        r = await client.post("/auth/register", json={"email": f"bank_{key()}@example.com", "password": "pass1234",
+                                                      "name": "Bank Tester", "company_name": f"BankCo {key()}"})
+        assert r.status_code == 200, r.text
+        h = _owners[client] = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    else:
+        r = await client.post("/companies", json={"name": f"BankCo {key()}"}, headers=owner)
+        assert r.status_code == 200, r.text
+        h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    me = (await client.get("/companies/me", headers=h)).json()
+    uid = str(decode_access_token(h["Authorization"].split(" ", 1)[1])["sub"])
+    return {"h": h, "company_id": me["id"], "user_id": uid}
+
+
+async def bank(client: AsyncClient, h: dict, *, name: str = "Main Bank", currency: str = "USD",
+               bank_type: str = "checking", opening: float = 0.0, opening_date: str | None = None,
+               rate: float | None = None) -> dict:
+    body = {"bank_name": name, "account_number": f"****{_uuid.uuid4().int % 10000:04d}",
+            "bank_type": bank_type, "currency": currency, "opening_balance": opening}
+    if opening_date:
+        body["opening_date"] = opening_date
+    if rate:
+        body["rate"] = rate
+    r = await client.post("/accounting/bank-accounts", json=body, headers=h)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def upload(company_id: str, user_id: str, content: bytes, filename: str, content_type: str = "text/csv") -> str:
+    file_id = f"ai_up_{_uuid.uuid4().hex}"
+    d = upload_dir()
+    (d / f"{file_id}.bin").write_bytes(content)
+    (d / f"{file_id}.meta").write_text(json.dumps({
+        "filename": filename, "content_type": content_type, "size": len(content),
+        "company_id": company_id, "user_id": user_id,
+    }))
+    return file_id
+
+
+def csv_bytes(rows: list[tuple[str, ...]], *, balance: bool = False) -> bytes:
+    """Date,Description,Amount rows, each with an optional fourth item, its Reference; with
+    ``balance`` the running balance from 0."""
+    refs = any(len(r) > 3 for r in rows)
+    out = ["Date,Description,Amount" + (",Balance" if balance else "") + (",Reference" if refs else "")]
+    running = 0.0
+    for d, desc, amt, *ref in rows:
+        running += float(amt) if amt else 0.0
+        out.append(f"{d},{desc},{amt}" + (f",{running:.2f}" if balance else "")
+                   + (f",{ref[0] if ref else ''}" if refs else ""))
+    return ("\n".join(out) + "\n").encode()
+
+
+async def read(client: AsyncClient, co: dict, files: list[tuple[bytes, str, str]], bank_id: str | None = None,
+               idem: str | None = None) -> dict:
+    """read-statement over uploaded files; waits for the job and returns the preview."""
+    from celerp.ai import jobs
+    file_ids = [upload(co["company_id"], co["user_id"], c, n, ct) for c, n, ct in files]
+    body = {"file_ids": file_ids, "idempotency_key": idem or key()}
+    if bank_id:
+        body["bank_id"] = bank_id
+    r = await client.post(f"{API}/read-statement", json=body, headers=co["h"])
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    await until(lambda: not jobs.running_tasks())
+    p = await client.get(f"{API}/statement-preview/{job_id}", headers=co["h"])
+    assert p.status_code == 200, p.text
+    return p.json()
+
+
+async def import_statement(client: AsyncClient, co: dict, preview: dict, *, bank_id: str | None = None,
+                           new_bank: dict | None = None, header: dict | None = None,
+                           idem: str | None = None, expect: int = 200, tick_all: bool = False) -> dict:
+    """Import ``preview``'s statements as reviewed; ``tick_all`` ticks the lines the preview
+    left unticked as probably already in the books."""
+    statements = []
+    for st in preview["statements"]:
+        lines = [{**line, "ticked": True} for line in st["lines"]] if tick_all else st["lines"]
+        statements.append({"header": {**st["header"], **(header or {})}, "lines": lines})
+    body = {"job_id": preview["job_id"], "statements": statements, "idempotency_key": idem or key()}
+    if bank_id:
+        body["bank_id"] = bank_id
+    if new_bank:
+        body["new_bank"] = new_bank
+    if preview.get("column_map"):
+        body["column_map"] = preview["column_map"]
+    r = await client.post(f"{API}/import-statement", json=body, headers=co["h"])
+    assert r.status_code == expect, r.text
+    return r.json()
+
+
+async def statement(client: AsyncClient, co: dict, bank_id: str, rows: list[tuple[str, str, str]], *,
+                    opening: str, closing: str, start: str, end: str, tick_all: bool = False) -> dict:
+    """Read and import one CSV statement on ``bank_id``; returns the import answer."""
+    preview = await read(client, co, [(csv_bytes(rows), f"st-{end}.csv", "text/csv")], bank_id=bank_id)
+    return await import_statement(client, co, preview, bank_id=bank_id, tick_all=tick_all, header={
+        "opening_balance": opening, "closing_balance": closing, "period_start": start, "period_end": end})
+
+
+async def co_of(client: AsyncClient, h: dict) -> dict:
+    """The company ``h`` signs in to, in the shape the helpers here take."""
+    me = (await client.get("/companies/me", headers=h)).json()
+    return {"h": h, "company_id": me["id"], "user_id": user_id(h)}
+
+
+async def lines_on(client: AsyncClient, co: dict, bank_id: str, rows: list[tuple[str, str, str]], *,
+                   opening: str, closing: str, start: str, end: str) -> tuple[str, list[dict]]:
+    """Import every line of one statement on ``bank_id``, those that look already booked too:
+    its session id and its lines by date, then description."""
+    sid = (await statement(client, co, bank_id, rows, opening=opening, closing=closing, start=start, end=end,
+                           tick_all=True))["sessions"][0]["id"]
+    mine = [line for line in all_lines(await groups(client, co, bank_id, view="all")) if line["statement_id"] == sid]
+    return sid, sorted(mine, key=lambda line: (line["line_date"], line["description"]))
+
+
+async def groups(client: AsyncClient, co: dict, bank_id: str, **params) -> dict:
+    r = await client.get(f"{API}/bank/{bank_id}/groups", params=params, headers=co["h"])
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def all_lines(table: dict) -> list[dict]:
+    return [line for g in table["groups"] for line in g["lines"]]
+
+
+def line_by_text(table: dict, text: str) -> dict:
+    return next(line for line in all_lines(table) if text in line["description"])
+
+
+def accept(table: dict, keys: list[str], line_ids: list[str] | None = None) -> dict:
+    """An accept as the bank page sends one: the lines ticked in the groups ``keys`` (each
+    one with a suggestion, or exactly ``line_ids``) with the suggestion version each was shown."""
+    lines = [l for g in table["groups"] if g["key"] in keys for l in g["lines"]
+             if (l["id"] in line_ids if line_ids is not None else bool(l["suggestion"]))]
+    return {"group_keys": keys, "line_ids": [l["id"] for l in lines],
+            "versions": {l["id"]: l["suggestion_version"] or "" for l in lines}}
+
+
+async def resolve(client: AsyncClient, co: dict, bank_id: str, *, decisions: list | None = None,
+                  accept: dict | None = None, idem: str | None = None, headers: dict | None = None):
+    body = {"idempotency_key": idem or key()}
+    if decisions is not None:
+        body["decisions"] = decisions
+    if accept is not None:
+        body["accept"] = accept
+    return await client.post(f"{API}/bank/{bank_id}/resolve", json=body, headers=headers or co["h"])
+
+
+async def paid_invoice(client: AsyncClient, co: dict, bk: dict, total: float, day: str, *,
+                       payments: int = 1, paid: int | None = None) -> tuple[str, str]:
+    """A customer invoice of ``total`` due in ``payments`` equal parts, ``paid`` of them (all when
+    None) paid into ``bk`` on ``day``: its id and its number."""
+    r = await client.post("/docs", headers=co["h"], json={
+        "doc_type": "invoice", "contact_id": "contact:1", "issue_date": "2026-01-02",
+        "line_items": [{"name": "Work", "quantity": 1, "unit_price": total, "line_total": total}],
+        "subtotal": total, "tax": 0.0, "total": total})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    assert (await client.post(f"/docs/{doc}/finalize", json={}, headers=co["h"])).status_code == 200
+    for _ in range(payments if paid is None else paid):
+        r = await client.post(f"/docs/{doc}/payment", headers=co["h"], json={
+            "amount": total / payments, "payment_date": day, "bank_account": bk["chart_account_code"]})
+        assert r.status_code == 200, r.text
+    state = (await client.get(f"/docs/{doc}", headers=co["h"])).json()
+    return doc, state.get("ref_id") or state["doc_number"]
+
+
+async def journal(session, co: dict, je_id: str) -> dict:
+    """The stored state of one journal entry of ``co``."""
+    from sqlalchemy import select
+    from celerp.models.projections import Projection
+    state = (await session.execute(select(Projection.state).where(
+        Projection.company_id == _uuid.UUID(co["company_id"]), Projection.entity_id == je_id))).scalar_one()
+    return state
+
+
+async def bank_row(client: AsyncClient, h: dict, bank_id: str) -> dict:
+    r = await client.get(f"/accounting/bank-accounts/{bank_id}", headers=h)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def user_id(headers: dict) -> str:
+    """The user a bearer token signs in (its ``sub`` claim)."""
+    import base64
+    payload = headers["Authorization"].split(" ", 1)[1].split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["sub"]
+
+
+async def member(client: AsyncClient, session, co: dict, role: str) -> dict:
+    """Headers for a new member of ``co`` holding ``role``."""
+    from test_helpers import invite_user
+    tok = await invite_user(client, session, co["h"], f"{role}-{_uuid.uuid4().hex[:8]}@example.com", role)
+    return {"Authorization": f"Bearer {tok}"}
+
+
+async def import_into(client: AsyncClient, h: dict, sid: str, content: bytes, filename: str = "test.csv",
+                      content_type: str = "text/csv") -> dict:
+    """The statement a started reconciliation stands for, read from ``content`` and imported
+    on its bank in its place: the empty session gives way to the import, which ends on its
+    statement date and closes on its balance (the opening is that balance less the lines).
+    Returns the import answer with ``session_id`` and the statement's ``lines`` by date."""
+    got = (await client.get(f"{API}/{sid}", headers=h)).json()
+    bank_id, end, closing = got["bank_account_id"], got["statement_date"], float(got["statement_balance"])
+    co = await co_of(client, h)
+    preview = await read(client, co, [(content, filename, content_type)], bank_id=bank_id)
+    rows = [line for st in preview["statements"] for line in st["lines"]]
+    total = sum(float(line["amount"]) for line in rows)
+    start = min([line["line_date"] for line in rows if line.get("line_date")] + [end])
+    r = await client.request("DELETE", f"{API}/{sid}", json={"idempotency_key": key()}, headers=h)
+    assert r.status_code == 200, r.text
+    answer = await import_statement(client, co, preview, bank_id=bank_id, tick_all=True, header={
+        "opening_balance": f"{closing - total:.2f}", "closing_balance": f"{closing:.2f}",
+        "period_start": start, "period_end": end})
+    new = answer["sessions"][0]["id"]
+    mine = [line for line in all_lines(await groups(client, co, bank_id, view="all")) if line["statement_id"] == new]
+    return {**answer, "session_id": new,
+            "lines": sorted(mine, key=lambda line: (line["line_date"], line["description"]))}
+
+
+async def bank_of(client: AsyncClient, h: dict, sid: str) -> str:
+    """The bank account a reconciliation belongs to."""
+    r = await client.get(f"{API}/{sid}", headers=h)
+    assert r.status_code == 200, r.text
+    return r.json()["bank_account_id"]
+
+
+async def decide(client: AsyncClient, h: dict, sid: str, line_id: str, kind: str, **fields):
+    """One resolve decision on one line of reconciliation ``sid``: the response."""
+    return await decide_on(client, h, await bank_of(client, h, sid), line_id, kind, **fields)
+
+
+async def decide_on(client: AsyncClient, h: dict, bank_id: str, line_id: str, kind: str, **fields):
+    """One resolve decision on one line of ``bank_id`` in a single request: the response."""
+    return await client.post(f"{API}/bank/{bank_id}/resolve", headers=h, json={
+        "idempotency_key": key(), "decisions": [{"line_ids": [line_id], "kind": kind, **fields}]})
+
+
+async def undo(client: AsyncClient, h: dict, sid: str, line_ids: list[str]):
+    """Undo settled lines of reconciliation ``sid`` through its bank: the response."""
+    return await client.post(f"{API}/bank/{await bank_of(client, h, sid)}/unmatch", headers=h,
+                             json={"line_ids": line_ids, "idempotency_key": key()})
+
+
+async def bank_post(client: AsyncClient, h: dict, sid: str, action: str, body: dict | None = None):
+    """POST bank/{bank}/<action> (suggest, complete) for the bank of reconciliation ``sid``."""
+    return await client.post(f"{API}/bank/{await bank_of(client, h, sid)}/{action}", headers=h,
+                             json={"idempotency_key": key(), **(body or {})})
+
+
+async def bank_complete(client, h, sid) -> dict:
+    """Complete the open statements of the session's bank, up to the first that does not balance."""
+    r = await client.get(f"{API}/{sid}", headers=h)
+    if r.status_code != 200:
+        return {"status_code": r.status_code}
+    bank_id = r.json()["bank_account_id"]
+    r = await client.post(f"{API}/bank/{bank_id}/complete", headers=h,
+                          json={"idempotency_key": key()})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def stopped_reason(body: dict) -> str:
+    """The reason completion stopped, as the reader sees it."""
+    from ui.i18n import refusal_text
+
+    assert body["stopped_at"], body
+    return refusal_text(body["stopped_at"]["reason"])
+
+
+async def complete(client, h, sid):
+    body = await bank_complete(client, h, sid)
+    assert body["stopped_at"] is None, body
+    got = (await client.get(f"{API}/{sid}", headers=h)).json()
+    assert got["status"] == "completed", got
+    return got
+
+
+@asynccontextmanager
+async def browser(h: dict):
+    """The real UI app signed in as the bearer token in ``h``, its API client routed to the
+    in-process API, so a form posted here writes what the page would."""
+    from celerp.main import app as api_app
+    from ui.app import app as ui_app
+
+    def bridged(tok=None, *, timeout=10.0, follow_redirects=True, bulk=False, headers=None):
+        merged = {**(headers or {}), **({"Authorization": f"Bearer {tok}"} if tok is not None else {})}
+        return AsyncClient(transport=ASGITransport(app=api_app), base_url="http://test",
+                           headers=merged, timeout=timeout, follow_redirects=follow_redirects)
+
+    with patch("ui.api_client._local_client", bridged):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
+                               cookies={"celerp_token": h["Authorization"].split(" ", 1)[1]}) as ui:
+            yield ui

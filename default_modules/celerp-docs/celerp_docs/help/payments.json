@@ -6,10 +6,17 @@
   "routes": ["/payments", "/docs/{entity_id}"],
   "permission": "view_payments",
   "order": 5,
+  "checked": "c54ab06d392ac8241bd762c2fa126e797173ec04f76ae53a623c810cbced289b",
   "steps": [
     {
       "text": "Open {pay} from the sidebar to see every payment across your documents.",
       "labels": {"pay": "nav.payments"},
+      "image": null,
+      "capture": {"route": "/payments", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to record a payment against a document, refund or void one, or match an online payment that found no invoice. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/payments", "selector": "main", "actions": []}
     }

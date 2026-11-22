@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import AccountRole, refusal, refusal_detail
+from celerp.accounting_roles import AccountRole, Refused, catalog_refusal, refusal, refusal_detail
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
@@ -37,6 +37,7 @@ from celerp.services.journal_accounts import require_settlement_account
 from celerp.services.money import books_currency, checked_exchange_rate, require_doc_rate, round_money
 from celerp.services.permissions import require_permission
 from ui.i18n import t
+from celerp.agent_markers import agent_excluded
 
 log = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ _BOOKS = ("deposit_account", "timezone", "base_currency", "rate")
 async def payment_books(session: AsyncSession, company_id, state: dict) -> dict:
     """The books an online payment on *state* is recorded on, fixed when its payment
     page opens: the deposit account, the business timezone that dates it, the company
-    currency and the document's rate. ValueError when the document cannot be paid in
+    currency and the document's rate. Refused when the document cannot be paid in
     the company's books (no usable timezone or rate)."""
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
@@ -132,9 +133,14 @@ async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str,
         raise HTTPException(status_code=422, detail=refusal(
             "pay.err_no_books", "The payment carries no books to record it on."))
     try:
-        timezone, rate = business_timezone(books["timezone"]).key, checked_exchange_rate(books["rate"])
-    except ValueError as exc:
+        timezone = business_timezone(books["timezone"]).key
+    except Refused as exc:
         raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
+    try:
+        rate = checked_exchange_rate(books["rate"])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_books_bad_rate", "The payment's books carry an unusable exchange rate.")) from exc
     return books["deposit_account"], timezone, books["base_currency"].upper(), rate
 
 
@@ -172,7 +178,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     if not managed:
         try:
             context = await payment_books(session, company_id, doc_state)
-        except ValueError as exc:
+        except Refused as exc:
             raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
         paid_at = paid_at or datetime.datetime.now(datetime.timezone.utc)
     account, timezone, base, rate = await _checked_books(session, company_id, context)
@@ -181,7 +187,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
             "pay.err_no_paid_time", "The payment carries no time it was paid."))
     try:
         amount = pay.from_stripe_amount(amount_minor, currency)
-    except ValueError as exc:
+    except Refused as exc:
         raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
     from celerp_docs.routes import _get_doc, apply_doc_payment
     body = {"amount": float(amount), "payment_date": business_date_at(paid_at, timezone),
@@ -244,9 +250,6 @@ def unmatched_refusal(state: dict, amount: Decimal, currency: str) -> str | None
 REFUND_TRANSITIONS = ("applied", "reversed")
 
 
-NOT_LINKED_TO_STRIPE = "The payment is no longer linked to Stripe"
-
-
 def stripe_refund_key(refund_id: str, cycle: int, transition: str) -> str:
     """The ledger name of one change to a Stripe refund, in the *cycle* Stripe put
     the refund through."""
@@ -296,14 +299,14 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
     released_at = payment.get("stripe_released_at")
     if (reference not in await stripe_receipt_references(session, company_id, entity_id, managed=True)
             or (released_at and occurred_at >= datetime.datetime.fromisoformat(released_at))):
-        raise HTTPException(status_code=409, detail=NOT_LINKED_TO_STRIPE)
+        raise HTTPException(status_code=409, detail=t("pay.err_refund_not_linked_to_stripe"))
     if payment.get("bank_account") != account or Decimal(str(payment.get("conversion_rate"))) != rate:
         raise HTTPException(status_code=422, detail=refusal(
             "pay.err_refund_books_mismatch",
             "The refund carries other books than its payment was recorded on."))
     try:
         amount = pay.from_stripe_amount(amount_minor, currency)
-    except ValueError as exc:
+    except Refused as exc:
         raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
     await books_currency_still(session, company_id, base)
     day = business_date_at(occurred_at, timezone)
@@ -419,7 +422,7 @@ async def record_stripe_dispute(session, company_id, row: Projection, payment: d
 _NOT_SET_UP = "Online payment is not set up for this invoice. Please contact the business that sent it."
 
 
-@public_router.get("/pay/{token}")
+@public_router.get("/pay/{token}", openapi_extra=agent_excluded("public"))
 async def start_payment(token: str, session: AsyncSession = Depends(get_session)):
     company_id, entity_id, state = await _doc_for_token(session, token)
     if state is None:
@@ -438,7 +441,7 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
         raise HTTPException(status_code=409, detail=t("documents.err_pay_not_payable"))
     try:
         amount = pay.to_stripe_amount(_outstanding(state), currency)
-    except ValueError as exc:
+    except Refused as exc:
         raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     try:
         await require_online_deposit_account(session, company_id, books["deposit_account"])
@@ -459,7 +462,7 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
     return RedirectResponse(result["url"], status_code=303)
 
 
-@public_router.get("/pay/{token}/return")
+@public_router.get("/pay/{token}/return", openapi_extra=agent_excluded("public"))
 async def return_from_payment(token: str):
     """Customer's return from Stripe: back to the invoice. Nothing is recorded here;
     Celerp Cloud delivers the payment once Stripe reports it paid."""
@@ -468,7 +471,7 @@ async def return_from_payment(token: str):
 
 # ── Authed: merchant Connect status + one-click connect/disconnect ───────────
 
-@router.get("/payments/enabled")
+@router.get("/payments/enabled", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show whether online card payments on invoices are turned on.")
 async def payments_enabled_flag(user=Depends(get_current_user)) -> dict:
     """Cached feature flag, in-memory: cheap enough for per-page-render gates
     (the settings page uses /payments/status for the authoritative answer)."""
@@ -481,12 +484,12 @@ def _stripe_url(result) -> bool:
     return isinstance(url, str) and url.startswith("https://")
 
 
-@router.get("/payments/status")
+@router.get("/payments/status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show the state of the company's online payments account.")
 async def payments_status(user=Depends(get_current_user)) -> dict:
     return await pay.connect_status()
 
 
-@router.post("/payments/connect", dependencies=[Depends(require_install_owner)])
+@router.post("/payments/connect", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/payments"}, summary="Get the link that connects an online payments account so customers can pay invoices by card.")
 async def payments_connect() -> dict:
     """Begin Connect OAuth via Cloud; returns {url} for the UI to redirect to."""
     result = await pay.connect_start()
@@ -495,7 +498,7 @@ async def payments_connect() -> dict:
     return {"url": result["url"]}
 
 
-@router.post("/payments/disconnect", dependencies=[Depends(require_install_owner)])
+@router.post("/payments/disconnect", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/payments"}, summary="Disconnect the company's online payments account.")
 async def payments_disconnect() -> dict:
     """What Cloud did: disconnected, or disconnecting while existing payments finish."""
     result = await pay.disconnect()
@@ -504,7 +507,7 @@ async def payments_disconnect() -> dict:
     return result
 
 
-@router.get("/payments/unmatched", dependencies=[Depends(require_install_owner)])
+@router.get("/payments/unmatched", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True}, summary="List online payments received that are not matched to an invoice of this company.")
 async def payments_unmatched(company_id=Depends(get_current_company_id),
                              session: AsyncSession = Depends(get_session)) -> dict:
     """Online payments received for a company or invoice that no longer exists, or
@@ -536,17 +539,17 @@ async def payments_unmatched(company_id=Depends(get_current_company_id),
 
 
 # Why an unmatched payment was not recorded on the chosen invoice
-# (``pay.UnmatchedRefused``); the web app shows them in the user's language.
+# (``pay.UnmatchedRefused``), each reason's catalog key.
 UNMATCHED_REFUSALS = {
-    "gone": "This payment is no longer with the unmatched payments.",
-    "other_company": "This payment was made to another company. Switch to that company to record it there.",
-    "missing": "This invoice no longer exists.",
-    "not_invoice": "Only an invoice can take this payment.",
-    "status": "This invoice cannot take a payment in its current status.",
-    "currency": "This invoice is in another currency than the payment.",
-    "paid": "This invoice is already paid.",
-    "too_small": "This invoice owes less than the payment.",
-    "refused": "This invoice cannot take this payment.",
+    "gone": "pay.unmatched_refused_gone",
+    "other_company": "pay.unmatched_refused_other_company",
+    "missing": "pay.unmatched_refused_missing",
+    "not_invoice": "pay.unmatched_refused_not_invoice",
+    "status": "pay.unmatched_refused_status",
+    "currency": "pay.unmatched_refused_currency",
+    "paid": "pay.unmatched_refused_paid",
+    "too_small": "pay.unmatched_refused_too_small",
+    "refused": "pay.unmatched_refused_refused",
 }
 
 
@@ -559,10 +562,10 @@ _UNMATCHED_RECORDERS = [Depends(require_install_owner), require_permission("reco
 
 
 def _unmatched_refused(reason: str) -> HTTPException:
-    return HTTPException(status_code=409, detail={"message": UNMATCHED_REFUSALS[reason], "reason": reason})
+    return HTTPException(status_code=409, detail={**catalog_refusal(UNMATCHED_REFUSALS[reason]), "reason": reason})
 
 
-@router.get("/payments/unmatched/invoices", dependencies=_UNMATCHED_RECORDERS)
+@router.get("/payments/unmatched/invoices", dependencies=_UNMATCHED_RECORDERS, openapi_extra={"x-celerp-agent": True}, summary="List the invoices an unmatched online payment can be recorded on.")
 async def payments_unmatched_invoices(reference: str, company_id=Depends(get_current_company_id),
                                       session: AsyncSession = Depends(get_session)) -> dict:
     """The invoices of the current company the unmatched payment *reference* can be
@@ -586,7 +589,7 @@ async def payments_unmatched_invoices(reference: str, company_id=Depends(get_cur
     return {"items": sorted(items, key=lambda i: i["ref"])}
 
 
-@router.post("/payments/unmatched/record", dependencies=_UNMATCHED_RECORDERS)
+@router.post("/payments/unmatched/record", dependencies=_UNMATCHED_RECORDERS, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/payments"}, summary="Record an unmatched online payment on an invoice of this company.")
 async def payments_unmatched_record(body: UnmatchedRecordBody, company_id=Depends(get_current_company_id),
                                     session: AsyncSession = Depends(get_session)) -> dict:
     """Record the unmatched payment on an invoice of the current company

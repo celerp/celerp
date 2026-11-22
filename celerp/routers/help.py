@@ -11,10 +11,7 @@ need, and never hides a page for either reason.
 """
 from __future__ import annotations
 
-import re
-from functools import lru_cache
 from typing import Annotated
-from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -28,15 +25,15 @@ from celerp.services.auth import get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, missing_permission_text
 from celerp.accounting_roles import catalog_refusal
 from ui.i18n import current_lang, t
+from celerp.agent_markers import agent_excluded
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 # An agent tool. Each result names whether the caller holds its page's permission, so
 # it depends on whichever permission a page names: every one.
-_AGENT = {"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"}
+_AGENT = {"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": "*"}
 
 _MAX_Q_LEN = 200
 _MAX_PATH_LEN = 300
-_SEGMENT = re.compile(r"\{[^/{}]+\}")
 
 
 def _flags(hit: help_search_mod.Hit) -> dict:
@@ -54,7 +51,8 @@ def _summary(page: HelpPage) -> dict:
     return {"id": page.id, "title": page.title, "summary": page.summary}
 
 
-@router.get("/help/search", operation_id="help_search", openapi_extra=_AGENT)
+@router.get("/help/search", operation_id="help_search", openapi_extra=_AGENT,
+            summary="Search the help pages for how to do something in Celerp.")
 async def help_search(
     q: str = Query(..., max_length=_MAX_Q_LEN),
     module: str | None = None,
@@ -75,7 +73,8 @@ async def help_search(
     return {"hits": [{**_summary(h.page), **_flags(h)} for h in hits]}
 
 
-@router.get("/help/page/{page_id}", operation_id="help_read", openapi_extra=_AGENT)
+@router.get("/help/page/{page_id}", operation_id="help_read", openapi_extra=_AGENT,
+            summary="Read one help page with its numbered steps and the button names the user sees.")
 async def help_read(
     page_id: str,
     role: str = Depends(get_current_role),
@@ -96,7 +95,7 @@ async def help_read(
     }
 
 
-@router.get("/help/browse", include_in_schema=False)
+@router.get("/help/browse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List every help page by module, or the pages of one module.")
 async def help_browse(module: str | None = None) -> dict:
     """Every help page by module (core first, then each module as the index orders them),
     or one module's pages."""
@@ -112,7 +111,7 @@ async def help_browse(module: str | None = None) -> dict:
     return {"modules": list(by_module.values())}
 
 
-@router.get("/help/img/{page_id}/{step}", include_in_schema=False)
+@router.get("/help/img/{page_id}/{step}", include_in_schema=False, openapi_extra=agent_excluded("internal"))
 async def help_image(page_id: str, step: str) -> Response:
     """The screenshot of one step of a help page."""
     page = get_index().pages.get(page_id)
@@ -122,40 +121,19 @@ async def help_image(page_id: str, step: str) -> Response:
     return Response(data, media_type="image/webp", headers={"X-Content-Type-Options": "nosniff"})
 
 
-@lru_cache(maxsize=512)
-def _route_pattern(route: str) -> re.Pattern:
-    """A help page route's path as a full-path match; each {name} stands for one path segment."""
-    parts = _SEGMENT.split(route)
-    return re.compile("[^/]+".join(re.escape(p) for p in parts) + r"/?\Z")
-
-
-def _covers(route: str, path: str, query: set[tuple[str, str]]) -> bool:
-    """Whether a help page route covers the screen at ``path`` with ``query``: the paths
-    match, every query pair the route names (a tab, say) is on the screen's address, and
-    both name the same ``type``. A list path such as ``/docs`` serves a different screen
-    per type, so a route without a type covers only the untyped list."""
-    route_path, _, route_query = route.partition("?")
-    route_pairs = set(parse_qsl(route_query))
-    return (_route_pattern(route_path).match(path) is not None
-            and route_pairs <= query
-            and dict(route_pairs).get("type") == dict(query).get("type"))
-
-
 def _short_path(address: str) -> str:
     if len(address.partition("?")[0]) > _MAX_PATH_LEN:
         raise ValueError(f"the path part is longer than {_MAX_PATH_LEN} characters")
     return address
 
 
-@router.get("/help/for-route")
+@router.get("/help/for-route", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the help pages that cover one screen of the app.")
 async def help_for_route(
     path: Annotated[str, AfterValidator(_short_path), Query(max_length=MAX_ADDRESS_LEN, pattern=r"^/")],
 ) -> dict:
     """The help pages that cover the screen at ``path`` (its query included), for the top
     bar Help panel. A list address carries its filters, so the query may run long; the
     path part is held to a path's length."""
-    path, _, query = path.partition("?")
-    pairs = set(parse_qsl(query))
-    pages = [p for p in get_index().pages.values() if any(_covers(r, path, pairs) for r in p.routes)]
+    pages = [p for p in get_index().pages.values() if help_search_mod.covers(p.routes, path)]
     pages.sort(key=lambda p: (p.order, p.id))
     return {"pages": [_summary(p) for p in pages]}

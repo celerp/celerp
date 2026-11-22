@@ -113,7 +113,7 @@ async def test_earlier_version_quotation_keeps_its_totals_through_restore_check_
     cid = auth["company_id"]
     earlier = await _as_saved_by_earlier_version(session, cid, lid)
 
-    await _check_replay(session, cid)  # the restore's replay agrees with the record: no refusal
+    await _check_replay(session, cid, rebuild=False)  # the restore's replay agrees with the record: no refusal
     await _rebuild(session, cid)
     after = await _state(session, cid, lid)
     assert {k: after[k] for k in _TOTALS} == {k: earlier[k] for k in _TOTALS}

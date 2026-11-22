@@ -44,6 +44,7 @@ from celerp.services.permissions import carry_authority, require_permission
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.physical_codes import physical_code_conflicts
 from ui.i18n import refusal_text
+from ui.i18n import t
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1170,7 +1171,7 @@ _CHECK_FNS = {
 }
 
 
-@router.post("/doctor")
+@router.post("/doctor", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/doctor"}, summary="Run the Doctor checks on this installation and report what needs fixing.")
 async def run_doctor(
     request: Request,
     fix: bool = Query(False, description="Apply repairs (default: dry-run report only)"),
@@ -1189,7 +1190,7 @@ async def run_doctor(
     check_names = [c.strip() for c in checks.split(",")] if checks else ALL_CHECKS
     invalid = [c for c in check_names if c not in _CHECK_FNS]
     if invalid:
-        raise HTTPException(status_code=422, detail=f"Unknown checks: {invalid}")
+        raise HTTPException(status_code=422, detail=t("admin.err_unknown_checks_invalid", invalid=invalid))
 
     # Doctor is an admin maintenance operation. On a mature database the integrity
     # scans, their repairs, and the full projection rebuild routinely exceed the
@@ -1237,7 +1238,7 @@ async def run_doctor(
     return response
 
 
-@router.get("/relay/status")
+@router.get("/relay/status", openapi_extra={"x-celerp-agent": True}, summary="Show whether the relay that makes this installation reachable from the internet is running.")
 async def relay_status(
     _user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),

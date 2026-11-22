@@ -9,7 +9,7 @@ again only under the identity it was sent under: the service replays a stored re
 and refuses to run again a step whose outcome it cannot report. Running a step under
 a new identity is always an explicit user action that says what it counts as.
 
-The AI service is played over HTTP by its step rules (tests/ai_fake_cloud.py). A kill
+The AI service is played over HTTP by its step rules (ai_fake_cloud.py at the repository root). A kill
 is ``jobs.shutdown()`` (every task cancelled mid-step), a restart is
 ``jobs.recover_on_start()``.
 """
@@ -26,10 +26,13 @@ from sqlalchemy import select, update
 from ai_fake_cloud import answer, cloud, tool_turn, until  # noqa: F401
 from celerp.ai import deadlines, jobs, llm, service, usage
 from celerp.config import settings
+from ui.i18n import lang_label
 from celerp.models.ai import AIBatchJob, AIJobStep, AIUsage
 from celerp.models.notification import Notification
 from celerp.services.company_lock import locked_company
 from test_ai_usage import _conversation, owner  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("tools_open_when_called")
 
 AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
 TERMINAL = {"completed", "failed", "cancelled"}
@@ -414,12 +417,21 @@ async def test_a_file_that_keeps_raising_ends_retryable_and_the_other_files_fini
     conv = await _conversation(client, token)
     file_ids = _files(company_id, user_id, 3)
     real_read = batch.read_file
-    tries = []
+    tries, failed_op, held_while_reading = [], [], []
 
     async def _read(run, file_id, operation_id, **kw):
         if file_id == file_ids[1]:
             tries.append(file_id)
+            failed_op.append(operation_id)
             raise RuntimeError("unexpected")
+        if file_id == file_ids[2]:
+            # The failed file's charge is no longer held once it ends, while this file still reads.
+            for _ in range(300):
+                if len(tries) == jobs.STEP_ATTEMPTS and failed_op[0] not in jobs.held_operation_ids():
+                    break
+                await asyncio.sleep(0.01)
+            held_while_reading.append((failed_op[0] in jobs.held_operation_ids(),
+                                       operation_id in jobs.held_operation_ids()))
         return await real_read(run, file_id, operation_id, **kw)
     monkeypatch.setattr(batch, "read_file", _read)
     r = await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token), json={
@@ -427,6 +439,7 @@ async def test_a_file_that_keeps_raising_ends_retryable_and_the_other_files_fini
     job = await _finished(client, token, uuid.UUID(r.json()["job_id"]))
 
     assert len(tries) == jobs.STEP_ATTEMPTS
+    assert held_while_reading == [(False, True)]
     files = _by_file(job)
     assert [files[f]["status"] for f in file_ids] == ["success", "error", "success"]
     assert files[file_ids[1]]["error"] == "Something went wrong while reading this file. Retry it to read it again."
@@ -576,7 +589,7 @@ async def test_ai_access_lost_mid_job_stops_the_unsent_files_and_resume_sends_th
 
 _CAPS = {"help_search": {
     "name": "help_search", "method": "GET", "path": "/help/search", "path_names": (), "query_names": ("q",),
-    "expects_body": False, "inject_idempotency": False, "required_permissions": (), "result_permissions": (), "field_visibility": False,
+    "expects_body": False, "key_field": None, "keyed": False, "required_permissions": (), "result_permissions": (), "field_visibility": False,
     "tool": {"type": "function", "function": {"name": "help_search", "description": "help_search",
                                               "parameters": {}}}}}
 
@@ -598,7 +611,7 @@ async def test_a_question_past_p_is_promoted_notified_and_resumes_from_its_journ
     model step; resumed from the journal: the first step is not run again and the
     second carries the original tool call id."""
     monkeypatch.setattr(deadlines, "PROMOTE_AFTER_S", 0.2)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: _CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: _CAPS)
 
     async def _exec(app, authz, capability, arguments, call_id, *, result_max_bytes=None):
         return {"ok": True, "status": 200, "data": {"pages": ["contacts.add-supplier"]}}
@@ -641,7 +654,7 @@ async def test_a_background_question_resumed_after_a_restart_answers_in_its_aske
     cannot be recovered is stored in Thai."""
     from ui.i18n import set_lang, t
     monkeypatch.setattr(deadlines, "PROMOTE_AFTER_S", 0.2)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: _CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: _CAPS)
 
     async def _exec(app, authz, capability, arguments, call_id, *, result_max_bytes=None):
         return {"ok": True, "status": 200, "data": {"pages": ["contacts.add-supplier"]}}
@@ -670,7 +683,7 @@ async def test_a_background_question_resumed_after_a_restart_answers_in_its_aske
     state = await _question(client, token, conv, qid)
     resent = [b for b in cloud.bodies if b.get("step_id") == second][-1]
     system = next(m["content"] for m in resent["messages"] if m.get("role") == "system")
-    assert service.agent_system_prompt("th") in system
+    assert f"The user reads {lang_label('th')}." in system
     if end == "store":
         assert (state["state"], state["message"]["content"]) == ("answered", "เปิดผู้ติดต่อ")
     else:
@@ -854,7 +867,7 @@ async def test_a_steps_declared_budget_is_computed_after_it_takes_the_slot(cloud
     monkeypatch.setattr(deadlines, "call_budget", _budget)
     async with jobs.gate.slot("interactive"):
         order.append("slot")
-        await llm.complete([{"role": "user", "content": "hi"}])
+        await jobs.send_step(lambda: llm.complete([{"role": "user", "content": "hi"}]), resend=False)
     assert order == ["slot", "budget"]
 
 

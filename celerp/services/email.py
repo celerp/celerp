@@ -5,11 +5,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
+from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
-from typing import NamedTuple
+from typing import Awaitable, Callable, NamedTuple
 
 from celerp.output.branding import EMAIL_BRAND_LINE as _BRAND_LINE, brand_url as _brand_url
 
@@ -29,10 +33,166 @@ class EmailResult(NamedTuple):
     reason: str | None = None
 
 
-def relay_send_is_idempotent() -> bool:
-    """The configured relay supports deduplicated retry with a stable operation id."""
+def relay_identity() -> str | None:
+    """A digest naming the relay account this installation sends through, never its token;
+    None with no relay. An operation id is deduplicated only by the account that took it."""
     from celerp.config import settings
-    return bool(settings.gateway_token)
+    if not settings.gateway_token:
+        return None
+    from celerp.gateway.state import relay_http_url
+    return hashlib.sha256(f"{relay_http_url()}\n{settings.gateway_token}".encode()).hexdigest()
+
+
+# The longest a send waits for its transport, and the longest a send can take with recording its
+# outcome: an attempt recorded as sending less than SEND_TIMEOUT ago may still be with the
+# transport (attempt_state).
+TRANSPORT_TIMEOUT = timedelta(minutes=4)
+SEND_TIMEOUT = TRANSPORT_TIMEOUT + timedelta(minutes=1)
+# How long after an attempt began the same operation id may be sent again: shorter than the
+# time the relay answers for an operation id, so a replay is never taken as a new email.
+REPLAY_WINDOW = timedelta(hours=12)
+
+# Why an email was not sent: its recipient was not confirmed just before it went out.
+RECIPIENT_UNCONFIRMED = "email.err_recipient_unconfirmed"
+
+
+class Attempt(NamedTuple):
+    """One email of a durable send: its operation id and its send_email arguments."""
+    operation_id: str
+    message: dict
+
+
+def payload_json(message: dict) -> str:
+    """The stored form of an email's send_email arguments: every character past ASCII written
+    as itself, so a size limit counts it once."""
+    return json.dumps(message, sort_keys=True, ensure_ascii=False)
+
+
+def payload_digest(message: dict) -> str:
+    """The digest of an email's stored form, which a replay of its attempt must match."""
+    return hashlib.sha256(payload_json(message).encode()).hexdigest()
+
+
+def attempt_record(attempt: Attempt, previous: dict | None) -> dict:
+    """The stored record of ``attempt`` before it goes out: kept and committed first, so a run
+    stopped at any point after leaves the attempt sending, never forgotten. ``previous`` is the
+    record it replaces (None for a first send): a replay of the same operation id keeps when
+    that attempt first began, so repeated replays never move the replay window."""
+    began = (previous.get("began") or previous.get("at")
+             if previous and previous.get("operation_id") == attempt.operation_id else None)
+    return {"state": "sending", "at": datetime.now(timezone.utc).isoformat(), "operation_id": attempt.operation_id,
+            "digest": payload_digest(attempt.message), "relay": relay_identity(), **({"began": began} if began else {})}
+
+
+def settled_record(record: dict, result: EmailResult) -> dict:
+    """``record`` with the outcome of its send: sent, unconfirmed (it may have gone out) or failed.
+    ``began`` keeps when the attempt first went out, which bounds its replay (next_step)."""
+    state = "sent" if result.ok else "unconfirmed" if result.unconfirmed else "failed"
+    if result.reason == RECIPIENT_UNCONFIRMED and record.get("began"):
+        state = "unconfirmed"  # a replay not sent this time: its first attempt may still have gone out
+    return {**record, "state": state, "at": datetime.now(timezone.utc).isoformat(),
+            "began": record.get("began") or record.get("at"),
+            **({"reason": result.reason, "detail": result.detail} if state == "failed" else {})}
+
+
+def _stamp(at) -> datetime | None:
+    """A record's stored time (one with no zone is read as UTC); None when unreadable."""
+    try:
+        when = datetime.fromisoformat(str(at))
+    except (ValueError, OverflowError):
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def attempt_state(record: dict | None, now: datetime) -> str | None:
+    """How a stored attempt reads at ``now``: "sending" while it may still be with the
+    transport, "unconfirmed" once it may have gone out unanswered (its run was cut off),
+    otherwise as recorded; None when there is no record."""
+    if not record or record.get("state") is None:
+        return None
+    if record["state"] != "sending":
+        return record["state"]
+    began = _stamp(record.get("at"))
+    return "sending" if began is not None and began + SEND_TIMEOUT > now else "unconfirmed"
+
+
+def next_step(record: dict | None, *, again: bool = False) -> str:
+    """What a run does with a stored attempt: "new" sends a new email (none was recorded, or
+    the transport refused it), "replay" sends the same attempt under its operation id (the
+    relay that took it deduplicates, so it can never arrive twice), "stored" answers as stored
+    (sent, or still with another run's transport) and "unverified" answers that it may have
+    gone out: never sent again through a transport that could deliver it twice, unless the
+    person confirmed it may be sent again (``again``). A replay is the same relay account
+    the attempt was recorded under, inside REPLAY_WINDOW of when it began; past either, the
+    relay may no longer know the operation id, so the attempt is unverified."""
+    now = datetime.now(timezone.utc)
+    state = attempt_state(record, now)
+    if state in (None, "failed"):
+        return "new"
+    if state != "unconfirmed":
+        return "stored"
+    if again:
+        return "new"
+    relay, began = relay_identity(), _stamp(record.get("began") or record.get("at"))
+    if relay is None or record.get("relay") != relay or began is None:
+        return "unverified"
+    return "replay" if abs(now - began) < REPLAY_WINDOW else "unverified"
+
+
+async def transmit(attempts: list[Attempt],
+                   current: Callable[[Attempt], Awaitable[bool]] | None = None) -> list[EmailResult]:
+    """Send each attempt under its operation id, failing closed on an unknown outcome; a send
+    cut off or past TRANSPORT_TIMEOUT is unconfirmed, as it may have gone out. ``current`` is
+    asked immediately before each attempt goes out, since the ones before it may have been
+    slow: an attempt whose recipient it does not confirm is not sent (RECIPIENT_UNCONFIRMED)."""
+    results = []
+    for attempt in attempts:
+        try:
+            if current is not None and not await current(attempt):
+                results.append(EmailResult(False, "recipient not confirmed before sending",
+                                           reason=RECIPIENT_UNCONFIRMED))
+                continue
+        except Exception as exc:
+            log.warning("Confirming an email's recipient failed (%s)", type(exc).__name__)
+            results.append(EmailResult(False, "recipient not confirmed before sending", reason=RECIPIENT_UNCONFIRMED))
+            continue
+        try:
+            results.append(await asyncio.wait_for(send_email(
+                **attempt.message, operation_id=attempt.operation_id, fail_closed_on_uncertain=True),
+                TRANSPORT_TIMEOUT.total_seconds()))
+        except Exception as exc:
+            log.warning("Sending email failed (%s)", type(exc).__name__)
+            results.append(EmailResult(False, "delivery outcome unknown", unconfirmed=True))
+    return results
+
+
+async def send_durably(session, begin: Callable[..., Awaitable[list[Attempt]]],
+                       current: Callable[..., Awaitable[bool]],
+                       settle: Callable[..., Awaitable[object]]):
+    """The one lifecycle of an email a later run must not send twice. ``begin(session)``
+    takes the caller's locks, records each attempt it sends (attempt_record) and returns
+    them; that is committed, releasing every lock, before anything goes out, so no writer of
+    the company waits on the transport. ``current(session, attempt)`` answers, from what is
+    stored now, whether the attempt's recipient may still get it at the address it carries;
+    it is asked immediately before each attempt goes out, on rows read afresh, and its
+    transaction is ended before the transport is called, so a recipient who changed while an
+    earlier attempt was slow is not sent to. ``settle(session, results)`` then takes the locks
+    again, records each outcome on the attempt it read back (settled_record) and returns
+    the answer, which is committed."""
+    attempts = await begin(session)
+    await session.commit()
+
+    async def confirmed(attempt: Attempt) -> bool:
+        session.expire_all()
+        try:
+            return await current(session, attempt)
+        finally:
+            await session.rollback()
+
+    results = await transmit(attempts, confirmed) if attempts else []
+    answer = await settle(session, results)
+    await session.commit()
+    return answer
 
 
 def _with_footer(body_html: str, body_text: str) -> tuple[str, str]:
@@ -63,7 +223,9 @@ async def send_email(
     operation_id: str | None = None,
     fail_closed_on_uncertain: bool = False,
 ) -> EmailResult:
-    """Send a transactional email via the relay or SMTP fallback. Never raises.
+    """Send a transactional email via the relay or SMTP fallback. Never raises on a
+    transport failure; raises RuntimeError when called with a database transaction open
+    (refuse_held_transaction), as every lock it holds would wait on the transport.
 
     ok is True only when a transport actually accepted the message - the relay path
     is a synchronous HTTP call to the relay's /email/send (which submits to the
@@ -75,7 +237,9 @@ async def send_email(
     unconfirmed instead of falling back to SMTP, which could send it twice.
     """
     from celerp.config import settings
+    from celerp.services.company_lock import refuse_held_transaction
 
+    refuse_held_transaction("an email is sent")
     if branded:
         body_html, body_text = _with_footer(body_html, body_text)
 

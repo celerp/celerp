@@ -29,7 +29,7 @@ from celerp.events.schemas import (
     workflow_step_minutes,
 )
 from celerp.models.company import Company, Location, WorkCenter
-from celerp.importers.results import failure_reason
+from celerp.importers.results import BatchImportResult, failure_reason, keyed_reason, record_refused, row_refusal
 from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import migrations
@@ -193,13 +193,6 @@ class MfgBatchImportRequest(BaseModel):
     records: list[MfgImportRecord] = Field(..., max_length=500)
 
 
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str]
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -234,7 +227,7 @@ async def _created_before(session: AsyncSession, company_id, key: str, fingerpri
     stored = await find_event_by_idempotency(session, company_id, key)
     if stored is not None and (stored.event_type != "mfg.order.created"
                                or (stored.metadata_ or {}).get("request") != fingerprint):
-        raise movements.refuse(409, "key_reused", "This request key was already used for a different run. "
+        raise movements.refuse(409, "key_reused_run", "This request key was already used for a different run. "
                                "Send the request again without reusing the key.")
     return stored
 
@@ -335,7 +328,7 @@ async def _load_recipe_graph(session: AsyncSession, company_id, root_id: str, ro
 # Recipe endpoints (the manufacturing recipe attached to an inventory item)
 # ---------------------------------------------------------------------------
 
-@router.put("/items/{item_id}/recipe")
+@router.put("/items/{item_id}/recipe", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/manufacturing"}, summary="Set the recipe of an item, the materials and quantities it is made from.")
 async def set_item_recipe(
     item_id: str,
     payload: RecipeSpec,
@@ -412,7 +405,7 @@ async def set_item_recipe(
 # Production workflow endpoints (the ordered build steps attached to an item)
 # ---------------------------------------------------------------------------
 
-@router.put("/items/{item_id}/workflow")
+@router.put("/items/{item_id}/workflow", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/manufacturing"}, summary="Set the production steps of an item.")
 async def set_item_workflow(
     item_id: str,
     payload: WorkflowSpec,
@@ -502,7 +495,7 @@ class BuildBody(BaseModel):
     idempotency_key: str | None = None
 
 
-@router.post("/items/{item_id}/build")
+@router.post("/items/{item_id}/build", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Start a production run to build a number of an item from its recipe.")
 async def build_item(
     item_id: str,
     payload: BuildBody,
@@ -521,7 +514,7 @@ async def build_item(
         raise HTTPException(status_code=404, detail=t("manufacturing.err_item_not_found"))
     movements.require_stock(item.state or {}, item_id)
     if not is_manufacturable(item.state):
-        raise HTTPException(status_code=422, detail="Item has no recipe to build from")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_item_has_no_recipe_build_from"))
     refuse_draft(item.state or {}, item_id)
     key = payload.idempotency_key or str(uuid.uuid4())
     # The run id follows the key, so a retried build finds the run it made instead of a second one.
@@ -601,7 +594,7 @@ async def _recost_dependents_of(session: AsyncSession, company_id, user, item_id
     return [tid for tid in targets if await _recost_one(session, company_id, user, tid, states) is not None]
 
 
-@router.post("/items/{item_id}/recost-dependents")
+@router.post("/items/{item_id}/recost-dependents", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/manufacturing"}, summary="Update the cost of every item whose recipe uses this item.")
 async def recost_dependents(
     item_id: str,
     company_id=Depends(get_current_company_id),
@@ -799,7 +792,7 @@ async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
     return items
 
 
-@router.get("/to-make")
+@router.get("/to-make", openapi_extra={"x-celerp-agent": True}, summary="List what needs making to meet open orders, product by product.")
 async def to_make(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -858,7 +851,7 @@ class MakeWorkOrdersBody(BaseModel):
     idempotency_key: str | None = None
 
 
-@router.post("/to-make/make")
+@router.post("/to-make/make", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Create a work order for each chosen line of the to-make list.")
 async def make_work_orders(
     payload: MakeWorkOrdersBody,
     company_id=Depends(get_current_company_id),
@@ -889,8 +882,8 @@ async def _once(session: AsyncSession, company_id, user_id, action: str, payload
     stored = await find_event_by_idempotency(session, company_id, key)
     if stored is not None:
         if stored.event_type != "mfg.operation.recorded" or (stored.metadata_ or {}).get("request") != fingerprint:
-            raise movements.refuse(409, "key_reused", "This request key was already used for a different action. "
-                                   "Send the request again without reusing the key.")
+            raise movements.refuse(409, "key_reused", "That action was already sent with different details. "
+                                   "Check the list, then try again.")
         return stored.data["result"]
     result = await act(payload.idempotency_key)
     await emit_event(
@@ -964,7 +957,7 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
     at = datetime.now(timezone.utc).isoformat()
     completed: list[str] = []
     failed: list[str] = []
-    not_created: list[str] = []
+    not_created: list[dict] = []
     states = await _all_item_states(session, company_id)
     # One action per finalize: a re-finalize after a revert to draft is a new one.
     operation = f"finalize:{entity_id}:{int((doc_state or {}).get('revert_count') or 0)}"
@@ -978,7 +971,9 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
                 made = await make_selected(session, company_id, user_id,
                                            [WorkOrderLineRef(item_id=item_id, doc_id=entity_id)], False, operation)
         except HTTPException as exc:
-            not_created.append(f"{(states.get(item_id) or {}).get('sku') or item_id} ({failure_reason(exc)})")
+            not_created.append(catalog_refusal("notice.mfg_not_created.product",
+                                               product=(states.get(item_id) or {}).get("sku") or item_id,
+                                               refusal=keyed_reason(exc)))
             continue
         if not auto_complete:
             continue
@@ -1002,32 +997,32 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
     try:
         async with session.begin_nested():
             if not_created:
-                await notif_svc.create(
-                    session, company_id, category="manufacturing",
-                    title="Work orders not created",
-                    body=(f"{len(not_created)} work order(s) could not be created on invoice posting: "
-                          f"{', '.join(not_created)}. Fix the recipe, "
-                          f"then create the work order from the To-Make board."),
-                    priority="high", action_url="/manufacturing/to-make")
+                await _finalize_notice(session, company_id, "not_created", "high",
+                                       "/manufacturing/to-make", n=len(not_created), products=not_created)
             if auto_complete and failed:
-                await notif_svc.create(
-                    session, company_id, category="manufacturing",
-                    title="Work orders need completing",
-                    body=(f"{len(failed)} work order(s) could not auto-complete on invoice posting "
-                          f"and are left planned: {', '.join(failed)}. Complete them manually."),
-                    priority="high", action_url="/manufacturing/production?status=planned")
+                await _finalize_notice(session, company_id, "not_completed", "high",
+                                       "/manufacturing/production?status=planned", n=len(failed),
+                                       runs=", ".join(failed))
             elif auto_complete and completed:
-                await notif_svc.create(
-                    session, company_id, category="manufacturing",
-                    title="Work orders auto-completed",
-                    body=(f"{len(completed)} work order(s) were completed automatically on invoice "
-                          f"posting: {', '.join(completed)}."),
-                    priority="medium", action_url="/manufacturing/production")
+                await _finalize_notice(session, company_id, "auto_completed", "medium",
+                                       "/manufacturing/production", n=len(completed), runs=", ".join(completed))
     except Exception as exc:
         log.warning("work order notification failed: %s", exc)
 
 
-@router.post("/to-make/requirements")
+async def _finalize_notice(session: AsyncSession, company_id, outcome: str, priority: str, action_url: str,
+                           **params) -> None:
+    """A notice of what an invoice's posting did to its work orders, stored in English with
+    the keys each reader's language is shown from; a param may be a list of refusals."""
+    title = catalog_refusal(f"notice.mfg_{outcome}.title")
+    body = catalog_refusal(f"notice.mfg_{outcome}.body", **params)
+    await notif_svc.create(session, company_id, category="manufacturing", title=title["message"],
+                           body=body["message"], priority=priority, action_url=action_url,
+                           i18n={"title": title["message_key"], "body": body["message_key"],
+                                 "params": body["params"]})
+
+
+@router.post("/to-make/requirements", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/manufacturing"}, summary="Total the raw materials and sub-assemblies chosen to-make lines need.")
 async def bulk_requirements(
     payload: BulkBuildBody,
     company_id=Depends(get_current_company_id),
@@ -1081,7 +1076,7 @@ class BulkRunActionBody(BaseModel):
 _BULK_RUN_ACTIONS = {"start", "issue", "return", "complete", "hold", "resume", "cancel"}
 
 
-@router.post("/bulk-action")
+@router.post("/bulk-action", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-selection": "run_ids"}, summary="Apply one action, such as start or complete, to several production runs at once.")
 async def bulk_run_action(
     payload: BulkRunActionBody,
     company_id=Depends(get_current_company_id),
@@ -1093,7 +1088,7 @@ async def bulk_run_action(
     Runs in a state that does not permit the action are skipped (not a hard error)."""
     action = payload.action
     if action not in _BULK_RUN_ACTIONS:
-        raise HTTPException(status_code=422, detail=f"Unknown bulk action: {action}")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_unknown_bulk_action_action", action=action))
     out = await _once(session, company_id, user.id, "bulk_action", payload,
                       lambda rk: _bulk_run_action(session, company_id, user.id, payload.run_ids, action, rk))
     await session.commit()
@@ -1154,7 +1149,7 @@ def _run_makes(run_state: dict, item_id: str, item_sku: str) -> bool:
     return any((o.get("sku") and o.get("sku") == item_sku) for o in run_state.get("expected_outputs", []))
 
 
-@router.get("/items/{item_id}/hub")
+@router.get("/items/{item_id}/hub", openapi_extra={"x-celerp-agent": True}, summary="Show an item's manufacturing overview, with open demand, runs and recipe.")
 async def item_manufacturing_hub(
     item_id: str,
     company_id=Depends(get_current_company_id),
@@ -1220,7 +1215,7 @@ async def item_manufacturing_hub(
 # Import endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("/import/template", response_class=PlainTextResponse, include_in_schema=False)
+@router.get("/import/template", response_class=PlainTextResponse, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/manufacturing/import/template"}, summary="Download the spreadsheet template for importing manufacturing records.")
 async def import_manufacturing_template():
     return PlainTextResponse(
         "entity_id,event_type,idempotency_key\n",
@@ -1261,7 +1256,7 @@ async def _imported_before(session: AsyncSession, company_id, rec, fingerprint: 
     return False
 
 
-@router.post("/import/batch", response_model=BatchImportResult)
+@router.post("/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records"}, summary="Import a batch of manufacturing records from a spreadsheet.")
 async def batch_import_manufacturing(
     body: MfgBatchImportRequest,
     company_id=Depends(get_current_company_id),
@@ -1283,11 +1278,11 @@ async def batch_import_manufacturing(
     locked = await lock_projections(session, company_id, named)
 
     created = skipped = 0
-    errors: list[str] = []
+    errors: list[str | dict] = []
     for rec in body.records:
         if rec.event_type != "mfg.order.created":
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+                errors.append(record_refused(rec.entity_id, "not_import_safe", event_type=rec.event_type))
             skipped += 1
             continue
         try:
@@ -1304,7 +1299,7 @@ async def batch_import_manufacturing(
             created += 1
         except Exception as exc:
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
+                errors.append(row_refusal(rec.entity_id, exc))
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, errors=errors)
@@ -1484,7 +1479,7 @@ async def _locked_work_center(session: AsyncSession, company_id, wc_id: str) -> 
     return wc
 
 
-@router.get("/work-centers")
+@router.get("/work-centers", openapi_extra={"x-celerp-agent": True}, summary="List the work centers where production happens.")
 async def list_work_centers(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -1495,7 +1490,7 @@ async def list_work_centers(
     return {"items": [_wc_dict(w) for w in rows], "total": len(rows)}
 
 
-@router.post("/work-centers")
+@router.post("/work-centers", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/manufacturing"}, summary="Add a work center where production happens.")
 async def create_work_center(
     payload: WorkCenterCreate,
     company_id=Depends(get_current_company_id),
@@ -1525,7 +1520,7 @@ async def create_work_center(
     return {"id": str(wc.id)}
 
 
-@router.patch("/work-centers/{wc_id}")
+@router.patch("/work-centers/{wc_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/manufacturing"}, summary="Change a work center's name or details.")
 async def patch_work_center(
     wc_id: str,
     payload: WorkCenterPatch,
@@ -1568,7 +1563,7 @@ async def patch_work_center(
     return {"ok": True}
 
 
-@router.patch("/work-centers/{wc_id}/is_default")
+@router.patch("/work-centers/{wc_id}/is_default", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/manufacturing"}, summary="Make a work center the company's default.")
 async def set_default_work_center(
     wc_id: str,
     company_id=Depends(get_current_company_id),
@@ -1588,7 +1583,7 @@ async def set_default_work_center(
     return {"ok": True}
 
 
-@router.delete("/work-centers/{wc_id}")
+@router.delete("/work-centers/{wc_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/manufacturing"}, summary="Delete a work center.")
 async def delete_work_center(
     wc_id: str,
     company_id=Depends(get_current_company_id),
@@ -1604,11 +1599,11 @@ async def delete_work_center(
     if others is None:
         raise HTTPException(
             status_code=409,
-            detail="This is your only work center. Add another before deleting this one.")
+            detail=t("manufacturing.err_your_only_work_center_add_another"))
     if wc.is_default:
         raise HTTPException(
             status_code=409,
-            detail="This is the default work center. Set another center as default before deleting it.")
+            detail=t("manufacturing.err_default_work_center_set_another_center"))
     await session.delete(wc)
     await session.commit()
     return {"ok": True}
@@ -1650,7 +1645,7 @@ def _stock_by_product(states: dict[str, dict]) -> tuple[dict[str, float], dict[t
 _RUN_STATUSES = ("planned", "in_progress", "on_hold", "completed", "cancelled")
 
 
-@router.get("")
+@router.get("", openapi_extra={"x-celerp-agent": True}, summary="List production runs, newest first.")
 async def list_orders(
     q: str | None = None,
     status: str | None = None,
@@ -1670,7 +1665,7 @@ async def list_orders(
     return {"items": items, "total": len(items)}
 
 
-@router.post("")
+@router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Create a production run for an item.")
 async def create_order(
     payload: MfgOrderCreate,
     company_id=Depends(get_current_company_id),
@@ -1695,7 +1690,7 @@ async def create_order(
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
-@router.get("/{order_id}")
+@router.get("/{order_id}", openapi_extra={"x-celerp-agent": True}, summary="Read one production run in full, with its materials, output and status.")
 async def get_order(
     order_id: str,
     company_id=Depends(get_current_company_id),
@@ -1705,7 +1700,7 @@ async def get_order(
     return row.state | {"id": row.entity_id}
 
 
-@router.post("/{order_id}/start")
+@router.post("/{order_id}/start", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Start a production run.")
 async def start_order(
     order_id: str,
     payload: KeyBody | None = None,
@@ -1721,7 +1716,7 @@ async def start_order(
     return {"event_id": entry.id}
 
 
-@router.post("/{order_id}/hold")
+@router.post("/{order_id}/hold", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Put an active production run on hold.")
 async def hold_order(
     order_id: str,
     payload: CancelBody | None = None,
@@ -1739,7 +1734,7 @@ async def hold_order(
     return {"event_id": entry.id}
 
 
-@router.post("/{order_id}/resume")
+@router.post("/{order_id}/resume", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Resume a production run that is on hold.")
 async def resume_order(
     order_id: str,
     payload: KeyBody | None = None,
@@ -1756,7 +1751,7 @@ async def resume_order(
     return {"event_id": entry.id}
 
 
-@router.post("/{order_id}/schedule")
+@router.post("/{order_id}/schedule", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Set the due date, planned start or priority of a production run.")
 async def schedule_order(
     order_id: str,
     payload: ScheduleBody,
@@ -1776,7 +1771,7 @@ async def schedule_order(
     return {"event_id": entry.id}
 
 
-@router.post("/{order_id}/issue")
+@router.post("/{order_id}/issue", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Issue materials from stock into a production run.")
 async def issue_order(
     order_id: str,
     payload: IssueBody | None = None,
@@ -1795,7 +1790,7 @@ async def issue_order(
     return result
 
 
-@router.post("/{order_id}/return")
+@router.post("/{order_id}/return", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Return issued materials from a production run to stock.")
 async def return_order_materials(
     order_id: str,
     payload: ReturnBody | None = None,
@@ -1814,7 +1809,7 @@ async def return_order_materials(
     return result
 
 
-@router.post("/{order_id}/undo-receipt")
+@router.post("/{order_id}/undo-receipt", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Take back finished goods a production run received while they are unchanged.")
 async def undo_order_receipt(
     order_id: str,
     payload: UndoReceiptBody,
@@ -1830,7 +1825,7 @@ async def undo_order_receipt(
     return result
 
 
-@router.post("/{order_id}/reopen")
+@router.post("/{order_id}/reopen", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Reopen a completed production run, reversing what completing it did.")
 async def reopen_order(
     order_id: str,
     payload: KeyBody | None = None,
@@ -1847,7 +1842,7 @@ async def reopen_order(
     return result
 
 
-@router.post("/{order_id}/receive")
+@router.post("/{order_id}/receive", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Receive finished goods from a production run into stock.")
 async def receive_order(
     order_id: str,
     payload: ReceiveBody | None = None,
@@ -1866,7 +1861,7 @@ async def receive_order(
     return result
 
 
-@router.post("/{order_id}/complete")
+@router.post("/{order_id}/complete", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Complete a production run, issuing any remaining materials and receiving the output.")
 async def complete_order(
     order_id: str,
     payload: CompleteBody | None = None,
@@ -1888,7 +1883,7 @@ async def complete_order(
     return result
 
 
-@router.get("/{order_id}/reconcile")
+@router.get("/{order_id}/reconcile", openapi_extra={"x-celerp-agent": True}, summary="Show why a production run needs reconciling and the materials involved.")
 async def reconcile_needs(
     order_id: str,
     company_id=Depends(get_current_company_id),
@@ -1913,7 +1908,7 @@ async def reconcile_needs(
                          for r in received]}
 
 
-@router.post("/{order_id}/reconcile")
+@router.post("/{order_id}/reconcile", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Record the value of the materials in a production run whose history cannot prove it.")
 async def reconcile_order(
     order_id: str,
     payload: ReconcileBody,
@@ -1932,7 +1927,7 @@ async def reconcile_order(
     return result
 
 
-@router.post("/{order_id}/repair-output")
+@router.post("/{order_id}/repair-output", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Repair what an older version recorded about a production run's output.")
 async def repair_order_output(
     order_id: str,
     payload: RepairOutputBody,
@@ -1949,7 +1944,7 @@ async def repair_order_output(
     return result
 
 
-@router.post("/{order_id}/cancel")
+@router.post("/{order_id}/cancel", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Cancel a production run that holds no materials or output.")
 async def cancel_order(
     order_id: str,
     payload: CancelBody,

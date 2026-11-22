@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import Refused, catalog_refusal, field_refusal
 from celerp.importers.adapters.registry import get_adapter
 from celerp.models.company import Company
 from celerp.models.migration import MigrationBatchFile, MigrationRun
@@ -34,11 +35,11 @@ async def add(session: AsyncSession, user_id: uuid.UUID, parts: AsyncIterable[st
     upload = await store.create_several(parts, owner=_owner(user_id))
     try:
         prepared_by = migrations.validate_prepared_by(upload.prepared_by) or ""
-    except migrations.MigrationError:
+    except Refused as exc:
         for _, result in upload.files:
             if not isinstance(result, store.ScanStoreError):
                 store.delete_scan(result.token)
-        raise
+        raise migrations.MigrationError(422, {"errors": [field_refusal("prepared_by", exc.detail)]}) from None
     now = datetime.now(timezone.utc)
     for n, (file_name, result) in enumerate(upload.files):
         row = MigrationBatchFile(user_id=user_id, file_name=file_name, prepared_by=prepared_by,
@@ -115,7 +116,8 @@ async def open_file(session: AsyncSession, user_id: uuid.UUID, file_id: uuid.UUI
     wizard's next step. A file that is gone or unreadable says why."""
     row = await _owned(session, user_id, file_id)
     if row.error is not None:
-        raise migrations.MigrationError(422, row.error)
+        # The reason is kept as the person read it when the upload refused the file.
+        raise migrations.MigrationError(422, catalog_refusal("error.refusal_as_written", text=row.error))
     run_id = await migrations.started_run_id(session, row.scan_claim_sha256, user_id)
     if run_id is not None:
         return {"run_id": str(run_id)}

@@ -42,7 +42,6 @@ from celerp_fixed_assets.operations import (
     _run,
     asset_movements,
     catch_up,
-    conflict,
     in_use,
     refuse,
     label_lines,
@@ -278,7 +277,7 @@ async def _draft_credit_notes(session, company_id, invoice_id: str, asset_id: st
 def _pending(asset: dict) -> dict:
     sale = asset.get("sale") or {}
     if sale.get("state") != "pending":
-        raise conflict(f"{asset['number']} is not waiting on a sale invoice.")
+        raise setup.refused(409, "fixed_assets.err_number_not_waiting_sale_invoice", number=asset['number'])
     return sale
 
 
@@ -288,7 +287,7 @@ async def _buyer(session, company_id, contact_id) -> dict:
         Projection.company_id == company_id, Projection.entity_type == "contact",
         Projection.entity_id == str(contact_id or "")))).scalar_one_or_none()
     if row is None or row.get("merged_into"):
-        raise setup.unprocessable("Choose the buyer from your contacts.")
+        raise setup.refuse("fixed_assets.err_choose_buyer_from_your_contacts")
     return {"contact_id": str(contact_id), "contact_name": row.get("name") or ""}
 
 
@@ -332,7 +331,7 @@ async def reissue(session, company_id, user_id, asset_id: str, body: dict) -> di
         sale = _pending(asset)
         invoice = await _state(session, company_id, sale["invoice_id"])
         if invoice is not None and invoice.get("status") == "draft" and _carries(invoice, asset_id):
-            raise conflict(f"{asset['number']} is already on draft invoice {doc_number(invoice, sale['invoice_id'])}.")
+            raise setup.refused(409, "fixed_assets.err_number_already_draft_invoice_doc_number", number=asset['number'], doc_number=doc_number(invoice, sale['invoice_id']))
         day = _date(body.get("date") or sale["date"], "The sale date")
         shown = {"number": asset["number"], "date": day, "price": sale.get("price"),
                  "contact_name": (invoice or {}).get("contact_name") or sale.get("contact_name")}

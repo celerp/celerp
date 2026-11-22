@@ -15,7 +15,7 @@ from celerp.connectors.base import (
     EntityFlow, SyncDirection, SyncEntity, SyncResult,
 )
 from celerp.connectors.http import RateLimitedClient
-from celerp.importers.results import failure_reason
+from celerp.importers.results import failure_reason, kept_refusal, message_text
 from celerp.models.projections import Projection
 from celerp.services.peer_access import ENTITY_ROUTE, SOURCE_HEADER
 
@@ -375,6 +375,8 @@ def _refusal(errors: list) -> str:
     """The receiving company's reason, without the record id it prefixes."""
     if not errors:
         return "Receiving installation did not acknowledge update"
+    if isinstance(errors[0], dict):  # a keyed refusal (row_refusal) names the record in a param
+        return message_text(kept_refusal(errors[0], ""))
     return str(errors[0]).partition(": ")[2] or str(errors[0])
 
 

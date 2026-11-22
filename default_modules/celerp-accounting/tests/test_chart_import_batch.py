@@ -20,7 +20,7 @@ import uuid
 
 import pytest
 
-from test_helpers import grant_permission, perm_setup
+from test_helpers import grant_permission, message_texts, perm_setup, refusal_keys
 from ui.i18n import refusal_text, t
 
 PATH = "/accounting/accounts/import/batch"
@@ -170,7 +170,7 @@ async def test_chart_import_rejects_options_in_the_query_string(client, query):
     h = await _reg(client)
     r = await client.post(f"{PATH}?{query}", headers=h, json={"records": [_row("8300", "New")]})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == "The chart import takes no query parameters."
+    assert refusal_text(r.json()["detail"]) == "The chart import takes no query parameters."
     assert "8300" not in await _chart(client, h)
 
 
@@ -203,7 +203,7 @@ async def test_chart_import_repeat_same_file_creates_nothing(client):
     (_row("8500", "Bad Type", "Current Asset"), "Account type must be one of"),
     (_row("8500", "No Type", ""), "Account type must be one of"),
     ({"code": 8500, "name": "Numeric", "account_type": "asset"}, "code must be text"),
-    ("not a row", "must be an object"),
+    ("not a row", "Each row needs a code, a name and an account type."),
     (_row("8500", "Bad\x00Name"), "Account name cannot contain a NUL character."),
     (_row("85\x0000"), "Account code cannot contain a NUL character."),
     (_row("8500", parent_code="85\x0001"), "Parent code cannot contain a NUL character."),
@@ -214,7 +214,7 @@ async def test_chart_import_validates_code_name_type(client, row, message):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 1
-    assert len(body["errors"]) == 1 and message in body["errors"][0], body["errors"]
+    assert len(body["errors"]) == 1 and message in message_texts(body["errors"])[0], body["errors"]
     chart = await _chart(client, h)
     assert "8501" in chart and "8500" not in chart
 
@@ -326,7 +326,7 @@ async def test_chart_import_missing_parent_is_invalid(client):
     body = r.json()
     assert body["created"] == 1
     assert len(body["errors"]) == 1
-    assert "8800" in body["errors"][0] and "9999" in body["errors"][0]
+    assert "8800" in message_texts(body["errors"])[0] and "9999" in message_texts(body["errors"])[0]
     assert "8800" not in await _chart(client, h)
 
 
@@ -343,7 +343,7 @@ async def test_chart_import_cycle_is_invalid(client):
     body = r.json()
     assert body["created"] == 1
     assert len(body["errors"]) == 4
-    assert all("loop" in e for e in body["errors"]), body["errors"]
+    assert all("loop" in e for e in message_texts(body["errors"])), body["errors"]
     chart = await _chart(client, h)
     assert not {"8900", "8910", "8920", "8930"} & set(chart) and "8940" in chart
 
@@ -356,7 +356,7 @@ async def test_chart_import_cycle_through_existing_account_is_invalid(client, se
     r = await _import(client, h, [_row("8960", "Closes The Loop", parent_code="8950")])
     body = r.json()
     assert body["created"] == 0
-    assert len(body["errors"]) == 1 and "loop" in body["errors"][0]
+    assert len(body["errors"]) == 1 and "loop" in message_texts(body["errors"])[0]
     assert "8960" not in await _chart(client, h)
 
 
@@ -371,7 +371,7 @@ async def test_chart_import_row_under_a_loop_already_in_the_chart_is_invalid(cli
     ])
     body = r.json()
     assert body["created"] == 0
-    assert any("8956" in e and "loop (8956 > 8955 > 8955)" in e for e in body["errors"]), body["errors"]
+    assert any("8956" in e and "loop (8956 > 8955 > 8955)" in e for e in message_texts(body["errors"])), body["errors"]
     chart = await _chart(client, h)
     assert "8956" not in chart and "8957" not in chart
 
@@ -386,7 +386,7 @@ async def test_chart_import_child_of_invalid_row_is_invalid(client):
     body = r.json()
     assert body["created"] == 0
     assert len(body["errors"]) == 2
-    assert any("8971" in e and "8970" in e for e in body["errors"]), body["errors"]
+    assert any("8971" in e and "8970" in e for e in message_texts(body["errors"])), body["errors"]
     chart = await _chart(client, h)
     assert "8970" not in chart and "8971" not in chart
 
@@ -399,7 +399,7 @@ async def test_chart_import_duplicate_code_in_file_is_invalid(client):
     ])
     body = r.json()
     assert body["created"] == 0
-    assert any("more than once" in e for e in body["errors"]), body["errors"]
+    assert "import.record.code_repeated" in refusal_keys(body["errors"]), body["errors"]
     chart = await _chart(client, h)
     assert "8980" not in chart and "8981" not in chart
 
@@ -442,7 +442,7 @@ async def test_chart_import_rejects_unrecognized_is_active(client, value):
     r = await _import(client, h, [_row("8690", "Odd", is_active=value)])
     body = r.json()
     assert body["created"] == 0
-    assert len(body["errors"]) == 1 and t("acct.err_active_value", "en") in body["errors"][0]
+    assert len(body["errors"]) == 1 and t("acct.err_active_value", "en") in message_texts(body["errors"])[0]
     assert "8690" not in await _chart(client, h)
 
 
@@ -467,7 +467,7 @@ async def test_chart_import_preview_reports_what_the_import_would_do_and_writes_
     imported = await _import(client, h, rows)
     assert preview.json() == imported.json()
     assert (preview.json()["created"], preview.json()["skipped_codes"]) == (2, ["1110"])
-    assert "8999" in preview.json()["errors"][0]
+    assert "8999" in message_texts(preview.json()["errors"])[0]
 
 
 @pytest.mark.asyncio

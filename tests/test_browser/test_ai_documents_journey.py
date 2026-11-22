@@ -6,8 +6,8 @@
 Receipts: photos go to a reading job, the thread shows the job's progress, and
 the finished job offers one card per proposed vendor and bill; Confirm all
 writes them. Statements: a CSV runs the agent inline, and each step of the
-reconciliation (start, import, auto-match, post a missing entry, complete) is
-a card the user confirms. The model is scripted the same way as
+bank workflow (read the file, import the statement, post a missing entry,
+complete) is a card the user confirms. The model is scripted the same way as
 `test_ai_chat_journey.py`; only the reading job's model call is faked here,
 every write still lands through the real routes.
 """
@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextvars
 import json
 import re
+import time
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -31,7 +32,7 @@ from .test_ai_chat_journey import (  # noqa: F401  (fixtures by name)
     _SCRIPT, _answer, _open_chat, _send, _tool_call, agent_caps, agent_env, item_create_cap,
 )
 
-pytestmark = pytest.mark.browser
+pytestmark = [pytest.mark.browser, pytest.mark.usefixtures("tools_open_when_called")]
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
@@ -124,6 +125,8 @@ def _confirm_card(page: Page, text: str) -> None:
     card.get_by_role("button", name="Confirm").click()
     expect(page.locator(".ai-action__done")).to_have_count(done_before + 1)
     expect(page.locator(".ai-action__error")).to_have_count(0)
+    # The confirmed write hands back to the assistant; its reply lands before the next turn.
+    expect(page.locator(".ai-msg--pending")).to_have_count(0, timeout=15000)
 
 
 def _send_receipts(page: Page, text: str) -> None:
@@ -237,63 +240,106 @@ def test_receipts_bulk_table_journey(page: Page, ui_server, api):
 _STATEMENT = b"Date,Description,Amount\n2026-03-01,Bank fee,-500\n"
 
 
+def _db_one(sql: str, *args) -> str:
+    """The first column of the one row ``sql`` finds in the app's database."""
+    from .conftest import _test_db
+    conn = _test_db()
+    with conn.cursor() as cur:
+        cur.execute(sql, args)
+        row = cur.fetchone()
+    conn.close()
+    assert row, sql
+    return str(row[0])
+
+
+def _reading_job(api, bank_id: str) -> str:
+    """The reading job the assistant started for ``bank_id``: its id is derived from the
+    request key the tool call fills in, so the test finds it by the bank it reads for."""
+    return _db_one("SELECT entity_id FROM projections WHERE company_id = %s AND entity_id LIKE 'bankread:%%' "
+                   "AND state::jsonb->>'bank_account_id' = %s ORDER BY created_at DESC LIMIT 1",
+                   api.get("/companies/me").json()["id"], bank_id).split(":", 1)[1]
+
+
+def _preview(api, job_id: str) -> dict:
+    """The statement preview once the reading job has finished."""
+    deadline = time.monotonic() + 30
+    while True:
+        r = api.get(f"/accounting/reconciliation/statement-preview/{job_id}")
+        if r.status_code != 409 or time.monotonic() > deadline:
+            assert r.status_code == 200, r.text
+            return r.json()
+        time.sleep(0.2)
+
+
 def test_statement_reconcile_journey(page: Page, ui_server, api, agent_caps):
-    recon = "/accounting/reconciliation/{session_id}"
-    start_cap = agent_caps[("POST", "/accounting/reconciliation/start")]
-    import_cap = agent_caps[("POST", f"{recon}/import-file")]
-    match_cap = agent_caps[("POST", f"{recon}/auto-match")]
-    workbench_cap = agent_caps[("GET", f"{recon}/workbench")]
-    create_cap = agent_caps[("POST", f"{recon}/lines/{{line_id}}/create")]
-    complete_cap = agent_caps[("POST", f"{recon}/complete")]
+    api_root = "/accounting/reconciliation"
+    read_cap = agent_caps[("POST", f"{api_root}/read-statement")]
+    preview_cap = agent_caps[("GET", f"{api_root}/statement-preview/{{job_id}}")]
+    import_cap = agent_caps[("POST", f"{api_root}/import-statement")]
+    groups_cap = agent_caps[("GET", f"{api_root}/bank/{{bank_id}}/groups")]
+    resolve_cap = agent_caps[("POST", f"{api_root}/bank/{{bank_id}}/resolve")]
+    complete_cap = agent_caps[("POST", f"{api_root}/bank/{{bank_id}}/complete")]
 
     bank = api.post("/accounting/bank-accounts", json={
         "bank_name": "Journey Bank", "account_number": "****4242", "bank_type": "checking",
         "currency": "USD", "opening_balance": 100000.0,
     }).json()
-    start_body = {"bank_account_id": bank["id"], "statement_date": "2026-03-31", "statement_balance": 99500.0}
+    bank_id = bank["id"]
 
     _open_chat(page, ui_server)
     file_id = _attach(page, [{"name": "march.csv", "mimeType": "text/csv", "buffer": _STATEMENT}])[0]
 
-    _SCRIPT.append(_call(start_cap, body=start_body,
-                         content="I'll open the March reconciliation for Journey Bank once you confirm."))
+    _SCRIPT.append(_call(read_cap, body={"file_ids": [file_id], "bank_id": bank_id},
+                         content="I'll read march.csv for Journey Bank once you confirm."))
     _send(page, "Reconcile this statement against our books")
-    _confirm_card(page, bank["id"])
+    # The card names the file by its name, never by its upload id.
+    card = page.locator(".ai-action__card", has_text="march.csv")
+    expect(card).to_be_visible()
+    expect(card).not_to_contain_text(file_id)
+    _confirm_card(page, "march.csv")
+    job_id = _reading_job(api, bank_id)
+    preview = _preview(api, job_id)
+    found = preview["statements"][0]
+    assert [(l["description"], float(l["amount"])) for l in found["lines"]] == [("Bank fee", -500.0)]
 
-    # Starting again for the same statement returns the open session, so the
-    # test learns the id the same way the assistant does.
-    sid = api.post("/accounting/reconciliation/start", json=start_body).json()["id"]
+    # A read runs on its own and the model answers from the preview it got back.
+    _SCRIPT.append(_call(preview_cap, path={"job_id": job_id}))
+    _SCRIPT.append(_answer("The statement has one line: Bank fee, -500.00 on 2026-03-01. "
+                           "Give me the opening and closing balances and I will import it."))
+    _send(page, "What did it find?")
+    expect(page.locator(".ai-msg--ai").last).to_contain_text("The statement has one line")
 
-    _SCRIPT.append(_call(import_cap, path={"session_id": sid}, body={"file_id": file_id},
-                         content="Next I'll import the statement lines from march.csv."))
-    _send(page, "Import the statement")
-    _confirm_card(page, file_id)
-    lines = api.get(f"/accounting/reconciliation/{sid}/statement-lines").json()["items"]
-    assert [(l["description"], l["amount"]) for l in lines] == [("Bank fee", -500.0)]
+    header = {**found["header"], "opening_balance": "100000.00", "closing_balance": "99500.00",
+              "period_start": "2026-03-01", "period_end": "2026-03-31"}
+    _SCRIPT.append(_call(import_cap, body={"job_id": job_id, "bank_id": bank_id,
+                                           "statements": [{"header": header, "lines": found["lines"]}]},
+                         content="I'll import the March statement onto Journey Bank once you confirm."))
+    _send(page, "Opening 100,000, closing 99,500")
+    # The card names the statement reading by its file and shows the balances, never the job id.
+    card = page.locator(".ai-action__card", has_text="Closing balance: 99500.00")
+    expect(card).to_contain_text("march.csv")
+    expect(card).not_to_contain_text(job_id)
+    _confirm_card(page, "Closing balance: 99500.00")
 
-    _SCRIPT.append(_call(match_cap, path={"session_id": sid},
-                         content="I'll match the lines against the recorded entries."))
-    _send(page, "Match them")
-    _confirm_card(page, sid)
+    lines = [l for g in api.get(f"{api_root}/bank/{bank_id}/groups").json()["groups"] for l in g["lines"]]
+    assert [(l["description"], float(l["amount"])) for l in lines] == [("Bank fee", -500.0)]
 
-    # A read runs on its own and the model answers from the workbench it got back.
-    _SCRIPT.append(_call(workbench_cap, path={"session_id": sid}))
-    _SCRIPT.append(_answer("One line has no book entry: Bank fee, -500.00 on 2026-03-01. "
+    _SCRIPT.append(_call(groups_cap, path={"bank_id": bank_id}))
+    _SCRIPT.append(_answer("One line has no book entry: Bank fee, -500.00. "
                            "Say which expense account it belongs to and I will propose the entry."))
     _send(page, "What is still open?")
     expect(page.locator(".ai-msg--ai").last).to_contain_text("One line has no book entry")
 
-    _SCRIPT.append(_call(create_cap, path={"session_id": sid, "line_id": lines[0]["id"]},
-                         body={"account_code": "6100", "memo": "Bank fee"},
+    _SCRIPT.append(_call(resolve_cap, path={"bank_id": bank_id}, body={"decisions": [
+        {"line_ids": [lines[0]["id"]], "kind": "post", "account_code": "6100"}]},
                          content="I'll post the bank fee to 6100 once you confirm."))
     _send(page, "Post it to 6100")
     _confirm_card(page, "6100")
-    workbench = api.get(f"/accounting/reconciliation/{sid}/workbench").json()
-    assert workbench["statement_lines"] == []
-    assert abs(workbench["difference"]) < 0.01
+    assert api.get(f"{api_root}/bank/{bank_id}/groups").json()["groups"] == []
 
-    _SCRIPT.append(_call(complete_cap, path={"session_id": sid},
-                         content="The difference is zero. Confirm to close the reconciliation."))
+    _SCRIPT.append(_call(complete_cap, path={"bank_id": bank_id},
+                         content="Every line is settled. Confirm to complete the March statement."))
     _send(page, "Close it")
-    _confirm_card(page, sid)
-    assert api.get(f"/accounting/reconciliation/{sid}").json()["status"] == "completed"
+    _confirm_card(page, "Journey Bank")
+    sid = _db_one("SELECT id FROM reconciliation_sessions WHERE bank_account_id = %s", bank_id)
+    assert api.get(f"{api_root}/{sid}").json()["status"] == "completed"

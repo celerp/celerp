@@ -13,18 +13,20 @@ PLUGIN_MANIFEST = {
     "ui_routes": "celerp_accounting.ui_routes",
     "slots": {
         "nav": [
-            {"group": "Finance", "key": "accounting", "href": "/accounting", "label": "Accounting", "label_key": "nav.accounting", "order": 50, "settings_href": "/settings/accounting", "permission": "manage_accounting"},
+            {"group": "Finance", "key": "accounting", "href": "/accounting", "help": "accounting.journal-entries", "label": "Accounting", "label_key": "nav.accounting", "order": 50, "settings_href": "/settings/accounting", "settings_help": "accounting.settings", "permission": "manage_accounting"},
             # The financial reports live under /reports but ship with this module,
             # so they stay reachable when the reports module is not installed.
-            {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "label_key": "nav.reports", "order": 51, "permission": "view_financial_reports"},
-            {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "label_key": "nav.reconcile", "order": 52, "permission": "manage_accounting"},
-            {"group": "Finance", "key": "donors", "href": "/donors", "label": "Donors", "label_key": "nav.donors", "order": 56, "permission": "view_payments", "verticals": ["nonprofit"]},
+            {"group": "Finance", "key": "reports", "href": "/reports", "help": "accounting.financial-reports", "label": "Reports", "label_key": "nav.reports", "order": 51, "permission": "view_financial_reports"},
+            {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "help": "accounting.reconcile", "label": "Reconcile", "label_key": "nav.reconcile", "order": 52, "permission": "manage_accounting"},
+            {"group": "Finance", "key": "bank_questions", "href": "/accounting/questions", "help": "accounting.bank-questions", "label": "Questions from your accountant", "label_key": "nav.bank_questions", "order": 53, "permission": "answer_bank_questions"},
+            {"group": "Finance", "key": "donors", "href": "/donors", "help": "accounting.donors", "label": "Donors", "label_key": "nav.donors", "order": 56, "permission": "view_payments", "verticals": ["nonprofit"]},
         ],
         "on_company_created": {"handler": "celerp_accounting.routes:seed_chart_of_accounts_hook"},
         "on_books_currency_set": {"handler": "celerp_accounting.routes:default_bank_follows_books_hook"},
         "on_modules_ready": {"handler": "celerp_accounting.routes:backfill_chart_of_accounts_hook"},
         "periodic_operation": {"handler": "celerp_accounting.recognition:run_due", "module": "celerp-accounting"},
         "doc_posting_dependents": {"handler": "celerp_accounting.recognition:dependents"},
+        "record_names": {"handler": "celerp_accounting.statement_lines:record_names"},
         "projection_handler": [
             {"prefix": "account.", "handler": "celerp_accounting.projections:apply_accounting_event", "permission": "view_financial_reports"},
             {"prefix": "je.", "handler": "celerp_accounting.projections:apply_accounting_event", "permission": "view_financial_reports"},

@@ -181,7 +181,7 @@ def setup_routes(app) -> None:
         asks = result.get("needs_confirmation") or []
         errors = result.get("errors") or []
         done = t("inventory.channel_bulk_done", n=result.get("updated", 0), service=channel.get("label"))
-        extra = [*([P("; ".join(errors), cls="flash flash--warning")] if errors else []),
+        extra = [*([P(refusal_text(errors), cls="flash flash--warning")] if errors else []),
                  *([_bulk_confirmation(platform, asks)] if asks else [])]
         if extra:
             return _bulk_result(done, "flash--success", *extra)
@@ -209,7 +209,7 @@ def setup_routes(app) -> None:
         errors = result.get("errors") or []
         return await _block(token, entity_id, channel, role,
                             confirm=asks[0] if asks else None,
-                            message="; ".join(errors) or None)
+                            message=refusal_text(errors) or None)
 
     @app.get("/inventory/{entity_id}/channel/{platform}")
     async def item_channel_page(request: Request, entity_id: str, platform: str):

@@ -280,3 +280,65 @@ def test_import_outcomes_live_in_a_neutral_module():
                     or any(getattr(t, "id", None) in names for t in getattr(node, "targets", []))):
                 stale.append(f"{path.relative_to(root)} defines {getattr(node, 'name', 'a result name')}")
     assert stale == []
+
+
+def test_a_rejected_batch_names_each_record_with_its_keyed_reason_in_the_readers_language():
+    """A batch a record refused fails with a keyed refusal: each record (its source type and
+    id) with the refusal the write raised, a reason given as text kept as written, ten named
+    and the rest counted; the run's error reads in the reader's language."""
+    from types import SimpleNamespace
+
+    from celerp.accounting_roles import catalog_refusal
+    from celerp.importers.results import RecordOutcome
+    from celerp.importers.sinks import MigrationBatchError
+    from celerp.services.migration_core_sink import sink_result
+    from celerp.services.migrations import _error_view, _failure_details
+    from test_helpers import in_language
+
+    keyed = catalog_refusal("import.record.not_found")
+    record = SimpleNamespace(source_type="Location", source_external_id="loc-1")
+    result = sink_result([record], [RecordOutcome("", "failed", keyed)], "location")
+    assert result.errors[0].message == keyed
+    assert sink_result([record], [RecordOutcome("", "failed")], "location").errors[0].message["message_key"] \
+        == "migration.record_not_imported"
+
+    errors = [SinkError("Location", "loc-1", keyed), SinkError("Item", "sku-2", "Negative quantity.")] \
+        + [SinkError("Item", f"x-{n}", "Bad.") for n in range(10)]
+    exc = MigrationBatchError(errors)
+    refusal = exc.refusal
+    assert refusal["message_key"] == "migration.batch_not_saved"
+    assert refusal["params"]["n"] == 12
+    reasons = refusal["params"]["reasons"]
+    assert len(reasons) == 10 and {r["message_key"] for r in reasons} == {"import.record_refused"}
+    assert reasons[0]["params"] == {"entity_id": "Location loc-1", "refusal": keyed}
+    assert reasons[1]["params"]["refusal"]["message_key"] == "error.refusal_as_written"
+    assert refusal["also"] == [catalog_refusal("migration.batch_more", n=2)]
+    assert str(exc).startswith("12 records could not be imported, so this batch was not saved.")
+    assert "Item sku-2: Negative quantity." in str(exc) and str(exc).endswith("And 2 more.")
+    assert MigrationBatchError(errors[:1]).refusal["message_key"] == "migration.batch_not_saved_one"
+
+    count, details = _failure_details(exc)
+    assert count == 12
+    run = SimpleNamespace(error_summary={"phase": PHASE, "message": str(exc), **details})
+    assert _error_view(run)["message"] == str(exc)
+    from ui import i18n
+
+    i18n.set_lang("th")
+    try:
+        thai = _error_view(run)["message"]
+    finally:
+        i18n.set_lang("en")
+    assert thai == in_language("th", {**details, "message": str(exc)}) != str(exc)
+    assert "loc-1" in thai
+
+
+def test_a_refused_batch_reads_its_reasons_as_sentences_and_closes_the_count_of_the_rest():
+    """The reasons of a refused batch read as one sentence closed by a full stop when they
+    are fragments, so "And n more." starts its own sentence, and that one ends in a full stop too."""
+    from celerp.importers.sinks import REPORTED_RECORD_LIMIT, MigrationBatchError
+
+    errors = [SinkError(source_type="Customer", source_external_id=f"c-{i}", message="needs a name")
+              for i in range(REPORTED_RECORD_LIMIT + 2)]
+    text = str(MigrationBatchError(errors))
+    assert text.endswith("Customer c-9: needs a name. And 2 more."), text
+    assert "needs a name; Customer c-1: needs a name" in text

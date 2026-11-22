@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from race_support import _ITEM, _app_client, _direct, _http, _ok, _race, _refused, _revoke, _seed
+from test_helpers import message_texts
 
 pytestmark = pytest.mark.asyncio
 
@@ -48,7 +49,7 @@ async def _run(factory, company_id) -> tuple[dict | None, list[str]]:
 def _counts(resp) -> tuple[int, int, list]:
     _ok(resp)
     body = resp.json()
-    return body["created"], body["skipped"], body["errors"]
+    return body["created"], body["skipped"], message_texts(body["errors"])
 
 
 @pytest.mark.parametrize("first_wins", [True, False], ids=["first-payload-wins", "second-payload-wins"])

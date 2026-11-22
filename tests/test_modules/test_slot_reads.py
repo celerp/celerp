@@ -27,6 +27,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 # argument on to it.
 _DIRECT = {"get", "get_slot", "fire_lifecycle"}
 _INDIRECT = {"visible_slot_contributions": False, "required_connectors": True}
+# The assistant's gate reads the slot a route names in this openapi_extra field
+# (celerp.ai.tools._any_permission), so the route declaration is the read.
+_ROUTE_SLOT_FIELD = "x-celerp-agent-any-permission"
+_ROUTE_SLOT_READER = ("celerp/ai/tools.py", "_any_permission")
 
 
 def _sources() -> list[Path]:
@@ -37,8 +41,9 @@ def _sources() -> list[Path]:
 
 
 def _slot_reads() -> tuple[dict[str, list[str]], list[str]]:
-    """Slot name -> where it is read, and every read whose name the source does not
-    show (outside the indirect readers, which pass their caller's names on)."""
+    """Slot name -> where it is read (a route naming one for the assistant's gate
+    included), and every read whose name the source does not show (outside the
+    indirect readers, which pass their caller's names on)."""
     reads: dict[str, list[str]] = {}
     unnamed: list[str] = []
     for path in _sources():
@@ -60,7 +65,14 @@ def _slot_reads() -> tuple[dict[str, list[str]], list[str]]:
                 registries |= {a.asname for a in node.names
                                if a.name == "celerp.modules.slots" and a.asname}
         helpers = {n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
-                   and n.name in _INDIRECT and path.name == "module_slots.py"}
+                   and ((n.name in _INDIRECT and path.name == "module_slots.py")
+                        or (str(path.relative_to(_ROOT)), n.name) == _ROUTE_SLOT_READER)}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    if (isinstance(key, ast.Constant) and key.value == _ROUTE_SLOT_FIELD
+                            and isinstance(value, ast.Constant) and isinstance(value.value, str)):
+                        reads.setdefault(value.value, []).append(f"{path.relative_to(_ROOT)}:{node.lineno}")
         inside = {id(c) for h in helpers for c in ast.walk(h)}
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not node.args:
@@ -104,6 +116,7 @@ def test_manufacturing_slots_are_public_with_their_keyword_contracts():
         "label_source": ("session", "company_id", "ids"),
         "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
         "turn_off_preflight": ("session", "company_id"),
+        "record_names": ("session", "company_id", "settings", "role", "ids"),
         "periodic_operation": ("session", "company_id", "today", "budget"),
     }
     assert set(loader._HANDLER_KEYWORDS) <= set(loader._SLOT_VALIDATORS)

@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import text
 
 from test_reconciliation_history import (
-    admin, bank, completed, deposit, fx_deposit, history, legacy_deposit, legacy_session, start)
+    admin, bank, complete, completed, deposit, fx_deposit, history, legacy_deposit, legacy_session, start)
 from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
@@ -90,7 +90,7 @@ async def test_a_correction_held_by_a_completed_reconciliation_names_reopen_and_
     assert (await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)).status_code == 200
     r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"}, headers=h)
     assert r.status_code == 200 and r.json()["balance"] == 50.0, r.text
-    assert (await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)).status_code == 200
+    await complete(client, h, sid)
 
 
 async def test_books_currency_set_keeps_a_default_bank_a_completed_reconciliation_reads(client, session):
@@ -102,7 +102,7 @@ async def test_books_currency_set_keeps_a_default_bank_a_completed_reconciliatio
         "SELECT company_id, id FROM bank_accounts WHERE chart_account_code = :c"), {"c": _DEFAULT_BANK_CODE})).one()
     assert (await start(client, h, str(bank_id), "2026-09-30", 0.0)).status_code == 200
     sid = (await history(client, h, str(bank_id))).json()["items"][0]["id"]
-    assert (await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)).status_code == 200
+    await complete(client, h, sid)
     await session.execute(text("UPDATE bank_accounts SET currency = 'THB' WHERE id = :b"), {"b": bank_id})
     await session.commit()
     await default_bank_follows_books_hook(session=session, company_id=company_id)

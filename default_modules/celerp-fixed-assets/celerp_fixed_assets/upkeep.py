@@ -33,6 +33,7 @@ from celerp_fixed_assets.moves import _GONE, _locked_assets, member_name
 from celerp_fixed_assets.operations import in_use
 from celerp_fixed_assets.store import _emit, _entities, _state
 from celerp_fixed_assets.views import money_shown, readable
+from ui.i18n import t
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 _VIEW = [require_permission("view_fixed_assets")]
@@ -45,8 +46,8 @@ NOTICE_TITLE = "Asset reminders"
 NOTICE_KEY = "fixed_assets.notice.reminders"
 # Each kind of reminder and the field that says what it is about.
 KINDS = {"maintenance": "work", "warranty": "provider", "insurance": "insurer"}
-_DETAIL_REFUSAL = {"work": "Describe the maintenance work.", "provider": "Name the warranty provider.",
-                   "insurer": "Name the insurer."}
+_DETAIL_REFUSAL = {"work": "fixed_assets.err_describe_maintenance_work", "provider": "fixed_assets.err_name_warranty_provider",
+                   "insurer": "fixed_assets.err_name_insurer"}
 EDITABLE = ("due", "every_months", "lead_days", "responsible_user_id", "policy", "insured_value", *KINDS.values())
 LEAD_DAYS = 30
 MAINT_EDITABLE = ("date", "work", "by")
@@ -72,9 +73,9 @@ def _whole(value, low: int, high: int, refusal: str) -> int:
     try:
         number = int(str(value).strip())
     except ValueError:
-        raise setup.unprocessable(refusal) from None
+        raise setup.refuse(refusal) from None
     if not low <= number <= high:
-        raise setup.unprocessable(refusal)
+        raise setup.refuse(refusal)
     return number
 
 
@@ -85,16 +86,16 @@ async def _field(session, company_id, field: str, value, kind: str):
     if field == "every_months":
         if value in (None, ""):
             return None
-        return _whole(value, 1, 120, "Repeat every whole number of months, from 1 to 120, or leave it empty.")
+        return _whole(value, 1, 120, "fixed_assets.err_repeat_every_months")
     if field == "lead_days":
         if value in (None, ""):
             return LEAD_DAYS
-        return _whole(value, 0, 365, "Tell this many days ahead: a whole number between 0 and 365.")
+        return _whole(value, 0, 365, "fixed_assets.err_lead_days_whole")
     if field == "responsible_user_id":
         if value in (None, ""):
             return None
         if not await member_name(session, company_id, value):
-            raise setup.unprocessable("The responsible person is not a member of this company. Choose a member.")
+            raise setup.refuse("fixed_assets.err_responsible_person_not_member_company_choose")
         return str(uuid.UUID(str(value)))
     if field == "insured_value":
         if value in (None, ""):
@@ -104,13 +105,13 @@ async def _field(session, company_id, field: str, value, kind: str):
         try:
             amount = setup.number(value, "The insured value")
         except HTTPException:
-            raise setup.unprocessable("Enter the insured value as an amount, such as 25000.") from None
+            raise setup.refuse("fixed_assets.err_enter_insured_value_as_amount_such") from None
         if amount < 0:
-            raise setup.unprocessable("Enter the insured value as an amount, such as 25000.")
+            raise setup.refuse("fixed_assets.err_enter_insured_value_as_amount_such")
         return str(round_money(amount, await setup.currency(session, company_id)))
     text = _text(value)
     if field == KINDS[kind] and not text:
-        raise setup.unprocessable(_DETAIL_REFUSAL[field])
+        raise setup.refuse(_DETAIL_REFUSAL[field])
     return text
 
 
@@ -131,7 +132,7 @@ def reminder_out(reminder_id: str, state: dict) -> dict:
 async def _live_asset(session, company_id, asset_id: str) -> dict:
     ((_, state),) = await _locked_assets(session, company_id, [asset_id])
     if not state.get("number"):
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     if state.get("status") in _GONE:
         in_use(asset_id, state, "upkeep")
     return state
@@ -140,7 +141,7 @@ async def _live_asset(session, company_id, asset_id: str) -> dict:
 async def _new_reminder(session, company_id, user_id, asset_id: str, body: dict) -> str:
     kind = body.get("kind")
     if not isinstance(kind, str) or kind not in KINDS:
-        raise setup.unprocessable("Choose maintenance, warranty or insurance.")
+        raise setup.refuse("fixed_assets.err_choose_maintenance_warranty_insurance")
     state = {"asset_id": asset_id, "kind": kind, "status": "open"}
     for field in (KINDS[kind], "due", "every_months", "lead_days", "responsible_user_id",
                   *(("policy", "insured_value") if kind == "insurance" else ())):
@@ -161,8 +162,8 @@ async def add_reminder(session, company_id, user_id, asset_id: str, body: dict) 
 async def _locked(session, company_id, entity_id: str, entity_type: str) -> dict:
     row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row is None or row.entity_type != entity_type:
-        raise HTTPException(status_code=404, detail="No such reminder." if entity_type == REMINDER
-                            else "No such maintenance entry.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_reminder") if entity_type == REMINDER
+                            else t("fixed_assets.err_no_such_maintenance_entry"))
     return row.state
 
 
@@ -175,9 +176,9 @@ async def _change(session, company_id, user_id, reminder_id: str, changes: dict,
 
 def _open(reminder: dict) -> None:
     if reminder["status"] == "done":
-        raise setup.unprocessable("This reminder is already done.")
+        raise setup.refuse("fixed_assets.err_reminder_already_done")
     if reminder["status"] == "removed":
-        raise setup.unprocessable("This reminder was removed. Undo the removal first.")
+        raise setup.refuse("fixed_assets.err_reminder_was_removed_undo_removal_first")
 
 
 async def _record_maintenance(session, company_id, user_id, asset_id: str, data: dict) -> str:
@@ -211,26 +212,26 @@ async def postpone(session, company_id, user_id, reminder_id: str, body: dict) -
     to = _day(body.get("to"), "The date to postpone to")
     reason = _text(body.get("reason"))
     if not reason:
-        raise setup.unprocessable("Say why it is postponed.")
+        raise setup.refuse("fixed_assets.err_say_why_postponed")
     if to <= reminder["due"]:
-        raise setup.unprocessable(f"Postpone to a date after {reminder['due']}.")
+        raise setup.refuse("fixed_assets.err_postpone_date_after_due", due=reminder['due'])
     return await _change(session, company_id, user_id, reminder_id, {"due": to},
                          _history("postponed", user_id, {"due": reminder["due"]}, {"due": to}, reason=reason))
 
 
 async def edit(session, company_id, user_id, reminder_id: str, changes: dict) -> dict:
     if not isinstance(changes, dict):
-        raise setup.unprocessable("Send the reminder's changes as named fields.")
+        raise setup.refuse("fixed_assets.err_send_reminder_s_changes_as_named")
     reminder = await _locked(session, company_id, reminder_id, REMINDER)
     if reminder["status"] == "removed":
-        raise setup.unprocessable("This reminder was removed. Undo the removal first.")
+        raise setup.refuse("fixed_assets.err_reminder_was_removed_undo_removal_first")
     if "kind" in changes:
-        raise setup.unprocessable("The kind of a reminder cannot be changed. Remove it and add a new one.")
+        raise setup.refuse("fixed_assets.err_kind_reminder_cannot_changed_remove_add")
     allowed = {KINDS[reminder["kind"]], "due", "every_months", "lead_days", "responsible_user_id",
                *(("policy", "insured_value") if reminder["kind"] == "insurance" else ())}
     unknown = sorted(set(changes) - allowed)
     if unknown:
-        raise setup.unprocessable(f"{unknown[0]} cannot be edited on this reminder.")
+        raise setup.refuse("fixed_assets.err_value_cannot_edited_reminder", value=unknown[0])
     after = {f: await _field(session, company_id, f, v, reminder["kind"]) for f, v in changes.items()}
     after = {k: v for k, v in after.items() if reminder.get(k) != v}
     if not after:
@@ -242,7 +243,7 @@ async def edit(session, company_id, user_id, reminder_id: str, changes: dict) ->
 async def remove(session, company_id, user_id, reminder_id: str) -> dict:
     reminder = await _locked(session, company_id, reminder_id, REMINDER)
     if reminder["status"] == "removed":
-        raise setup.unprocessable("This reminder is already removed.")
+        raise setup.refuse("fixed_assets.err_reminder_already_removed")
     return await _change(session, company_id, user_id, reminder_id, {"status": "removed"},
                          _history("removed", user_id, {"status": reminder["status"]}, {"status": "removed"}))
 
@@ -255,7 +256,7 @@ async def undo(session, company_id, user_id, reminder_id: str) -> dict:
     index = next((i for i, h in enumerate(reminder.get("history") or [])
                   if h["action"] not in ("created", "undone") and not h.get("undone")), None)
     if index is None:
-        raise setup.unprocessable("Nothing to undo on this reminder.")
+        raise setup.refuse("fixed_assets.err_nothing_undo_reminder")
     latest = reminder["history"][index]
     if latest.get("maint_id"):
         await _emit(session, company_id, user_id, latest["maint_id"], MAINT, "fa.maint.status", {"status": "undone"})
@@ -275,7 +276,7 @@ async def add_entry(session, company_id, user_id, asset_id: str, body: dict) -> 
     day = _day(body.get("date"), "The date the work was done")
     work = _text(body.get("work"))
     if not work:
-        raise setup.unprocessable("Describe the maintenance work.")
+        raise setup.refuse("fixed_assets.err_describe_maintenance_work")
     data = {"date": day, "work": work, "by": _text(body.get("by")), "next_due": None, "reminder_id": None}
     if body.get("next_due") not in (None, ""):
         data["reminder_id"] = await _new_reminder(session, company_id, user_id, asset_id, {
@@ -288,18 +289,17 @@ async def add_entry(session, company_id, user_id, asset_id: str, body: dict) -> 
 
 async def edit_entry(session, company_id, user_id, maint_id: str, changes: dict) -> dict:
     if not isinstance(changes, dict):
-        raise setup.unprocessable("Send the maintenance entry's changes as named fields.")
+        raise setup.refuse("fixed_assets.err_send_maintenance_entry_s_changes_as")
     entry = await _locked(session, company_id, maint_id, MAINT)
     from_bill = bool(entry.get("source"))
     if from_bill and {"date", "amount"} & set(changes):
-        raise setup.unprocessable(f"The {'date' if 'date' in changes else 'amount'} comes from the bill. Correct the "
-                                  "bill to change it.")
+        raise setup.refuse("fixed_assets.err_value_comes_from_bill_correct_bill", value='date' if 'date' in changes else 'amount')
     unknown = sorted(set(changes) - set(MAINT_EDITABLE))
     if unknown:
-        raise setup.unprocessable(f"{unknown[0]} cannot be edited on a maintenance entry.")
+        raise setup.refuse("fixed_assets.err_value_cannot_edited_maintenance_entry", value=unknown[0])
     after = {k: _day(v, "The date the work was done") if k == "date" else _text(v) for k, v in changes.items()}
     if "work" in after and not after["work"]:
-        raise setup.unprocessable("Describe the maintenance work.")
+        raise setup.refuse("fixed_assets.err_describe_maintenance_work")
     after = {k: v for k, v in after.items() if entry.get(k) != v}
     if after:
         await _emit(session, company_id, user_id, maint_id, MAINT, "fa.maint.updated", {"changes": after})
@@ -310,9 +310,9 @@ async def edit_entry(session, company_id, user_id, maint_id: str, changes: dict)
 async def set_entry_status(session, company_id, user_id, maint_id: str, status: str) -> dict:
     entry = await _locked(session, company_id, maint_id, MAINT)
     if entry.get("source"):
-        raise setup.unprocessable("This maintenance came from a bill. To remove it, undo its registration.")
+        raise setup.refuse("fixed_assets.err_maintenance_came_from_bill_remove_undo")
     if entry["status"] == "undone":
-        raise HTTPException(status_code=404, detail="No such maintenance entry.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_maintenance_entry"))
     if entry["status"] != status:
         await _emit(session, company_id, user_id, maint_id, MAINT, "fa.maint.status", {"status": status})
         await session.commit()
@@ -323,7 +323,7 @@ async def attach_to_entry(session, company_id, user_id, maint_id: str, file: Upl
     """Store a receipt or report on the asset, tagged maintenance, and list it on the entry."""
     entry = await _state(session, company_id, maint_id)
     if entry is None or entry.get("status") == "undone":
-        raise HTTPException(status_code=404, detail="No such maintenance entry.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_maintenance_entry"))
 
     async def note(_state_of_asset: dict, meta: dict) -> None:
         locked = await _locked(session, company_id, maint_id, MAINT)
@@ -352,7 +352,7 @@ async def of_asset(session, company_id, asset_id: str) -> dict:
     """An asset's reminders, open ones soonest first, and its maintenance log, newest first."""
     asset = await _state(session, company_id, asset_id)
     if asset is None or not asset.get("number"):
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     currency = await setup.currency(session, company_id)
     reminders = [reminder_out(r, s) for r, s in await _entities(session, company_id, REMINDER)
                  if s["asset_id"] == asset_id]
@@ -427,19 +427,19 @@ async def tell_reminders(session, company_id, today: date) -> None:
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
-@router.get("/assets/{asset_id}/upkeep", dependencies=_VIEW)
+@router.get("/assets/{asset_id}/upkeep", dependencies=_VIEW, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["view_financial_reports"]}, summary="Show the maintenance history and reminders of a fixed asset.")
 async def get_upkeep(asset_id: str, company_id=Depends(get_current_company_id), money: bool = Depends(money_shown),
                      session: AsyncSession = Depends(get_session)) -> dict:
     return readable(await of_asset(session, company_id, asset_id), money)
 
 
-@router.post("/assets/{asset_id}/reminders", dependencies=_MANAGE)
+@router.post("/assets/{asset_id}/reminders", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Add a maintenance reminder to a fixed asset, such as a yearly service.")
 async def create_reminder(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await add_reminder(session, company_id, user.id, asset_id, body)
 
 
-@router.get("/reminders", dependencies=_VIEW)
+@router.get("/reminders", dependencies=_VIEW, openapi_extra={"x-celerp-agent": True}, summary="List the maintenance reminders that are due.")
 async def list_due(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     today = (await company_today(session, company_id)).isoformat()
     return {"items": [{k: v for k, v in r.items() if k != "told"} for r in await due_items(session, company_id, today)]}
@@ -449,54 +449,54 @@ async def _one(session, company_id, entity_id: str, entity_type: str) -> dict:
     state = await _state(session, company_id, entity_id)
     if state is None or not entity_id.startswith(f"fa:{entity_type.removeprefix('fa_')}:") \
             or state.get("status") == "undone":
-        raise HTTPException(status_code=404, detail="No such reminder." if entity_type == REMINDER
-                            else "No such maintenance entry.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_reminder") if entity_type == REMINDER
+                            else t("fixed_assets.err_no_such_maintenance_entry"))
     return state
 
 
-@router.get("/reminders/{reminder_id}", dependencies=_VIEW)
+@router.get("/reminders/{reminder_id}", dependencies=_VIEW, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["view_financial_reports"]}, summary="Read one maintenance reminder.")
 async def get_reminder(reminder_id: str, company_id=Depends(get_current_company_id), money: bool = Depends(money_shown),
                        session: AsyncSession = Depends(get_session)) -> dict:
     return readable(reminder_out(reminder_id, await _one(session, company_id, reminder_id, REMINDER)), money)
 
 
-@router.post("/reminders/{reminder_id}/done", dependencies=_MANAGE)
+@router.post("/reminders/{reminder_id}/done", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/reminders"}, summary="Mark a maintenance reminder as done.")
 async def reminder_done(reminder_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await mark_done(session, company_id, user.id, reminder_id, body)
 
 
-@router.post("/reminders/{reminder_id}/postpone", dependencies=_MANAGE)
+@router.post("/reminders/{reminder_id}/postpone", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/reminders"}, summary="Postpone a maintenance reminder to a later date.")
 async def reminder_postpone(reminder_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                             user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await postpone(session, company_id, user.id, reminder_id, body)
 
 
-@router.patch("/reminders/{reminder_id}", dependencies=_MANAGE)
+@router.patch("/reminders/{reminder_id}", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/reminders"}, summary="Change a maintenance reminder, such as its date or interval.")
 async def reminder_edit(reminder_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await edit(session, company_id, user.id, reminder_id, body.get("changes") or {})
 
 
-@router.post("/reminders/{reminder_id}/remove", dependencies=_MANAGE)
+@router.post("/reminders/{reminder_id}/remove", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/reminders"}, summary="Remove a maintenance reminder.")
 async def reminder_remove(reminder_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                           session: AsyncSession = Depends(get_session)) -> dict:
     return await remove(session, company_id, user.id, reminder_id)
 
 
-@router.post("/reminders/{reminder_id}/undo", dependencies=_MANAGE)
+@router.post("/reminders/{reminder_id}/undo", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/reminders"}, summary="Undo the latest change to a maintenance reminder.")
 async def reminder_undo(reminder_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                         session: AsyncSession = Depends(get_session)) -> dict:
     return await undo(session, company_id, user.id, reminder_id)
 
 
-@router.post("/assets/{asset_id}/maintenance", dependencies=_MANAGE)
+@router.post("/assets/{asset_id}/maintenance", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Record maintenance done on a fixed asset, with its date, cost and notes.")
 async def create_entry(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                        user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await add_entry(session, company_id, user.id, asset_id, body)
 
 
-@router.get("/maintenance/{maint_id}", dependencies=_VIEW)
+@router.get("/maintenance/{maint_id}", dependencies=_VIEW, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["view_financial_reports"]}, summary="Read one maintenance record of a fixed asset.")
 async def get_entry(maint_id: str, company_id=Depends(get_current_company_id), money: bool = Depends(money_shown),
                     company_settings: dict = Depends(get_current_company_settings),
                     session: AsyncSession = Depends(get_session)) -> dict:
@@ -506,25 +506,25 @@ async def get_entry(maint_id: str, company_id=Depends(get_current_company_id), m
         currency=books_currency(company_settings))}, money)
 
 
-@router.patch("/maintenance/{maint_id}", dependencies=_MANAGE)
+@router.patch("/maintenance/{maint_id}", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Change a maintenance record of a fixed asset.")
 async def entry_edit(maint_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await edit_entry(session, company_id, user.id, maint_id, body.get("changes") or {})
 
 
-@router.post("/maintenance/{maint_id}/remove", dependencies=_MANAGE)
+@router.post("/maintenance/{maint_id}/remove", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Remove a maintenance record of a fixed asset.")
 async def entry_remove(maint_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)) -> dict:
     return await set_entry_status(session, company_id, user.id, maint_id, "removed")
 
 
-@router.post("/maintenance/{maint_id}/restore", dependencies=_MANAGE)
+@router.post("/maintenance/{maint_id}/restore", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Restore a removed maintenance record of a fixed asset.")
 async def entry_restore(maint_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                         session: AsyncSession = Depends(get_session)) -> dict:
     return await set_entry_status(session, company_id, user.id, maint_id, "active")
 
 
-@router.post("/maintenance/{maint_id}/files", dependencies=_MANAGE)
+@router.post("/maintenance/{maint_id}/files", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Attach a file to a maintenance record of a fixed asset.")
 async def entry_file(maint_id: str, file: UploadFile, company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await attach_to_entry(session, company_id, user.id, maint_id, file)

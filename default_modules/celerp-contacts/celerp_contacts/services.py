@@ -9,12 +9,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.importers.results import ImportOutcome, failure_reason
+from celerp.importers.results import ImportOutcome, failure_reason, record_refused, row_refusal
 from celerp.models.projections import Projection
 from celerp.accounting_roles import catalog_refusal
 from celerp.services.currencies import require_currency_code, require_email, require_phone
 from celerp.services.peer_import import SourceRevision
-from ui.i18n import t
 
 CONTACT_CREATED = "crm.contact.created"
 CONTACT_WRITE_FIELDS = frozenset({
@@ -112,15 +111,15 @@ async def import_contact_records(
     for rec in records:
         label = str(rec.data.get("name") or rec.entity_id)
         if rec.event_type != CONTACT_CREATED:
-            outcome.add(rec.entity_id, "rejected", f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+            outcome.add(rec.entity_id, "rejected", record_refused(rec.entity_id, "not_import_safe", event_type=rec.event_type))
             continue
         if "is_self" in rec.data:
-            outcome.add(rec.entity_id, "rejected", f"{label}: {t('contacts.err_import_own_contact')}")
+            outcome.add(rec.entity_id, "rejected", row_refusal(label, catalog_refusal("contacts.err_import_own_contact")))
             continue
         try:
             require_contact_write_fields(rec.data)
         except HTTPException as exc:
-            outcome.add(rec.entity_id, "rejected", f"{label}: {failure_reason(exc)}")
+            outcome.add(rec.entity_id, "rejected", row_refusal(label, exc))
             continue
         identity = contact_import_identity(rec.data)
         keyed = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
@@ -132,15 +131,14 @@ async def import_contact_records(
             if cid in states and _live(states[cid]):
                 candidates.add(cid)
         if rec.entity_id in states and not _live(states[rec.entity_id]):
-            outcome.add(rec.entity_id, "rejected", f"{label}: contact {rec.entity_id} was merged or deleted")
+            outcome.add(rec.entity_id, "rejected", record_refused(label, "contact_gone", contact_id=rec.entity_id))
             continue
         if any(states[cid].get("is_self") for cid in candidates):
-            outcome.add(rec.entity_id, "rejected", f"{label}: {t('contacts.err_import_own_contact')}")
+            outcome.add(rec.entity_id, "rejected", row_refusal(label, catalog_refusal("contacts.err_import_own_contact")))
             continue
         if len(candidates) > 1:
-            outcome.add(rec.entity_id, "rejected",
-                        f"{label}: matches {len(candidates)} existing contacts ({', '.join(sorted(candidates))}); "
-                        "merge them or give the row a unique email, phone or name")
+            outcome.add(rec.entity_id, "rejected", record_refused(
+                label, "contacts_ambiguous", n=len(candidates), ids=", ".join(sorted(candidates))))
             continue
         contact_id = next(iter(candidates), None)
         state = states[contact_id] if contact_id else None
@@ -149,7 +147,7 @@ async def import_contact_records(
         try:
             require_contact_fields(incoming, state)
         except HTTPException as exc:
-            outcome.add(rec.entity_id, "rejected", f"{label}: {failure_reason(exc)}")
+            outcome.add(rec.entity_id, "rejected", row_refusal(label, exc))
             continue
         try:
             if contact_id:
@@ -183,7 +181,7 @@ async def import_contact_records(
             states[rec.entity_id] = {"entity_type": "contact", **data}
             outcome.add(rec.entity_id, "created")
         except Exception as exc:
-            outcome.add(rec.entity_id, "failed", f"{label}: {failure_reason(exc)}")
+            outcome.add(rec.entity_id, "failed", row_refusal(label, exc))
     return outcome
 
 

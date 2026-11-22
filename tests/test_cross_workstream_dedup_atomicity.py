@@ -25,7 +25,7 @@ import uuid as _uuid
 import pytest
 from sqlalchemy import select
 
-from test_helpers import lock_every_company
+from test_helpers import lock_every_company, message_texts
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -363,7 +363,7 @@ async def test_batch_import_rejects_duplicate_record_survivors_commit(client, se
     body = r.json()
     assert body["created"] == 2           # the two good records
     assert len(body["errors"]) == 1       # the duplicate record only
-    assert dup_id in body["errors"][0]
+    assert dup_id in message_texts(body["errors"])[0]
     # Survivors committed; the duplicate record has no projection.
     assert await _doc_state(session, cid, ok_id_1) is not None
     assert await _doc_state(session, cid, ok_id_2) is not None

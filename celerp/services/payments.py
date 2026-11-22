@@ -24,6 +24,7 @@ from celerp.models.payment_closure import PaymentClosure, PaymentRecovery, Unmat
 from celerp.modules.boundary import ModuleRefused, judge_writes, needs_modules, require_company_uses
 from celerp.services.money import round_money, to_decimal
 from ui.i18n import t
+from celerp.accounting_roles import Refused
 
 log = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ def to_stripe_amount(amount, currency: str) -> int:
     if (value <= 0 or value != round_money(value, code) or scaled != scaled.to_integral_value()
             or (code in _STRIPE_WHOLE_UNITS and value != value.to_integral_value())
             or (code in _STRIPE_THREE_DECIMAL and scaled % 10)):
-        raise ValueError(t("error.stripe_amount", value=value, code=code))
+        raise Refused("error.stripe_amount", value=value, code=code)
     return int(scaled)
 
 
@@ -128,7 +129,7 @@ def from_stripe_amount(api_amount: int, currency: str) -> Decimal:
     try:
         to_stripe_amount(value, currency)
     except ValueError as exc:
-        raise ValueError(t("error.stripe_amount_inexact", value=api_amount, code=currency.upper())) from exc
+        raise Refused("error.stripe_amount_inexact", value=api_amount, code=currency.upper()) from exc
     return value
 
 

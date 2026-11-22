@@ -22,7 +22,7 @@ from test_helpers import invite_user, signed_request
 
 AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
 ANSWER = {"answer": "The owner's figures.", "model_used": "m", "tools_called": [], "help_pages": None,
-          "error": None, "error_code": None}
+          "downloads": [], "error": None, "error_code": None}
 
 
 async def _one_off(session, company_id, user_id, state: str) -> uuid.UUID:

@@ -1181,7 +1181,7 @@ async def test_receive_return_no_sold_inventory(client, session):
 
     r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "W-NOSOLD", "quantity": 1}]})
     assert r.status_code == 422, r.text
-    assert "shipped 0" in r.json()["detail"], r.text
+    assert "shipped 0" in refusal_text(r.json()["detail"]), r.text
 
 
 @pytest.mark.asyncio

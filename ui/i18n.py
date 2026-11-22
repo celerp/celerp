@@ -30,6 +30,9 @@ _registry: dict[str, dict] = {}
 
 # Context variable holds the active language for the current request
 _current_lang: ContextVar[str] = ContextVar("celerp_lang", default="en")
+# The signed-in reader's role (their session cookie's claim), or None when the request has no
+# signed-in reader (the API answering a client): which way out of a refusal they may take.
+_reader_role: ContextVar[str | None] = ContextVar("celerp_reader_role", default=None)
 
 # RTL languages (central set; a module may additionally declare its own RTL)
 RTL_LANGS = frozenset({"ar", "he", "fa", "ur"})
@@ -130,7 +133,7 @@ class Text(str):
     params: dict
 
 
-def t(key: str, lang: str | None = None, **kwargs) -> str:
+def t(key: str, /, lang: str | None = None, **kwargs) -> str:
     """Translate *key*. Uses context language when *lang* is not passed.
 
     Falls back: locale -> English -> key itself.
@@ -297,7 +300,29 @@ def field_label_key(label: str) -> str | None:
     return _field_label_keys().get(label)
 
 
-def t_or(key: str, fallback: str, **kwargs) -> str:
+def kept(text: str) -> dict:
+    """A text kept to be read later by someone else: the catalog key and params t() read it
+    from, and the text as written for a reader whose catalogs lack the key."""
+    return {"key": getattr(text, "key", None), "params": dict(getattr(text, "params", {}) or {}), "text": str(text)}
+
+
+def read_kept(value, lang: str | None = None) -> str:
+    """A text ``kept`` wrote, in ``lang`` (the reader's language by default); plain text as written."""
+    if not isinstance(value, dict):
+        return str(value or "")
+    key, text = value.get("key"), str(value.get("text") or "")
+    if lang is None:
+        lang = _current_lang.get()
+    found = isinstance(key, str) and (_cached_load(lang).get(key) or _cached_load("en").get(key))
+    if not found:
+        return text
+    try:
+        return found.format(**(value.get("params") or {}))
+    except (KeyError, IndexError, ValueError):
+        return text
+
+
+def t_or(key: str, fallback: str, /, **kwargs) -> str:
     """Translate *key* when a catalog has it, else return *fallback* (text the server
     already wrote in English). A translation missing one of *kwargs* falls back too."""
     lang = _current_lang.get()
@@ -387,12 +412,18 @@ def refusal_text(detail) -> str:
     if key:
         params = {name: _refusal_param(name, value) for name, value in (detail.get("params") or {}).items()}
         message = _without_ids(t_or(str(key), message, **params))
-    return " ".join(text for text in (message, refusal_text(detail.get("also") or [])) if text)
+    fix = detail.get("fix")
+    ask = (t("error.fix_ask_roles", place=t(fix["label_key"]),
+             roles=", ".join(t(f"settings.{r}") for r in fix.get("roles") or []))
+           if isinstance(fix, dict) and not may_take(fix) else "")
+    return " ".join(text for text in (message, ask, refusal_text(detail.get("also") or [])) if text)
 
 
-# A record id the user never sees: a bare UUID, or a prefixed id such as item:<uuid>.
+# A record id the user never sees: a bare UUID, or a prefixed id such as item:<uuid>. A UUID
+# that is a segment of a path or address (attachments/<uuid>/photo.png) is part of what the
+# user reads, so it stays.
 _INTERNAL_ID = re.compile(
-    r"\b(?:[a-z_]+:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+    r"(?<!/)\b(?:[a-z_]+:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b(?!/)", re.I)
 
 
 def _without_ids(text: str) -> str:
@@ -411,12 +442,24 @@ _ICON = re.compile(r"^\W+")
 # The marks that end a sentence in the site languages; a list of reasons that all end with
 # one reads as sentences, never as "Sold.; ...".
 _SENTENCE_END = (".", "!", "?", "\u3002", "\uff01", "\uff1f", "\u1362", "\u061f")
+# The full stop a language closes a sentence with; Thai closes one with the space after it.
+_FULL_STOP = {"ja": "\u3002", "am": "\u1362", "th": ""}
+
+
+def as_sentence(text: str, lang: str | None = None) -> str:
+    """``text`` read as a whole sentence: kept as it is when it ends with a sentence mark,
+    else closed by the reader's full stop, so a reason set before the next sentence never
+    runs into it and never reads with two stops."""
+    if not text or text.endswith(_SENTENCE_END):
+        return text
+    return text + _FULL_STOP.get(lang or _current_lang.get(), ".")
 
 
 def _refusal_param(name: str, value):
     """A refusal param as the user reads it: a nested refusal (a sidebar item's ``nav.``
     label without its icon), or a list of them (``steps`` and ``reasons`` joined by
-    semicolons unless every one is a whole sentence, others as sentences), in the user's language; a
+    semicolons unless every one is a whole sentence, ``reasons`` closed by a full stop, others
+    as sentences), in the user's language; a
     ``role`` as its label and ``roles`` as their labels; ``type``/``types`` as account types;
     ``status`` as an item status, ``lot_status`` as one read mid-sentence and
     ``doc_status`` as a document status, each only when the value is an enum slug (a
@@ -431,8 +474,12 @@ def _refusal_param(name: str, value):
         return _ICON.sub("", text) if str(value.get("message_key") or "").startswith("nav.") else text
     if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
         texts = [refusal_text(v) for v in value]
-        sentences = name not in ("steps", "reasons") or all(t.endswith(_SENTENCE_END) for t in texts)
-        return (" " if sentences else "; ").join(texts)
+        if name not in ("steps", "reasons") or all(t.endswith(_SENTENCE_END) for t in texts):
+            return " ".join(texts)
+        # Reasons that are not whole sentences read as one, closed by a full stop, so the
+        # sentence after them ("And 3 more.") starts a new one; a step list sits mid-sentence.
+        joined = "; ".join(texts)
+        return as_sentence(joined) if name == "reasons" else joined
     if name == "role":
         return role_label(str(value), str(value).replace("_", " "))
     if name == "roles" and isinstance(value, list):
@@ -565,11 +612,28 @@ class I18nMiddleware:
         from starlette.requests import HTTPConnection
         # Restored afterwards, so an app called in-process by another (the API
         # under the UI) never leaves its language behind in the caller's context.
-        token = _current_lang.set(get_lang(HTTPConnection(scope)))
+        connection = HTTPConnection(scope)
+        token = _current_lang.set(get_lang(connection))
+        reader = _reader_role.set(_signed_in_role(connection))
         try:
             await self._app(scope, receive, send)
         finally:
+            _reader_role.reset(reader)
             _current_lang.reset(token)
+
+
+def _signed_in_role(connection) -> str | None:
+    """The role the request's session cookie names, or None without a signed-in reader."""
+    from ui.config import get_claims, get_role
+
+    return get_role(connection) if get_claims(connection) else None
+
+
+def may_take(fix: dict) -> bool:
+    """Whether the reader may take a refusal's way out (celerp.accounting_roles.refusal_fix):
+    their role is among the roles its page allows, or there is no signed-in reader to judge."""
+    role = _reader_role.get()
+    return role is None or role in (fix.get("roles") or [])
 
 
 def is_rtl(lang: str | None = None) -> bool:

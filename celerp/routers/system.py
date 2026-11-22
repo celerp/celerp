@@ -19,6 +19,7 @@ from celerp.services.auth import (
     get_current_user, is_install_owner, require_install_owner,
 )
 from celerp.services.permissions import require_permission
+from celerp.agent_markers import agent_excluded
 
 router = APIRouter()
 
@@ -45,7 +46,7 @@ def _send_sigterm() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-@router.post("/restart", dependencies=[Depends(require_install_owner)])
+@router.post("/restart", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("installation"))
 async def restart_server(
     background_tasks: BackgroundTasks,
 ) -> dict:
@@ -61,7 +62,7 @@ async def restart_server(
 # ── Last start ───────────────────────────────────────────────────────────────
 
 
-@router.get("/start-report", dependencies=[require_permission("manage_company_settings")])
+@router.get("/start-report", dependencies=[require_permission("manage_company_settings")], openapi_extra={"x-celerp-agent": True}, summary="Show why the last start of the app held the records back, with each failed step and how to fix it.")
 async def start_report(request: Request) -> dict:
     """What Doctor shows first: why the last start held the records back (each failed
     step with its error), or nothing when the records are current."""
@@ -74,7 +75,7 @@ async def start_report(request: Request) -> dict:
 # only a login.
 
 
-@router.get("/installation-owner")
+@router.get("/installation-owner", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show whether the signed-in user is the installation owner.")
 async def installation_owner(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -84,7 +85,7 @@ async def installation_owner(
     return {"installation_owner": await is_install_owner(session, user.id)}
 
 
-@router.get("/update")
+@router.get("/update", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show the installed version, whether an update is available and whether automatic updates are on.")
 async def update_status(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -94,7 +95,7 @@ async def update_status(
     return update.status(owner=await is_install_owner(session, user.id))
 
 
-@router.post("/update", status_code=202, dependencies=[Depends(require_install_owner)])
+@router.post("/update", status_code=202, dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("installation"))
 async def install_update(background_tasks: BackgroundTasks) -> dict:
     """Install the newest version pip offers. The version is chosen here, never
     by the caller; Celerp restarts and is back in about a minute."""
@@ -107,7 +108,7 @@ async def install_update(background_tasks: BackgroundTasks) -> dict:
     return {"ok": True, "installing": target}
 
 
-@router.post("/update/check", dependencies=[Depends(require_install_owner)])
+@router.post("/update/check", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/system-recovery"}, summary="Check now whether a newer version of Celerp is available.")
 async def check_for_update() -> dict:
     from celerp.services import update
     await asyncio.to_thread(update.refresh_check)
@@ -118,7 +119,7 @@ class UpdateSettings(BaseModel):
     auto: StrictBool
 
 
-@router.patch("/update/settings", dependencies=[Depends(require_install_owner)])
+@router.patch("/update/settings", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/system-recovery"}, summary="Turn automatic overnight updates on or off.")
 async def update_settings(body: UpdateSettings) -> dict:
     """Turn automatic overnight updates on or off."""
     from celerp.services import update

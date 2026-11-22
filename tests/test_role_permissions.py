@@ -78,6 +78,7 @@ EXPECTED_CATALOGUE = {
     "send_statements": ("manager", True, "viewer"),
     "view_financial_reports": ("manager", True, "viewer"),
     "manage_accounting": ("manager", True, "viewer"),
+    "answer_bank_questions": ("manager", True, "viewer"),
     "reallocate_restricted_funds": ("admin", True, "viewer"),
     "manage_module_settings": ("manager", True, "viewer"),
     "automate_billing": ("manager", True, "viewer"),

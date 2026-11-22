@@ -154,7 +154,7 @@ async def test_transfer_is_guarded_on_both_accounts(client, session):
     a = await bank(client, h)
     b = await bank(client, h, name="Coast Bank", number="0002")
     r = await client.post("/accounting/transfers", json={
-        "from_bank_id": a["id"], "to_bank_id": b["id"], "amount": 100.0, "date": "2026-09-10"}, headers=h)
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": a["id"], "to_bank_id": b["id"], "amount": 100.0, "date": "2026-09-10"}, headers=h)
     assert r.status_code == 200, r.text
     je = r.json().get("je_id") or r.json()["id"]
     await completed(client, h, a, "2026-09-30", OPENING - 100.0, [je])
@@ -538,11 +538,19 @@ async def _waits(engine, task, what: str) -> None:
     raise AssertionError(f"{what} did not wait")
 
 
+async def _complete(client, h, b) -> dict:
+    """The bank's complete, as one request: the body it answers."""
+    r = await client.post(f"/accounting/reconciliation/bank/{b['id']}/complete", headers=h,
+                          json={"idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 def _hold_completion(monkeypatch):
     """Hold a completion once it has locked its reconciliation, before it commits."""
     from celerp_accounting import routes
     reached, release = asyncio.Event(), asyncio.Event()
-    real = routes._recon_bank_and_entries
+    real = routes._settled_difference
 
     async def held(*args, **kw):
         out = await real(*args, **kw)
@@ -550,7 +558,7 @@ def _hold_completion(monkeypatch):
             reached.set()
             await release.wait()
         return out
-    monkeypatch.setattr(routes, "_recon_bank_and_entries", held)
+    monkeypatch.setattr(routes, "_settled_difference", held)
     return reached, release
 
 
@@ -560,14 +568,14 @@ async def test_backdated_posting_waiting_on_a_completion_is_refused(monkeypatch,
     b = await bank(real_client, h)
     sid = (await start(real_client, h, b["id"], "2026-09-30")).json()["id"]
     reached, release = _hold_completion(monkeypatch)
-    completing = asyncio.create_task(real_client.post(f"/accounting/reconciliation/{sid}/complete", headers=h))
+    completing = asyncio.create_task(_complete(real_client, h, b))
     await asyncio.wait_for(reached.wait(), 10)
     posting = asyncio.create_task(deposit_response(real_client, h, b, "2026-09-15"))
     try:
         await _waits(real_engine, posting, "the backdated posting")
     finally:
         release.set()
-    assert (await completing).status_code == 200
+    assert (await completing)["stopped_at"] is None
     r = await posting
     assert r.status_code == 409, r.text
     assert "30 Sep 2026" in refusal(r)
@@ -591,14 +599,14 @@ async def test_completion_waits_for_a_backdated_posting(monkeypatch, real_engine
     monkeypatch.setattr(routes, "emit_event", held)
     posting = asyncio.create_task(deposit_response(real_client, h, b, "2026-09-15"))
     await asyncio.wait_for(reached.wait(), 10)
-    completing = asyncio.create_task(real_client.post(f"/accounting/reconciliation/{sid}/complete", headers=h))
+    completing = asyncio.create_task(_complete(real_client, h, b))
     try:
         await _waits(real_engine, completing, "the completion")
     finally:
         release.set()
     assert (await posting).status_code == 200
-    r = await completing
-    assert r.status_code == 200 and r.json()["status"] == "completed", r.text
+    assert (await completing) == {"completed": ["2026-09-30"], "stopped_at": None}
+    assert (await real_client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["status"] == "completed"
     # Completed after the posting committed, the period now holds that day.
     assert (await deposit_response(real_client, h, b, "2026-09-16")).status_code == 409
 
@@ -628,7 +636,7 @@ async def test_guard_judges_the_entry_as_committed_under_the_lock(real_engine, r
 
 
 async def test_a_held_entry_refusal_links_to_the_reconciliation_that_holds_it(client, session):
-    """The void toast leads to the reconciliation to unmatch the entry in, not just its name."""
+    """The void toast leads to the bank page where the entry can be let go of, not just its name."""
     from ui.components.journal import journal_void_toast
     from ui.components.shell import refusal_fix
     from ui.i18n import t
@@ -638,7 +646,7 @@ async def test_a_held_entry_refusal_links_to_the_reconciliation_that_holds_it(cl
     sid = (await start(client, h, b["id"], "2026-09-30", OPENING + 50.0)).json()["id"]
     assert (await match(client, h, sid, [je])).status_code == 200
     detail = (await void(client, h, je, "2026-10-15")).json()["detail"]
-    link = {"href": f"/accounting/reconcile/{sid}", "label": t("recon.view_completed")}
+    link = {"href": f"/accounting/reconcile/bank/{b['id']}?view=posted", "label": t("recon.view_completed")}
     assert refusal_fix(detail) == link
     toast = __import__("json").loads(journal_void_toast(
         {"results": [{"status": "refused", "detail": detail}]})["HX-Trigger"])["celerpToast"]

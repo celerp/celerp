@@ -11,6 +11,7 @@ import pytest
 from stock_books import assert_settled
 from test_cost_restatement import _state
 from test_posting_roles_merge import _lot
+from ui.i18n import refusal_text
 
 
 @pytest.mark.asyncio
@@ -28,7 +29,7 @@ async def test_replaying_an_undone_merge_is_refused(session, client, auth):
 
     r = await client.post("/items/merge", headers=h, json={**body, "plan_fingerprint": fp})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == "This merge was undone. Review the merge again."
+    assert refusal_text(r.json()["detail"]) == "This merge was undone. Review the merge again."
     assert (await _state(session, auth, merged))["status"] == "archived"
     for lot in (a, b):
         assert (await _state(session, auth, lot))["status"] == "available"
