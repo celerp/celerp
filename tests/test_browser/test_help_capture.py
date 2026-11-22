@@ -44,7 +44,8 @@ from .conftest import _test_db, clear_session_registry, set_session_cookies
 
 pytestmark = pytest.mark.browser
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "default_modules" / "celerp-subscriptions" / "tests"))
+_REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO / "default_modules" / "celerp-subscriptions" / "tests"))
 from agreement_kit import freeze_day  # noqa: E402
 
 _SEED_PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "seed_demo.py"
@@ -73,8 +74,17 @@ _PAGES = [p for p in shipped_pages() if isinstance(p.data, dict)]
 _EMPTY_STATE_SELECTOR = ", ".join((
     ".empty-state", ".empty-state-msg", ".empty-state-cta",
     ".cloud-hero", ".upgrade-banner", ".module-license-upsell", ".ai-showcase__headline",
-    ".ai-empty-state__welcome",
+    ".ai-empty-state__welcome", ".flash--error",
 ))
+# The same screens drawn without those components: every English message whose key names it
+# an empty or nothing-to-show message (``no_...``, ``...empty...``, ``...nothing...``).
+_EMPTY_KEY = re.compile(r"^no_|(^|_)(empty|nothing)(_|$)")
+_EMPTY_MESSAGES = sorted({
+    text.split("{", 1)[0].strip()
+    for catalog in (_REPO / "ui/locales/en.json", *_REPO.glob("default_modules/*/*/locales/en.json"))
+    for key, text in json.loads(catalog.read_text(encoding="utf-8")).items()
+    if _EMPTY_KEY.search(key.rsplit(".", 1)[-1]) and len(text.split("{", 1)[0].strip()) >= 12
+})
 # Steps whose text is about that empty or sales screen itself: "<page id>#<step>": why.
 _CONNECT_SALES = "the step names what Celerp Connect adds, which its sales page lists"
 _NO_TAX_REGIME = "no first-party module ships a tax regime, so the page shows where to get one"
@@ -699,13 +709,19 @@ def _visible_label(key: str) -> str:
 
 def _empty_state_shown(target) -> list[str]:
     """The empty-state components visible in the part of ``target`` a picture keeps."""
-    return target.evaluate("""(el, [sel, maxHeight]) => {
+    return target.evaluate("""(el, [sel, maxHeight, emptyMessages]) => {
         const top = el.getBoundingClientRect().top;
-        return [el, ...el.querySelectorAll(sel)]
+        const components = [el, ...el.querySelectorAll(sel)]
             .filter(e => e.matches(sel) && e.checkVisibility()
                          && e.getBoundingClientRect().top - top < maxHeight)
             .map(e => `${e.className}: ${e.innerText.trim().slice(0, 80)}`);
-    }""", [_EMPTY_STATE_SELECTOR, _MAX_HEIGHT])
+        const messages = [el, ...el.querySelectorAll("*")]
+            .filter(e => e.checkVisibility() && e.getBoundingClientRect().top - top < maxHeight)
+            .map(e => [...e.childNodes].filter(n => n.nodeType === Node.TEXT_NODE)
+                                      .map(n => n.textContent).join("").trim())
+            .filter(text => text && emptyMessages.some(m => text.startsWith(m)));
+        return [...components, ...messages.map(text => `message: ${text.slice(0, 80)}`)];
+    }""", [_EMPTY_STATE_SELECTOR, _MAX_HEIGHT, _EMPTY_MESSAGES])
 
 
 def _write_image(target, path: Path) -> None:
