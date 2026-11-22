@@ -1355,6 +1355,7 @@ input[type="number"] { text-align: right; }
 .help-steps { margin: 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
 .help-step p { margin: 0 0 0.5rem; }
 .help-step__img { max-width: 100%; height: auto; border: 1px solid var(--c-border); border-radius: var(--radius); }
+.help-step__zoom { display: inline-block; cursor: zoom-in; }
 .help-related { margin: 0; padding-left: 1.25rem; }
 .help-back { align-self: flex-start; }
 

@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
+from bs4 import BeautifulSoup
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -152,8 +153,11 @@ async def test_help_page_step_with_unreadable_image_keeps_its_text(client, monke
     r = await ui_get(headers, "/help/contacts.add-supplier")
     assert r.status_code == 200
     assert all(text in r.text for text in ("Open the list.", "Choose New.", "Save the supplier."))
-    assert 'src="/help/img/contacts.add-supplier/1"' in r.text
     assert r.text.count("help-step__img") == 1
+    # The picture opens at full size in a new tab, from a link the keyboard reaches, alt kept.
+    link = BeautifulSoup(r.text, "html.parser").select_one("a.help-step__zoom")
+    assert (link["href"], link["target"], link["rel"]) == ("/help/img/contacts.add-supplier/1", "_blank", ["noopener"])
+    assert link.img["src"] == link["href"] and link.img["alt"] == "Add a supplier 1"
 
 
 @pytest.mark.asyncio

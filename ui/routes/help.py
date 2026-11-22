@@ -120,9 +120,12 @@ def _related(ids: list[str], lang: str) -> list[FT]:
 
 
 def _steps(body: dict) -> FT:
+    """Each step's text and picture; the picture links to itself at full size in a new tab."""
     return Ol(*[Li(P(step["text"]),
-                   *([Img(src=safe_url(step["image_url"]), alt=f"{body['title']} {n}", loading="lazy",
-                          cls="help-step__img")] if step["image_url"] else []),
+                   *([A(Img(src=safe_url(step["image_url"]), alt=f"{body['title']} {n}", loading="lazy",
+                            cls="help-step__img"),
+                        href=safe_url(step["image_url"]), target="_blank", rel="noopener",
+                        cls="help-step__zoom")] if step["image_url"] else []),
                    cls="help-step")
                 for n, step in enumerate(body["steps"], start=1)], cls="help-steps")
 
