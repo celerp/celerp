@@ -865,8 +865,8 @@ async def test_an_older_stripe_payment_whose_books_cannot_be_read_is_not_given_b
 
     refunded, voided = await _give_back(real_client, real_engine, boss, a, invoice)
 
-    assert (refunded.status_code, refunded.json().get("detail")) == (422, NO_BOOKS)
-    assert (voided.status_code, voided.json().get("detail")) == (422, NO_BOOKS)
+    assert (refunded.status_code, refusal_text(refunded.json().get("detail"))) == (422, NO_BOOKS)
+    assert (voided.status_code, refusal_text(voided.json().get("detail"))) == (422, NO_BOOKS)
     assert await _doc(real_engine, invoice) == before and await _ledger(real_engine, invoice) == events
     assert await _books(real_engine, invoice) == {"1111": Decimal("37985"), ar: Decimal("-37985")}
 

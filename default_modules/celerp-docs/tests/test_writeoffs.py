@@ -12,6 +12,8 @@ import uuid
 
 import pytest
 
+from ui.i18n import refusal_text
+
 
 async def _register(client) -> str:
     addr = f"admin-{uuid.uuid4().hex[:8]}@writeoff.test"
@@ -524,7 +526,7 @@ async def test_writeoff_qty_no_account_rejects(client, session):
     await _clear_line_account(session, wo, lid)
     r = await _terminal(client, t, wo)
     assert r.status_code == 422, r.text
-    assert "account" in r.json()["detail"].lower()
+    assert "account" in refusal_text(r.json()["detail"]).lower()
     assert await _je_for(client, t, wo) is None
     assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
     st = await _state(client, t, wo)
@@ -541,7 +543,7 @@ async def test_writeoff_all_blank_rejects(client):
     wo = (await _writeoff(client, t, [a]))["id"]
     r = await _terminal(client, t, wo)
     assert r.status_code == 422, r.text
-    assert "Enter a quantity and a destination account" in r.json()["detail"]
+    assert "Enter a quantity and a destination account" in refusal_text(r.json()["detail"])
     assert await _je_for(client, t, wo) is None
     assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
 

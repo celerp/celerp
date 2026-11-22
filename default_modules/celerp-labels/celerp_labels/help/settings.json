@@ -3,9 +3,10 @@
   "title": "Label templates",
   "summary": "Design and manage the label templates used when printing.",
   "keywords": ["label template", "barcode template", "qr template", "settings"],
-  "routes": ["/settings/labels"],
+  "routes": ["/settings/labels", "/settings/labels/{tmpl_id}"],
   "permission": "manage_labels",
   "order": 2,
+  "checked": "d91299737f37047087f4863302d7fbc84a13bd24f6dbc7a6e3c05274afddd579",
   "steps": [
     {
       "text": "Open {lbl} from Inventory Settings to see the {tmpl} list.",
@@ -16,6 +17,18 @@
     {
       "text": "Choose {add} to create a new template, then lay out its fields in the editor.",
       "labels": {"add": "btn._add"},
+      "image": null,
+      "capture": {"route": "/settings/labels", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click a template to edit it: its name, its size in millimetres and where each field sits on the label.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/labels", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to list, add, change or delete label templates. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/settings/labels", "selector": "main", "actions": []}
     }

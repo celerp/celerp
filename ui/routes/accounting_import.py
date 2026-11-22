@@ -18,6 +18,7 @@ from ui.config import get_token as _token
 from ui.i18n import t
 from ui.routes.csv_import import (
     CsvImportSpec,
+    serve_import_template,
     discard_import_csv,
     resolve_import_csv,
     _rows_to_csv,
@@ -144,6 +145,7 @@ def asset_register_target() -> dict | None:
 
 
 def setup_routes(app):
+    serve_import_template(app, "/accounting", "/accounting")
 
     @app.get("/import/asset-register")
     async def import_asset_register_page(request: Request):

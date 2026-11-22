@@ -15,6 +15,7 @@
   ],
   "permission": "view_subscriptions",
   "order": 4,
+  "checked": "5f6d950c02e153ae4746bb5eb678ed6ec10a495d10027c7e762095aab6bbcc5a",
   "steps": [
     {
       "text": "Open {nav} from the sidebar to see every member and their standing.",
@@ -73,6 +74,16 @@
       "labels": {
         "new": "page.new_membership"
       },
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "You can also ask the assistant which members are in good standing or overdue, or to send, skip or reopen a period. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {
         "route": "/members",

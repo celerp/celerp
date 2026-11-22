@@ -63,7 +63,7 @@ async def _older_release(session, cid, *, extra: dict | None = None) -> None:
 async def test_the_fixed_asset_roles_are_one_group_never_guessed():
     assert set(ROLE_GROUPS["fixed_assets"]) == {R.FIXED_ASSETS, *FA_ROLES}
     assert set(FA_ROLES) <= set(UNGUESSED_ROLES)
-    assert POSTING_ROLES_SCHEMA == 4
+    assert POSTING_ROLES_SCHEMA >= 4  # the release that added the fixed asset roles
 
 
 async def test_a_new_company_has_every_fixed_asset_role_mapped(session, auth):

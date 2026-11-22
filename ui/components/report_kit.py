@@ -134,8 +134,9 @@ def plain_error_response(e: APIError):
     return PlainTextResponse(str(e.detail), status_code=status)
 
 
-def date_params(d_from: str, d_to: str) -> dict:
-    return {k: v for k, v in {"date_from": d_from, "date_to": d_to}.items() if v}
+def date_params(d_from: str, d_to: str, names: tuple[str, str] = ("date_from", "date_to")) -> dict:
+    """The period as API query params under ``names``, an open end ("All time") left out."""
+    return {k: v for k, v in zip(names, (d_from, d_to)) if v}
 
 
 def fname_date(v: str) -> str:

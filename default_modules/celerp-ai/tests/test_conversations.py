@@ -20,6 +20,8 @@ from celerp.models.company import Company, User
 from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
 from types import SimpleNamespace
 
+from fasthtml.common import to_xml
+
 from celerp.ai.tools import keyed_error
 
 from celerp.ai.conversations import (
@@ -211,7 +213,7 @@ async def test_get_conversation_with_messages(session, company, user):
 
     result = await get_conversation(session, conv.id, company.id, user.id)
     assert result is not None
-    msgs = await get_messages(session, conv.id)
+    msgs, _ = await get_messages(session, conv.id)
     assert len(msgs) == 2
     assert msgs[0].role == "user"
     assert msgs[1].role == "assistant"
@@ -233,7 +235,7 @@ async def test_delete_conversation_cascades_messages(session, company, user):
     # Conversation and its messages gone
     result = await get_conversation(session, conv.id, company.id, user.id)
     assert result is None
-    assert await get_messages(session, conv.id) == []
+    assert await get_messages(session, conv.id) == ([], None)
 
 
 @pytest.mark.asyncio
@@ -264,7 +266,7 @@ async def test_query_in_conversation_adds_messages(session, company, user):
     await add_message(session, conv.id, "assistant", "Answer 1", model_used="test-model", tools_called=["kpis"])
     await session.commit()
 
-    msgs = await get_messages(session, conv.id)
+    msgs, _ = await get_messages(session, conv.id)
     assert len(msgs) == 2
     assert msgs[1].model_used == "test-model"
     assert msgs[1].tools_called == ["kpis"]
@@ -277,7 +279,7 @@ async def test_message_limit_per_conversation(session, company, user):
         await add_message(session, conv.id, "user" if i % 2 == 0 else "assistant", f"Msg {i}")
     await session.commit()
 
-    msgs = await get_messages(session, conv.id, limit=300)
+    msgs, _ = await get_messages(session, conv.id, limit=300)
     assert len(msgs) <= MAX_MESSAGES_PER_CONVERSATION
 
 
@@ -296,7 +298,7 @@ async def test_message_pruning_preserves_unresolved_action(session, company, use
     await session.commit()
 
     assert await session.get(AIMessage, protected_id) is not None
-    msgs = await get_messages(session, conv.id, limit=MAX_MESSAGES_PER_CONVERSATION + 10)
+    msgs, _ = await get_messages(session, conv.id, limit=MAX_MESSAGES_PER_CONVERSATION + 10)
     assert len(msgs) == MAX_MESSAGES_PER_CONVERSATION + 1
 
 
@@ -312,7 +314,7 @@ async def test_history_token_budget_truncates(session, company, user):
     await add_message(session, conv.id, "assistant", "Short answer")
     await session.commit()
 
-    msgs = await get_messages(session, conv.id)
+    msgs, _ = await get_messages(session, conv.id)
     history = build_history_context(msgs)
     # The long message should be excluded (exceeds budget)
     # Only the short answer fits
@@ -333,7 +335,7 @@ async def test_history_excludes_file_content(session, company, user):
     await add_message(session, conv.id, "assistant", "Processed!")
     await session.commit()
 
-    msgs = await get_messages(session, conv.id)
+    msgs, _ = await get_messages(session, conv.id)
     history = build_history_context(msgs)
     # History should contain the text but no file data
     assert len(history) == 2
@@ -379,7 +381,7 @@ async def test_get_messages_returns_newest_n_chronological(session, company, use
         await add_message(session, conv.id, "user", f"m{i}")
     await session.commit()
 
-    msgs = await get_messages(session, conv.id, limit=3)
+    msgs, _ = await get_messages(session, conv.id, limit=3)
     assert [m.content for m in msgs] == ["m2", "m3", "m4"]
 
 
@@ -414,15 +416,67 @@ def test_pending_actions_filters_status_and_expiry():
 
 
 def test_pending_actions_reports_stale_executing_as_retryable():
-    """A claim that never finalized can safely retry the same immutable action id."""
+    """A keyed claim that never finalized can safely retry the same immutable action id."""
     stale_since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 1)).isoformat()
-    stale = {**_pending_record("lost"), "status": "executing", "executing_since": stale_since}
+    stale = {**_pending_record("lost"), "keyed": True, "status": "executing", "executing_since": stale_since}
     result = pending_actions([stale])
     assert result[0]["id"] == "lost"
     assert result[0]["status"] == "retryable"
     assert result[0]["error"]["message_key"] == "ai.action_unfinished"
     history = build_history_context([SimpleNamespace(role="assistant", content="hi", tools_called=[stale])])
     assert "[action awaiting retry: create_contact]" in history[0]["content"]
+
+
+def test_stale_unkeyed_claim_is_listed_as_unknown():
+    """A crash between claim and finalize on a route with no key store leaves an
+    outcome nobody knows: it is listed as unknown, never as a retry, and the
+    history tells the model not to propose it again silently."""
+    stale_since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 1)).isoformat()
+    for record in (
+        {**_pending_record("lost"), "keyed": False, "status": "executing", "executing_since": stale_since},
+        {**_pending_record("old"), "status": "executing", "executing_since": stale_since},
+    ):
+        listed = pending_actions([record])
+        assert [r["status"] for r in listed] == ["unknown"], record
+        history = build_history_context([SimpleNamespace(role="assistant", content="hi", tools_called=[record])])
+        assert "[action outcome unknown: create_contact;" in history[0]["content"]
+        assert "awaiting retry" not in history[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_pruning_keeps_an_unknown_card(session, company, user):
+    """Pruning keeps a conversation whose only action has an unknown outcome,
+    stored or a stale unkeyed claim, and its card still offers Dismiss and Run again."""
+    from celerp.ai.conversations import _protected_conversation_ids
+    from celerp_ai.ui_routes import _action_card
+    from ui.i18n import t
+    stale_since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 1)).isoformat()
+    records = {
+        "stored": {**_pending_record("u1"), "keyed": False, "status": "unknown",
+                   "finished_at": stale_since},
+        "stale": {**_pending_record("u2"), "keyed": False, "status": "executing",
+                  "executing_since": stale_since},
+    }
+    ids = {}
+    for label, record in records.items():
+        conv = AIConversation(
+            company_id=company.id, user_id=user.id, title=label,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        session.add(conv)
+        await session.flush()
+        session.add(AIMessage(conversation_id=conv.id, role="assistant", content="done?",
+                              tools_called=[record]))
+        ids[label] = conv.id
+    await session.flush()
+    assert await _protected_conversation_ids(session, list(ids.values())) == set(ids.values())
+    for record in records.values():
+        listed = pending_actions([record])
+        assert [r["status"] for r in listed] == ["unknown"]
+        html = to_xml(_action_card(str(uuid.uuid4()), str(uuid.uuid4()), listed[0]))
+        assert t("ai.run_again") in html and t("btn.dismiss") in html
+        assert t("btn.retry") not in html
 
 
 @pytest_asyncio.fixture
@@ -508,7 +562,7 @@ async def test_finalize_tool_call_records_terminal_state(session, company, user,
     assert "data" not in record
     assert tool_names(msg.tools_called) == ["create_contact"]
     history = build_history_context([msg])
-    assert "[completed action: create_contact -> x]" in history[0]["content"]
+    assert '[completed action: create_contact {"body":{"name":"Acme"}} -> x]' in history[0]["content"]
 
 
 @pytest.mark.asyncio
@@ -556,7 +610,7 @@ async def test_history_appends_proposed_action_lines(session, company, user):
     )
     await session.commit()
 
-    msgs = await get_messages(session, conv.id)
+    msgs, _ = await get_messages(session, conv.id)
     history = build_history_context(msgs)
     assert "[proposed action: create_contact]" in history[0]["content"]
 
@@ -787,3 +841,11 @@ async def test_pruning_and_history_share_same_protection_rule(session, company, 
         session, company.id, user.id, limit=MAX_CONVERSATIONS_PER_USER,
     )
     assert protected_id in {c.id for c in history}
+
+
+def test_a_completed_actions_arguments_past_ascii_are_read_back_as_written():
+    """Thai arguments reach the model's history as written and within the length kept: their
+    escaped form would be six times as long, cut short and unreadable."""
+    from celerp.ai.conversations import _ARGUMENTS_IN_HISTORY, _brief
+    name = "ร้าน" * (_ARGUMENTS_IN_HISTORY // 10)
+    assert _brief({"name": name}) == '{"name":"' + name + '"}'

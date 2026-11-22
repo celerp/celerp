@@ -29,5 +29,15 @@
   "labels.selected": "Ausgewählt: {ids}{more}",
   "labels.template_deleted": "Vorlage gelöscht.",
   "labels.template_not_found": "Vorlage nicht gefunden.",
-  "labels.width_example": "z. B. 50"
+  "labels.width_example": "z. B. 50",
+  "labels.err_labels_not_printed_source_records": "Für {source}-Datensätze werden keine Etiketten gedruckt.",
+  "labels.err_your_role_cannot_see_these_records": "Ihre Rolle hat keinen Zugriff auf diese Datensätze und kann daher auch deren Etiketten nicht drucken.",
+  "labels.err_choose_records_print_labels": "Wählen Sie die Datensätze aus, für die Etiketten gedruckt werden sollen.",
+  "labels.err_print_at_most_max_source_ids": "Es können maximal {max_source_ids} Etiketten gleichzeitig gedruckt werden.",
+  "tool.create_template_api_labels_templates_post": "Eine Etikettenvorlage mit Größe und Feldern hinzufügen.",
+  "tool.update_template_api_labels_templates__template_id__put": "Eine Etikettenvorlage ändern.",
+  "tool.delete_template_api_labels_templates__template_id__delete": "Eine Etikettenvorlage löschen.",
+  "tool.print_single_api_labels_print__entity_id__post": "Ein PDF-Etikett für einen Lagerartikel erstellen.",
+  "tool.bulk_print_api_labels_bulk_print_post": "Einen PDF-Bogen mit Etiketten für mehrere Lagerartikel erstellen.",
+  "tool.print_source_api_labels_print_source_post": "Einen PDF-Bogen mit Etiketten für ausgewählte Datensätze einer Art anhand einer gewählten Vorlage erstellen."
 }

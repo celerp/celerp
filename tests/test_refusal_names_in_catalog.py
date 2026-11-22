@@ -4,11 +4,14 @@ links to the page that moves the lock."""
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
+from fasthtml.common import to_xml
 
-from celerp.accounting_roles import period_locked_refusal
+from celerp.accounting_roles import period_locked_refusal, refusal
 from celerp.services.permissions import PERMISSIONS, missing_permission_refusal
 from ui.components.shell import refusal_fix, toast_header
 from ui.i18n import refusal_text, set_lang, t
@@ -56,4 +59,40 @@ def test_the_period_lock_refusal_toast_links_to_the_lock_page():
 
 def test_every_period_lock_refusal_links_to_the_lock_page():
     for key in ("error.period_locked", "mfg.period_locked"):
-        assert refusal_fix({"message_key": key})["href"] == "/settings/accounting?tab=period-lock"
+        assert refusal_fix(refusal(key, ""))["href"] == "/settings/accounting?tab=period-lock"
+
+
+# A catalog string that only looks like an app path, and why it is not one.
+_NOT_A_PAGE = {"settings_cloud.per_mo": "a price per month", "settings_cloud.per_year": "a price per year"}
+_PATH = re.compile(r'(?:(?<=\s)|^|(?<=["(]))(/[a-z][a-z0-9_-]*(?:/[A-Za-z0-9_{}.-]+)*)')
+
+
+def _ui_page(path: str) -> bool:
+    from starlette.routing import Match
+
+    from ui.app import app
+    scope = {"type": "http", "method": "GET", "path": re.sub(r"\{\w+\}", "x", urlsplit(path).path)}
+    return any(r.matches(scope)[0] == Match.FULL for r in app.routes)
+
+
+def test_every_page_a_refusal_or_catalog_text_names_is_a_page():
+    """A way out names a page the reader can open: every refusal link, and every app path
+    written in the English catalog."""
+    from celerp.accounting_roles import REFUSAL_FIXES
+
+    catalog = json.loads(Path("ui/locales/en.json").read_text(encoding="utf-8"))
+    named = {f"fix {key}": href for key, (href, _label, _permission) in REFUSAL_FIXES.items()}
+    named |= {f"text {key}": path for key, text in catalog.items() if key not in _NOT_A_PAGE
+              for path in _PATH.findall(text if isinstance(text, str) else "")}
+    assert [f"{where} -> {path}" for where, path in named.items() if not _ui_page(path)] == []
+    assert all(_PATH.findall(catalog[key]) for key in _NOT_A_PAGE)  # each exception still reads that way
+
+
+def test_a_refused_call_on_a_page_links_to_the_page_that_resolves_it():
+    from ui.api_client import APIError
+    from ui.components.shell import error_flash
+
+    refusal = period_locked_refusal("2026-10-31")
+    html = to_xml(error_flash(APIError(409, refusal_text(refusal), refusal)))
+    assert 'href="/settings/accounting?tab=period-lock"' in html and t("page.period_lock", "en") in html
+    assert "href" not in to_xml(error_flash(APIError(409, "plain", None)))

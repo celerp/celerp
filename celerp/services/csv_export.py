@@ -11,6 +11,7 @@ import io
 from collections.abc import AsyncIterator, Iterable
 
 from fastapi import HTTPException
+from ui.i18n import t
 
 
 def resolve_export_cols(cols: str | None, default: list[str], allowed: Iterable[str]) -> list[str]:
@@ -26,7 +27,7 @@ def resolve_export_cols(cols: str | None, default: list[str], allowed: Iterable[
     if unknown:
         raise HTTPException(
             status_code=422,
-            detail=f"Unknown export column(s): {', '.join(unknown)}. Choose from: {', '.join(sorted(allowed_set))}",
+            detail=t("import.err_unknown_export_column_s_unknown_choose", unknown=', '.join(unknown), allowed_set=', '.join(sorted(allowed_set))),
         )
     return wanted
 

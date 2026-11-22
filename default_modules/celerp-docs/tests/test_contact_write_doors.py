@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from test_contact_reference_lifecycle import _NoCommit
 from test_contact_selection import _contact, _doc, _get, _item, _line, _list, _owner, _seed, _select
 from test_helpers import remove_company
+from ui.i18n import refusal_text
 
 
 def _fields(**values) -> dict:
@@ -271,7 +272,7 @@ async def test_import_refuses_the_wrong_contact_type(client, resource):
     assert r.status_code == 422 and "Wrong Side is not a customer" in r.text, r.text
     r = await client.post(f"/{resource}/import/batch", headers=h, json={"records": [record]})
     assert r.status_code == 200 and r.json()["created"] == 0, r.text
-    assert "Wrong Side is not a customer" in " ".join(r.json()["errors"])
+    assert "Wrong Side is not a customer" in refusal_text(r.json()["errors"])
 
 
 @pytest.mark.asyncio

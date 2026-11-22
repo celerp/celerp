@@ -106,7 +106,7 @@ async def test_trigger_failure(auth_client, monkeypatch):
     )
     r = await auth_client.post("/backup/trigger")
     assert r.status_code == 422, f"Expected 422 so UI can show real error. Got {r.status_code}: {r.text[:100]}"
-    assert "pg_dump" in r.json()["detail"]
+    assert "pg_dump" in refusal_text(r.json()["detail"])
     # No HX-Trigger on failure
     assert "HX-Trigger" not in r.headers
 
@@ -451,12 +451,13 @@ async def test_import_returns_warnings_field(auth_client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_export_local_returns_422_when_pg_dump_fails(auth_client, monkeypatch):
-    """Regression: /backup/export used to bubble RuntimeError as 500.
-    Must now return 422 with the actual error message so the user sees what went wrong."""
-    from celerp.services.backup import BackupResult
+    """Regression: /backup/export used to bubble a missing pg_dump as 500.
+    It answers 422 with the reason, keyed, so the user sees what went wrong."""
+    from celerp.services.backup import BackupFailed
+    from ui.i18n import t
 
-    def fake_export_full():
-        raise RuntimeError("pg_dump not found in PATH — cannot create backup")
+    async def fake_export_full():
+        raise BackupFailed(t("error.backup_tool_missing"))
 
     monkeypatch.setattr(
         "celerp.services.backup_export.export_full",
@@ -465,7 +466,8 @@ async def test_export_local_returns_422_when_pg_dump_fails(auth_client, monkeypa
     r = await auth_client.get("/backup/export")
     # 422 is the contract: the route caught the error and surfaced a detail
     assert r.status_code == 422
-    assert "pg_dump" in r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "error.backup_tool_missing"
+    assert "database tool is missing" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -480,7 +482,7 @@ async def test_export_cloud_returns_422_when_reassembly_fails(auth_client, monke
     )
     r = await auth_client.get("/backup/export/abc-123")
     assert r.status_code == 422
-    assert "pg_dump" in r.json()["detail"]
+    assert "pg_dump" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio

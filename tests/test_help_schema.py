@@ -129,7 +129,8 @@ def test_read_image_never_follows_a_link(tmp_path):
 
 def test_read_image_refuses_what_is_not_a_bounded_webp_file(tmp_path):
     import os
-    from celerp.help.schema import MAX_IMAGE_BYTES, read_image
+    from celerp.help.bundle import MAX_IMAGE_BYTES
+    from celerp.help.schema import read_image
     img = tmp_path / "img"
     img.mkdir()
     page = _image_page(tmp_path)

@@ -20,8 +20,8 @@ from celerp.services.business_time import business_date_of
 from fa_fixtures import FA
 from test_disposal import _dispose
 from test_runs import _contributed, _managed_from, _race_company
-from test_transfer import _location, _move
 from ui.i18n import refusal_text
+from test_transfer import _location, _move
 
 pytestmark = pytest.mark.asyncio
 
@@ -367,7 +367,7 @@ async def test_s9_check_key_without_edit_keys(fa):
                           headers=auditor)).status_code == 403
 
     unknown = await fa.client.post("/fixed-assets/api/checks", headers=auditor, json={"tag": "NOPE"})
-    assert unknown.status_code == 422 and unknown.json()["detail"] == "No asset with tag NOPE."
+    assert unknown.status_code == 422 and refusal_text(unknown.json()["detail"]) == "No asset with tag NOPE."
     # Without the key, no checks.
     await _grant(fa, "check_fixed_assets", ["owner", "admin", "manager", "operator"])
     assert (await fa.client.post("/fixed-assets/api/checks", headers=auditor, json={"tag": "TAG-5"})).status_code == 403
@@ -383,7 +383,8 @@ async def test_checks_disposed_removal_and_not_seen_report(fa):
     await _dispose(fa, old, "2026-03-31")
 
     disposed = await fa.client.post("/fixed-assets/api/checks", headers=fa.h, json={"tag": "TAG-OLD"})
-    assert disposed.status_code == 422 and disposed.json()["detail"] == "Disposed on 2026-03-31."
+    assert disposed.status_code == 422 and disposed.json()["detail"]["message_key"] == "fixed_assets.err_check_left.disposed" \
+        and refusal_text(disposed.json()["detail"]) == "Disposed on 31 Mar 2026."
     check = await fa.ok(await fa.client.post("/fixed-assets/api/checks", headers=fa.h, json={"tag": "TAG-1"}))
     # Scanning the asset number works the same when the asset has no tag.
     van_number = (await fa.asset(van))["number"]

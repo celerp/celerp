@@ -104,7 +104,7 @@ async def test_taking_back_more_than_went_out_is_refused_in_the_users_language(c
                           json={"line_ids": [l0], "quantities": {l0: 2}})
     assert r.json()["detail"]["message_key"] == "lines.cannot_set_available"
     assert _in_spanish(r, 422) == ("No se puede marcar como disponible: "
-                                   "RT-BACK: no se pueden devolver 2 de 1 que salieron")
+                                   "RT-BACK: no se pueden devolver 2 de 1 que salieron.")
 
 
 async def test_each_take_back_reason_is_translated(client, h):
@@ -117,7 +117,7 @@ async def test_each_take_back_reason_is_translated(client, h):
                           json={"line_ids": [l0, l1], "quantities": {l0: 0, l1: 2}})
     assert _in_spanish(r, 422) == ("No se puede marcar como disponible: "
                                    "RT-TWO-A: la cantidad devuelta debe ser mayor que cero; "
-                                   "RT-TWO-B: no se pueden devolver 2 de 1 que salieron")
+                                   "RT-TWO-B: no se pueden devolver 2 de 1 que salieron.")
 
 
 async def test_a_due_date_before_the_issue_date_is_refused_in_plain_words(client, owner):

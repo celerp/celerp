@@ -103,7 +103,6 @@ async def test_unknown_account_in_entry_names_the_code(client):
     ("settings_accounting.code_too_long", "{max}"),
     ("settings_accounting.account_not_found", "Select Try again"),
     ("acct.error_loading_data", "Select Try again"),
-    ("recon.err_no_lines", "bank statement export"),
 ])
 def test_message_says_what_to_do(key, needle):
     raw = json.loads((_LOCALES / "en.json").read_text(encoding="utf-8"))

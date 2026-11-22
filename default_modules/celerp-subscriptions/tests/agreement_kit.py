@@ -134,7 +134,7 @@ async def tick(session, cid: str, day: str):
     async def factory():
         yield session
 
-    return await unattended(periodic.run_company(factory, uuid.UUID(cid), today=date.fromisoformat(day)))
+    return await unattended(lambda: periodic.run_company(factory, uuid.UUID(cid), today=date.fromisoformat(day)))
 
 
 async def summary(client, headers: dict, **params) -> dict:

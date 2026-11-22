@@ -15,7 +15,7 @@ import pytest
 from fixtures.manager_io import specs
 from fixtures.manager_io.encoder import SCHEMA_GUID, write_manager_file
 from fixtures.manager_io.support import BASIC, adapter, artifact, ref
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 from migration_support import (
     load_run,
     maker,
@@ -87,7 +87,7 @@ async def _scan_refusals(client, path) -> set[str]:
     for source in ("manager_io", None):
         r = await scan_upload(client, path.read_bytes(), source=source, name=path.name)
         assert r.status_code == 422, r.text
-        details.add(r.json()["detail"])
+        details.add(refusal_text(r.json()["detail"]))
     return details
 
 

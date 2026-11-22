@@ -16,6 +16,7 @@ import pytest
 from company_backup_support import company, member, owner, token
 from migration_support import auth, multipart, real_client, real_engine  # noqa: F401
 from test_export_set_adapters import _without, _xero
+from ui.i18n import refusal_text
 
 BASE = "/migrations/move-requests"
 
@@ -143,7 +144,7 @@ async def test_an_interrupted_send_resumes_with_the_files_still_to_go(real_engin
     body = _ask(draft["draft_token"])
     relay.fail_upload = "General Ledger.txt"
     failed = await real_client.post(BASE, json=body, headers=headers)
-    assert failed.status_code == 502 and "Retry" in failed.json()["detail"]
+    assert failed.status_code == 502 and "Retry" in refusal_text(failed.json()["detail"])
     assert relay.submits == []
     resumed = await real_client.post(BASE, json=body, headers=headers)
     assert resumed.status_code == 201, resumed.text
@@ -161,12 +162,12 @@ async def test_a_send_is_refused_with_the_reason(real_engine, real_client, relay
     short = await _draft(real_client, headers, _without("General Ledger.txt"))
     incomplete = await real_client.post(BASE, json=_ask(short["draft_token"]), headers=headers)
     assert incomplete.status_code == 422
-    assert "General Ledger is missing" in incomplete.json()["detail"]
-    assert "before asking us to move this client" in incomplete.json()["detail"]
+    assert "General Ledger is missing" in refusal_text(incomplete.json()["detail"])
+    assert "before asking us to move this client" in refusal_text(incomplete.json()["detail"])
     gone = await real_client.post(BASE, json=_ask("x" * 43), headers=headers)
-    assert gone.status_code == 410 and "Upload" in gone.json()["detail"]
+    assert gone.status_code == 410 and "Upload" in refusal_text(gone.json()["detail"])
     none = await real_client.post(BASE, json=_ask(""), headers=headers)
-    assert none.status_code == 422 and "export files" in none.json()["detail"]
+    assert none.status_code == 422 and "export files" in refusal_text(none.json()["detail"])
     for bad in ({"client_name": "  "}, {"firm_name": ""}, {"reply_to": "not an email"},
                 {"operation_id": "not-a-uuid"}):
         assert (await real_client.post(BASE, json=_ask(short["draft_token"], **bad),
@@ -176,11 +177,11 @@ async def test_a_send_is_refused_with_the_reason(real_engine, real_client, relay
     whole = await _draft(real_client, headers, _xero())
     relay.no_account = True
     needed = await real_client.post(BASE, json=_ask(whole["draft_token"]), headers=headers)
-    assert needed.status_code == 428 and "free Celerp account" in needed.json()["detail"]
+    assert needed.status_code == 428 and "free Celerp account" in refusal_text(needed.json()["detail"])
     relay.no_account = False
     relay.refuse = httpx.Response(403, json={"detail": "Use your verified account email so we can reply to you"})
     mismatch = await real_client.post(BASE, json=_ask(whole["draft_token"]), headers=headers)
-    assert mismatch.status_code == 403 and "verified account email" in mismatch.json()["detail"]
+    assert mismatch.status_code == 403 and "verified account email" in refusal_text(mismatch.json()["detail"])
     relay.refuse = None
 
     # Another user's draft is not theirs to send, and only the owner asks at all.

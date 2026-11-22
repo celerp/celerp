@@ -32,7 +32,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import refusal_detail
+from celerp.accounting_roles import Refused, refusal_detail
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.importers.tabular import ZIP_ERRORS, check_zip_member, read_zip_member, zip_directory_fits
@@ -57,6 +57,7 @@ from celerp.services.permissions import require_permission
 from celerp_inventory.routes import flatten_item, get_item_projection
 from ui.i18n import t
 from ui.components.encode import inert_media_type
+from celerp.agent_markers import agent_excluded
 
 logger = logging.getLogger(__name__)
 
@@ -106,11 +107,11 @@ async def _locked_item(session: AsyncSession, company_id, entity_id: str) -> Pro
     drop the earlier one's change, so each waits for the last to commit before reading."""
     row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found_2"))
     return row
 
 
-@router.post("/{entity_id}/attachments")
+@router.post("/{entity_id}/attachments", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Attach a file to an inventory item.")
 async def upload_attachment(
     entity_id: str,
     file: UploadFile = File(...),
@@ -125,14 +126,14 @@ async def upload_attachment(
     Pass ?attachment_type=view_360 to tag a 360 image/video explicitly.
     """
     if attachment_type is not None and attachment_type not in _VALID_TYPES:
-        raise HTTPException(status_code=422, detail=f"Invalid attachment_type: {attachment_type!r}")
+        raise HTTPException(status_code=422, detail=t("inventory.err_invalid_attachment_type_attachment_type", attachment_type=f'{attachment_type!r}'))
 
     await get_item_projection(session, company_id, entity_id)
 
     async with storing(session, company_id) as store:
         try:
             att = await store.upload(file, attachment_type=attachment_type)  # type: ignore[arg-type]
-        except ValueError as exc:
+        except Refused as exc:
             raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
 
         row = await _locked_item(session, company_id, entity_id)
@@ -144,7 +145,7 @@ async def upload_attachment(
     return att
 
 
-@router.delete("/{entity_id}/attachments/{att_id}", status_code=204)
+@router.delete("/{entity_id}/attachments/{att_id}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Remove an attachment from an inventory item.")
 async def delete_attachment(
     entity_id: str,
     att_id: str,
@@ -164,7 +165,7 @@ async def delete_attachment(
     await session.commit()
 
 
-@router.put("/{entity_id}/attachments/{att_id}/preview", status_code=200)
+@router.put("/{entity_id}/attachments/{att_id}/preview", status_code=200, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Choose which attached image is shown as an item's picture.")
 async def set_preview_image(
     entity_id: str,
     att_id: str,
@@ -183,16 +184,16 @@ async def set_preview_image(
     attachments: list[dict] = row.state.get("attachments") or []
     target = next((a for a in attachments if a["id"] == att_id), None)
     if target is None:
-        raise HTTPException(status_code=404, detail="Attachment not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_attachment_not_found"))
     if target["type"] != "image":
-        raise HTTPException(status_code=422, detail="preview_image_id can only be set to an image attachment")
+        raise HTTPException(status_code=422, detail=t("inventory.err_preview_image_id_can_only_set"))
 
     await _patch_item_attachments(session, company_id, entity_id, user.id, attachments, att_id)
     await session.commit()
     return {"preview_image_id": att_id}
 
 
-@router.post("/attachments/bulk")
+@router.post("/attachments/bulk", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Attach files to many items at once from a ZIP archive whose file names match item SKUs.")
 async def bulk_attach_legacy(
     file: UploadFile = File(...),
     override_hero: bool = Query(False),
@@ -233,7 +234,7 @@ def _detect_tag_and_label(stem: str) -> tuple[str, str | None, bool]:
     return "product_images", None, True  # bare SKU → hero candidate
 
 
-@router.post("/files/bulk")
+@router.post("/files/bulk", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Attach files to many items at once from a ZIP archive whose file names match item SKUs.")
 async def bulk_attach_files(
     file: UploadFile = File(...),
     override_hero: bool = Query(False, description="If true, override existing hero image for matched items"),
@@ -382,7 +383,7 @@ def _get_item_file(files: list[dict], file_id: str) -> dict:
     return match
 
 
-@router.post("/{entity_id}/files")
+@router.post("/{entity_id}/files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Attach a file to an inventory item, with its tag and description.")
 async def upload_item_file(
     entity_id: str,
     file: UploadFile = File(...),
@@ -400,7 +401,7 @@ async def upload_item_file(
     async with storing(session, company_id) as store:
         try:
             meta = await store.upload(file)
-        except ValueError as exc:
+        except Refused as exc:
             raise HTTPException(status_code=413, detail=refusal_detail(exc)) from exc
 
         is_hero, document_tag = item_file_role(
@@ -411,7 +412,7 @@ async def upload_item_file(
     return {"file_id": meta["id"], **meta, "is_hero": is_hero}
 
 
-@router.post("/{entity_id}/files/{file_id}/tag")
+@router.post("/{entity_id}/files/{file_id}/tag", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Change the tag of a file attached to an inventory item.")
 async def tag_item_file(
     entity_id: str,
     file_id: str,
@@ -441,7 +442,7 @@ async def tag_item_file(
     return (updated.state if updated else {}) | {"id": entity_id}
 
 
-@router.patch("/{entity_id}/files/{file_id}/description")
+@router.patch("/{entity_id}/files/{file_id}/description", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Change the description of a file attached to an inventory item.")
 async def update_item_file_description(
     entity_id: str,
     file_id: str,
@@ -471,7 +472,7 @@ async def update_item_file_description(
     return (updated.state if updated else {}) | {"id": entity_id}
 
 
-@router.post("/{entity_id}/files/{file_id}/hero")
+@router.post("/{entity_id}/files/{file_id}/hero", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Make one attached image the featured picture of an inventory item.")
 async def set_item_file_hero(
     entity_id: str,
     file_id: str,
@@ -502,7 +503,7 @@ async def set_item_file_hero(
     return {"preview_image_id": file_id}
 
 
-@router.delete("/{entity_id}/files/{file_id}", status_code=204)
+@router.delete("/{entity_id}/files/{file_id}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Delete a file attached to an inventory item.")
 async def delete_item_file(
     entity_id: str,
     file_id: str,
@@ -540,7 +541,7 @@ async def _assert_image_visible(session: AsyncSession, company_id, role: str, ro
         raise HTTPException(status_code=404, detail=t("inventory.err_file_not_found"))
 
 
-@router.get("/{entity_id}/files/{file_id}/thumbnail")
+@router.get("/{entity_id}/files/{file_id}/thumbnail", openapi_extra=agent_excluded("internal"))
 async def item_file_thumbnail(
     entity_id: str,
     file_id: str,
@@ -560,11 +561,11 @@ async def item_file_thumbnail(
     atts = row.state.get("attachments") or []
     match = _get_item_file(files + atts, file_id)
     if not str(match.get("mime", "")).startswith("image/"):
-        raise HTTPException(status_code=404, detail="File is not an image")
+        raise HTTPException(status_code=404, detail=t("inventory.err_file_not_image"))
     await _assert_image_visible(session, company_id, role, row, match)
     data = await get_or_create_thumbnail(session, str(company_id), match)
     if data is None:
-        raise HTTPException(status_code=404, detail="Thumbnail unavailable")
+        raise HTTPException(status_code=404, detail=t("inventory.err_thumbnail_unavailable"))
     return Response(
         content=data,
         media_type="image/jpeg",
@@ -572,7 +573,7 @@ async def item_file_thumbnail(
     )
 
 
-@router.get("/{entity_id}/files/{file_id}")
+@router.get("/{entity_id}/files/{file_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-field-visibility": True, "x-celerp-agent-download": "/items/{entity_id}/files/{file_id}/download"}, summary="Download a file attached to an inventory item.")
 async def download_item_file(
     entity_id: str,
     file_id: str,

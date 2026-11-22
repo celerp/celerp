@@ -13,7 +13,7 @@ PLUGIN_MANIFEST = {
     "ui_routes": "celerp_dashboard.ui_routes",
     "depends_on": [],
     "slots": {
-        "nav": {"group": None, "key": "dashboard", "href": "/dashboard", "label": "Dashboard", "label_key": "nav.dashboard", "order": 1, "permission": "view_dashboards"},
+        "nav": {"group": None, "key": "dashboard", "href": "/dashboard", "help": "dashboard.overview", "label": "Dashboard", "label_key": "nav.dashboard", "order": 1, "permission": "view_dashboards"},
     },
     "migrations": None,
     "help": {"dir": "celerp_dashboard/help"},

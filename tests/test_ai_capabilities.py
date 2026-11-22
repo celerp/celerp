@@ -3,73 +3,31 @@
 """Generic OpenAPI capability compiler/executor tests."""
 from __future__ import annotations
 
+import asyncio
 import ast
+import functools
+import hashlib
 import importlib.util
 import inspect
-import sys
+import re
 import textwrap
+from typing import Annotated
 
 import pytest
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
 from fastapi.responses import PlainTextResponse
+from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 
+from celerp import agent_markers
 from celerp.ai import tools as ai_tools
 from celerp.services import cost_visibility, journal_accounts, permissions
 from test_helpers import real_agent_app
 
 
 _bearer = HTTPBearer()
-
-
-# The exact agent allowlist after this pass: one core search route plus the
-# marked read/write routes of contacts, docs, and inventory. Each entry is a
-# (method, path) pair so the assertion pins WHICH operations are agent-callable,
-# not merely how many. Adding or removing a marker changes this set and so
-# forces this test - and therefore review - as the spec requires.
-_EXPECTED_AGENT_ROUTES = {
-    ("GET", "/search"),
-    ("GET", "/help/search"),
-    ("GET", "/help/page/{page_id}"),
-    ("POST", "/crm/contacts"),
-    ("GET", "/crm/contacts"),
-    ("GET", "/crm/contacts/{contact_id}"),
-    ("PATCH", "/crm/contacts/{contact_id}"),
-    ("GET", "/docs"),
-    ("GET", "/docs/summary"),
-    ("GET", "/docs/{entity_id}"),
-    ("POST", "/docs"),
-    ("PATCH", "/docs/{entity_id}"),
-    ("GET", "/items"),
-    ("GET", "/items/valuation"),
-    ("GET", "/items/{entity_id}"),
-    ("GET", "/items/{entity_id}/reorder-suggestion"),
-    ("POST", "/items"),
-    ("PATCH", "/items/{entity_id}"),
-    ("POST", "/items/import/preview"),
-    ("POST", "/items/import/commit"),
-    ("POST", "/docs/{entity_id}/payment"),
-    ("GET", "/accounting/bank-accounts"),
-    ("POST", "/accounting/reconciliation/start"),
-    ("GET", "/accounting/reconciliation/{session_id}/workbench"),
-    ("POST", "/accounting/reconciliation/{session_id}/import-file"),
-    ("POST", "/accounting/reconciliation/{session_id}/auto-match"),
-    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/match"),
-    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/unmatch"),
-    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/create"),
-    ("PATCH", "/accounting/reconciliation/{session_id}/lines/{line_id}"),
-    ("POST", "/accounting/reconciliation/{session_id}/bulk-confirm"),
-    ("POST", "/accounting/reconciliation/{session_id}/complete"),
-    ("POST", "/accounting/reconciliation/{session_id}/reopen"),
-    ("POST", "/accounting/reconciliation/{session_id}/write-off"),
-}
-
-
-def _real_agent_route_set() -> set[tuple[str, str]]:
-    app = real_agent_app()
-    compiled = ai_tools.compile_agent_capabilities(app, {})
-    return {(cap["method"], cap["path"]) for cap in compiled.values()}
 
 
 class _WriteBody(BaseModel):
@@ -92,7 +50,9 @@ def _app() -> FastAPI:
     ):
         return {"item_id": item_id, "q": q, "token": auth.credentials}
 
-    @app.post("/things", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
+    @app.post("/things", openapi_extra={
+        "x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key",
+    })
     async def create_thing(
         body: _WriteBody,
         auth: HTTPAuthorizationCredentials = Depends(_bearer),
@@ -154,19 +114,21 @@ def test_compile_uses_openapi_and_fails_closed_for_unsafe_shapes():
 
     post_body = compiled[post_name]["tool"]["function"]["parameters"]["properties"]["body"]
     assert "idempotency_key" not in post_body["properties"]
-    assert compiled[post_name]["inject_idempotency"] is True
+    assert compiled[post_name]["key_field"] == "idempotency_key"
+    assert compiled[post_name]["keyed"] is True
 
 
 def test_declared_idempotent_mutation_compiles_without_a_key():
-    """A route that dedupes by construction opts out of the injected key; a
-    mutation with neither the key nor the declaration still never compiles."""
+    """A route that dedupes by construction declares itself idempotent with no key
+    field; a mutation with no retry marker never compiles."""
     compiled = ai_tools.compile_agent_capabilities(_app(), {})
     touch_name = next(name for name in compiled if name.startswith("touch_thing_"))
     touch = compiled[touch_name]
     assert touch["method"] == "POST"
-    assert touch["inject_idempotency"] is False
+    assert touch["key_field"] is None
+    assert touch["keyed"] is True
     assert touch["expects_body"] is False
-    assert set(touch["tool"]["function"]["parameters"]["properties"]) == {"path"}
+    assert set(touch["tool"]["function"]["parameters"]["properties"]) == {"path", "after_previous"}
     assert all("unsafe_write" not in name for name in compiled)
 
 
@@ -175,7 +137,7 @@ def test_nonconfirming_post_preview_compiles_without_idempotency():
     preview = next(cap for name, cap in compiled.items() if name.startswith("preview_thing_"))
     assert preview["method"] == "POST"
     assert preview["requires_confirmation"] is False
-    assert preview["inject_idempotency"] is False
+    assert preview["key_field"] is None
 
 
 def test_compile_filters_existing_route_permissions(monkeypatch):
@@ -263,6 +225,259 @@ async def test_executor_reenters_fastapi_with_user_auth_and_server_idempotency()
     assert created["data"]["idempotency_key"] != "model-controlled"
 
 
+async def test_a_revision_read_by_one_tool_is_sent_back_by_the_write():
+    """A write that names the revision it replaces (If-Match) compiles with a headers
+    section, and the read before it hands the model that revision (its ETag), so the
+    model can read, then write, and a stale revision is refused rather than overwritten."""
+    app = FastAPI()
+    state = {"rev": "r1"}
+
+    @app.get("/menu", responses={200: {"headers": {"ETag": {"schema": {"type": "string"}}}}},
+             openapi_extra={"x-celerp-agent": True})
+    async def read_menu(response: Response):
+        response.headers["ETag"] = state["rev"]
+        return {"hidden": []}
+
+    @app.patch("/menu", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/menu"})
+    async def write_menu(if_match: Annotated[str | None, Header(alias="If-Match")] = None):
+        if if_match != state["rev"]:
+            from ui.i18n import t
+            raise HTTPException(status_code=412 if if_match else 428,
+                                detail=t("settings_menu.err_changed" if if_match else "settings_menu.err_version_required"))
+        state["rev"] = "r2"
+        return {"ok": True}
+
+    @app.exception_handler(StarletteHTTPException)
+    async def answer_as_the_app_does(request, exc):
+        from celerp.error_body import error_response
+        return error_response(request, exc.status_code, exc.detail, headers=exc.headers)
+
+    for endpoint in (read_menu, write_menu):
+        endpoint.__module__ = "celerp.routers.agent_test"
+    caps = {c["method"]: c for c in ai_tools.compile_agent_capabilities(app, {}).values()}
+    assert caps["PATCH"]["tool"]["function"]["parameters"]["properties"]["headers"]["properties"].keys() == {"If-Match"}
+    read = await ai_tools.execute_agent_capability(app, "Bearer t", caps["GET"], {}, "call-r")
+    assert read["headers"] == {"ETag": "r1"}
+    wrote = await ai_tools.execute_agent_capability(
+        app, "Bearer t", caps["PATCH"], {"headers": {"If-Match": read["headers"]["ETag"]}}, "call-w")
+    assert wrote["ok"] is True
+    stale = await ai_tools.execute_agent_capability(
+        app, "Bearer t", caps["PATCH"], {"headers": {"If-Match": "r1"}}, "call-s")
+    assert stale["ok"] is False and stale["status"] == 412
+    smuggled = await ai_tools.execute_agent_capability(
+        app, "Bearer t", caps["PATCH"], {"headers": {"Authorization": "Bearer other"}}, "call-x")
+    assert smuggled["ok"] is False and smuggled["error"]["code"] == "invalid_arguments"
+
+
+async def test_a_change_the_screen_reviews_first_compiles_a_preview_read_whose_token_the_change_sends_back():
+    """A change confirmed with what its review returned (``x-celerp-agent-preview``)
+    gets a read that reviews it: same route and arguments, the flag forced on, no card.
+    The change forces the flag off, so the model can review, then confirm with the token,
+    and a change sent without a fresh review is refused by the route."""
+    app = FastAPI()
+    applied: list[str] = []
+
+    @app.post("/ops", openapi_extra={
+        "x-celerp-agent": True, "x-celerp-agent-check": "/ops", "x-celerp-agent-key": "op_key",
+        "x-celerp-agent-preview": {"flag": "preview", "token": "fingerprint"}})
+    async def operate(body: dict):
+        token = f"fp-{body.get('name')}"
+        if body.get("preview"):
+            return {"fingerprint": token}
+        if body.get("fingerprint") != token:
+            from ui.i18n import t
+            raise HTTPException(status_code=409, detail=t("settings_menu.err_changed"))
+        applied.append(body["op_key"])
+        return {"done": body["name"]}
+
+    @app.exception_handler(StarletteHTTPException)
+    async def answer_as_the_app_does(request, exc):
+        from celerp.error_body import error_response
+        return error_response(request, exc.status_code, exc.detail, headers=exc.headers)
+
+    operate.__module__ = "celerp.routers.agent_test"
+    caps = ai_tools.compile_agent_capabilities(app, {})
+    change = caps["operate_ops_post"]
+    review = caps["operate_ops_post_preview"]
+    assert change["requires_confirmation"] is True and review["requires_confirmation"] is False
+    assert review["card_screen"] is None and review["check_screen"] is None
+    assert "after_previous" not in review["tool"]["function"]["parameters"]["properties"]
+    assert "operate_ops_post_preview" in change["tool"]["function"]["description"]
+
+    asked = {"body": {"name": "a", "preview": False}}
+    seen = await ai_tools.execute_agent_capability(app, "Bearer t", review, asked, "call-review")
+    assert seen == {"ok": True, "status": 200, "data": {"fingerprint": "fp-a"}} and applied == []
+    confirmed = {"body": {"name": "a", "preview": True, "fingerprint": seen["data"]["fingerprint"]}}
+    done = await ai_tools.execute_agent_capability(app, "Bearer t", change, confirmed, "call-change")
+    assert done["data"] == {"done": "a"} and applied == [ai_tools.tool_call_key("call-change")]
+    # What the model sent stays as it sent it: the flag and the key go only into the request.
+    assert asked == {"body": {"name": "a", "preview": False}}
+    assert confirmed == {"body": {"name": "a", "preview": True, "fingerprint": "fp-a"}}
+    unreviewed = await ai_tools.execute_agent_capability(app, "Bearer t", change, {"body": {"name": "b"}}, "call-b")
+    assert unreviewed["ok"] is False and unreviewed["status"] == 409 and len(applied) == 1
+
+
+def test_a_preview_read_named_like_another_tool_does_not_compile():
+    app = FastAPI()
+
+    @app.post("/ops", openapi_extra={
+        "x-celerp-agent": True, "x-celerp-agent-check": "/ops", "x-celerp-agent-key": "op_key",
+        "x-celerp-agent-preview": {"flag": "preview", "token": "fingerprint"}})
+    async def operate(body: dict):
+        return {}
+
+    @app.get("/ops/look", operation_id="operate_ops_post_preview", openapi_extra={"x-celerp-agent": True})
+    async def look():
+        return {}
+
+    operate.__module__ = look.__module__ = "celerp.routers.agent_test"
+    with pytest.raises(ValueError, match="duplicate agent operationId: 'operate_ops_post_preview'"):
+        ai_tools.compile_agent_capabilities(app, {})
+
+
+@pytest.mark.parametrize("marker", [
+    {"flag": "preview"}, {"flag": "preview", "token": ""}, ["preview", "fingerprint"],
+    {"flag": "preview", "token": "fingerprint", "extra": "x"},
+])
+def test_a_preview_marker_without_a_flag_and_a_token_does_not_compile(marker):
+    app = FastAPI()
+
+    @app.post("/ops", openapi_extra={
+        "x-celerp-agent": True, "x-celerp-agent-check": "/ops", "x-celerp-agent-preview": marker})
+    async def operate(body: dict):
+        return {}
+
+    operate.__module__ = "celerp.routers.agent_test"
+    with pytest.raises(ValueError, match="x-celerp-agent-preview"):
+        ai_tools.compile_agent_capabilities(app, {})
+
+
+def test_a_preview_marker_on_a_change_that_is_not_confirmed_first_does_not_compile():
+    app = FastAPI()
+
+    @app.post("/ops", openapi_extra={
+        "x-celerp-agent": True, "x-celerp-agent-confirm": False,
+        "x-celerp-agent-preview": {"flag": "preview", "token": "fingerprint"}})
+    async def operate(body: dict):
+        return {}
+
+    operate.__module__ = "celerp.routers.agent_test"
+    with pytest.raises(ValueError, match="x-celerp-agent-preview"):
+        ai_tools.compile_agent_capabilities(app, {})
+
+
+def test_a_marker_or_schema_flag_that_is_present_but_false_or_empty_reads_as_absent():
+    """A blank check screen is no check, so a confirm-first change with one does not compile; an
+    optional query parameter (OpenAPI writes required: false) is not required; and an upload
+    route whose only body field is the file has no body for the model to fill."""
+    app = FastAPI()
+
+    @app.post("/blank-check", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": ""})
+    async def blank_check():
+        return {}
+
+    @app.get("/listed", openapi_extra={"x-celerp-agent": True})
+    async def listed(q: str | None = None):
+        return {}
+
+    @app.post("/upload", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/files"})
+    async def upload(file: UploadFile = File(...)):
+        return {}
+
+    for endpoint in (blank_check, listed, upload):
+        endpoint.__module__ = "celerp.routers.agent_test"
+    compiled = ai_tools.compile_agent_capabilities(app, {})
+    assert not any(name.startswith("blank_check") for name in compiled)
+    listed_cap = next(cap for name, cap in compiled.items() if name.startswith("listed"))
+    assert "required" not in listed_cap["tool"]["function"]["parameters"]["properties"]["query"]
+    upload_cap = next(cap for name, cap in compiled.items() if name.startswith("upload"))
+    assert upload_cap["uploads"] == ("file",) and upload_cap["expects_body"] is False
+
+
+def _marker_app(case: str) -> FastAPI:
+    app = FastAPI()
+    if case == "any_permission":
+        @app.get("/a", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-permission": ["view costs"]})
+        async def a():
+            return {}
+    elif case == "key_field":
+        @app.post("/a", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+                                       "x-celerp-agent-key": "request_key"})
+        async def a(body: _WriteBody):
+            return {}
+    elif case == "download":
+        @app.post("/a", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": True,
+                                       "x-celerp-agent-check": "/a"})
+        async def a(body: _WriteBody):
+            return {}
+    elif case == "no_body":
+        @app.post("/a", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+                                       "x-celerp-agent-key": "idempotency_key"})
+        async def a():
+            return {}
+    else:
+        @app.get("/a", openapi_extra={"x-celerp-agent": True, "operationId": ""})
+        async def a():
+            return {}
+    a.__module__ = "celerp.routers.agent_test"
+    return app
+
+
+@pytest.mark.parametrize("case, message", [
+    ("any_permission", "x-celerp-agent-any-permission must list permission keys"),
+    ("key_field", "agent marker names a field the body does not have: 'request_key'"),
+    ("download", "x-celerp-agent-download on a POST route: /a"),
+    ("no_body", "agent marker names a body field on a route with no body: /a"),
+    ("no_operation_id", "duplicate or missing agent operationId: ''"),
+])
+def test_a_route_whose_agent_markers_do_not_fit_it_stops_the_tool_list_from_compiling(case, message):
+    """A marker that names something the route does not have would give the assistant a tool
+    that cannot be called as described, so the whole list refuses to compile instead."""
+    with pytest.raises(ValueError, match=re.escape(message)):
+        ai_tools.compile_agent_capabilities(_marker_app(case), {})
+
+
+async def test_a_tool_with_two_upload_parts_refuses_a_call_with_one_file_and_sends_nothing():
+    app = FastAPI()
+    reached = []
+
+    @app.post("/pair", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/files"})
+    async def pair(first: UploadFile = File(...), second: UploadFile = File(...)):
+        reached.append(1)
+        return {}
+
+    pair.__module__ = "celerp.routers.agent_test"
+    cap = next(iter(ai_tools.compile_agent_capabilities(app, {}).values()))
+    assert cap["uploads"] == ("first", "second")
+
+    def loaded(file_id):
+        return b"a", {"filename": "a.csv", "content_type": "text/csv"}
+
+    got = await ai_tools.execute_agent_capability(app, "Bearer t", cap, {"file_ids": ["f1"]}, "c", load_file=loaded)
+    assert got["ok"] is False and got["error"]["code"] == "invalid_arguments"
+    assert "takes 2 files" in got["error"]["message"]
+    assert reached == []
+
+
+@pytest.mark.parametrize("section, value", [("path", {}), ("query", {}), ("headers", {}), ("body", {}),
+                                            ("file_ids", []), ("after_previous", True)])
+async def test_an_argument_section_the_tool_does_not_have_is_refused_even_when_empty(section, value):
+    """A read with no parameters, body or upload takes none of these sections, empty or not."""
+    app = FastAPI()
+    reached = []
+
+    @app.get("/plain", openapi_extra={"x-celerp-agent": True})
+    async def plain():
+        reached.append(1)
+        return {}
+
+    plain.__module__ = "celerp.routers.agent_test"
+    cap = next(iter(ai_tools.compile_agent_capabilities(app, {}).values()))
+    got = await ai_tools.execute_agent_capability(app, "Bearer user-token", cap, {section: value}, "call-1")
+    assert got["error"]["code"] == "invalid_arguments", got
+    assert reached == []
+
+
 async def test_executor_rejects_request_infrastructure_and_path_escape():
     app = _app()
     cap = next(
@@ -288,6 +503,35 @@ async def test_executor_rejects_request_infrastructure_and_path_escape():
     )
     assert bad_path["error"]["code"] == "invalid_path_parameter"
 
+    for dot in (".", ".."):
+        rerouted = await ai_tools.execute_agent_capability(
+            app, "Bearer user-token", cap, {"path": {"item_id": dot}}, "call-dot",
+        )
+        assert rerouted["error"]["code"] == "invalid_path_parameter"
+
+
+@pytest.mark.parametrize("value", [".", "..", "%2e%2e", "%2E.", "", ". .", "x"])
+def test_no_path_value_sends_a_tool_to_another_route(value):
+    """The request a confirmed card runs reaches the route the card names: every filled
+    path of every tool survives the HTTP client's dot-segment normalisation unchanged."""
+    import httpx
+
+    caps = ai_tools.compile_agent_capabilities(real_agent_app(), {})
+    rerouted = []
+    for name, cap in sorted(caps.items()):
+        names = tuple(cap.get("path_names") or ())
+        for target in names:
+            values = {n: (value if n == target else "id1") for n in names}
+            filled = ai_tools.filled_path(str(cap["path"]), names, values)
+            if isinstance(filled, dict):
+                assert filled["error"]["code"] == "invalid_path_parameter"
+                continue
+            sent = httpx.Request(cap["method"], "http://testserver" + filled).url.raw_path.decode()
+            if sent != filled:
+                rerouted.append(f"{name} [{target}={value!r}] {filled} -> {sent}")
+    assert any(cap.get("path_names") for cap in caps.values())
+    assert rerouted == []
+
 
 async def test_executor_bounds_json_result():
     app = FastAPI()
@@ -307,41 +551,28 @@ async def test_executor_bounds_json_result():
     assert result["error"]["code"] == "result_too_large"
 
 
-def test_real_app_agent_allowlist_is_exact():
-    """Compiling the real app with every first-party module enabled yields
-    exactly the approved agent allowlist and nothing else."""
-    assert _real_agent_route_set() == _EXPECTED_AGENT_ROUTES
+async def test_executor_measures_a_result_past_ascii_as_utf8():
+    """A Thai result is measured as it is kept, each character once in UTF-8: its escaped form
+    is twice as long and would refuse a result that fits."""
+    app = FastAPI()
+
+    @app.get("/thai", openapi_extra={"x-celerp-agent": True})
+    async def thai():
+        return {"value": "ก" * 20}
+
+    route = next(r for r in app.routes if getattr(getattr(r, "endpoint", None), "__name__", "") == "thai")
+    route.endpoint.__module__ = "celerp.routers.agent_test"
+    app.openapi_schema = None
+    cap = next(iter(ai_tools.compile_agent_capabilities(app, {}).values()))
+
+    result = await ai_tools.execute_agent_capability(
+        app, "Bearer user-token", cap, {}, "call-thai", result_max_bytes=100
+    )
+    assert "error" not in result and result["data"] == {"value": "ก" * 20}, result
 
 
-def test_bulk_delete_and_lifecycle_never_compile():
-    """Destructive and lifecycle operations are never agent-callable. Bulk
-    deletes, single-entity deletes, document lifecycle transitions, and the raw
-    envelope import batch stay off the allowlist even though they sit on the same
-    routers as marked reads and writes. The only agent-callable import
-    transports are the guided preview and commit, which validate every row and
-    echo a preview hash before any write."""
-    routes = _real_agent_route_set()
-
-    # Specific dangerous operations that must never appear.
-    for forbidden in (
-        ("POST", "/items/bulk/delete"),
-        ("POST", "/items/import/batch"),
-        ("POST", "/items/import/rows"),
-        ("GET", "/items/import/batches"),
-        ("POST", "/docs/{entity_id}/void"),
-        ("POST", "/docs/{entity_id}/finalize"),
-        ("POST", "/docs/{entity_id}/send"),
-    ):
-        assert forbidden not in routes, forbidden
-
-    # No DELETE is ever compiled, and no bulk operation leaks in. The guided
-    # import preview/commit are the only import transports on the allowlist.
-    allowed_import = {("POST", "/items/import/preview"), ("POST", "/items/import/commit")}
-    for method, path in routes:
-        assert method != "DELETE", (method, path)
-        assert "/bulk/" not in path, path
-        if "/import/" in path:
-            assert (method, path) in allowed_import, (method, path)
+def test_a_tool_call_key_tells_apart_identities_that_differ_past_ascii():
+    assert ai_tools.tool_call_key("message:call-ก") != ai_tools.tool_call_key("message:call-ข")
 
 
 # ---------------------------------------------------------------------------
@@ -365,15 +596,40 @@ def _namespace(fn, tree) -> dict:
             name = node.module or ""
             if node.level:
                 name = importlib.util.resolve_name("." * node.level + name, fn.__module__.rpartition(".")[0])
-            module = sys.modules.get(name)
+            module = _imported(name)
             for alias in node.names:
+                # `is None`, not truthiness: an imported name may be an SQL column, which refuses bool().
+                found = getattr(module, alias.name, None)
                 namespace[alias.asname or alias.name] = (
-                    getattr(module, alias.name, None) or sys.modules.get(f"{name}.{alias.name}"))
+                    found if found is not None else _imported(f"{name}.{alias.name}"))
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 name = alias.name if alias.asname else alias.name.split(".")[0]
-                namespace[alias.asname or name] = sys.modules.get(name)
+                namespace[alias.asname or name] = _imported(name)
     return namespace
+
+
+def _imported(name: str):
+    """The module an in-body import names, imported now: what it resolves to must not
+    depend on whether an earlier test happened to import it first."""
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
+
+
+@functools.cache
+def _calls(fn) -> tuple[tuple[ast.Call, object], ...]:
+    """Each call in ``fn``'s source with what it resolves to, read once per function:
+    the walk below meets the same functions under every capability. A coroutine handed
+    to ``asyncio.create_task`` runs after the response is sent, so what it consults is
+    not part of the result and its calls are left out."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    namespace = _namespace(fn, tree)
+    calls = [(node, _resolve(node.func, namespace)) for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    later = {id(inner) for node, target in calls if target is asyncio.create_task
+             for arg in node.args for inner in ast.walk(arg)}
+    return tuple((node, target) for node, target in calls if id(node) not in later)
 
 
 def _consulted(fn, seen: set | None = None, granted: bool = False) -> tuple[set[str], bool, set[str]]:
@@ -394,9 +650,7 @@ def _consulted(fn, seen: set | None = None, granted: bool = False) -> tuple[set[
             or (fn is journal_accounts._authorize_movement and not granted)):
         return set(), False, set()
     seen.add((fn, granted))
-    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
-    namespace = _namespace(fn, tree)
-    calls = [(node, _resolve(node.func, namespace)) for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    calls = _calls(fn)
     granted = granted or any(
         inspect.unwrap(target) is inspect.unwrap(journal_accounts.fund_movement_grant)
         for _, target in calls if target is not None)
@@ -454,6 +708,79 @@ def test_every_permission_a_capabilitys_result_depends_on_is_declared():
     assert _undeclared(real_agent_app()) == []
 
 
+def _undescribed(app) -> list[str]:
+    """Agent tools without a real summary of their own. The description is the route's
+    `summary=` only (a docstring carries internal notes and costs context on every turn):
+    one sentence ending in a full stop, at least four words, no braces or backticks,
+    under 300 characters, and never the title FastAPI makes from the function name."""
+    endpoints = {(path, method): route for path, methods, route in ai_tools._api_routes(app) for method in methods}
+    found = []
+    capabilities = ai_tools.compile_agent_capabilities(app, {})
+    for name, capability in sorted(capabilities.items()):
+        route = endpoints[(capability["path"], capability["method"])]
+        summary = (route.summary or "").strip()
+        generated = route.name.replace("_", " ").title()
+        # A change reviewed first says which read reviews it; that read is the compiler's own.
+        told = summary
+        if capability["preview"]:
+            told += ai_tools._preview_note(name, capability["preview"]["token"])
+        if capability["preview_flag"]:
+            told = ai_tools._preview_tool(capabilities[name.removesuffix("_preview")])["tool"]["function"]["description"]
+        real = (
+            summary
+            and told == capability["tool"]["function"]["description"]
+            and summary.endswith(".")
+            and summary.count(". ") == 0
+            and len(summary.split()) >= 4
+            and len(summary) < 300
+            and not set("{}`") & set(summary)
+            and summary not in (name, generated)
+        )
+        if not real:
+            found.append(name)
+    return found
+
+
+def test_every_agent_tool_says_what_it_does():
+    """The AI reads a tool's description to pick it, so every tool the live surface
+    compiles carries one sentence written for the user's task, never the operation id."""
+    assert _undescribed(real_agent_app()) == []
+
+
+def test_the_description_guard_finds_an_undocumented_tool():
+    app = FastAPI()
+
+    @app.get("/plain", operation_id="plain", openapi_extra={"x-celerp-agent": True})
+    async def plain():
+        return {"ok": True}
+
+    @app.get("/told", operation_id="told", openapi_extra={"x-celerp-agent": True})
+    async def told():
+        """List what was told."""
+        return {"ok": True}
+
+    @app.get("/terse", operation_id="terse", summary="List.", openapi_extra={"x-celerp-agent": True})
+    async def terse():
+        return {"ok": True}
+
+    @app.get("/coded", operation_id="coded", summary="List the `told` rows for one {id}.",
+             openapi_extra={"x-celerp-agent": True})
+    async def coded():
+        return {"ok": True}
+
+    @app.get("/said", operation_id="said", summary="List what each contact said last.",
+             openapi_extra={"x-celerp-agent": True})
+    async def said():
+        return {"ok": True}
+
+    names = ("plain", "told", "terse", "coded", "said")
+    for route in app.routes:
+        if getattr(getattr(route, "endpoint", None), "__name__", "") in names:
+            route.endpoint.__module__ = "celerp.routers.agent_test"
+    app.openapi_schema = None
+    assert _undescribed(app) == ["coded", "plain", "terse", "told"]
+
+
 def _costs_helper(settings, role):
     return permissions.role_has_permission(settings, role, "view_inventory_costs")
 
@@ -493,7 +820,16 @@ def test_the_declaration_guard_finds_a_check_in_a_handler_or_a_helper_it_calls()
         from celerp_accounting.funds import post_fund_movement
         return await post_fund_movement(None, None, ts=None, reason="", actor=None)
 
-    for fn in (_costs_helper, _visibility_helper, direct, helper, by_data, declared, emits, moves):
+    async def _checks_later():
+        return _costs_helper({}, "owner")
+
+    @app.get("/starts", operation_id="starts", openapi_extra={"x-celerp-agent": True})
+    async def starts():
+        asyncio.create_task(_checks_later())
+        return {"ok": _costs_helper({}, "owner")}
+
+    for fn in (_costs_helper, _visibility_helper, direct, helper, by_data, declared, emits, moves, starts,
+               _checks_later):
         fn.__module__ = "celerp.routers.agent_test"
     app.openapi_schema = None
     found = "\n".join(_undeclared(app))
@@ -505,6 +841,8 @@ def test_the_declaration_guard_finds_a_check_in_a_handler_or_a_helper_it_calls()
     assert "helper: field visibility applied True, declared False" in found
     assert "by_data: declared [], consults [], by data" in found
     assert "declared:" not in found
+    # A task the handler starts runs after the response; the handler's own check still counts.
+    assert "starts: declared [], consults ['view_inventory_costs'], by data []" in found
 
 
 def test_a_declared_result_permission_must_be_a_permission_key():
@@ -518,3 +856,596 @@ def test_a_declared_result_permission_must_be_a_permission_key():
     app.openapi_schema = None
     with pytest.raises(ValueError, match="permission keys"):
         ai_tools.compile_agent_capabilities(app, {})
+
+
+# ---------------------------------------------------------------------------
+# Every route is a tool or excluded with a reason; tool schemas and retry markers
+# ---------------------------------------------------------------------------
+
+_KEY_FIELD = re.compile(r"idempot|request_key|_token$")
+_SECRET_FIELD = re.compile(
+    r"^(password|new_password|current_password|passcode|otp|secret|client_secret|api_key|private_key"
+    r"|credentials?|refresh_token|access_token|token|claim_token|service_key)$"
+)
+# Short-lived ids the server issued to the same user in the same company; not secrets.
+_SERVER_HANDLES = {"scan_token", "draft_token", "upload_token", "share_token"}
+# The share token inside a link the user pastes; it opens only that one shared document.
+_HANDLE_ROUTES = {("POST", "/docs/import-link"): {"token"}}
+_CHANGE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _nested_api_routes(routes) -> list[APIRoute]:
+    found = []
+    for route in routes:
+        if isinstance(route, APIRoute):
+            found.append(route)
+        router = getattr(route, "original_router", route)
+        found.extend(_nested_api_routes(getattr(router, "routes", None) or ()))
+    return found
+
+
+def _schema_fields(schema) -> list[str]:
+    """Every property name in a JSON schema, nested objects and list items included."""
+    if not isinstance(schema, dict):
+        return []
+    found = []
+    for name, sub in (schema.get("properties") or {}).items():
+        found.append(name)
+        found.extend(_schema_fields(sub))
+    for key in ("items", "additionalProperties"):
+        found.extend(_schema_fields(schema.get(key)))
+    for key in ("anyOf", "oneOf", "allOf"):
+        for sub in schema.get(key) or ():
+            found.extend(_schema_fields(sub))
+    return found
+
+
+def _route_index(app) -> dict[tuple[str, str], APIRoute]:
+    return {(method, path): route for path, methods, route in ai_tools._api_routes(app) for method in methods}
+
+
+def test_unknown_exclusion_reason_is_refused():
+    assert agent_markers.agent_excluded("session") == {"x-celerp-agent-excluded": "session"}
+    assert set(agent_markers.AGENT_EXCLUSIONS) == {
+        "session", "internal", "public", "machine", "secret", "claim_step", "company", "switch",
+        "no_company", "installation", "assistant",
+    }
+    assert all(reason.strip().endswith(".") for reason in agent_markers.AGENT_EXCLUSIONS.values())
+    with pytest.raises(ValueError):
+        agent_markers.agent_excluded("convenience")
+
+
+def test_every_route_is_a_tool_or_excluded():
+    """Every action a user can take is an assistant tool. A route stays off only when its
+    own marker names why, with a reason from AGENT_EXCLUSIONS; a new route fails here
+    until it is classified. Hidden routes are walked too."""
+    app = real_agent_app()
+    walked = ai_tools._api_routes(app)
+    assert {route.unique_id for _, _, route in walked} == {route.unique_id for route in _nested_api_routes(app.routes)}
+    compiled = {(cap["method"], cap["path"]) for cap in ai_tools.compile_agent_capabilities(app, {}).values()}
+    problems = []
+    for path, methods, route in walked:
+        extra = route.openapi_extra or {}
+        reason = extra.get("x-celerp-agent-excluded")
+        for method in sorted(methods):
+            tool = (method, path) in compiled
+            if reason is not None and reason not in agent_markers.AGENT_EXCLUSIONS:
+                problems.append(f"{method} {path}: unknown exclusion reason {reason!r}")
+            elif tool and reason is not None:
+                problems.append(f"{method} {path}: both a tool and excluded")
+            elif not tool and reason is None:
+                marked = extra.get("x-celerp-agent") is True
+                problems.append(f"{method} {path}: {'marked but does not compile' if marked else 'neither a tool nor excluded'}")
+    assert problems == []
+
+
+def test_every_write_tool_is_classified():
+    """A confirm-first change declares exactly one retry marker: idempotent (its key
+    reaches a lookup, so a retry answers the first result) or a check screen (the
+    signed-in screen the card links when the outcome is unknown)."""
+    from celerp.help import checks
+    from celerp.help.search import covers
+
+    app = real_agent_app()
+    routes = _route_index(app)
+    screens = checks.ui_route_paths()
+    problems = []
+    for name, cap in sorted(ai_tools.compile_agent_capabilities(app, {}).items()):
+        if not cap["requires_confirmation"]:
+            continue
+        route = routes[(cap["method"], cap["path"])]
+        extra = route.openapi_extra or {}
+        idempotent = extra.get("x-celerp-agent-idempotent") is True
+        check = extra.get("x-celerp-agent-check")
+        if idempotent == bool(check):
+            problems.append(f"{name}: needs exactly one of idempotent or check")
+            continue
+        if cap["keyed"] is not idempotent:
+            problems.append(f"{name}: keyed is {cap['keyed']}")
+        if idempotent and not ai_tools.key_store(route):
+            problems.append(f"{name}: idempotent, but no lookup reads its key")
+        if idempotent and extra.get("x-celerp-agent-outside") and (cap["method"], cap["path"]) not in ai_tools.KEYED_BEFORE_OUTSIDE:
+            problems.append(f"{name}: keyed with an outside step but no ordering entry")
+        if check and not covers(screens, re.sub(r"\{[^}]+\}", "sample", check)):
+            problems.append(f"{name}: check screen {check!r} is not a signed-in screen")
+    assert problems == []
+
+
+def test_no_tool_shows_a_key_field():
+    """Keys are supplied by the system and bound to the card's tool call; the model never
+    sees or writes one, so a retry of one card reuses its key."""
+    shown = []
+    for name, cap in sorted(ai_tools.compile_agent_capabilities(real_agent_app(), {}).items()):
+        for field in _schema_fields(cap["tool"]["function"]["parameters"]):
+            if _KEY_FIELD.search(field) and field not in _SERVER_HANDLES:
+                shown.append(f"{name}: {field}")
+    assert shown == []
+
+
+def test_no_tool_takes_a_secret():
+    """A secret typed into the chat would reach the AI provider and stay in the log. The
+    one secret the system fills is removed at compile; every other such route stays off."""
+    taken = []
+    for name, cap in sorted(ai_tools.compile_agent_capabilities(real_agent_app(), {}).items()):
+        allowed = _SERVER_HANDLES | _HANDLE_ROUTES.get((cap["method"], cap["path"]), set())
+        for field in _schema_fields(cap["tool"]["function"]["parameters"]):
+            if _SECRET_FIELD.match(field) and field not in allowed:
+                taken.append(f"{name}: {field}")
+    assert taken == []
+
+
+def _binary(prop) -> bool:
+    if not isinstance(prop, dict):
+        return False
+    if prop.get("format") == "binary" or prop.get("contentMediaType") == "application/octet-stream":
+        return True
+    return _binary(prop.get("items")) or any(_binary(sub) for sub in prop.get("anyOf") or ())
+
+
+def test_user_facing_fields_stay_visible_to_the_model():
+    """The model fills every value the user would fill on the screen. Compile removes only
+    the closed set: the key field, upload parts and the generated secret; it adds only
+    `after_previous` on a change and `file_ids` on an upload."""
+    app = real_agent_app()
+    openapi = app.openapi()
+    schemas = (openapi.get("components") or {}).get("schemas") or {}
+    routes = _route_index(app)
+    problems = []
+    for name, cap in sorted(ai_tools.compile_agent_capabilities(app, {}).items()):
+        extra = routes[(cap["method"], cap["path"])].openapi_extra or {}
+        operation = openapi["paths"][cap["path"]][cap["method"].lower()]
+        content = (operation.get("requestBody") or {}).get("content") or {}
+        raw = next(iter(content.values()), {}).get("schema") if content else None
+        body = ai_tools._optional_body(ai_tools._inline_local_refs(raw or {}, schemas))
+        props = body.get("properties") or {}
+        uploads = {field for field, prop in props.items() if _binary(prop)}
+        key = extra.get("x-celerp-agent-key") or ""
+        removed = uploads | {extra.get("x-celerp-agent-generated-secret")} | ({key} if "[]" not in key else set())
+        params = cap["tool"]["function"]["parameters"]
+        top = params["properties"]
+        expected_top = {"path", "query", "headers", "body"} | ({"after_previous"} if cap["requires_confirmation"] else set())
+        if uploads:
+            expected_top.add("file_ids")
+            if "file_ids" not in params.get("required", ()):
+                problems.append(f"{name}: file_ids is not required")
+        if not set(top) <= expected_top or cap["requires_confirmation"] != ("after_previous" in top):
+            problems.append(f"{name}: top-level arguments {sorted(top)}")
+        shown = top.get("body") or {}
+        if set(shown.get("properties") or {}) != set(props) - removed:
+            problems.append(f"{name}: body fields {sorted(set(shown.get('properties') or {}) ^ (set(props) - removed))} differ")
+        if not (set(body.get("required") or ()) - removed) <= set(shown.get("required") or ()):
+            problems.append(f"{name}: a required field became optional")
+    assert problems == []
+
+
+# Changes that may run without a card because they only read: each answers a check of the
+# rows it is given and writes nothing. Anything else that is not a GET waits for the user.
+_READS_WITHOUT_CARD = {
+    ("POST", "/items/import/preview"): "maps an import file's columns and reports row errors; saves nothing",
+    ("POST", "/items/import/rows/preview"): "classifies mapped import rows as new, update or error; saves nothing",
+    ("POST", "/items/merge/preview"): "shows what a merge of the named items would produce; merges nothing",
+    ("POST", "/accounting/accounts/import/preview"): "checks chart of accounts rows; saves nothing",
+    ("POST", "/accounting/reconciliation/statement-preview/{job_id}"): "re-checks a reading job's statements with edits; imports nothing",
+}
+
+
+def _unconfirmed_changes(app) -> list[str]:
+    routes = _route_index(app)
+    unconfirmed = []
+    for name, cap in sorted(ai_tools.compile_agent_capabilities(app, {}).items()):
+        if cap["method"] in _CHANGE_METHODS and not cap["requires_confirmation"]:
+            extra = routes[(cap["method"], cap["path"])].openapi_extra or {}
+            if cap["preview_flag"] and cap["preview_flag"] == (extra.get("x-celerp-agent-preview") or {}).get("flag"):
+                continue  # the review of a change: execute always sends the route's preview flag
+            if (cap["method"], cap["path"]) not in _READS_WITHOUT_CARD:
+                unconfirmed.append(f"{cap['method']} {cap['path']}")
+    return unconfirmed
+
+
+def test_every_change_tool_is_confirm_first():
+    """Every change the assistant makes waits for the user's confirmation. Only a preview
+    that writes nothing opts out: on its own route listed with the reason it only reads,
+    or as the review read of a change whose route takes a preview flag."""
+    app = real_agent_app()
+    assert _unconfirmed_changes(app) == []
+    routes = _route_index(app)
+    assert [key for key in _READS_WITHOUT_CARD
+            if (key not in routes or (routes[key].openapi_extra or {}).get("x-celerp-agent-confirm") is not False)] == []
+
+
+def test_the_confirm_guard_finds_a_writing_route_marked_no_confirm():
+    app = FastAPI()
+
+    @app.post("/things/{thing_id}/sync", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False})
+    async def sync_thing(thing_id: str) -> dict:
+        return {"ok": True}
+
+    sync_thing.__module__ = "celerp.routers.agent_test"
+    assert _unconfirmed_changes(app) == ["POST /things/{thing_id}/sync"]
+
+
+def test_owner_only_tool_is_hidden_from_a_member():
+    """A route gated outside require_permission (installation owner, company owner) is
+    dropped at compile for a caller who fails the gate, so their model never sees it."""
+    app = real_agent_app()
+
+    def paths(role, gates):
+        compiled = ai_tools.compile_agent_capabilities(app, {}, role=role, caller_gates=gates)
+        return {(cap["method"], cap["path"]) for cap in compiled.values()}
+
+    install_owner_route = ("POST", "/settings/cloud-disconnect")
+    owner_route = ("GET", "/migrations/export-requests")
+    member = paths("operator", frozenset())
+    owner = paths("owner", frozenset({"owner", "install_owner"}))
+    assert install_owner_route not in member and owner_route not in member
+    assert install_owner_route in owner and owner_route in owner
+
+
+# ---------------------------------------------------------------------------
+# Compiler shapes: key marker, DELETE, form, empty success, download, generated secret
+# ---------------------------------------------------------------------------
+
+class _FundBody(BaseModel):
+    name: str
+    request_key: str
+
+
+class _Row(BaseModel):
+    sku: str
+    idempotency_key: str | None = None
+
+
+class _Rows(BaseModel):
+    records: list[_Row]
+
+
+class _NewUser(BaseModel):
+    email: str
+    password: str
+
+
+def _shape_app() -> FastAPI:
+    app = FastAPI()
+    seen: list = []
+    app.state.seen = seen
+    keyed = {"x-celerp-agent": True, "x-celerp-agent-idempotent": True}
+    check = {"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}
+
+    @app.post("/funds", summary="Create a fund for restricted gifts.",
+              openapi_extra={**keyed, "x-celerp-agent-key": "request_key"})
+    async def create_fund(body: _FundBody):
+        return body.model_dump()
+
+    @app.post("/rows", summary="Import several stock rows at once.",
+              openapi_extra={**keyed, "x-celerp-agent-key": "records[].idempotency_key"})
+    async def import_rows(body: _Rows):
+        return body.model_dump()
+
+    @app.delete("/things/{item_id}", summary="Delete one thing from the list.", openapi_extra=check)
+    async def remove_thing(item_id: str):
+        return {"deleted": item_id}
+
+    @app.post("/form", summary="Rename a thing from a form post.", openapi_extra=check)
+    async def form_post(name: str = Form(...)):
+        return {"name": name}
+
+    @app.post("/ping", summary="Mark the thing as checked today.", status_code=204,
+              response_class=Response, openapi_extra=check)
+    async def ping():
+        seen.append("ping")
+        return Response(status_code=204)
+
+    @app.get("/export.csv", summary="Download every thing as a CSV file.", response_class=PlainTextResponse,
+             openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/things/export.csv"})
+    async def export_things():
+        seen.append("export")
+        return "a,b"
+
+    @app.post("/users", summary="Add a member to the company by email.",
+              openapi_extra={**check, "x-celerp-agent-generated-secret": "password"})
+    async def add_user(body: _NewUser):
+        return {"email": body.email, "password_length": len(body.password)}
+
+    @app.post("/both", summary="Change a thing with two retry markers.",
+              openapi_extra={**keyed, "x-celerp-agent-check": "/settings/inventory"})
+    async def both_markers():
+        return {"ok": True}
+
+    @app.post("/neither", summary="Change a thing with no retry marker.", openapi_extra={"x-celerp-agent": True})
+    async def no_marker():
+        return {"ok": True}
+
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            route.endpoint.__module__ = "celerp.routers.agent_test"
+    app.openapi_schema = None
+    return app
+
+
+def _shape(compiled, endpoint_name):
+    return next(cap for name, cap in compiled.items() if name.startswith(endpoint_name + "_"))
+
+
+def _digest(call_id: str) -> str:
+    return hashlib.sha256(call_id.encode("utf-8")).hexdigest()[:32]
+
+
+async def test_key_marker_injects_into_the_named_field():
+    app = _shape_app()
+    compiled = ai_tools.compile_agent_capabilities(app, {})
+    fund, rows = _shape(compiled, "create_fund"), _shape(compiled, "import_rows")
+    fund_body = fund["tool"]["function"]["parameters"]["properties"]["body"]
+    assert "request_key" not in fund_body["properties"]
+    assert "request_key" not in fund_body.get("required", [])
+    rows_items = rows["tool"]["function"]["parameters"]["properties"]["body"]["properties"]["records"]["items"]
+    assert "idempotency_key" not in _schema_fields(rows_items)
+
+    got = await ai_tools.execute_agent_capability(app, "Bearer t", fund, {"body": {"name": "Roof"}}, "call-7")
+    assert got["data"]["request_key"] == f"agent:{_digest('call-7')}"
+    got = await ai_tools.execute_agent_capability(
+        app, "Bearer t", rows, {"body": {"records": [{"sku": "a"}, {"sku": "b"}]}}, "call-8"
+    )
+    assert [row["idempotency_key"] for row in got["data"]["records"]] == [
+        f"agent:{_digest('call-8')}:0", f"agent:{_digest('call-8')}:1",
+    ]
+
+
+def test_a_change_compiles_only_with_exactly_one_retry_marker():
+    compiled = ai_tools.compile_agent_capabilities(_shape_app(), {})
+    assert not any(name.startswith(("both_markers_", "no_marker_")) for name in compiled)
+    assert _shape(compiled, "remove_thing")["keyed"] is False
+    assert _shape(compiled, "create_fund")["keyed"] is True
+
+
+async def test_form_and_empty_response_mutations_compile():
+    app = _shape_app()
+    compiled = ai_tools.compile_agent_capabilities(app, {})
+    remove, form, ping = (_shape(compiled, n) for n in ("remove_thing", "form_post", "ping"))
+    assert remove["method"] == "DELETE" and remove["requires_confirmation"] is True
+    assert form["requires_confirmation"] is True and ping["requires_confirmation"] is True
+    assert set(form["tool"]["function"]["parameters"]["properties"]["body"]["properties"]) == {"name"}
+
+    got = await ai_tools.execute_agent_capability(app, "Bearer t", form, {"body": {"name": "Blue"}}, "call-f")
+    assert got == {"ok": True, "status": 200, "data": {"name": "Blue"}}
+    got = await ai_tools.execute_agent_capability(app, "Bearer t", ping, {}, "call-p")
+    assert got == {"ok": True, "status": 204} and app.state.seen == ["ping"]
+
+
+async def test_download_tool_answers_a_link_never_bytes():
+    app = _shape_app()
+    export = _shape(ai_tools.compile_agent_capabilities(app, {}), "export_things")
+    assert export["requires_confirmation"] is False
+    got = await ai_tools.execute_agent_capability(app, "Bearer t", export, {}, "call-d")
+    assert got == {"ok": True, "status": 200, "data": {"download": "/things/export.csv"}}
+    assert app.state.seen == []
+
+
+async def test_generated_secret_is_filled_by_the_server_and_hidden_from_the_model():
+    app = _shape_app()
+    add_user = _shape(ai_tools.compile_agent_capabilities(app, {}), "add_user")
+    body = add_user["tool"]["function"]["parameters"]["properties"]["body"]
+    assert "password" not in body["properties"] and "password" not in body.get("required", [])
+    got = await ai_tools.execute_agent_capability(
+        app, "Bearer t", add_user, {"body": {"email": "new@example.com"}}, "call-u"
+    )
+    assert got["ok"] is True and got["data"]["password_length"] >= 16
+
+
+# ---------------------------------------------------------------------------
+# Gates the compiler can see, the way back, downloads, newly opened areas
+# ---------------------------------------------------------------------------
+
+_GATE_MARKERS = ("x-celerp-agent-any-permission", "x-celerp-agent-any-role")
+
+
+def test_every_tool_gate_is_visible_to_compile():
+    """A role check the compiler cannot see would show a tool to a role the route then
+    refuses. Every tool carries require_permission, an agent_gate dependency, or a marker
+    that says any permission or any role is enough; a route whose body refuses a role
+    (a 403 or a permission call) needs one of the first three and never any-role."""
+    app = real_agent_app()
+    routes = _route_index(app)
+    problems = []
+    for name, cap in sorted(ai_tools.compile_agent_capabilities(app, {}).items()):
+        route = routes[(cap["method"], cap["path"])]
+        extra = route.openapi_extra or {}
+        fixed = bool(ai_tools._route_permissions(route)) or bool(ai_tools.route_gates(route))
+        refusing = ai_tools.refusing_checks(route)
+        if not (fixed or any(extra.get(m) for m in _GATE_MARKERS)):
+            problems.append(f"{name}: no gate the compiler can see")
+        if refusing and extra.get("x-celerp-agent-any-role"):
+            problems.append(f"{name}: any-role, but its body refuses: {refusing[0]}")
+        if refusing and not (fixed or extra.get("x-celerp-agent-any-permission")):
+            problems.append(f"{name}: its body refuses with no gate the compiler can see: {refusing[0]}")
+    assert problems == []
+
+
+def test_the_gate_scan_finds_a_refusal_in_a_helper_the_handler_calls():
+    """The scan behind the gate guard reads the handler and the helpers it calls."""
+    from fastapi import HTTPException
+
+    def _deny(role: str) -> None:
+        if role != "owner":
+            raise HTTPException(status_code=403, detail="no")
+
+    app = FastAPI()
+
+    @app.post("/guarded", openapi_extra={"x-celerp-agent": True})
+    def guarded(role: str = Query("x")) -> dict:
+        _deny(role)
+        return {}
+
+    route = _route_index(app)[("POST", "/guarded")]
+    assert ai_tools.refusing_checks(route) != []
+
+
+# A helper whose source alone does not parse: a lambda written on a continuation line.
+_PAIR = ("first",
+         lambda: None)
+_unreadable = _PAIR[1]
+
+
+def test_the_gate_scan_passes_over_a_helper_whose_source_does_not_parse():
+    """A helper the scan cannot read is passed over; the handler's own refusal is still found."""
+    from fastapi import HTTPException
+
+    app = FastAPI()
+
+    @app.post("/guarded", openapi_extra={"x-celerp-agent": True})
+    def guarded(role: str = Query("x")) -> dict:
+        _unreadable()
+        if role != "owner":
+            raise HTTPException(status_code=403, detail="no")
+        return {}
+
+    route = _route_index(app)[("POST", "/guarded")]
+    assert [c.split(": ", 1)[1] for c in ai_tools.refusing_checks(route)] == [
+        'if role != "owner":', 'raise HTTPException(status_code=403, detail="no")']
+
+
+def test_price_tool_hidden_without_price_permission():
+    """The price tool is shown to a role that may set prices, and to a role that may edit
+    items (a draft's creator authors its cost); a role with neither never sees it."""
+    app = real_agent_app()
+    route = ("POST", "/items/{entity_id}/price")
+
+    def paths(role):
+        return {(c["method"], c["path"]) for c in ai_tools.compile_agent_capabilities(app, {}, role=role).values()}
+
+    assert route not in paths("viewer")
+    assert route in paths("operator")
+    assert route in paths("manager")
+
+
+def test_staff_password_tools_owner_only():
+    """Whether a member's password may be reset is the owner's question: the check is a
+    tool for the owner only, and the reset itself, which takes a password, stays off."""
+    app = real_agent_app()
+    check = ("GET", "/companies/me/users/{user_id}/password")
+    reset = ("POST", "/companies/me/users/{user_id}/password")
+
+    def paths(role, gates):
+        compiled = ai_tools.compile_agent_capabilities(app, {}, role=role, caller_gates=gates)
+        return {(c["method"], c["path"]) for c in compiled.values()}
+
+    assert check in paths("owner", frozenset({"owner"}))
+    assert check not in paths("admin", frozenset())
+    assert reset not in paths("owner", frozenset({"owner"}))
+    extra = _route_index(app)[reset].openapi_extra or {}
+    assert extra.get("x-celerp-agent-excluded") == "secret"
+
+
+def test_every_write_tool_has_a_way_back():
+    """Everything the assistant changes can be undone. Every write tool names its way
+    back: a reverse that is itself a tool, a screen the card links to, or a reason a
+    user would accept. A reason that only points at the screen is not a reason."""
+    from celerp.ai import reverse
+    from celerp.help import checks
+    from celerp.help.search import covers
+
+    app = real_agent_app()
+    compiled = ai_tools.compile_agent_capabilities(app, {})
+    tools = {(c["method"], c["path"]) for c in compiled.values()}
+    screens = checks.ui_route_paths()
+    problems = []
+    for name, cap in sorted(compiled.items()):
+        if not cap["requires_confirmation"]:
+            continue
+        back = reverse.WAY_BACK.get((cap["method"], cap["path"]))
+        kind, _, target = (back or "").partition(":")
+        if back is None:
+            problems.append(f"{name}: no way back")
+        elif kind == "tool" and tuple(target.split(" ", 1)) not in tools:
+            problems.append(f"{name}: reverse {target!r} is not a tool")
+        elif kind == "screen" and not covers(screens, re.sub(r"\{[^}]+\}", "sample", target)):
+            problems.append(f"{name}: screen {target!r} is not a signed-in screen")
+        elif kind == "reason" and target not in reverse.REASONS:
+            problems.append(f"{name}: unknown reason {target!r}")
+        elif kind not in {"tool", "screen", "reason"}:
+            problems.append(f"{name}: unreadable way back {back!r}")
+    for key, text in reverse.REASONS.items():
+        if reverse.SCREEN_ONLY.search(text):
+            problems.append(f"reason {key}: only points at the screen")
+    assert problems == []
+    assert reverse.SCREEN_ONLY.search("Same as the screen.")
+
+
+def test_every_download_tool_names_a_ui_route():
+    """A file is never sent through the chat. A download tool answers a link to the
+    signed-in screen that serves the file, so that link must be a live UI route."""
+    from celerp.help import checks
+
+    app = real_agent_app()
+    screens = set(checks.ui_route_paths())
+    downloads = []
+    for path, methods, route in ai_tools._api_routes(app):
+        link = (route.openapi_extra or {}).get("x-celerp-agent-download")
+        if link is None:
+            continue
+        downloads.append(path)
+        if link not in screens:
+            raise AssertionError(f"{path}: download link {link!r} is not a UI route")
+        assert set(re.findall(r"\{([^}]+)\}", link)) <= set(re.findall(r"\{([^}]+)\}", path)), path
+    compiled = {c["path"] for c in ai_tools.compile_agent_capabilities(app, {}).values()}
+    assert len(downloads) == 21
+    assert set(downloads) <= compiled
+
+
+def test_funds_tools_compile():
+    """Fund balances move through the assistant like any other confirmed change; the
+    fund request key is supplied by the system, never shown to the model, and a change
+    is keyed exactly when a lookup of that key makes its retry safe."""
+    app = real_agent_app()
+    routes = _route_index(app)
+    caps = ai_tools.compile_agent_capabilities(app, {})
+    funds = {(c["method"], c["path"]): c for c in caps.values() if c["path"].startswith("/accounting/funds")}
+    assert ("GET", "/accounting/funds") in funds
+    assert ("POST", "/accounting/funds") in funds
+    for route, cap in funds.items():
+        assert "request_key" not in _schema_fields(cap["tool"]["function"]["parameters"])
+        if cap["method"] != "GET":
+            assert cap["requires_confirmation"] is True, route
+            assert cap["keyed"] is bool(ai_tools.key_store(routes[route])), route
+
+
+_LIFECYCLE = {
+    ("POST", "/docs/{entity_id}/finalize"): "finalize_documents",
+    ("POST", "/docs/{entity_id}/void"): "finalize_documents",
+    ("POST", "/docs/{entity_id}/send"): "edit_documents",
+    ("POST", "/items/bulk/expire"): "adjust_inventory",
+    ("POST", "/items/import/batch"): "import_export_data",
+    ("DELETE", "/crm/contacts/{contact_id}/notes/{note_id}"): "edit_contacts",
+}
+
+
+def test_lifecycle_bulk_import_and_delete_tools_are_confirm_first_and_role_filtered():
+    """Finalize, void, send, a bulk change, a batch import and a delete are confirmed
+    tools, and a role without the permission never sees them."""
+    app = real_agent_app()
+    caps = {(c["method"], c["path"]): c for c in ai_tools.compile_agent_capabilities(app, {}).values()}
+    viewer = {(c["method"], c["path"]) for c in ai_tools.compile_agent_capabilities(app, {}, role="viewer").values()}
+    for route, permission in _LIFECYCLE.items():
+        assert route in caps, route
+        assert caps[route]["requires_confirmation"] is True, route
+        assert permission in ai_tools._route_permissions(_route_index(app)[route]), route
+        assert route not in viewer, route

@@ -1,0 +1,31 @@
+{
+  "id": "fixed-assets.import",
+  "title": "Import an asset register",
+  "summary": "Bring in the assets you already hold from a spreadsheet.",
+  "keywords": ["import", "asset register", "spreadsheet", "csv", "opening assets"],
+  "routes": ["/fixed-assets/import", "/fixed-assets/import/draft/{ref}", "/fixed-assets/imports/{batch_id}", "/import/asset-register"],
+  "permission": "manage_accounting",
+  "order": 7,
+  "checked": "3e68257f697b44fb8d54d23cd1df877047f8058e151763b563355b765bc643e6",
+  "steps": [
+    {
+      "text": "On {title}, upload your asset register and match its columns. Each row is checked before anything is created; fix a row or upload a corrected file.",
+      "labels": {"title": "fixed_assets.import_title"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/import", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Each finished import is listed with its file, its date and how its rows came out. Open one to see its rows, or undo it to remove every asset it added.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/import", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also give the assistant an asset register to import: it previews the rows and shows the import as a card that runs only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/import", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register"]
+}

@@ -27,6 +27,14 @@ from conftest_support import skip_relay_check_in
 pytestmark = pytest.mark.usefixtures("_db_engine", "relay_not_called_at_boot")
 
 
+_LOOP_RAN: list[bool] = []
+
+
+async def _module_loop():
+    """A module's background loop: notes that the app started it."""
+    _LOOP_RAN.append(True)
+
+
 async def _boom_hook(session=None, **kwargs):
     """An on_modules_ready hook that fails, standing in for one whose DB work
     poisons the shared boot session."""
@@ -34,11 +42,13 @@ async def _boom_hook(session=None, **kwargs):
 
 
 class _FakeSession:
-    """Async-context session whose commit() refuses (a poisoned transaction).
-    All fakes share one rollback spy so the guard's rollback is observable."""
+    """Async-context session whose commit() refuses (a poisoned transaction) unless
+    ``refuses`` is False. All fakes share one rollback spy so the guard's rollback is
+    observable."""
 
-    def __init__(self, rollback_spy: AsyncMock):
-        self.commit = AsyncMock(side_effect=RuntimeError("commit refused: transaction aborted"))
+    def __init__(self, rollback_spy: AsyncMock, refuses: bool = True):
+        self.commit = AsyncMock(side_effect=RuntimeError("commit refused: transaction aborted")
+                                if refuses else None)
         self.rollback = rollback_spy
         # A query result with no rows.
         self.execute = AsyncMock(return_value=MagicMock())
@@ -88,9 +98,12 @@ def _verdict_fetch_spy(monkeypatch) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_modules_ready_commit_guarded(monkeypatch):
+@pytest.mark.parametrize("hook_fails", [True, False])
+async def test_modules_ready_commit_guarded(monkeypatch, hook_fails):
     """A failing on_modules_ready hook does not crash boot: the raise is caught,
-    the session is rolled back, and startup runs through to serving."""
+    the session is rolled back, and startup runs through to serving, with the records
+    held back so no module's background loop starts. When the hooks succeed, the
+    records are current and each module's background loop starts."""
     import celerp.main as main_mod
     from celerp.config import settings
     from celerp.modules import slots
@@ -118,7 +131,7 @@ async def test_modules_ready_commit_guarded(monkeypatch):
         return step
 
     monkeypatch.setattr("celerp.services.starter_modules.enable_starter_modules", _commits())
-    monkeypatch.setattr("celerp.db.LifecycleSessionLocal", lambda: _FakeSession(rollback_spy))
+    monkeypatch.setattr("celerp.db.LifecycleSessionLocal", lambda: _FakeSession(rollback_spy, hook_fails))
     monkeypatch.setattr("celerp.services.dev_release_guard.run_upgrade_guard",
                         _commits({"changed": False, "rebuilt": False, "current": True}))
     verdicts = _verdict_fetch_spy(monkeypatch)
@@ -132,20 +145,32 @@ async def test_modules_ready_commit_guarded(monkeypatch):
     settings.celerp_public_url = None
 
     slots.clear()
-    slots.register("on_modules_ready", {"handler": f"{__name__}:_boom_hook", "_module": "test-mod"})
+    if hook_fails:
+        slots.register("on_modules_ready", {"handler": f"{__name__}:_boom_hook", "_module": "test-mod"})
+    slots.register("background_loop", {"handler": f"{__name__}:_module_loop", "_module": "test-mod",
+                                     "_first_party": True})
+    _LOOP_RAN.clear()
 
     entered = False
     try:
         with _mock_db():
             async with main_mod.lifespan(MagicMock()):
                 entered = True
+                for _ in range(200 if not hook_fails else 20):
+                    if _LOOP_RAN:
+                        break
+                    await asyncio.sleep(0.01)
     finally:
         slots.clear()
         settings.gateway_token = saved_token
         settings.celerp_public_url = saved_public
 
     assert entered, "boot did not survive a failing on_modules_ready hook"
-    assert rollback_spy.await_count >= 1, "the poisoned boot session was not rolled back"
+    if hook_fails:
+        assert _LOOP_RAN == [], "a module's background loop started while the records were held back"
+        assert rollback_spy.await_count >= 1, "the poisoned boot session was not rolled back"
+    else:
+        assert _LOOP_RAN == [True], "boot did not start the module's background loop"
     assert verdicts["done"].wait(5), "boot did not fetch missing free verdicts"
     assert verdicts["args"] == ("/tmp/modules-forced",)
 
@@ -576,3 +601,49 @@ async def test_shutdown_stops_migration_runs(monkeypatch):
         settings.gateway_token = saved_token
         settings.celerp_public_url = saved_public
     assert stopped == [run_id]
+
+
+async def test_shutdown_cancels_ai_job_tasks_and_lets_a_lease_renewal_in_flight_finish(monkeypatch):
+    """The app stops its AI jobs by the jobs' own rule (``jobs.shutdown``): a job's task is
+    cancelled, and a lease renewal whose job's task already ended is waited for, never
+    cancelled mid-statement."""
+    import asyncio
+    import uuid
+
+    import celerp.main as main_mod
+    from celerp.ai import jobs
+    from celerp.config import settings
+
+    seen = []
+
+    async def _job():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            seen.append("job cancelled")
+            raise
+
+    async def _renewal():
+        try:
+            await asyncio.sleep(0.2)
+            seen.append("renewal finished")
+        except asyncio.CancelledError:
+            seen.append("renewal cancelled")
+            raise
+
+    saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
+    settings.gateway_token = ""
+    settings.celerp_public_url = None
+    job_id = uuid.uuid4()
+    try:
+        async with main_mod.lifespan(MagicMock()):
+            jobs._tasks[job_id] = asyncio.create_task(_job())
+            renewal = asyncio.create_task(_renewal())
+            jobs._draining.add(renewal)
+            await asyncio.sleep(0)
+    finally:
+        jobs._draining.discard(renewal)
+        settings.gateway_token = saved_token
+        settings.celerp_public_url = saved_public
+    assert seen == ["job cancelled", "renewal finished"]
+    assert not jobs.running_tasks()

@@ -1864,10 +1864,11 @@ async def test_connector_reauthorize_requires_disconnect_without_releasing_owner
 @pytest.mark.asyncio
 async def test_connector_authorize_lock_failure_keeps_durable_claim(client):
     from celerp.connectors.ownership import ConnectorOwnershipError
+    from ui.i18n import t
 
     token = await _register(client, "auth-url-lock-fails")
     claim = AsyncMock(return_value=(object(), True))
-    lock = AsyncMock(side_effect=ConnectorOwnershipError("ownership changed"))
+    lock = AsyncMock(side_effect=ConnectorOwnershipError(t("error.connector_not_here", service="QuickBooks")))
     release = AsyncMock()
 
     with _relay_settings() as mock_settings, \

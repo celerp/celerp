@@ -3,9 +3,10 @@
   "title": "Working with received documents",
   "summary": "Documents a vendor shared that are waiting to be booked into the system.",
   "keywords": ["received", "shared", "import", "vendor"],
-  "routes": ["/docs/received"],
+  "routes": ["/docs/received", "/docs/received/{rid}"],
   "permission": "view_documents",
   "order": 4,
+  "checked": "5749e6649593f8f33096f4e442a9f6d89f1e2208802b7e61d1d5c26278a8b8f1",
   "steps": [
     {
       "text": "Open {recv} from the sidebar. {hint}",
@@ -16,6 +17,18 @@
     {
       "text": "Use {imp} to bring in a document a vendor shared with you, then book it once it is reviewed.",
       "labels": {"imp": "received.import_shared"},
+      "image": null,
+      "capture": {"route": "/docs/received", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click a document in the list to open it and read its lines before you book it.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/docs/received", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to list what was received, book a received document into your records or mark it reconciled. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/docs/received", "selector": "main", "actions": []}
     }

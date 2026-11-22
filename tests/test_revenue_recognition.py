@@ -112,8 +112,8 @@ async def _tick(session, auth, day: str):
     async def factory():
         yield session
 
-    await unattended(periodic.run_company(factory, uuid.UUID(str(auth["company_id"])),
-                                          today=date.fromisoformat(day)))
+    await unattended(lambda: periodic.run_company(factory, uuid.UUID(str(auth["company_id"])),
+                                                  today=date.fromisoformat(day)))
 
 
 async def _member(client, session, auth, role: str) -> tuple[dict, str]:

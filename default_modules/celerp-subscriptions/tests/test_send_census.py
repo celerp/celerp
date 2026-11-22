@@ -18,6 +18,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from celerp.services import email
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import send_census  # noqa: E402
 
@@ -39,7 +41,7 @@ def _records() -> list[dict]:
 def _moments() -> list[datetime]:
     """Read times from the write through past the cut-off, on both sides of it."""
     from celerp_subscriptions import billing
-    cut = _T0 + billing.SEND_TIMEOUT
+    cut = _T0 + email.SEND_TIMEOUT
     return [_T0, _T0 + timedelta(seconds=1), cut - timedelta(seconds=1), cut, cut + timedelta(seconds=1),
             cut + timedelta(days=1)]
 
@@ -108,7 +110,7 @@ def _expected(record: dict, emailed: bool, waits: bool, now: datetime) -> tuple:
     unconfirmed from the start. A readable time reads in UTC, however it was stored."""
     from celerp_subscriptions import billing
     at = _T0.isoformat() if record.get("at") in _T0_TIMES else record.get("at")  # in UTC
-    cut = _T0 + billing.SEND_TIMEOUT
+    cut = _T0 + email.SEND_TIMEOUT
     if emailed:
         return "sent", at
     return {
@@ -147,7 +149,7 @@ def test_every_status_a_send_can_read_has_a_summary_kind_a_period_mark_and_a_his
 
 def test_only_a_cut_off_send_is_offered_as_a_new_message():
     from celerp_subscriptions import billing
-    assert {s for s in _statuses() if billing.sends_again(s, {}, set())} == {"unconfirmed"}
+    assert {s for s in _statuses() if billing.sends_again(s, {}, {})} == {"unconfirmed"}
 
 
 def test_only_send_state_reads_a_send_records_stored_state_or_time():

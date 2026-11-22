@@ -12,10 +12,9 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from fasthtml.common import *
 
-from celerp.accounting_roles import PERIOD_LOCK_PATH
 from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
-from ui.i18n import t, get_lang, available_langs, lang_label, refusal_text, try_again_pattern
+from ui.i18n import t, get_lang, available_langs, lang_label, may_take, refusal_text, try_again_pattern
 from ui.components.doc_money import DOC_MONEY_JS
 from ui.components.encode import js_value, safe_url
 from ui.components.icons import icon
@@ -3234,6 +3233,18 @@ def flash(msg: str | tuple, kind: str = "error") -> FT:
     return Div(msg, cls=f"flash flash--{kind}", id="flash")
 
 
+def refusal_line(error) -> str | tuple:
+    """A refused API call (an APIError) as it reads on a page: its text, and a link to the
+    page that resolves it when there is one (refusal_fix)."""
+    fix = refusal_fix(error.data)
+    return (str(error.detail), " ", A(fix["label"], href=safe_url(fix["href"]))) if fix else str(error.detail)
+
+
+def error_flash(error) -> FT:
+    """refusal_line in the page's flash."""
+    return flash(refusal_line(error))
+
+
 def no_access_text(error=None, *, permission: str | None = None) -> str:
     """Why the reader's role may not do this: the API's keyed refusal on *error* (an APIError),
     or *permission* when the page checks it itself, naming what is missing. An unkeyed 403
@@ -3263,20 +3274,12 @@ def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-
     )
 
 
-# A refusal the reader can resolve on one page: its key, that page and the catalog key naming it.
-# A refusal's key -> (href, label key); the href is formatted with the refusal's params.
-_REFUSAL_FIXES = {
-    "error.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
-    "mfg.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
-    "error.recon_entry_held": ("/accounting/reconcile/{recon_id}", "recon.view_completed"),
-    "error.recon_period_changed": ("/accounting/reconcile/{recon_id}", "recon.view_completed"),
-}
-
-
 def refusal_fix(detail) -> dict | None:
-    """The {href, label} link to the page that resolves a keyed refusal, when there is one."""
-    fix = _REFUSAL_FIXES.get(detail.get("message_key")) if isinstance(detail, dict) else None
-    return {"href": fix[0].format(**(detail.get("params") or {})), "label": t(fix[1])} if fix else None
+    """The {href, label} link to the page that resolves a keyed refusal, when the refusal
+    carries one (celerp.accounting_roles.refusal_fix) and the reader's role may use it; a
+    reader who may not reads who can in the refusal's text instead (refusal_text)."""
+    fix = detail.get("fix") if isinstance(detail, dict) else None
+    return {"href": fix["href"], "label": t(fix["label_key"])} if isinstance(fix, dict) and may_take(fix) else None
 
 
 def toast_header(message: str | dict, kind: str = "success", *, persist: bool = False,

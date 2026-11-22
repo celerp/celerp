@@ -25,11 +25,13 @@ _COUNT = "3 outside documents waiting for a fund choice"
 
 
 async def _hold(session, auth, kind: str | None) -> None:
+    from celerp.accounting_roles import catalog_refusal
     from celerp.services import peer_attention
 
     await peer_attention.record(
         session, company_id=auth["company_id"], source_company_id=uuid.uuid4(), entity_type="journal_entry",
-        source_entity_id=uuid.uuid4().hex, label="Correction", reason="Waiting for a fund on each line",
+        source_entity_id=uuid.uuid4().hex, label="Correction",
+        reason=catalog_refusal("peer.journal_waiting_for_funds"),
         fix={"kind": kind} if kind else None)
     await session.commit()
 

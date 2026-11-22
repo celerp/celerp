@@ -3,9 +3,10 @@
   "title": "Import or export inventory",
   "summary": "Bring items in from a spreadsheet, or export the current list.",
   "keywords": ["import", "export", "csv", "spreadsheet", "bulk"],
-  "routes": ["/inventory", "/inventory/import"],
+  "routes": ["/inventory", "/inventory/import", "/inventory/import/draft/{csv_ref}"],
   "permission": "import_export_data",
   "order": 2,
+  "checked": "dc74cdf0cfbd83546bd1824c8a17d61de82770c61294e775168ea8050733b62c",
   "steps": [
     {
       "text": "On {inv}, use {exp} to download the current list, or {imp} to start an import.",
@@ -18,6 +19,18 @@
       "labels": {"title": "page.import_inventory", "dl": "btn.download_template"},
       "image": null,
       "capture": {"route": "/inventory/import", "selector": "main", "actions": []}
+    },
+    {
+      "text": "After the upload, a review page shows each row as it will be imported, so you can fix a row or upload a corrected file before anything is created.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/inventory/import", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also give the assistant a spreadsheet to import: it previews the rows and shows the import as a card that runs only when you confirm. It can also export your items for you.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/inventory", "selector": "main", "actions": []}
     }
   ],
   "related": ["inventory.add-item"]

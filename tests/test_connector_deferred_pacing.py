@@ -44,7 +44,7 @@ def _stopping(monkeypatch, stop: str, context) -> list:
         if stop == "relay_down":
             raise relay_token.RelayUnavailable("relay 503")
         if stop == "connect_ended":
-            raise relay_token.ConnectRequired("Connect ended")
+            raise relay_token.ConnectRequired("connectors.connect_lapsed", service="WooCommerce")
         if stop == "error":
             raise RuntimeError("the relay answered 500")
         return None if stop == "no_context" else context(cid)

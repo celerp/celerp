@@ -7,6 +7,8 @@ Once the record is resolved and synced again, both screens are back to OK."""
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from fasthtml.common import to_xml
 
@@ -15,7 +17,7 @@ from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_peer_sync_end_to_end import FIRM, _route_to_app
 from test_peer_two_way_sync import ADJUSTED, _from_firm, _journals, _lock, _pair_journals, _post_journal
-from ui.i18n import t
+from ui.i18n import date_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -97,7 +99,7 @@ async def test_a_declined_journal_shows_needs_attention_until_it_posts(real_clie
     needs = t("connectors.status_needs_attention", n=1)
     row = _journals_row(view)
     assert needs in row and t("connectors.status_ok") not in row, row
-    assert "Year-end accrual" in view and "2026-06-30" in view
+    assert "Year-end accrual" in view and date_text(date(2026, 6, 30)) in view
     others = [e for e in runs if e != "journals"]
     assert others and view.count(f">{t('connectors.status_ok')}<") == len(others), view
     assert "connector-sync-info--warn" in card and t("connectors.needs_attention") in card, card

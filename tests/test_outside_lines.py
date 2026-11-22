@@ -22,6 +22,7 @@ from fasthtml.common import to_xml
 from celerp.models.projections import Projection
 from income_books import _issued, _issued_import, _item, _line
 from test_credit_note_settlement_owned import _post
+from test_helpers import message_texts, refused_records
 from test_income_accounts import _finalize_entry, ui_client  # noqa: F401 (fixture)
 
 pytestmark = pytest.mark.asyncio
@@ -399,7 +400,7 @@ async def test_document_import_refuses_line_fund_id(client, auth):
                  "line_items": [_line(item, "Filed", 10), _line(item, "Filed", 5, **({key: value} if key else {}))]}}
         for eid, (key, value) in zip(eids, keys)]})
     assert r.status_code == 200 and r.json()["created"] == 1, r.text
-    errors = r.json()["errors"]
+    errors = message_texts(r.json()["errors"])
     for eid, (key, _) in zip(eids[:3], keys):
         assert f"{eid}: The file gives {key}. Choose funds on the import screen, not in the file." in errors, errors
     assert [(await client.get(f"/docs/{eid}", headers=auth["headers"])).status_code for eid in eids] == [404] * 3 + [200]
@@ -1034,15 +1035,14 @@ async def test_import_batch_refuses_fund_lines_and_movement_shapes(client, sessi
     r = await client.post("/accounting/import/batch", headers=auth["headers"],
                           json={"records": records, "fund_choices": {"all": gift}})
     assert r.status_code == 200 and r.json()["created"] == 1, r.text
-    errors = r.json()["errors"]
+    refused = refused_records(r.json()["errors"])
     for record, key in zip(keyed, ("fund_id", "fund_choice", "origin")):
-        assert any(e.startswith(record["entity_id"]) and
-                   f"The file gives {key}. Choose funds on the import screen, not in the file." in e
-                   for e in errors), (key, errors)
+        assert refused.get(record["entity_id"]) == (
+            f"The file gives {key}. Choose funds on the import screen, not in the file."), (key, refused)
     for record in (release, restricted):
-        assert any(e.startswith(record["entity_id"]) and "moves money of" in e and
-                   "Transfer between funds, Release from restriction or Reallocate restricted funds" in e
-                   for e in errors), (record["data"], errors)
+        reason = refused.get(record["entity_id"], "")
+        assert "moves money of" in reason and (
+            "Transfer between funds, Release from restriction or Reallocate restricted funds" in reason), (record["data"], refused)
     posted = await _entry_state(session, auth["company_id"], plain["entity_id"])
     assert [e.get("fund_id") for e in posted["entries"]] == [gift, gift]
     for record in records[:-1]:
@@ -1074,7 +1074,7 @@ async def test_import_named_authorizer_moves_nothing(client, session, auth):
                                           {"account": rna, "debit": 0, "credit": 10.0}]}}],
         "fund_choices": {"lines": {f"{eid}:1": gift, f"{eid}:2": gift, f"{eid}:3": other, f"{eid}:4": other}}})
     assert r.status_code == 200 and r.json()["created"] == 0, r.text
-    assert "Restricted money moves only through Transfer between funds" in r.json()["errors"][0], r.text
+    assert "Restricted money moves only through Transfer between funds" in message_texts(r.json()["errors"])[0], r.text
     assert await _entry_ids(session, auth) == before
 
 

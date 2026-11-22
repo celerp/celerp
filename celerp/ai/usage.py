@@ -3,8 +3,10 @@
 
 """AI usage: the one record of what the AI service charged, read by the usage report.
 
-One row per question asked, keyed by company, user and the question's operation id,
-written before every send under the id (so a restart cannot lose it) and updated with
+One row per question asked, keyed by company and the question's operation id and
+attributed to the user who sent it first (a second user sending the same operation,
+which the service charges once, finds that row and adds none of their own), written
+before every send under the id (so a restart cannot lose it) and updated with
 what came back. The service names a question's whole charge on every reply to its
 first turn, a retry's included: that charge replaces what the row held and settles
 it. A reply that names no charge (an older service, or one that could not settle)
@@ -49,7 +51,8 @@ async def record_usage(
     commits. ``known``: ``credits`` is the operation's whole charge, named by the
     service; otherwise ``credits`` were added by the replies this run received.
     ``send_bytes``: the question is about to be sent with a body of that size, so the
-    row is pending again until the service has ended and settled that send. Under the
+    row is pending again until the service has ended and settled that send. The row of
+    an operation already recorded keeps the user who sent it first. Under the
     company's lock (lock_for_ai, a retake for a caller that holds it)."""
     await jobs.lock_for_ai(session, company_id)
     now = datetime.now(timezone.utc)

@@ -25,8 +25,9 @@ from fastapi import HTTPException
 
 from celerp_fixed_assets import runs, setup
 from celerp_fixed_assets.projections import said
-from celerp_fixed_assets.operations import MODULE, _dec, _effects, _journal_view, _post, _run, _undo, conflict
+from celerp_fixed_assets.operations import MODULE, _dec, _effects, _journal_view, _post, _run, _undo
 from celerp_fixed_assets.store import _emit, _entities, _state
+from ui.i18n import t
 
 FIELDS = {"asset_account": "asset", "accumulated_depreciation_account": "accumulated depreciation",
           "depreciation_account": "depreciation expense"}
@@ -111,8 +112,7 @@ async def refuse_stranding(session, company_id, class_id: str, cls: dict, change
     assets = await _class_assets(session, company_id, class_id)
     for field in moving:
         if _held(assets, field):
-            raise conflict(f"The assets in {cls['name']} hold a balance on account {cls[field]}. Use Fix posting "
-                           "account, which moves the balance to the new account in one journal.")
+            raise setup.refused(409, "fixed_assets.err_assets_name_hold_balance_account_value", name=cls['name'], value=cls[field])
 
 
 def _day(books: runs.Books) -> str:
@@ -161,8 +161,7 @@ async def _split(session, company_id, account: str, amount: Decimal, keys: list[
             used[key] = used.get(key, Decimal(0)) + take
             left -= take
     if left:
-        raise conflict(f"The ledger holds {said(amount - left, currency)} on account {account} for these assets and the "
-                       f"register {said(amount, currency)}. Open the reconciliation to see the difference.")
+        raise setup.refused(409, "fixed_assets.err_ledger_holds_said_account_account_these", said=said(amount - left, currency), account=account, said2=said(amount, currency))
     return lines
 
 
@@ -174,26 +173,24 @@ async def fix_account(session, company_id, user_id, class_id: str, body: dict) -
 
     field, account, mode = body.get("field"), str(body.get("account") or "").strip(), body.get("mode")
     if not isinstance(field, str) or field not in FIELDS:
-        raise setup.unprocessable("Choose the asset, accumulated depreciation or depreciation expense account.")
+        raise setup.refuse("fixed_assets.err_choose_asset_accumulated_depreciation_depreciation_expense")
     if not isinstance(mode, str) or mode not in MODES:
-        raise setup.unprocessable("Choose Move existing balances or Future postings only.")
+        raise setup.refuse("fixed_assets.err_choose_move_existing_balances_future_postings")
     if mode == "future" and field in BALANCE_SHEET:
-        raise setup.unprocessable(f"The {FIELDS[field]} account is a balance sheet account, so what the assets "
-                                  "hold there moves with it. Choose Move existing balances.")
+        raise setup.refuse("fixed_assets.err_value_account_balance_sheet_account_so", value=FIELDS[field])
     if mode == "move" and field not in BALANCE_SHEET:
-        raise setup.unprocessable("Depreciation already posted stays in the periods it was posted in. Choose "
-                                  "Future postings only.")
+        raise setup.refuse("fixed_assets.err_depreciation_already_posted_stays_periods_was")
 
     async def plan(fa):
         row = (await lock_projections(session, company_id, [class_id])).get(class_id)
         if row is None or row.entity_type != "fa_class":
-            raise HTTPException(status_code=404, detail="No such asset class.")
+            raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_class"))
         cls = row.state
         old = cls.get(field)
         if not account:
-            raise setup.unprocessable("Choose the new account.")
+            raise setup.refuse("fixed_assets.err_choose_new_account")
         if account == old:
-            raise setup.unprocessable(f"{cls['name']} already posts to account {account}.")
+            raise setup.refuse("fixed_assets.err_name_already_posts_account_account", name=cls['name'], account=account)
         await require_destinations(session, company_id, {account})
         assets = await _class_assets(session, company_id, class_id)
         await lock_projections(session, company_id, [a for a, _ in assets])
@@ -248,7 +245,7 @@ async def undo_fix(session, company_id, user_id, class_id: str, body: dict) -> d
     """Undo the class's latest Fix posting account."""
     cls = await _state(session, company_id, class_id)
     if cls is None or not class_id.startswith("fa:class:"):
-        raise HTTPException(status_code=404, detail="No such asset class.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_class"))
     if not cls.get("last_fix"):
-        raise setup.unprocessable(f"{cls['name']} has no posting account change to undo.")
+        raise setup.refuse("fixed_assets.err_name_has_no_posting_account_change", name=cls['name'])
     return await _undo(session, company_id, user_id, [cls["last_fix"]], body)

@@ -253,7 +253,7 @@ def test_read_resource_has_no_write_counterpart():
 
 _JOB = str(uuid.uuid4())
 _ANSWERED = {"status": "completed", "job_id": _JOB, "answer": "ok", "model_used": "m", "tools_called": [],
-             "help_pages": None, "error": None, "error_code": None}
+             "help_pages": None, "downloads": [], "error": None, "error_code": None}
 
 
 @pytest.fixture

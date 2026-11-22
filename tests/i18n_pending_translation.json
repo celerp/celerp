@@ -12,5 +12,9 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {},
+  "modules": {
+    "celerp-fixed-assets": {},
+    "celerp-labels": {}
+  }
 }

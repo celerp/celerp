@@ -13,6 +13,8 @@ import uuid
 
 import pytest
 
+from ui.i18n import refusal_text
+
 from test_helpers import sell_item
 
 
@@ -193,7 +195,7 @@ async def test_export_items_csv_respects_visible_columns_and_visibility(client, 
 
     r_bad = await client.get("/items/export/csv?cols=sku,no_such_column", headers=_h(admin))
     assert r_bad.status_code == 422
-    assert "no_such_column" in r_bad.json()["detail"]
+    assert "no_such_column" in refusal_text(r_bad.json()["detail"])
 
     r_viewer = await client.get("/items/export/csv?cols=sku,name,cost_price", headers=_h(viewer))
     assert r_viewer.status_code == 200, r_viewer.text
@@ -455,4 +457,4 @@ async def test_export_items_csv_accepts_category_attribute_in_all_view(client):
     assert r.text.strip().splitlines() == ["sku,grade", "STONE-1,A"], r.text
 
     r = await client.get("/items/export/csv?cols=sku,thumbnail&skus=STONE-1", headers=_h(tok))
-    assert r.status_code == 422 and "thumbnail" in r.json()["detail"], r.text
+    assert r.status_code == 422 and "thumbnail" in refusal_text(r.json()["detail"]), r.text

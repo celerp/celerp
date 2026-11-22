@@ -3,9 +3,10 @@
   "title": "Choosing your business type",
   "summary": "Pick an industry preset once at setup so Celerp starts with the right categories and fields.",
   "keywords": ["vertical", "industry", "business type", "setup", "gems", "jewelry", "preset"],
-  "routes": ["/setup/company"],
+  "routes": ["/setup/company", "/setup/activating"],
   "permission": null,
   "order": 1,
+  "checked": "cba86f6f7f92ac67f6602fe24448fdb80c1ee6817ebaea85080665f218369316",
   "steps": [
     {
       "text": "Choose {label} on the setup screen; search if your trade is not in the short list.",
@@ -16,6 +17,18 @@
     {
       "text": "{hint}",
       "labels": {"hint": "setup.business_type_hint"},
+      "image": null,
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+    },
+    {
+      "text": "Once you continue, Celerp turns on the modules for your business type and opens the dashboard when they are ready.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to set your business type. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
     }

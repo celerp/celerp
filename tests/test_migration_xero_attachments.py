@@ -244,7 +244,7 @@ async def test_xero_limits_pause_the_fetch_and_stop_ends_it(real_engine, real_cl
 
     relay.no_account = True
     refused = await real_client.post(base, headers=headers)
-    assert refused.status_code == 428 and "free Celerp account" in refused.json()["detail"]
+    assert refused.status_code == 428 and "free Celerp account" in refusal_text(refused.json()["detail"])
     relay.no_account = False
 
     started = (await real_client.post(base, headers=headers)).json()

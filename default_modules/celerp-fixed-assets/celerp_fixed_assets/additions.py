@@ -38,11 +38,11 @@ from celerp_fixed_assets.operations import (
     _reclass,
     _run,
     asset_movements,
-    conflict,
     in_use,
 )
 from celerp_fixed_assets.store import _emit, _entities, _state
 from fastapi import HTTPException
+from ui.i18n import t
 
 KINDS = ("improvement", "replacement")
 # What Undo latest offers on the asset page; registration and disposal have their own Undo.
@@ -57,9 +57,9 @@ def _life(value) -> int | None:
     try:
         months = int(str(value))
     except ValueError:
-        raise setup.unprocessable("The life is a whole number of months.") from None
+        raise setup.refuse("fixed_assets.err_life_whole_number_months") from None
     if months < 1:
-        raise setup.unprocessable("The life is at least 1 month.")
+        raise setup.refuse("fixed_assets.err_life_at_least_1_month")
     return months
 
 
@@ -68,7 +68,7 @@ async def _locked_asset(session, company_id, asset_id: str) -> dict:
 
     row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
     if row is None or row.entity_type != "fa_asset":
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     return row.state
 
 
@@ -79,7 +79,7 @@ async def _funding(session, company_id, body: dict, asset_account: str, currency
     if body.get("source"):
         line = await _open_line(session, company_id, body["source"])
         if line["kind"] != "acquisition":
-            raise setup.unprocessable("Only a line that adds to an asset account pays for an addition.")
+            raise setup.refuse("fixed_assets.err_only_line_adds_asset_account_pays")
         amount = _dec(line["amount"])
         lines = _reclass(line, asset_account, amount) if line["account"] != asset_account else []
         contributions = [{"journal_id": line["journal_id"], "line_index": line["line_index"], "amount": str(amount)}]
@@ -88,7 +88,7 @@ async def _funding(session, company_id, body: dict, asset_account: str, currency
     amount = operations._money_in(body.get("amount"), "The amount", currency, positive=True)
     account = str(body.get("credit_account") or "")
     if not account:
-        raise setup.unprocessable("Choose the account the addition is paid from, or pick its bill line.")
+        raise setup.refuse("fixed_assets.err_choose_account_addition_paid_from_pick")
     return {"line": None, "amount": amount, "contributions": [], "day": body.get("date"), "generation": 0,
             "lines": [JournalLine(account=asset_account, debit=amount), JournalLine(account=account, credit=amount)]}
 
@@ -101,7 +101,7 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         in_use(asset_id, asset, "add")
         kind = body.get("kind")
         if kind not in KINDS:
-            raise setup.unprocessable("Choose what is added: an improvement or a replacement part.")
+            raise setup.refuse("fixed_assets.err_choose_what_added_improvement_replacement_part")
         cls = await setup.get_class(session, company_id, asset.get("class_id"))
         books = await runs._books(session, company_id)
         currency = books.currency
@@ -122,9 +122,9 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         if kind == "replacement":
             name = str(body.get("name") or "").strip()
             if not name:
-                raise setup.unprocessable("Name the replacement part.")
+                raise setup.refuse("fixed_assets.err_name_replacement_part")
             if life is None:
-                raise setup.unprocessable("Enter the replacement part's life in months.")
+                raise setup.refuse("fixed_assets.err_enter_replacement_part_s_life_months")
             item = await _replaced(session, company_id, books, asset_id, asset, cls, movements, day,
                                    body.get("replaced"))
             journals.append(_journal_view(item["lines"], currency))
@@ -191,13 +191,13 @@ async def _replaced(session, company_id, books, asset_id: str, asset: dict, cls:
     """The disposal of the part a replacement replaces: a component picked from the list,
     whole, or an estimated share of the asset when the old part was never separate."""
     if not isinstance(replaced, dict) or bool(replaced.get("asset_id")) == bool(replaced.get("estimate")):
-        raise setup.unprocessable("Pick the component being replaced, or estimate what the old part cost.")
+        raise setup.refuse("fixed_assets.err_pick_component_being_replaced_estimate_what")
     roles = disposal.accounts(books)
     if replaced.get("asset_id"):
         part_id = str(replaced["asset_id"])
         part = await _locked_asset(session, company_id, part_id)
         if part.get("parent_id") != asset_id:
-            raise setup.unprocessable(f"{part['number']} is not a component of {asset['number']}.")
+            raise setup.refuse("fixed_assets.err_number_not_component_number2", number=part['number'], number2=asset['number'])
         part_cls = await setup.get_class(session, company_id, part.get("class_id"))
         return disposal._plan_asset(books, part_id, part, part_cls,
                                     await asset_movements(session, company_id, part_id), day, Decimal(1),
@@ -207,8 +207,7 @@ async def _replaced(session, company_id, books, asset_id: str, asset: dict, cls:
     estimate = round_money(setup.number(replaced["estimate"], "The estimated cost of the old part"), books.currency)
     cost = _dec(asset.get("cost"))
     if estimate <= 0 or estimate >= cost:
-        raise setup.unprocessable(f"The estimated cost of the old part is more than 0 and less than "
-                                  f"{asset['number']}'s cost of {said(cost, books.currency)}.")
+        raise setup.refuse("fixed_assets.err_estimated_cost_old_part_more_than", number=asset['number'], said=said(cost, books.currency))
     return disposal._plan_asset(books, asset_id, asset, cls, movements, day, estimate / cost, _ZERO, roles)
 
 
@@ -231,11 +230,11 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
         site = await _locked_asset(session, company_id, asset_id)
         cls = await setup.get_class(session, company_id, site.get("class_id"))
         if not cls.get("construction"):
-            raise setup.unprocessable(f"{site['number']} is not under construction.")
+            raise setup.refuse("fixed_assets.err_number_not_under_construction", number=site['number'])
         if site.get("status") == "placed_in_service":
-            raise conflict(f"{site['number']} is already placed in service in full.")
+            raise setup.refused(409, "fixed_assets.err_number_already_placed_service_full", number=site['number'])
         if site.get("status") != "active":
-            raise conflict(f"{site['number']} is not in use, so it cannot be placed in service.")
+            raise setup.refused(409, "fixed_assets.err_number_not_use_so_cannot_placed", number=site['number'])
         day = _date(body.get("date"), "The available-for-use date")
         books = await runs._books(session, company_id)
         currency = books.currency
@@ -243,16 +242,16 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
                             what="available_for_use")
         rows = body.get("allocations")
         if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
-            raise setup.unprocessable("Allocate the cost to at least one asset.")
+            raise setup.refuse("fixed_assets.err_allocate_cost_at_least_one_asset")
         balance = _dec(site.get("cost"))
         allocations = []
         for row in rows:
             target = await setup.get_class(session, company_id, row.get("class_id"))
             if target.get("construction"):
-                raise setup.unprocessable("Place construction cost in a class that is in service.")
+                raise setup.refuse("fixed_assets.err_place_construction_cost_class_service")
             name = str(row.get("name") or "").strip()
             if not name:
-                raise setup.unprocessable("Name each asset placed in service.")
+                raise setup.refuse("fixed_assets.err_name_each_asset_placed_service")
             amount = operations._money_in(row.get("amount"), f"The amount for {name}", currency, positive=True)
             life = _life(row.get("life_months"))
             policy = setup.policy_of(target, fa)
@@ -260,8 +259,7 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
                                 "policy": {**policy, "life_months": life} if life else policy})
         total = sum((a["amount"] for a in allocations), _ZERO)
         if total > balance:
-            raise setup.unprocessable(f"The allocations total {said(total, currency)}, more than the {said(balance, currency)} "
-                                      f"{site['number']} holds.")
+            raise setup.refuse("fixed_assets.err_allocations_total_said_more_than_said2", said=said(total, currency), said2=said(balance, currency), number=site['number'])
         debits: dict[str, Decimal] = {}
         for a in allocations:
             debits[a["cls"]["asset_account"]] = debits.get(a["cls"]["asset_account"], _ZERO) + a["amount"]
@@ -335,13 +333,12 @@ async def undo_latest(session, company_id, user_id, asset_id: str, body: dict) -
     nothing has been charged or changed on it since and its date is open."""
     asset = await _state(session, company_id, asset_id)
     if asset is None or not asset_id.startswith("fa:asset:"):
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     latest = _latest(await asset_movements(session, company_id, asset_id))
     if latest is None:
-        raise setup.unprocessable(f"{asset['number']} has nothing to undo.")
+        raise setup.refuse("fixed_assets.err_number_has_nothing_undo", number=asset['number'])
     if latest.get("operation") in disposal._CHARGES:
-        raise conflict(f"Depreciation was charged on {asset['number']} after its latest change. Use Correct "
-                       "instead.")
+        raise setup.refused(409, "fixed_assets.err_depreciation_was_charged_number_after_its", number=asset['number'])
     op = await _state(session, company_id, f"fa:op:{latest['op_key']}") or {}
     if op.get("type") in ("disposal", "sale"):
         return await disposal.undo(session, company_id, user_id, asset_id, body)

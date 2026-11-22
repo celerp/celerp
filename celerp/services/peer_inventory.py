@@ -18,6 +18,7 @@ from celerp.models.projections import Projection
 from celerp.services.peer_identity import (
     _digest, claim_peer_revision, commit_peer_revision, peer_identity, resolve_peer_location,
 )
+from ui.i18n import t
 
 _FIELDS = frozenset({"location_id", "location_name", "location_type", "counts",
                      "source_closed_event_id"})
@@ -123,7 +124,7 @@ async def receive_stock_audit(
 
     company = await session.get(Company, grant.company_id)
     if company is None or not company.is_active or company.is_migration_staged:
-        raise HTTPException(403, "Company unavailable")
+        raise HTTPException(403, t("peer.err_company_unavailable"))
     owner = (await session.execute(select(User.id, UserCompany.role).join(
         UserCompany, UserCompany.user_id == User.id).where(
         UserCompany.company_id == grant.company_id,

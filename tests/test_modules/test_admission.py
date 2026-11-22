@@ -729,7 +729,7 @@ def _case_route_setup_rebound_through_globals(base, marker, monkeypatch):
                              ), "dynamically"
 
 
-def _manifest_changed(name: str, appended: str, reason: str = "bound once"):
+def _manifest_changed(name: str, appended: str, reason: str = "set once, as plain values"):
     """A module whose __init__.py holds a valid PLUGIN_MANIFEST literal and then
     changes it: Python runs the change, so admission must not read the literal
     alone."""

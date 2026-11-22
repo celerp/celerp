@@ -67,9 +67,11 @@ async def test_every_role_shows_its_account_and_that_it_is_ready(client, auth):
     assert (receivable["code"], receivable["status"]) == ("1120", "ready")
     assert receivable["name"]
     assert receivable["earlier"] == []
-    # Restricted net assets has no account until the company first turns funds on.
-    assert _row(panel, "restricted_net_assets")["status"] == "unused"
-    assert all(row["status"] == "ready" for row in panel["roles"] if row["role"] != "restricted_net_assets")
+    # Restricted net assets has no account until the company first turns funds on, and
+    # Suspense none until a bank line is first posted there.
+    later = {"restricted_net_assets", "suspense"}
+    assert {_row(panel, role)["status"] for role in later} == {"unused"}
+    assert all(row["status"] == "ready" for row in panel["roles"] if row["role"] not in later)
 
 
 @pytest.mark.asyncio

@@ -15,13 +15,15 @@ from pathlib import Path
 import httpx
 from fastapi import HTTPException
 
+from celerp.accounting_roles import Refused
 from celerp.services import cloud_entitlement, company_backup_files as files
 from celerp.services.company_handoff_crypto import decrypt_file, encrypt_file
 from celerp.services.company_handoff_links import handoff_page_link, spaces_object_url
 
 
-class HandoffSendError(Exception):
-    """The delivery was refused or its result is unconfirmed; retry the same operation."""
+class HandoffSendError(Refused):
+    """The delivery was refused or its result is unconfirmed; retry the same operation.
+    Raised with the catalog key of its reason."""
 
 
 class HandoffAccountNeeded(HandoffSendError):
@@ -31,19 +33,19 @@ class HandoffAccountNeeded(HandoffSendError):
 class HandoffRefused(HandoffSendError):
     """The cloud refused with a reason the owner can act on; keeps its status code."""
 
-    def __init__(self, detail: str, status_code: int):
-        super().__init__(detail)
+    def __init__(self, key: str, /, status_code: int, **params):
+        super().__init__(key, **params)
         self.status_code = status_code
 
 
-_ACCOUNT_NEEDED = "Sign in to a free Celerp account to send a company copy link."
+_ACCOUNT_NEEDED = "handoff.account_needed"
 
 
 def _upload_url(value: object, copy_id: uuid.UUID) -> str:
     try:
         return spaces_object_url(value, f"/handoffs/{copy_id.hex}.upload")
     except ValueError:
-        raise HandoffSendError("The upload destination is unavailable") from None
+        raise HandoffSendError("handoff.upload_destination_unavailable") from None
 
 
 async def cloud_json(method: str, path: str, *, payload: dict | None = None, params: dict | None = None,
@@ -54,7 +56,7 @@ async def cloud_json(method: str, path: str, *, payload: dict | None = None, par
     long enough for its size.
     No account, or a refusal the caller knows means an unverified one, raises
     HandoffAccountNeeded with ``account_needed``; a refusal the cloud explains keeps its
-    words and status; anything else is ``unconfirmed``."""
+    words and status; anything else is ``unconfirmed``. Both are catalog keys."""
     body = {"content": content} if content is not None else {}
     try:
         response = await cloud_entitlement.authenticated_request(
@@ -71,7 +73,7 @@ async def cloud_json(method: str, path: str, *, payload: dict | None = None, par
         # is unconfirmed.
         detail = _detail(response) if 400 <= response.status_code < 500 or response.status_code == 503 else None
         if detail:
-            raise HandoffRefused(detail, response.status_code)
+            raise HandoffRefused("error.cloud_said", status_code=response.status_code, reason=detail)
         raise HandoffSendError(unconfirmed)
     try:
         data = response.json()
@@ -89,18 +91,18 @@ async def as_http(call):
     try:
         return await call
     except HandoffAccountNeeded as exc:
-        raise HTTPException(status_code=428, detail=str(exc)) from None
+        raise HTTPException(status_code=428, detail=exc.detail) from None
     except HandoffRefused as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
     except HandoffSendError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        raise HTTPException(status_code=502, detail=exc.detail) from None
 
 
 async def _cloud(method: str, path: str, *, payload: dict | None = None,
                  params: dict | None = None, expected: int = 200) -> dict:
     # The relay's only refusal on creating a copy is an account it has not verified.
     return await cloud_json(method, path, payload=payload, params=params, expected=expected,
-                            unconfirmed="Could not confirm the company copy. Retry the same operation",
+                            unconfirmed="handoff.copy_unconfirmed",
                             account_needed=_ACCOUNT_NEEDED,
                             refused_means_account=(method, path) == ("POST", "/handoffs"))
 
@@ -122,13 +124,13 @@ async def _existing(company_id: uuid.UUID, operation_id: uuid.UUID) -> dict | No
     })
     items = result.get("items")
     if not isinstance(items, list) or len(items) > 1:
-        raise HandoffSendError("Could not verify the existing company copy")
+        raise HandoffSendError("handoff.existing_copy_unverified")
     if not items:
         return None
     row = items[0]
     if (not isinstance(row, dict) or row.get("operation_id") != str(operation_id)
             or row.get("company_id") != str(company_id)):
-        raise HandoffSendError("Could not verify the existing company copy")
+        raise HandoffSendError("handoff.existing_copy_unverified")
     return row
 
 
@@ -141,19 +143,19 @@ def decode_key(value: str) -> bytes:
     try:
         secret = base64.urlsafe_b64decode(str(value) + "=")
     except (ValueError, binascii.Error):
-        raise ValueError("Invalid company copy key") from None
+        raise Refused("handoff.copy_key_invalid") from None
     if len(secret) != 32 or encode_key(secret) != value:
-        raise ValueError("Invalid company copy key")
+        raise Refused("handoff.copy_key_invalid")
     return secret
 
 
 def _stage_path(company_id: uuid.UUID, operation_id: uuid.UUID, secret: bytes) -> Path:
     if not isinstance(secret, bytes) or len(secret) != 32:
-        raise HandoffSendError("Invalid company copy key")
+        raise HandoffSendError("handoff.copy_key_invalid")
     token = operation_id.hex + hashlib.sha256(secret).hexdigest()
     path = files.stage_path(str(company_id), token)
     if path is None:
-        raise HandoffSendError("Invalid handoff operation")
+        raise HandoffSendError("handoff.operation_invalid")
     return path
 
 
@@ -199,7 +201,7 @@ def _link_id(row: dict) -> uuid.UUID:
     try:
         return uuid.UUID(row["link_id"])
     except (ValueError, TypeError, KeyError):
-        raise HandoffSendError("Invalid company copy response") from None
+        raise HandoffSendError("handoff.copy_response_invalid") from None
 
 
 async def _send(company_id: uuid.UUID, copy_id: uuid.UUID, link_id: uuid.UUID,
@@ -208,14 +210,13 @@ async def _send(company_id: uuid.UUID, copy_id: uuid.UUID, link_id: uuid.UUID,
     link = handoff_page_link(link_id, secret)
     kept = await asyncio.to_thread(files.sent_copy, company_id, copy_id)
     if kept.get("key") not in (None, encode_key(secret)):
-        raise HandoffSendError("This copy was sent with another key. Start a new company copy")
+        raise HandoffSendError("handoff.sent_with_another_key")
     try:
         # Kept before the email is sent: a link that reaches the client is always readable here.
         await asyncio.to_thread(files.remember_sent_copy, company_id, copy_id, {
             "key": encode_key(secret), "recipient": recipient})
     except OSError:
-        raise HandoffSendError("Could not keep the copy's key on this computer. Nothing was sent. "
-                               "Retry the same operation") from None
+        raise HandoffSendError("handoff.key_not_kept") from None
     await _cloud("POST", f"/handoffs/{copy_id}/send", payload={
         "operation_id": str(operation_id), "recipient": recipient,
         "reply_to": reply_to, "note": note, "link": link,
@@ -231,7 +232,7 @@ async def send_company_backup(*, export: Callable[[Path], Awaitable[None]],
     existing = await _existing(company_id, operation_id)
     if existing is not None:
         if existing.get("firm_name") != firm_name:
-            raise HandoffSendError("This handoff was already prepared for a different firm")
+            raise HandoffSendError("handoff.prepared_for_another_firm")
         if existing.get("status") in ("ready", "sent", "imported"):
             result = await _send(company_id, uuid.UUID(existing["id"]), _link_id(existing),
                                  operation_id, secret,
@@ -239,9 +240,9 @@ async def send_company_backup(*, export: Callable[[Path], Awaitable[None]],
             stage.unlink(missing_ok=True)
             return result
         if existing.get("status") != "pending":
-            raise HandoffSendError("This handoff has expired. Start a new company copy")
+            raise HandoffSendError("handoff.expired")
         if not stage.is_file():
-            raise HandoffSendError("The original encrypted upload is unavailable. Start a new copy")
+            raise HandoffSendError("handoff.upload_unavailable")
     else:
         await _stage_once(stage, secret, export, company_id)
 
@@ -256,7 +257,7 @@ async def send_company_backup(*, export: Callable[[Path], Awaitable[None]],
     try:
         copy_id = uuid.UUID(created["id"])
     except (ValueError, TypeError, KeyError):
-        raise HandoffSendError("Invalid company copy response") from None
+        raise HandoffSendError("handoff.copy_response_invalid") from None
     upload_url = created.get("upload_url")
     if upload_url is not None:
         url = _upload_url(upload_url, copy_id)
@@ -270,11 +271,11 @@ async def send_company_backup(*, export: Callable[[Path], Awaitable[None]],
                 response = await client.put(url, content=chunks(),
                                             headers={"Content-Length": str(size)})
         except (httpx.HTTPError, TimeoutError) as exc:
-            raise HandoffSendError("Encrypted upload not confirmed. Retry the same operation") from exc
+            raise HandoffSendError("handoff.upload_unconfirmed") from exc
         if response.status_code not in (200, 201, 204):
-            raise HandoffSendError("Encrypted upload not confirmed. Retry the same operation")
+            raise HandoffSendError("handoff.upload_unconfirmed")
     elif created.get("status") not in ("ready", "sent", "imported"):
-        raise HandoffSendError("This handoff cannot be resumed")
+        raise HandoffSendError("handoff.cannot_resume")
     result = await _send(company_id, copy_id, _link_id(created), operation_id, secret,
                          recipient=recipient, reply_to=reply_to, note=note)
     stage.unlink(missing_ok=True)
@@ -283,16 +284,15 @@ async def send_company_backup(*, export: Callable[[Path], Awaitable[None]],
 
 # ── Copies sent ──────────────────────────────────────────────────────────────
 
-_UNAVAILABLE = "Company copy activity is unavailable"
+_UNAVAILABLE = "handoff.activity_unavailable"
 _STATUSES = ("pending", "ready", "sent", "imported", "expired", "revoked")
 _RENEWABLE = ("sent", "imported", "expired")
-_KEY_MISSING = ("This computer no longer holds this copy's key, so a new link would not open it. "
-                "Use Resend to send a new copy")
+_KEY_MISSING = "handoff.key_missing"
 
 
 class CopyNotFound(HandoffRefused):
     def __init__(self):
-        super().__init__("Company copy not found", 404)
+        super().__init__("handoff.copy_not_found", status_code=404)
 
 
 def _copy(company_id: uuid.UUID, row: object) -> dict:
@@ -366,6 +366,6 @@ async def new_link(company_id: uuid.UUID, copy_id: uuid.UUID, operation_id: uuid
     new link would open nothing, and the old one would already have stopped working."""
     await _owned(company_id, copy_id)
     if _kept_key(await asyncio.to_thread(files.sent_copy, company_id, copy_id)) is None:
-        raise HandoffRefused(_KEY_MISSING, 409)
+        raise HandoffRefused(_KEY_MISSING, status_code=409)
     await _cloud("POST", f"/handoffs/{copy_id}/new-link", payload={"operation_id": str(operation_id)})
     return await _owned(company_id, copy_id)

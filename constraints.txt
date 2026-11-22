@@ -25,7 +25,7 @@ bcrypt==5.0.0
     # via passlib
 beautifulsoup4==4.15.0
     # via python-fasthtml
-celerp-postgres==17.10.0 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+celerp-postgres==17.10.0 ; (platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'
     # via celerp (pyproject.toml)
 certifi==2026.10.23
     # via

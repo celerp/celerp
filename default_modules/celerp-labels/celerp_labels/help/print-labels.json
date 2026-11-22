@@ -3,9 +3,10 @@
   "title": "Printing labels",
   "summary": "Print barcode or QR labels for a batch of items.",
   "keywords": ["labels", "barcode", "qr", "print", "sticker"],
-  "routes": ["/labels/print-list"],
+  "routes": ["/labels/print-list", "/labels/print-source"],
   "permission": "manage_labels",
   "order": 1,
+  "checked": "d4379593e693dbf735063c7365c2b79024a6aebea77643b96933c17400049470",
   "steps": [
     {
       "text": "Selecting items in {inv} opens the print screen, titled {print}, with those items ready to print.",
@@ -16,6 +17,18 @@
     {
       "text": "Pick the {tmpl} to use, then confirm with {btn} to open the print dialog.",
       "labels": {"tmpl": "label.label_template", "btn": "btn._print_labels"},
+      "image": null,
+      "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Other screens print labels for their own records the same way, such as asset tags from the fixed asset register, on the first template that fits unless you pick another.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to print labels for items you name, using one of your templates. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
     }

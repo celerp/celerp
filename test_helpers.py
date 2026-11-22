@@ -23,9 +23,9 @@ from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
+from starlette.routing import Mount
 
 from celerp.modules.loader import _BUNDLED_MODULES_DIRS, is_core_folded, load_all, register_api_routes
-from celerp.routers import search as search_router_mod
 
 # Repo root: this file lives at repo root, so parent == repo root.
 REPO_ROOT = Path(__file__).resolve().parent
@@ -135,6 +135,20 @@ async def asked_in_thread(client, headers: dict, conversation_id: str, body: dic
         r = await client.post(f"/ai/conversations/{conversation_id}/query", headers=headers, json=body)
         assert r.status_code == 202, r.text
         return (await settled_question(client, headers, conversation_id, r.json()["job_id"]))["message"]
+
+
+@asynccontextmanager
+async def answered_continuation(answer: str = "Done."):
+    """Answering a message's last card carries its request on as a question job. Inside
+    the block a stand-in agent run answers that job with ``answer``, and the block ends
+    once every job has, so a test about the cards never reaches the AI service."""
+    from unittest.mock import AsyncMock, patch
+    from celerp.ai import jobs
+    from celerp.ai.service import AgentResult
+    result = AgentResult(answer=answer, model_used="test", tools_called=[], pending_actions=[])
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
+        yield
+        await until(lambda: not jobs.running_tasks())
 
 
 async def drain_jobs(release=lambda: None) -> None:
@@ -657,6 +671,40 @@ def in_language(lang: str, detail) -> str:
         i18n.set_lang("en")
 
 
+def message_texts(messages: list) -> list[str]:
+    """An import's outcome messages as English text: a keyed refusal's own message, else the text."""
+    from celerp.importers.results import message_text
+
+    return [message_text(m) for m in messages]
+
+
+def refusal_keys(messages: list) -> list[str | None]:
+    """The catalog key of each refused row's reason (the refusal inside ``import.record_refused``),
+    None for a reason given as text."""
+    keys = []
+    for message in messages:
+        inner = (message.get("params") or {}).get("refusal") if isinstance(message, dict) else None
+        keys.append((inner if isinstance(inner, dict) else message).get("message_key")
+                    if isinstance(message, dict) else None)
+    return keys
+
+
+def refused_records(messages: list) -> dict[str, str]:
+    """An import's refused records: each record's reason in English, by its entity id (a row
+    named by its number, import.row_n, by that name in English)."""
+    from celerp.importers.results import kept_refusal, message_text
+
+    found = {}
+    for message in messages:
+        if isinstance(message, dict) and message.get("message_key") == "import.record_refused":
+            entity_id = message_text(message["params"]["entity_id"])
+            found[entity_id] = message_text(kept_refusal(message, entity_id))
+        else:
+            entity_id, _, reason = message_text(message).partition(": ")
+            found[entity_id] = reason
+    return found
+
+
 def notice_in(lang: str, item: dict) -> dict:
     """A notice from ``GET /notifications`` as the bell lists it to a reader in ``lang``."""
     from ui.routes.notifications import _in_reader_language
@@ -703,20 +751,38 @@ def script_cfg(html: str, marker: str) -> dict:
     return found[0]
 
 
+def _core_route(route) -> bool:
+    """True for a route `celerp.main` declares itself, the modules folded into core
+    included. A test that ran the app's lifespan has also included the pluggable modules'
+    routers into it; those come from the module loader."""
+    from celerp.modules.loader import CORE_FOLDED
+
+    router = getattr(route, "original_router", None)
+    if router is None:
+        return True
+    roots = ("celerp.", *(name.replace("-", "_") + "." for name in sorted(CORE_FOLDED)))
+    return any(
+        getattr(getattr(sub, "endpoint", None), "__module__", "").startswith(roots)
+        for sub in router.routes
+    )
+
+
 def real_agent_app() -> FastAPI:
     """The real Celerp API surface with every first-party module enabled.
 
-    Built the same way `celerp.main` builds the live app: the core search and help
-    routers plus every bundled pluggable module's routes. `docs_url`/`redoc_url` are off
-    exactly as in production, so FastAPI's own `/docs` never shadows the
-    documents module. The autouse loader-reset fixture tears `_loaded` and the
-    slot registry back down after the test.
+    Every core route of `celerp.main` (hidden ones included) plus every bundled pluggable
+    module's routes, built the way the live app is. `docs_url`/`redoc_url` are off exactly
+    as in production, so FastAPI's own `/docs` never shadows the documents module. The
+    autouse loader-reset fixture tears `_loaded` and the slot registry back down after the
+    test.
     """
-    from celerp.routers import help as help_router_mod
+    import celerp.main as main_mod
 
     app = FastAPI(docs_url=None, redoc_url=None)
-    app.include_router(search_router_mod.router, tags=["search"])
-    app.include_router(help_router_mod.router, tags=["help"])
+    app.router.routes.extend(
+        route for route in main_mod.app.router.routes
+        if not isinstance(route, Mount) and _core_route(route)
+    )
     loaded = load_all(_BUNDLED_MODULES_DIRS[0], _bundled_pluggable_names())
     register_api_routes(app, loaded)
     app.openapi_schema = None

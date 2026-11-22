@@ -10,10 +10,12 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections import Counter
+from pathlib import Path
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 from sqlalchemy import text
 
 from company_backup_support import (
@@ -37,6 +39,7 @@ from test_company_backup import (  # noqa: F401 (_bk_modules_running: autouse, e
     _r_env,
     _r_refused,
     _r_rows,
+    _r_set_data,
     _r_source,
     _r_table_lines,
     _r_with_rows,
@@ -112,8 +115,8 @@ async def test_read_back_refusal_names_no_table(real_engine, real_client, tmp_pa
     async with _r_alter_rows(real_engine):
         r = await restore(real_client, tok, data, mode="new_company")
     _r_refused(r)
-    assert r.json()["detail"] == t(_cb().MISMATCH)
-    assert "projections" not in r.json()["detail"] and "(" not in r.json()["detail"]
+    assert refusal_text(r.json()["detail"]) == t(_cb().MISMATCH)
+    assert "projections" not in refusal_text(r.json()["detail"]) and "(" not in refusal_text(r.json()["detail"])
     assert await snapshot(real_engine) == before
 
 
@@ -130,9 +133,97 @@ async def test_record_disagreeing_with_history_refused(real_engine, real_client,
     before = await snapshot(real_engine)
     r = await restore(real_client, tok, edited, mode="new_company")
     _r_refused(r)
-    assert r.json()["detail"] == t(_cb().DISAGREE)
+    assert refusal_text(r.json()["detail"]) == t(_cb().DISAGREE)
     assert await snapshot(real_engine) == before
     assert await count(real_engine, "companies") == 1
+
+
+def _rules_of(data: bytes, rules) -> bytes:
+    """The backup with its manifest's projection rules set to ``rules`` (None: unrecorded)."""
+    parts = members(data)
+    meta = json.loads(parts["manifest.json"])
+    meta.pop("projection_semantics")
+    if rules is not None:
+        meta["projection_semantics"] = rules
+    parts["manifest.json"] = json.dumps(meta).encode()
+    return rezip(parts)
+
+
+@pytest.mark.parametrize("older", ["unrecorded", "previous"])
+async def test_a_backup_built_by_older_projection_rules_restores(real_engine, real_client, tmp_path,
+                                                                  monkeypatch, older):
+    """A backup whose records an older Celerp built by older projection rules (an item
+    holding the old weight_g / origin_country preset keys, from before they folded onto
+    weight and country of origin) restores, its records rebuilt by the running rules as an
+    upgrade rebuilds them; one built by the running rules is still checked strictly."""
+    from celerp.services.dev_release_guard import PROJECTION_SEMANTICS
+    from celerp_inventory import projections
+
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    with monkeypatch.context() as old_rules:
+        # The records as the older rules built them: the old keys were not folded.
+        old_rules.setattr(projections, "_fold_legacy_category_fields", lambda current, written: None)
+        await _r_set_data(real_engine, cid, {"name": "Ruby", "attributes": {
+            "weight_g": "2.5", "origin_country": "Sri Lanka"}})
+        data = await download(real_client, tok)
+    (built,) = await _r_rows(real_engine, "projections", cid)
+    assert built["state"]["attributes"]["weight_g"] == "2.5"
+    r = await restore(real_client, tok, data, mode="new_company")
+    _r_refused(r)  # recorded as the running rules, records that disagree with them are refused
+    rules = None if older == "unrecorded" else PROJECTION_SEMANTICS - 1
+    body = _r_created(await restore(real_client, tok, _rules_of(data, rules), mode="new_company"))
+    (restored,) = await _r_rows(real_engine, "projections", uuid.UUID(body["company_id"]))
+    state = restored["state"]
+    assert (state["weight"], state["weight_unit"]) == (2.5, "gram")
+    assert state["attributes"] == {"country_of_origin": "Sri Lanka"}
+
+
+RELEASED = sorted((Path(__file__).parent / "fixtures" / "released_backups").glob("*/*.zip"))
+
+
+def _totals(ledger: list[dict], records: list[dict]) -> tuple:
+    """How many of each event a company's history holds, and each item's quantity."""
+    items = sorted((r["entity_id"], r["state"].get("sku"), r["state"].get("quantity"))
+                   for r in records if r["entity_type"] == "item")
+    return Counter((e["entity_id"], e["event_type"]) for e in ledger), items
+
+
+@pytest.mark.parametrize("path", RELEASED, ids=lambda p: f"{p.parent.name}/{p.stem}")
+async def test_a_backup_made_by_a_released_version_restores(real_engine, real_client, tmp_path,
+                                                            monkeypatch, path):
+    """Every demo company backup a released Celerp made (fixtures/released_backups/<version>/,
+    captured from that release by capture.py there) restores at head as a new company with
+    the history and item quantities it holds."""
+    import celerp
+    from packaging.version import Version
+
+    made_by = Version(path.parent.name)
+    monkeypatch.setattr(celerp, "__version__", f"{made_by.major}.{made_by.minor}.{made_by.micro + 1}")
+    _r_env(tmp_path, monkeypatch)
+    _, _, tok = await _r_source(real_engine)
+    data = path.read_bytes()
+    held = _totals(*([json.loads(line) for line in _r_table_lines(data, table)]
+                     for table in ("ledger", "projections")))
+    body = _r_created(await restore(real_client, tok, data, mode="new_company"))
+    cid = uuid.UUID(body["company_id"])
+    assert _totals(await _r_rows(real_engine, "ledger", cid), await _r_rows(real_engine, "projections", cid)) == held
+    assert held[1], "a demo company holds items"
+
+
+@pytest.mark.parametrize("rules", [-1, "3", True, 1.5, "PROJECTION_SEMANTICS + 1"])
+async def test_a_backup_with_unreadable_or_newer_projection_rules_is_refused(
+        real_engine, real_client, tmp_path, monkeypatch, rules):
+    from celerp.services.dev_release_guard import PROJECTION_SEMANTICS
+
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    if rules == "PROJECTION_SEMANTICS + 1":
+        rules = PROJECTION_SEMANTICS + 1
+    before = await snapshot(real_engine)
+    r = await restore(real_client, tok, _rules_of(await download(real_client, tok), rules), mode="new_company")
+    _r_refused(r)
+    assert await snapshot(real_engine) == before
 
 
 @pytest.mark.parametrize("emptied", ["ledger", "projections"])
@@ -149,7 +240,7 @@ async def test_record_without_its_history_refused(real_engine, real_client, tmp_
     before = await snapshot(real_engine)
     r = await restore(real_client, tok, rezip(parts), mode="new_company")
     _r_refused(r)
-    assert r.json()["detail"] == t(_cb().DISAGREE)
+    assert refusal_text(r.json()["detail"]) == t(_cb().DISAGREE)
     assert await snapshot(real_engine) == before
 
 
@@ -199,7 +290,7 @@ async def test_same_backup_with_different_contents_refused(real_engine, real_cli
     before = await snapshot(real_engine)
     r = await read(real_client, tok, changed, mode="new_company")
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t(_cb().CHANGED_COPY)
+    assert refusal_text(r.json()["detail"]) == t(_cb().CHANGED_COPY)
     assert await snapshot(real_engine) == before
     again = await restore(real_client, tok, data, mode="new_company")
     assert again.status_code == 200, again.text

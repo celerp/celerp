@@ -94,7 +94,7 @@ async def test_the_chart_account_of_an_active_bank_account_cannot_be_archived_or
     r = await client.patch(f"/accounting/accounts/{code}", headers=_h(tok), json=change)
 
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == (
+    assert refusal_text(r.json()["detail"]) == (
         f"Account {code} belongs to the active bank account Harbor Bank. Archive the bank account "
         "before archiving this account or changing its type.")
     acc = await _chart_account(client, tok, code)

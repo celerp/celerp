@@ -27,6 +27,7 @@ their English text: the help viewer and Celerp AI show each label in the reader'
 | `order` | whole number | position in the module's list |
 | `steps` | list | 1 to 20 steps |
 | `related` | list of strings | ids of related pages |
+| `checked` | string, optional | the content hash of the screens the page covers when its steps were last read against them; written by `python -m celerp.help.checks stamp <page id>` |
 
 No other keys are allowed, and a page file is at most 64 KB.
 
@@ -76,7 +77,15 @@ No other keys are allowed, and a page file is at most 64 KB.
 
 An invalid page in a third-party module is logged and skipped when modules load; the module's
 other pages still load. First-party pages are held to the checks in `celerp/help/checks.py`
-(schema, label keys, routes, permissions, images, and a page for every sidebar and settings link
-of each module) by `tests/test_help_content.py`. Screenshots are written only by
+(schema, label keys, routes, permissions, images, screen coverage and the `checked` stamp) by
+`tests/test_help_content.py`. Every signed-in screen of the app is covered by at least one page,
+and every page covers at least one screen. A page's `checked` value is recomputed from the source
+of the handlers serving the screens it covers (plus each function of the same module a handler
+calls by name), so a change to one of those screens fails the check until the page's steps are
+read against the screen again and `python -m celerp.help.checks stamp <page id>` writes the new
+value. Each sidebar
+and settings link a first-party module registers names its page: the nav entry's `help` (for
+`href`) and `settings_help` (for `settings_href`) hold a page id the module ships, and that page's
+`routes` must cover the link, so the screen's Help panel lists it. Screenshots are written only by
 `tests/test_browser/test_help_capture.py` with `HELP_CAPTURE_WRITE=1`, which also checks each
 step against the running app.

@@ -35,7 +35,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import refusal_detail
+from celerp.accounting_roles import Refused, refusal_detail
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.downloads import content_disposition
@@ -61,6 +61,7 @@ from celerp_docs.taxes import TaxApplication
 from celerp.services.currencies import CURRENCY_CODES
 from ui.i18n import t
 from ui.components.encode import html_response
+from celerp.agent_markers import agent_excluded
 
 # Authenticated router — share token generation requires login
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -105,7 +106,7 @@ def _import_link(link: str | None, src: str | None, token: str | None) -> str:
     ``src`` + ``token`` pair. Mixed or incomplete input is rejected."""
     if link:
         if src or token:
-            raise HTTPException(status_code=400, detail="Give either link, or src and token, not both")
+            raise HTTPException(status_code=400, detail=t("documents.err_give_either_link_src_token_not"))
         return link
     if not (src and token):
         raise HTTPException(status_code=400, detail=t("documents.err_share_link_required"))
@@ -125,7 +126,7 @@ async def _validate_share_link(link: str) -> str:
     token, with the bundle download at ``<page>/bundle``."""
     try:
         page = await validate_public_base_url(link, reject_query=True, reject_fragment=True)
-    except ValueError as exc:
+    except Refused as exc:
         raise HTTPException(status_code=400, detail=refusal_detail(exc)) from exc
     token = urlsplit(page).path.rsplit("/", 1)[-1]
     if not token:
@@ -459,7 +460,7 @@ class ShareCreateBody(BaseModel):
     expires_at: str | None = None
 
 
-@router.get("/docs/{entity_id}/share/state")
+@router.get("/docs/{entity_id}/share/state", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True}, summary="Show whether a document or list has a working share link.")
 async def share_state(
     entity_id: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
@@ -471,7 +472,7 @@ async def share_state(
     return {"active": bool(row is not None and _share_active(row))}
 
 
-@router.get("/docs/{entity_id}/share")
+@router.get("/docs/{entity_id}/share", openapi_extra={"x-celerp-agent": True}, summary="Read the share link of a document or list with its expiry.")
 async def share_status(
     entity_id: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
@@ -488,7 +489,7 @@ async def share_status(
     return await _share_status(session, share_row)
 
 
-@router.post("/docs/{entity_id}/share")
+@router.post("/docs/{entity_id}/share", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Create a share link for a document or list, or change its expiry.")
 async def create_share_link(
     entity_id: str,
     body: ShareCreateBody | None = None,
@@ -522,7 +523,7 @@ async def create_share_link(
     return await _share_status(session, share_row)
 
 
-@router.delete("/docs/{entity_id}/share")
+@router.delete("/docs/{entity_id}/share", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Turn off the share link of a document or list so it stops working.")
 async def revoke_share_link(
     entity_id: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
@@ -629,7 +630,7 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
     return ident_mode
 
 
-@public_router.get("/share/{token}")
+@public_router.get("/share/{token}", openapi_extra=agent_excluded("public"))
 async def view_shared_doc(
     token: str,
     session: AsyncSession = Depends(get_session),
@@ -679,7 +680,7 @@ async def view_shared_doc(
     return html_response(html, headers={"Access-Control-Allow-Origin": "*"})
 
 
-@public_router.options("/share/{token}")
+@public_router.options("/share/{token}", openapi_extra=agent_excluded("public"))
 async def share_cors_preflight(token: str) -> Response:
     """Handle CORS preflight for the share endpoint."""
     return Response(
@@ -706,7 +707,7 @@ async def _document_revision(session: AsyncSession, row: Projection) -> int:
     )).scalar_one()
 
 
-@public_router.get("/share/{token}/bundle")
+@public_router.get("/share/{token}/bundle", openapi_extra=agent_excluded("public"))
 async def download_share_bundle(
     token: str,
     session: AsyncSession = Depends(get_session),
@@ -762,7 +763,7 @@ async def download_share_bundle(
     )
 
 
-@public_router.post("/docs/import-link")
+@public_router.post("/docs/import-link", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Fetch a document another Celerp company shared by link and file it under Received.")
 async def import_shared_doc(
     link: str | None = Query(None, description="The share link: the page the sender's document is shown on"),
     src: str | None = Query(None, description="Older link form: the sender's public address, given with token"),
@@ -811,7 +812,7 @@ async def import_shared_doc(
     return await _import_bundle(bundle, company_id, user.id, session, page)
 
 
-@public_router.post("/docs/import-bundle")
+@public_router.post("/docs/import-bundle", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Import a Celerp document file someone sent and file it under Received.")
 async def import_bundle_upload(
     request: Request,
     company_id: _uuid.UUID = Depends(get_current_company_id),
@@ -846,7 +847,7 @@ async def import_bundle_upload(
         try:
             bundle = json.loads(raw)
         except Exception:
-            raise HTTPException(status_code=422, detail="Request body is not valid JSON")
+            raise HTTPException(status_code=422, detail=t("documents.err_request_body_not_valid_json"))
 
     return await _import_bundle(bundle, company_id, user.id, session, None)
 

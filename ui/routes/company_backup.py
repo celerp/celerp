@@ -112,9 +112,8 @@ def _html(page, status_code: int = 200) -> Response:
 
 
 def _message(e: APIError) -> str:
-    """An API refusal as one plain sentence: field problems joined, anything else not shown raw."""
-    if isinstance(e.detail, dict):
-        return " ".join(str(v) for v in e.detail.values())
+    """An API refusal as plain sentences (field problems joined by the API client), anything
+    else not shown raw."""
     return e.detail if isinstance(e.detail, str) else t("error.invalid_value")
 
 

@@ -53,6 +53,9 @@ class AIConversation(Base):
 
 class AIMessage(Base):
     __tablename__ = "ai_messages"
+    # A conversation's messages are read newest first by (created_at, id) keyset; the index
+    # serves that order and every lookup by conversation.
+    __table_args__ = (sa.Index("ix_ai_messages_conversation_created", "conversation_id", "created_at", "id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4,
@@ -60,7 +63,6 @@ class AIMessage(Base):
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("ai_conversations.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)  # "user" | "assistant"
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -143,7 +145,7 @@ class AIJobStep(Base):
         ForeignKey("ai_batch_jobs.id", ondelete="CASCADE"), nullable=False, index=True,
     )
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
-    key: Mapped[str] = mapped_column(String(160), nullable=False)  # file id, "model:{turn}" or "tool:{call_id}"
+    key: Mapped[str] = mapped_column(String(160), nullable=False)  # file id, "model:{turn}", "tool:{call_id}" or "meta:{call_id}"
     operation_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), nullable=True)
     step_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), nullable=True)
     generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -164,7 +166,8 @@ class AIJobStep(Base):
 class AIUsage(Base):
     """One question the AI service was asked, named by its ``operation_id`` (the user
     message, one file of a reading job, or the one-off request), with what the service
-    charged for it. The row is written before the question leaves, and stays
+    charged for it: one row per operation of a company, attributed to the user who sent
+    it first. The row is written before the question leaves, and stays
     ``pending`` until the service has named the whole charge (in a reply, or in the
     operation's status read by celerp.ai.usage.reconcile_usage, once ``reconcile_at``
     has passed). A pending row the service can no longer confirm (past its retry
@@ -174,7 +177,7 @@ class AIUsage(Base):
 
     __tablename__ = "ai_usage"
     __table_args__ = (
-        sa.UniqueConstraint("company_id", "user_id", "operation_id", name="uq_ai_usage_operation"),
+        sa.UniqueConstraint("company_id", "operation_id", name="uq_ai_usage_operation"),
         sa.CheckConstraint("pending OR NOT unresolved", name="ck_ai_usage_unresolved_pending"),
     )
 

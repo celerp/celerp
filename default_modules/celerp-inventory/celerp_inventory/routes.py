@@ -1128,6 +1128,18 @@ class ItemListFilters:
     dir: str = "desc"
 
 
+def item_list_filters(
+    filters: ItemListFilters = Depends(),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+) -> ItemListFilters:
+    """The item list's filters as a request sends them. A memo or consignment contact scope
+    lists document membership, so it is refused without the document permission."""
+    if filters.on_memo_to or filters.consigned_from:
+        assert_role_permission(settings, role, "view_documents")
+    return filters
+
+
 def _attr_filters(request: Request) -> list[tuple[str, set[str]]]:
     """Category-attribute column filters: ?attr.<key>=v1,v2 keeps items whose (flattened)
     attribute value is in the chosen set. Multiple attribute filters AND together."""
@@ -1244,13 +1256,11 @@ async def query_items(
     company = await session.get(Company, company_id)
     settings = (company.settings if company else {}) or {}
     # Memo/consignment membership and sold prices come from documents, so they follow the
-    # document permission: a contact scope is refused without it, and a sold row carries
-    # no price.
+    # document permission: a contact scope is admitted by item_list_filters, and a sold row
+    # carries no price.
     can_see_docs = role_has_permission(settings, role, "view_documents")
     base_currency = settings.get("currency") or "USD"
     holding_scoped = bool(f.on_memo_to or f.consigned_from)
-    if holding_scoped:
-        assert_role_permission(settings, role, "view_documents")
     rows = await load_item_rows(session, company_id)
     result = await flatten_item_rows(session, company_id, rows)
 
@@ -1511,14 +1521,14 @@ async def query_items(
     return resp
 
 
-@router.get("", openapi_extra=_ITEM_READ_AGENT)
+@router.get("", summary="Find inventory items by text, status, category, location or other filters, such as everything sold or archived.", openapi_extra=_ITEM_READ_AGENT)
 async def list_items(
     request: Request,
     company_id=Depends(get_current_company_id),
     _: None = require_permission("view_inventory"),
     session: AsyncSession = Depends(get_session),
     role: str = Depends(get_current_role),
-    filters: ItemListFilters = Depends(),
+    filters: ItemListFilters = Depends(item_list_filters),
     limit: int = 50,
     offset: int = 0,
 ) -> dict:
@@ -1547,9 +1557,9 @@ async def list_items(
     return resp
 
 
-@router.get("/valuation", openapi_extra=_ITEM_READ_AGENT)
+@router.get("/valuation", summary="Count items and total their stock value for the item list filters, split by status and category.", openapi_extra=_ITEM_READ_AGENT)
 async def get_valuation(
-    filters: ItemListFilters = Depends(),
+    filters: ItemListFilters = Depends(item_list_filters),
     attr_filters: list[tuple[str, set[str]]] = Depends(_attr_filters),
     company_id=Depends(get_current_company_id),
     _: None = require_permission("view_inventory"),
@@ -1654,13 +1664,34 @@ _SUGGESTION_FIELDS = frozenset({
 })
 
 
-@router.get("/field-values")
+async def _visible_flats(session: AsyncSession, company_id, flats: list[dict], role: str, settings: dict) -> list[dict]:
+    """Flattened items as this role sees them. Each item's own category schema decides its
+    fields, exactly as GET /items/{id} does with a single item: one shared schema would
+    leak a field restricted in one category but visible in another."""
+    from celerp.services.field_schema import get_effective_field_schema
+
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    can_author_drafts = role_has_permission(settings, role, "edit_inventory")
+    by_category: dict = {}
+    for flat in flats:
+        by_category.setdefault(flat.get("category"), []).append(flat)
+    visible: list[dict] = []
+    for category, group in by_category.items():
+        field_schema = await get_effective_field_schema(session, company_id, category=category)
+        visible += apply_item_visibility(group, role, field_schema, can_see_costs, can_author_drafts=can_author_drafts)
+    return visible
+
+
+@router.get("/field-values", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["edit_inventory", "view_inventory_costs"], "x-celerp-agent-field-visibility": True}, summary="List the distinct values used in one item field, such as every brand or color in stock.")
 async def get_field_values(
     field: str,
     company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Return sorted distinct non-empty values for a categorical item field.
+    """Return sorted distinct non-empty values for a categorical item field, read from the
+    items as this role sees them: a field the role cannot see has no values.
 
     Allowed fields:
     - Fields in _SUGGESTION_FIELDS (core categorical fields)
@@ -1678,17 +1709,16 @@ async def get_field_values(
     })
     import re as _re
     if field in _BLOCKED_FIELDS or not _re.match(r'^[a-zA-Z][a-zA-Z0-9_]*$', field):
-        raise HTTPException(status_code=400, detail=f"Field '{field}' not available for suggestions")
+        raise HTTPException(status_code=400, detail=t("inventory.err_field_field_not_available_suggestions", field=field))
     demo_eids = set(await demo_item_ids(session, company_id))
     stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
     rows = (await session.execute(stmt)).scalars().all()
     seen: set[str] = set()
     found_in_known_fields = field in _SUGGESTION_FIELDS
     _price_config = await get_price_config(session, company_id)
-    for row in rows:
-        if row.entity_id in demo_eids:
-            continue
-        flat = flatten_item(row.state, row.entity_id, price_config=_price_config)
+    flats = [flatten_item(row.state, row.entity_id, price_config=_price_config)
+             for row in rows if row.entity_id not in demo_eids]
+    for flat in await _visible_flats(session, company_id, flats, role, settings):
         val = flat.get(field)
         if val and str(val).strip():
             seen.add(str(val).strip())
@@ -1703,7 +1733,7 @@ async def get_field_values(
     return {"values": sorted(seen)}
 
 
-@router.get("/categories")
+@router.get("/categories", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": "the category names item and purchase forms pick from, as the company category schemas are"}, summary="List the item categories in use.")
 async def list_item_categories(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -1729,7 +1759,7 @@ class ItemsMetadataBody(BaseModel):
     entity_ids: list[str] = Field(..., min_length=1, max_length=MAX_ITEMS_METADATA)
 
 
-@router.post("/metadata", dependencies=[require_permission("view_inventory")])
+@router.post("/metadata", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-result-permissions": ["edit_inventory", "view_inventory_costs"], "x-celerp-agent-field-visibility": True}, summary="Read the name, SKU and status of several items at once by their ids.")
 async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     """Bulk item-metadata read: one entry per requested id, keyed by entity_id.
 
@@ -1743,7 +1773,6 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     the result (no error, no fabricated entry).
     """
     from celerp.models.company import Location
-    from celerp.services.field_schema import get_effective_field_schema
 
     # pydantic rejects an empty or over-max list with 422 before this runs; dedup
     # so a repeated id resolves once.
@@ -1772,12 +1801,8 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     # flatten_item's qty_each derivation, exactly as GET /items/{id} does per item.
     units = await read_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
-    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
-    can_author_drafts = role_has_permission(settings, role, "edit_inventory")
-
-    flats: list[dict] = []
-    for row in rows:
-        flat = flatten_item(
+    flats = [
+        flatten_item(
             row.state, row.entity_id,
             location_id=str(row.location_id) if row.location_id else None,
             location_name=loc_names.get(row.location_id) if row.location_id else None,
@@ -1786,27 +1811,11 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
             price_config=price_config,
             unit_map=unit_map,
         )
-        flats.append(flat)
-
-    # Group by the item's own category and apply the per-category effective schema
-    # once per distinct category, exactly as GET /items/{id} does with a single
-    # item. A single shared schema (or category=None) would leak a field restricted
-    # in one category but visible in another.
-    by_category: dict = {}
-    for flat in flats:
-        by_category.setdefault(flat.get("category"), []).append(flat)
-
+        for row in rows
+    ]
     versions = {row.entity_id: row.version for row in rows}
-    result: dict = {}
-    for category, group in by_category.items():
-        field_schema = await get_effective_field_schema(session, company_id, category=category)
-        filtered = apply_item_visibility(
-            group, role, field_schema, can_see_costs, can_author_drafts=can_author_drafts,
-        )
-        for flat in filtered:
-            result[flat["id"]] = {**flat, "_version": versions[flat["id"]]}
-
-    return {"items": result}
+    visible = await _visible_flats(session, company_id, flats, role, settings)
+    return {"items": {flat["id"]: {**flat, "_version": versions[flat["id"]]} for flat in visible}}
 
 
 # ── Import routes ─────────────────────────────────────────────────────────────
@@ -1824,11 +1833,12 @@ def _bounded_rows(rows: list[dict]) -> list[dict]:
     return rows
 
 
-def _rows_preview_hash(rows: list[dict], upsert: bool, idempotency_key: str | None, plan: ImportPlan) -> str:
-    """Binds the rows, the update-existing choice, the operation key, the row
-    decisions, and what the rows meant when previewed."""
+def _rows_preview_hash(rows: list[dict], upsert: bool, plan: ImportPlan) -> str:
+    """Binds the rows, the update-existing choice, the row decisions, and what the
+    rows meant when previewed. Never the operation key: a preview and its import each
+    carry their own."""
     return import_preview_hash({
-        "rows": rows, "upsert": upsert, "idempotency_key": idempotency_key,
+        "rows": rows, "upsert": upsert,
         "decisions": plan.decisions, "semantic_fingerprint": plan.semantic_fingerprint,
     })
 
@@ -1920,6 +1930,8 @@ async def _rows_plan(session, company_id, role: str, settings: dict, body) -> Im
 @router.post(
     "/import/rows/preview", response_model=InventoryImportRowsPreview,
     dependencies=[require_permission("import_export_data")],
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-confirm": False, "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices", "view_inventory_costs"]},
+    summary="Check mapped item import rows before anything is saved, showing which are new, which update items and which have errors.",
 )
 async def import_rows_preview(
     body: InventoryImportRowsPreviewRequest,
@@ -1930,9 +1942,8 @@ async def import_rows_preview(
 ) -> InventoryImportRowsPreview:
     """Semantic preview of mapped browser rows; nothing is written.
 
-    The returned hash binds the rows, the update-existing choice, the operation
-    key, and what the rows mean now, and /import/rows refuses a commit whose
-    hash no longer matches.
+    The returned hash binds the rows, the update-existing choice and what the
+    rows mean now, and /import/rows refuses a commit whose hash no longer matches.
     """
     plan = await _rows_plan(session, company_id, role, settings, body)
     return InventoryImportRowsPreview(
@@ -1940,13 +1951,15 @@ async def import_rows_preview(
         locations_to_create=plan.locations_to_create,
         counts=plan.counts, summary_rows=plan.summary_rows, duplicate_groups=plan.duplicate_groups,
         cost_changes=plan.cost_changes, decisions=plan.decisions,
-        preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan),
+        preview_hash=_rows_preview_hash(body.rows, body.upsert, plan),
     )
 
 
 @router.post(
     "/import/rows", response_model=BatchImportResult,
     dependencies=[require_permission("import_export_data"), require_permission("edit_inventory")],
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices", "view_inventory_costs"]},
+    summary="Import mapped item rows that were already checked.",
 )
 async def import_rows(
     body: InventoryImportRows,
@@ -1960,8 +1973,7 @@ async def import_rows(
 
     Rows arrive mapped and fixed by the UI. The shared committer owns location
     resolution and creation, unit and quantity derivation, monetary conversion,
-    idempotency, and the category-schema follow-up. Unmarked: this is the browser
-    transport, not an agent capability (the agent commits through /import/commit).
+    idempotency, and the category-schema follow-up.
 
     Every commit runs the semantic preflight once, and any row error is refused
     with 422 before anything is written. With ``preview_hash`` the commit is also
@@ -1974,7 +1986,7 @@ async def import_rows(
     plan = None
     if body.preview_hash is not None:
         plan = await _rows_plan(session, company_id, role, settings, body)
-        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan) != body.preview_hash:
+        if _rows_preview_hash(body.rows, body.upsert, plan) != body.preview_hash:
             raise _preview_stale()
         if plan.errors:
             raise _validation_failed(plan.errors)
@@ -2131,6 +2143,8 @@ async def _build_item_preview(
 @router.get(
     "/import/preview", response_model=InventoryImportPreview,
     dependencies=[require_permission("import_export_data")],
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices", "view_inventory_costs"]},
+    summary="Read the check of an uploaded item import file.",
 )
 async def import_preview(
     file_id: str = Query(..., min_length=1, max_length=64),
@@ -2152,7 +2166,7 @@ async def import_preview(
 
 
 @router.post(
-    "/import/preview", response_model=InventoryImportPreview,
+    "/import/preview", summary="Check an item import file before anything is saved, showing how its columns map and which rows have errors.", response_model=InventoryImportPreview,
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False, "x-celerp-agent-result-permissions": _IMPORT_PERMISSIONS},
     dependencies=[require_permission("import_export_data")],
 )
@@ -2184,7 +2198,7 @@ class InventoryImportCommit(BaseModel):
 
 
 @router.post(
-    "/import/commit", response_model=BatchImportResult,
+    "/import/commit", summary="Import the items from a file already checked with the item import preview.", response_model=BatchImportResult,
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-result-permissions": _IMPORT_PERMISSIONS},
     dependencies=[require_permission("import_export_data"), require_permission("edit_inventory")],
 )
@@ -2224,7 +2238,7 @@ async def import_commit(
     )
 
 
-@router.get("/{entity_id}", dependencies=[require_permission("view_inventory")], openapi_extra=_ITEM_READ_AGENT)
+@router.get("/{entity_id}", summary="Read one inventory item in full, with its fields, quantity, location, prices, status and linked documents.", dependencies=[require_permission("view_inventory")], openapi_extra=_ITEM_READ_AGENT)
 async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.models.company import Location
     from celerp.services.field_schema import get_effective_field_schema
@@ -2274,7 +2288,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     return result
 
 
-@router.get("/{entity_id}/reorder-suggestion", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
+@router.get("/{entity_id}/reorder-suggestion", summary="Suggest a reorder point and reorder quantity for an item from how fast it sold recently.", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
 async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Suggested reorder_point / reorder_qty from trailing outbound velocity.
 
@@ -2360,7 +2374,7 @@ async def _require_company_location(session: AsyncSession, company_id, location_
     await require_company_location(session, company_id, location_id)
 
 
-@router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+@router.post("", summary="Add a new inventory item with its name, SKU, quantity, location and prices.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key",
                                  "x-celerp-agent-result-permissions": ["set_inventory_prices"]})
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     idem_key = payload.idempotency_key or str(uuid.uuid4())
@@ -2584,8 +2598,8 @@ def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
     return is_draft and role_has_permission(settings, role, "edit_inventory")
 
 
-@router.patch("/{entity_id}", openapi_extra={
-    "x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+@router.patch("/{entity_id}", summary="Change an existing inventory item's fields, such as its name, quantity, prices, category or location.", openapi_extra={
+    "x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key",
     "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "revert_items_to_draft", "set_inventory_prices"]})
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     """Change item fields (``fields_changed``: ``{field: {"old": ..., "new": ...}}``). A
@@ -2858,7 +2872,7 @@ class BulkDeleteBody(BaseModel):
     untouched_samples_only: bool = False
 
 
-@router.post("/bulk/status")
+@router.post("/bulk/status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-bulk-of": "POST /items/{entity_id}/status", "x-celerp-agent-result-permissions": ["revert_items_to_draft"]}, summary="Set the status of several inventory items at once.")
 async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
@@ -2898,7 +2912,7 @@ class RevertToDraftBody(BaseModel):
     reason: str | None = None
 
 
-@router.post("/bulk/make-available")
+@router.post("/bulk/make-available", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids"}, summary="Put several draft items into stock as available at once.")
 async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Commit one or more drafts into stock. Same authority as authoring the draft (edit_inventory) - no extra permission.
 
@@ -2933,7 +2947,7 @@ async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get
     return {"updated": len(event_ids), "event_ids": event_ids}
 
 
-@router.post("/bulk/revert-to-draft")
+@router.post("/bulk/revert-to-draft", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-result-permissions": ["revert_items_to_draft"]}, summary="Put several available items back to draft at once.")
 async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     """assert_status_change_allowed does the real gating (revert_items_to_draft + clean history),
     on lots locked before any is checked: a fulfilment or reservation that reached a lot
@@ -3002,7 +3016,7 @@ async def _build_transfer_data(session, company_id, entity_id: str, to_location_
     }
 
 
-@router.post("/bulk/transfer")
+@router.post("/bulk/transfer", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-bulk-of": "POST /items/{entity_id}/transfer"}, summary="Move several inventory items to another location at once.")
 async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
@@ -3040,7 +3054,7 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
     return {"updated": len(event_ids), "event_ids": event_ids, "refused": refused}
 
 
-@router.post("/bulk/delete")
+@router.post("/bulk/delete", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids"}, summary="Delete several draft items at once.")
 async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Delete drafts that were a mistake. Every selected item must be a draft (or already
     deleted) that never became stock; otherwise nothing is deleted and the answer names the
@@ -3066,9 +3080,7 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
     if blocked:
         skus = ", ".join(sorted(str((rows[e].state or {}).get("sku") or e) for e in blocked))
         raise HTTPException(status_code=409, detail=(
-            f"Nothing was deleted. Only a draft that never became stock can be deleted, and these cannot: {skus}. "
-            f"Use Revert to Draft for stock made available by mistake, Archive to retire a product, "
-            f"or Write Off Stock for goods that left the company."))
+            t("inventory.err_nothing_was_deleted_only_draft_never", skus=skus)))
     files = await holding_files(session, company_id, rows)
     # An item kept as Deleted still names what it names (a sub-assembly's recipe names
     # its parts), so whatever it names in the selection is kept with it.
@@ -3115,7 +3127,7 @@ class RestoreDeletedBody(BaseModel):
     entity_ids: list[str]
 
 
-@router.post("/bulk/restore-deleted")
+@router.post("/bulk/restore-deleted", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids"}, summary="Bring several deleted items back as drafts at once.")
 async def bulk_restore_deleted(payload: RestoreDeletedBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Undo a Delete that moved items to Deleted: each comes back as the draft it was.
     Every selected item must be deleted; otherwise nothing is restored and the answer names
@@ -3143,7 +3155,7 @@ class BulkExpireBody(BaseModel):
     entity_ids: list[str]
 
 
-@router.post("/bulk/expire")
+@router.post("/bulk/expire", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-bulk-of": "POST /items/{entity_id}/expire"}, summary="Mark several inventory items as expired at once.")
 async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
@@ -3169,7 +3181,7 @@ async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_co
 
 
 
-@router.post("/{entity_id}/transfer")
+@router.post("/{entity_id}/transfer", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"}, summary="Move an inventory item to another location.")
 async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await emit_event(
         session,
@@ -3188,7 +3200,7 @@ async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depend
     return {"event_id": entry.id}
 
 
-@router.get("/{entity_id}/split-preview")
+@router.get("/{entity_id}/split-preview", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True}, summary="Show what splitting an inventory item into smaller lots would produce, before anything is changed.")
 async def split_preview(
     entity_id: str,
     child_sku: str | None = None,
@@ -3272,7 +3284,7 @@ def _split_key_reused() -> dict:
                    "without a key, or with a new one.")
 
 
-@router.post("/{entity_id}/split")
+@router.post("/{entity_id}/split", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices"]}, summary="Split an inventory item into smaller lots, each with its own quantity.")
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists = (await get_price_config(session, company_id))[0]
     for _child in payload.children:
@@ -3301,7 +3313,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     if not splitting_allowed(parent.state):
         raise HTTPException(
             status_code=422,
-            detail="Allow splitting is set to No for this item. Change Allow Splitting to Yes in the item details to enable splitting.",
+            detail=t("inventory.err_allow_splitting_set_no_item_change"),
         )
 
     parent_qty = float(parent.state.get("quantity") or 0)
@@ -3781,7 +3793,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     parent_weight = parent_qty if weight_type and stored_weight is not None else stored_weight
     parent_pieces = parent_qty if pieces_type and stored_pieces is not None else stored_pieces
     if sell_by in unit_map and exceeds_precision(child_qty, int(unit_map[sell_by].get("decimals") or 0)):
-        raise ValueError(t("inventory.split_too_precise", qty=f"{child_qty:g}", unit=sell_by))
+        raise Refused("inventory.split_too_precise", qty=f"{child_qty:g}", unit=sell_by)
 
     if weight_type and child_weight is None:
         child_weight = child_qty
@@ -3793,7 +3805,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     if pieces_type and child_pieces is not None and abs(child_pieces - child_qty) > 1e-9:
         raise ValueError("for piece-sold items child_pieces must equal child_qty")
     if child_pieces is not None and float(child_pieces) != int(float(child_pieces)):
-        raise ValueError(t("inventory.split_pieces_not_whole"))
+        raise Refused("inventory.split_pieces_not_whole")
     ch_pieces = _to_int_pieces(child_pieces) if child_pieces is not None else None
 
     # What the mother keeps of each measure: the difference when both sides are known,
@@ -3804,16 +3816,16 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
         if child_weight is not None:
             weight_after = round(parent_weight - child_weight, 10)
             if weight_after < 0:
-                raise ValueError(t("inventory.split_weight_exceeds_lot",
-                                    weight=f"{child_weight:g}", lot_weight=f"{parent_weight:g}"))
+                raise Refused("inventory.split_weight_exceeds_lot",
+                                    weight=f"{child_weight:g}", lot_weight=f"{parent_weight:g}")
         fields_changed["weight"] = {"old": parent.state.get("weight"), "new": weight_after}
     pieces_after: int | None = None
     if parent_pieces is not None:
         if ch_pieces is not None:
             pieces_after = _to_int_pieces(parent_pieces) - ch_pieces
             if pieces_after < 0:
-                raise ValueError(t("inventory.split_pieces_exceeds_lot",
-                                    pieces=ch_pieces, lot_pieces=f"{parent_pieces:g}"))
+                raise Refused("inventory.split_pieces_exceeds_lot",
+                                    pieces=ch_pieces, lot_pieces=f"{parent_pieces:g}")
         fields_changed["pieces"] = {"old": stored_pieces, "new": pieces_after}
 
     # The split child is the same product as the parent: it KEEPS the parent SKU and is
@@ -3981,7 +3993,7 @@ async def restock_measures(session: AsyncSession, *, company_id, user_id, lot_id
                          idempotency_key=idempotency_key, metadata_=metadata)
 
 
-@router.post("/{entity_id}/transform")
+@router.post("/{entity_id}/transform", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_inventory_prices"]}, summary="Turn an inventory item into one or more different items, such as cutting raw stock into finished pieces.")
 async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _validate_sku(payload.child_sku)
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
@@ -4217,10 +4229,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 # A merge sent with an idempotency key gets its result id from the key, so every
 # delivery of the same merge names the same item and the same journal entry.
 _MERGE_ID_NAMESPACE = uuid.UUID("6f1d3c52-9a1e-4c55-9d1e-2a7f5b0e8c41")
-
-_STALE_MERGE = "The merge or its items changed since it was reviewed. Review the merge again."
-_UNREVIEWED_MERGE = "Preview this merge first, then confirm it with the plan_fingerprint the preview returned."
-_UNDONE_MERGE = "This merge was undone. Review the merge again."
 
 
 def _merge_result_id(company_id, idempotency_key: str | None) -> str:
@@ -4711,7 +4719,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     )
 
 
-@router.post("/merge/preview")
+@router.post("/merge/preview", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-confirm": False, "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices", "view_inventory_costs"], "x-celerp-agent-field-visibility": True}, summary="Show what merging several items into one would do to stock and the books, before anything is changed.")
 async def preview_merge(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     """What merging these items would do to the books, before the user confirms. Send
     the same body the merge will be confirmed with (every field but ``idempotency_key``
@@ -4749,7 +4757,7 @@ async def _merge_result_preview(session: AsyncSession, company_id, plan: MergePl
     return out
 
 
-@router.post("/merge")
+@router.post("/merge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices", "view_inventory_costs"]}, summary="Merge several inventory items into one new item.")
 async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Merge the items into one new item. Preview the merge first with POST
     /items/merge/preview and confirm it with the ``plan_fingerprint`` that preview
@@ -4776,7 +4784,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             if replay.event_type != "item.created" or meta.get("merge_request") != request_digest:
                 raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
             if await _merge_undone(session, company_id, replay.entity_id):
-                raise HTTPException(status_code=409, detail=_UNDONE_MERGE)
+                raise HTTPException(status_code=409, detail=t("inventory.err_merge_undone"))
             return {"id": replay.entity_id, "inventory_reclassification": meta.get("inventory_reclassification")}
 
     # Plan again under the locks, from the settings as last committed, and refuse if
@@ -4784,9 +4792,9 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     settings = await current_settings(session, company_id)
     plan = await _plan_merge(session, company_id, payload, settings, role, locked_sources)
     if payload.plan_fingerprint is None:
-        raise HTTPException(status_code=422, detail=_UNREVIEWED_MERGE)
+        raise HTTPException(status_code=422, detail=t("inventory.err_merge_unreviewed"))
     if not hmac.compare_digest(payload.plan_fingerprint, plan.fingerprint):
-        raise HTTPException(status_code=409, detail=_STALE_MERGE)
+        raise HTTPException(status_code=409, detail=t("inventory.err_merge_stale"))
 
     new_entity_id = _merge_result_id(company_id, payload.idempotency_key)
     # The merged item is a new physical lot, so it mints a FRESH barcode rather than
@@ -4937,7 +4945,7 @@ async def _merge_undone(session: AsyncSession, company_id, entity_id: str) -> bo
         LedgerEntry.event_type == "item.merge_undone").limit(1))).first() is not None
 
 
-@router.post("/{entity_id}/undo-merge")
+@router.post("/{entity_id}/undo-merge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Undo a merge so the merged items hold their own stock again.")
 async def undo_merge(entity_id: str, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Undo a merge: the merged items hold their own stock again, each on the inventory
     account it was in before, and the merge's reclassification entry is reversed.
@@ -4950,23 +4958,23 @@ async def undo_merge(entity_id: str, company_id=Depends(get_current_company_id),
     marker = await _latest_item_event(session, company_id, entity_id)
     if marker is None or marker.event_type != "item.merged":
         raise HTTPException(status_code=409, detail=(
-            "This merge can no longer be undone: the merged item has changed since it was made."))
+            t("inventory.err_merge_can_no_longer_undone_merged")))
     source_ids = list(marker.data["source_entity_ids"])
     locked = await _lock_items_for_physical_mutation(session, company_id, [entity_id, *source_ids])
     marker = await _latest_item_event(session, company_id, entity_id)
     if marker is None or marker.event_type != "item.merged" or entity_id not in locked:
         raise HTTPException(status_code=409, detail=(
-            "This merge can no longer be undone: the merged item has changed since it was made."))
+            t("inventory.err_merge_can_no_longer_undone_merged")))
     restores = []
     for sid in source_ids:
         last = await _latest_item_event(session, company_id, sid)
         if sid not in locked or last is None or last.event_type != "item.source_deactivated" \
                 or (last.data or {}).get("merged_into") != entity_id:
             raise HTTPException(status_code=409, detail=(
-                "This merge can no longer be undone: one of the merged items has changed since it was made."))
+                t("inventory.err_merge_can_no_longer_undone_one")))
         if not (last.data or {}).get("original_status"):
             raise HTTPException(status_code=409, detail=(
-                "This merge was made before merges could be undone, so the items' earlier state is not on record."))
+                t("inventory.err_merge_was_made_before_merges_could")))
         restores.append((sid, last.data))
 
     from celerp.services.auto_je import void_for_merge_reclassification
@@ -4990,7 +4998,7 @@ async def undo_merge(entity_id: str, company_id=Depends(get_current_company_id),
     return {"id": entity_id, "restored": source_ids}
 
 
-@router.post("/{entity_id}/adjust")
+@router.post("/{entity_id}/adjust", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"}, summary="Adjust the quantity of an inventory item, such as after a count or damage.")
 async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await adjust_item_quantity(
         session, company_id, user.id, entity_id, payload.model_dump(exclude_none=True),
@@ -5000,7 +5008,7 @@ async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(ge
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/price")
+@router.post("/{entity_id}/price", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-any-permission": ["set_inventory_prices", "edit_inventory"], "x-celerp-agent-result-permissions": ["edit_inventory", "set_inventory_prices"]}, summary="Set one price of an inventory item, such as its retail or cost price.")
 async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
     # Guard both the conventional key ("trade_price") and the raw list name ("Trade"):
@@ -5035,7 +5043,7 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/status")
+@router.post("/{entity_id}/status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["revert_items_to_draft"]}, summary="Change the status of an inventory item, such as available, on hold or sold.")
 async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     await reject_draft_status_change_via_generic_path(session, company_id, entity_id, payload.new_status)
     await assert_status_change_allowed(session, company_id, entity_id, payload.new_status, role, settings)
@@ -5084,7 +5092,7 @@ async def assert_reservable(session: AsyncSession, company_id, entity_id: str, q
             result=f"{reserved:g}"))
 
 
-@router.post("/{entity_id}/reserve")
+@router.post("/{entity_id}/reserve", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"}, summary="Reserve an inventory item for a customer so it is not sold to anyone else.")
 async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await assert_reservable(session, company_id, entity_id, payload.quantity)
     entry = await emit_event(
@@ -5104,7 +5112,7 @@ async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/unreserve")
+@router.post("/{entity_id}/unreserve", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"}, summary="Release the reservation on an inventory item.")
 async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await assert_reservable(session, company_id, entity_id, payload.quantity, release=True)
     entry = await emit_event(
@@ -5124,7 +5132,7 @@ async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depend
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/expire")
+@router.post("/{entity_id}/expire", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Mark an inventory item as expired.")
 async def expire_item(entity_id: str, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await assert_expirable(session, company_id, entity_id)
     entry = await emit_event(
@@ -5149,7 +5157,7 @@ async def expire_item(entity_id: str, company_id=Depends(get_current_company_id)
 # transport shares one implementation; this route is the raw-event-batch transport.
 
 
-@router.post("/import/batch", response_model=BatchImportResult)
+@router.post("/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices", "view_inventory_costs"]}, summary="Import a batch of inventory items, creating new ones and updating those that already exist.")
 async def batch_import_items(
     body: BatchImportRequest,
     company_id=Depends(get_current_company_id),
@@ -5176,7 +5184,7 @@ async def batch_import_items(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/import/batches")
+@router.get("/import/batches", openapi_extra={"x-celerp-agent": True}, summary="List the item imports done in this company, newest first.")
 async def list_import_batches(
     company_id=Depends(get_current_company_id),
     _: None = require_permission("import_export_data"),
@@ -5223,13 +5231,11 @@ async def _undoable_batch(session: AsyncSession, company_id, batch_uuid: uuid.UU
         raise HTTPException(status_code=409, detail=t("inventory.err_import_already_undone"))
     if not batch.reversible:
         raise HTTPException(status_code=409, detail={
-            "code": "import_not_reversible",
-            "message": t("inventory.err_import_not_reversible"),
-        })
+            **catalog_refusal("inventory.err_import_not_reversible"), "code": "import_not_reversible"})
     return batch
 
 
-@router.post("/import/batches/{batch_id}/undo")
+@router.post("/import/batches/{batch_id}/undo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Undo an item import, removing the items it created and taking its stock off the books.")
 async def undo_import_batch(
     batch_id: str,
     company_id=Depends(get_current_company_id),
@@ -5267,15 +5273,13 @@ async def undo_import_batch(
     batch = await _undoable_batch(session, company_id, batch_uuid, lock=True)
     if list(batch.entity_ids or []) != entity_ids:
         raise HTTPException(status_code=409, detail={
-            "code": "import_items_modified",
-            "message": t("inventory.err_import_items_changed"),
+            **catalog_refusal("inventory.err_import_items_changed"), "code": "import_items_modified",
             "entity_ids": sorted(set(entity_ids) ^ set(batch.entity_ids or [])),
         })
     unexpected = sorted(e.entity_id for e in entries if (e.state or {}).get("status") != "posted")
     if unexpected:
         raise HTTPException(status_code=409, detail={
-            "code": "import_entry_changed",
-            "message": "This import cannot be undone because the entry booking its opening stock was changed.",
+            **catalog_refusal("inventory.err_import_entry_changed"), "code": "import_entry_changed",
             "entity_ids": unexpected,
         })
 
@@ -5308,8 +5312,7 @@ async def undo_import_batch(
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "import_items_modified",
-                "message": t("inventory.err_import_items_changed"),
+                **catalog_refusal("inventory.err_import_items_changed"), "code": "import_items_modified",
                 "entity_ids": sorted(modified),
             },
         )
@@ -5362,6 +5365,8 @@ def _fmt_ts(val) -> str:
 @router.get(
     "/export/csv",
     dependencies=[require_permission("view_inventory"), require_permission("import_export_data")],
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-field-visibility": True, "x-celerp-agent-result-permissions": ["edit_inventory", "view_documents", "view_inventory_costs"], "x-celerp-agent-download": "/inventory/export/csv"},
+    summary="Download the item list as a CSV file, with the same filters as the list.",
 )
 async def export_items_csv(
     request: Request,
@@ -5369,7 +5374,7 @@ async def export_items_csv(
     session: AsyncSession = Depends(get_session),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
-    filters: ItemListFilters = Depends(),
+    filters: ItemListFilters = Depends(item_list_filters),
     cols: str | None = None,
 ) -> StreamingResponse:
     """The item list as CSV: the list's filters and order, every matching row (pagination never

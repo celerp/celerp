@@ -12,6 +12,7 @@ import json
 import pytest
 from httpx import AsyncClient
 from celerp.services.permissions import missing_permission_text
+from celerp.accounting_roles import catalog_refusal
 from ui.i18n import t, refusal_text
 
 
@@ -360,7 +361,7 @@ async def test_booking_again_after_a_failed_finish_reuses_the_draft(client, sess
 
     async def _fail_once(*args, **kwargs):
         monkeypatch.setattr(rcv, "_emit", real)
-        raise HTTPException(status_code=503, detail="unavailable")
+        raise HTTPException(status_code=503, detail=catalog_refusal("error.err_service_not_ready"))
 
     monkeypatch.setattr(rcv, "_emit", _fail_once)
     r = await client.post(f"/docs/received/{rid}/book", headers=_h(tok))
@@ -464,7 +465,7 @@ async def test_updating_again_after_a_failed_finish_keeps_the_draft_updatable(cl
 
     async def _fail_once(*args, **kwargs):
         monkeypatch.setattr(rcv, "_emit", real)
-        raise HTTPException(status_code=503, detail="unavailable")
+        raise HTTPException(status_code=503, detail=catalog_refusal("error.err_service_not_ready"))
 
     monkeypatch.setattr(rcv, "_emit", _fail_once)
     assert (await _update(client, tok, rid)).status_code == 503

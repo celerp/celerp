@@ -13,9 +13,11 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal, refusal_detail
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.models.company_peer import CompanyPeerGrant
+from ui.i18n import t
 from celerp.models.migration import MigrationRun, MigrationStatus
 from celerp.services import company_handoff_sender as sender
 from celerp.services import peer_attention
@@ -23,8 +25,6 @@ from celerp.services.peer_access import RENEW_WITHIN
 from celerp.services.peer_accounts import ACCOUNTS_PAGE
 
 SYNC_STATES = {"on": "On", "off": "Off", "failing": "Failing", "expiring": "Key expiring"}
-INVALID_SYNC = "Choose a sync status: On, Off, Failing or Key expiring."
-OWNER_ONLY = "Only the company's owner sees its sync and what needs attention."
 KEY_PAGE = "/settings/accountant-access"
 COPIES_PAGE = "/settings/company-handoff"
 _FINISHED = {MigrationStatus.COMPLETED.value, MigrationStatus.CANCELLED.value}
@@ -34,7 +34,7 @@ def _instant(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def _item(kind: str, label: str, reason: str, href: str | None = None,
+def _item(kind: str, label: str, reason: dict, href: str | None = None,
           when: datetime | None = None, post_again: str | None = None) -> dict:
     return {"kind": kind, "label": label, "reason": reason, "href": href,
             "at": when.isoformat() if when else None, "post_again": post_again}
@@ -46,7 +46,7 @@ def _attention_item(a) -> dict:
     again = (f"/accounting/journal/new?from={a.source_entity_id}"
              if a.kind == peer_attention.REVERSAL else None)
     fixed_there = (a.kind == peer_attention.ADDED or a.fix) and not (a.fix or {}).get("fixed")
-    return _item(a.kind, a.label, a.reason, ACCOUNTS_PAGE if fixed_there else None,
+    return _item(a.kind, a.label, peer_attention.reason_of(a), ACCOUNTS_PAGE if fixed_there else None,
                  _instant(a.created_at), again)
 
 
@@ -66,13 +66,11 @@ def _keys(grants: list[CompanyPeerGrant], refused: bool, now: datetime) -> tuple
         if ends <= now:
             expired = True
             items.append(_item("key_expired", grant.label,
-                               f"The key expired on {ends.date().isoformat()}, so this company "
-                               "receives nothing from it. Renew the key to sync again.", KEY_PAGE))
+                               catalog_refusal("firm_view.reason_key_expired", date=ends.date()), KEY_PAGE))
         elif ends - now <= RENEW_WITHIN:
             expiring = True
             items.append(_item("key_expiring", grant.label,
-                               f"The key expires on {ends.date().isoformat()}. Renew it before "
-                               "then to keep syncing.", KEY_PAGE))
+                               catalog_refusal("firm_view.reason_key_expiring", date=ends.date()), KEY_PAGE))
     status = "failing" if expired or refused else "expiring" if expiring else "on"
     return status, items
 
@@ -85,22 +83,21 @@ def _copy_items(copies: list[dict]) -> list[dict]:
         expires = str(copy.get("expires_at") or "")[:10] or "--"
         if copy.get("status") == "sent" and not copy.get("company_opened"):
             items.append(_item("copy_not_opened", recipient,
-                               f"Sent and not opened yet. The link expires on {expires}.",
+                               catalog_refusal("firm_view.reason_copy_not_opened", date=expires),
                                COPIES_PAGE))
         elif copy.get("status") == "expired" and not copy.get("company_opened"):
             items.append(_item("copy_expired", recipient,
-                               f"The link expired on {expires} before the copy was opened. "
-                               "Send a new copy if it is still needed.", COPIES_PAGE))
+                               catalog_refusal("firm_view.reason_copy_expired", date=expires), COPIES_PAGE))
     return items
 
 
-async def _copies(company_id: uuid.UUID) -> tuple[list[dict], str | None]:
+async def _copies(company_id: uuid.UUID) -> tuple[list[dict], dict | None]:
     try:
         return _copy_items(await sender.company_copies(company_id)), None
     except sender.HandoffAccountNeeded:
         return [], None  # no account on this installation: it sends no copies
     except sender.HandoffSendError as exc:
-        return [], str(exc)
+        return [], refusal_detail(exc)
 
 
 def _matches(row: dict, q: str | None, sync: str | None) -> bool:
@@ -119,7 +116,7 @@ async def firm_view(session: AsyncSession, user_id: uuid.UUID, *, q: str | None 
     """The rows newest activity first: one per company the user can open, and one per
     company move the user started that has not finished."""
     if sync is not None and sync not in SYNC_STATES:
-        raise HTTPException(422, INVALID_SYNC)
+        raise HTTPException(422, t("firm_view.err_invalid_sync"))
     q = (q or "").strip() or None
     now = datetime.now(timezone.utc)
     pairs = (await session.execute(
@@ -137,7 +134,7 @@ async def firm_view(session: AsyncSession, user_id: uuid.UUID, *, q: str | None 
         row = {"company_id": str(company.id), "company_name": company.name, "role": role,
                "sync": None, "last_sync": None, "attention": [], "unavailable": []}
         if role != "owner":
-            row["unavailable"] = [OWNER_ONLY]
+            row["unavailable"] = [catalog_refusal("firm_view.reason_owner_only")]
             rows.append(row)
             continue
         own = [g for g in grants if g.company_id == company.id]
@@ -162,8 +159,9 @@ async def firm_view(session: AsyncSession, user_id: uuid.UUID, *, q: str | None 
             "company_id": str(run.company_id), "company_name": name, "role": None,
             "sync": None, "last_sync": None, "unavailable": [],
             "attention": [_item("migration", run.source_system,
-                                f"The move from {run.source_system} is {run.status.replace('_', ' ')} "
-                                "and has not finished.", f"/migrations/{run.id}",
+                                catalog_refusal("firm_view.reason_migration", source=run.source_system,
+                                                state=catalog_refusal(f"migration.status.{run.status}")),
+                                f"/migrations/{run.id}",
                                 _instant(run.created_at))]})
 
     rows = [row for row in rows if _matches(row, q, sync)]

@@ -247,7 +247,7 @@ async def test_undo_disposal_refused_once_its_period_is_locked(fa):
     await _dispose(fa, car, "2026-05-20")
     await _lock(fa, "2026-05-31")
     r = await fa.post(f"/assets/{car}/undo-disposal", {"preview": True, "op_key": "u"})
-    assert r.status_code == 409 and "2026-05-20 is locked" in refusal_text(r.json()["detail"])
+    assert r.status_code == 409 and "20 May 2026 is locked" in refusal_text(r.json()["detail"])
 
 
 async def test_disposed_asset_refuses_another_disposal(fa):

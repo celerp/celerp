@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import pytest
 
+from ui.i18n import refusal_text
+
 from test_runs import _contributed
 
 pytestmark = pytest.mark.asyncio
@@ -30,4 +32,4 @@ async def test_wrong_shaped_values_are_refused_with_an_explanation(fa):
     for method, path, body in calls:
         r = await fa.client.request(method, f"/fixed-assets/api{path}", headers=fa.h, json=body)
         assert r.status_code == 422, (method, path, body, r.status_code, r.text)
-        assert isinstance(r.json()["detail"], str) and r.json()["detail"], (method, path, body)
+        assert refusal_text(r.json()["detail"]), (method, path, body)

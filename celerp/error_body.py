@@ -80,9 +80,13 @@ def as_written(detail: Any) -> dict:
 
 def as_refusal(detail: Any) -> Any:
     """``detail`` as the refusal it reads as: a t() text (ui.i18n.Text) as its key's
-    ``refusal``, a t() text among its params as a refusal of its own; anything else as given."""
+    ``refusal``, a t() text among its params as a refusal of its own; a dict whose
+    ``message`` is a t() text as that refusal with its other fields kept beside it;
+    anything else as given."""
     from ui.i18n import Text
 
+    if isinstance(detail, dict) and not detail.get("message_key") and isinstance(detail.get("message"), Text):
+        return {**detail, **as_refusal(detail["message"])}
     if not isinstance(detail, Text):
         return detail
     from celerp.accounting_roles import catalog_refusal

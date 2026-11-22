@@ -43,6 +43,7 @@ from celerp.connectors.base import (
 from ui.i18n import t
 import celerp.connectors.upsert as _upsert
 from celerp.modules.boundary import needs_modules
+from celerp.accounting_roles import Refused
 
 log = logging.getLogger(__name__)
 
@@ -653,10 +654,10 @@ class WooCommerceConnector(ConnectorBase):
                         raise LinkNeedsConfirmation(self, remote)
                 else:
                     if not allow_create:
-                        raise ValueError(t(
+                        raise Refused(
                             "connectors.err_publish_needs_outbound", sku=sku,
                             direction=direction_label(self, products_direction),
-                        ))
+                        )
                     stocked = str(state.get("inventory_type") or "stocked") == "stocked"
                     q = Decimal(str(qty))
                     if stocked and q != q.to_integral_value():
@@ -686,10 +687,10 @@ class WooCommerceConnector(ConnectorBase):
         except Exception as exc:
             if not created:
                 raise
-            raise ValueError(t(
+            raise Refused(
                 "connectors.err_link_save_failed", name=remote.get("name") or state.get("name") or sku,
                 service=self.display_name, reason=exc,
-            )) from exc
+            ) from exc
         return anchor_id
 
     async def _save_link(self, ctx, anchor_id, sku, link, rediscover, new_link, actor_id, *,
@@ -753,7 +754,7 @@ class WooCommerceConnector(ConnectorBase):
             anchor = await resolve_catalog_anchor_for_item(session, ctx.company_id, entity_id)
             link = external_link_for_state(anchor.state or {}, "woocommerce")
         if not link or link.get("remote_deleted") is True:
-            raise ValueError(t("connectors.err_not_published", service=self.display_name))
+            raise Refused("connectors.err_not_published", service=self.display_name)
         item = {"woocommerce_product_id": link.get("product_id"),
                 "woocommerce_variation_id": link.get("variation_id")}
         async with _http_client() as client:

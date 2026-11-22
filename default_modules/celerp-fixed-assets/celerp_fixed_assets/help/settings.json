@@ -3,13 +3,26 @@
   "title": "Asset classes, the depreciation run schedule and tax books",
   "summary": "Set the depreciation run schedule and convention, and manage asset classes.",
   "keywords": ["asset class", "settings", "depreciation convention", "run schedule", "tax book"],
-  "routes": ["/settings/fixed-assets"],
+  "routes": ["/settings/fixed-assets", "/fixed-assets/classes/{class_id}/apply", "/fixed-assets/classes/{class_id}/fix-account", "/fixed-assets/classes/{class_id}/revalue"],
   "permission": "manage_module_settings",
   "order": 3,
+  "checked": "99cb6e8d67edc73ace90fb9b7d1fac30316b6d71b806896cc2a6d823a8535bf6",
   "steps": [
     {
       "text": "On {title}, set the run schedule and convention, and add or archive asset classes.",
       "labels": {"title": "fixed_assets.settings_title"},
+      "image": null,
+      "capture": {"route": "/settings/fixed-assets", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Each asset class offers more actions: apply the class's current depreciation settings to the assets that still follow older ones, fix a posting account by moving existing balances or for future postings only, and revalue every asset of a class that uses the revaluation model.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/fixed-assets", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to change the run schedule or the convention, or to add or edit an asset class. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/settings/fixed-assets", "selector": "main", "actions": []}
     }

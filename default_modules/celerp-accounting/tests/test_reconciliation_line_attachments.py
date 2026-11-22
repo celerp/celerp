@@ -13,6 +13,7 @@ import uuid
 
 import pytest
 
+import bank_statement_helpers as B
 from celerp.services.attachments import company_attachment_dir
 
 _PDF = b"%PDF-1.4 receipt"
@@ -51,13 +52,9 @@ async def _line(client, h) -> tuple[str, list[str]]:
     r = await client.post("/accounting/reconciliation/start", headers=h, json={
         "bank_account_id": bank["id"], "statement_date": "2026-03-31", "statement_balance": 500.0,
     })
-    sid = r.json()["id"]
-    r = await client.post(f"/accounting/reconciliation/{sid}/import-csv", headers=h,
-                          files={"file": ("s.csv", b"Date,Description,Amount\n2026-03-05,Deposit,500\n"
-                                                   b"2026-03-06,Fee,-5\n", "text/csv")})
-    assert r.status_code == 200, r.text
-    items = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=h)).json()["items"]
-    return sid, [l["id"] for l in items]
+    data = await B.import_into(client, h, r.json()["id"], b"Date,Description,Amount\n2026-03-05,Deposit,500\n"
+                                                         b"2026-03-06,Fee,-5\n", "s.csv")
+    return data["session_id"], [l["id"] for l in data["lines"]]
 
 
 async def _attach(client, h, sid, line_id, content=_PDF, name="receipt.pdf", mime="application/pdf"):

@@ -11,40 +11,47 @@ import re
 from fasthtml.common import to_xml
 from fastapi import FastAPI
 
+from celerp.accounting_roles import catalog_refusal
 from ui import api_client
 from ui.routes import sync_accounts as routes
+
+def _written(text: str) -> dict:
+    """A hold's reason as the API serves one an older release wrote in English."""
+    return catalog_refusal("error.refusal_as_written", text=text)
+
 
 OTHER = {"id": "a-1", "code": "6150", "name": "Courier", "account_type": "expense", "currency": "USD"}
 HOLDS = [
     {"id": "h-collision", "source_company_id": "c-1", "label": "Courier run", "at": "2026-10-16T10:00:00",
-     "reason": "Demo Trading's account 6150 Courier has the same code as 6150 Subscriptions in your chart.",
+     "reason": _written("Demo Trading's account 6150 Courier has the same code as 6150 Subscriptions in your chart."),
      "fix": {"kind": "collision", "other": OTHER, "local": "6150", "suggested": "6151", "add": True}},
     {"id": "h-type", "source_company_id": "c-1", "label": "Deposit", "at": "2026-10-16T09:00:00",
-     "reason": "Demo Trading's account 6180 Deposits paid is an asset account.",
+     "reason": _written("Demo Trading's account 6180 Deposits paid is an asset account."),
      "fix": {"kind": "type", "other": {**OTHER, "code": "6180", "name": "Deposits paid", "account_type": "asset"},
              "local": "6180", "suggested": "6181", "add": True}},
     {"id": "h-archived", "source_company_id": "c-1", "label": "Insurance accrual", "at": "2026-10-16T08:00:00",
-     "reason": "Account 6700 Insurance, which you archived, is where Firm Practice's 6700 Insurance posts.",
+     "reason": _written("Account 6700 Insurance, which you archived, is where Firm Practice's 6700 Insurance posts."),
      "fix": {"kind": "archived", "other": {**OTHER, "code": "6700", "name": "Insurance"}, "local": "6700",
              "add": True}},
     {"id": "h-role", "source_company_id": "c-1", "label": "Sales return", "at": "2026-10-16T07:00:00",
-     "reason": "1200 Receivable is the Receivable account of Firm Practice.",
+     "reason": _written("1200 Receivable is the Receivable account of Firm Practice."),
      "fix": {"kind": "role", "other": OTHER, "local": None, "add": False,
              "href": "/settings/accounting#posting-accounts"}},
     {"id": "h-currency", "source_company_id": "c-1", "label": "Euro deposit", "at": "2026-10-16T06:00:00",
-     "reason": "Demo Trading's account 1119 Euro account is kept in EUR.",
+     "reason": _written("Demo Trading's account 1119 Euro account is kept in EUR."),
      "fix": {"kind": "currency", "other": {**OTHER, "code": "1119", "currency": "EUR"}, "local": None,
              "add": False}},
     {"id": "h-review", "source_company_id": "c-1", "label": "Rent", "at": "2026-10-16T05:00:00",
-     "reason": "Waiting for Demo Books to review accounts.",
+     "reason": _written("Waiting for Demo Books to review accounts."),
      "fix": {"kind": "review", "other": OTHER, "add": False, "accounts": [OTHER]}},
 ]
 ADDED = [
     {"id": "n-1", "label": "6160 Audit adjustments", "code": "6160", "removable": True, "why": None,
-     "reason": "Added by sync from Firm Practice with the journal Adjust.", "at": "2026-10-16T10:00:00"},
+     "reason": catalog_refusal("peer.attention_account_added", company="Firm Practice", record="the journal Adjust"), "at": "2026-10-16T10:00:00"},
     {"id": "n-2", "label": "6150 Courier", "code": "6150", "removable": False,
-     "why": "It has entries, so it can be archived, not removed.",
-     "reason": "Added by sync from Demo Trading with the journal Courier run.", "at": "2026-10-16T09:00:00"},
+     "why": {"message": "It has entries, so it can be archived, not removed.",
+             "message_key": "acct.err_remove_has_entries", "params": {}},
+     "reason": catalog_refusal("peer.attention_account_added", company="Demo Trading", record="the journal Courier run"), "at": "2026-10-16T09:00:00"},
 ]
 REVIEW = [{"source_company_id": "c-1", "client": "Demo Trading", "accounts": [
     {"id": "a-1", "code": "6150", "name": "Courier", "account_type": "expense",
@@ -168,7 +175,7 @@ async def test_review_lists_only_rows_needing_an_answer(monkeypatch):
 
 
 async def test_a_confirmed_review_lists_its_records_as_fixed(monkeypatch):
-    reviewed = {**HOLDS[-1], "reason": "Accounts reviewed. It posts on the next sync.",
+    reviewed = {**HOLDS[-1], "reason": catalog_refusal("peer.attention_accounts_reviewed"),
                 "fix": {**HOLDS[-1]["fix"], "fixed": True}}
     _app(monkeypatch, holds=[reviewed], added=[], review=[])
     html = to_xml(await routes.sync_accounts_body("test-token", "en"))
@@ -272,7 +279,7 @@ FUND_CHART = {"items": [*CHART["items"],
                         {"code": "6300", "name": "Utilities", "account_type": "expense", "is_active": True}]}
 HELD_JOURNAL = {
     "id": "h-funds", "source_company_id": "c-2", "label": "Reclass program costs", "at": "2026-10-17T10:00:00",
-    "reason": "Waiting for a fund on each line",
+    "reason": catalog_refusal("peer.journal_waiting_for_funds"),
     "fix": {"kind": "funds", "document": True, "lines": [1, 2], "revision": 3, "ts": "2026-03-31",
             "memo": "Reclass program costs", "firm": "Firm Practice",
             "entries": [{"account": "1111", "debit": 100.0, "credit": 0.0, "origin": "accountant"},
@@ -281,7 +288,7 @@ HELD_JOURNAL = {
                    {"account": "4100", "balances": {"fund:r": 60.0}}]}
 HELD_DOC = {
     "id": "h-doc", "source_company_id": "c-3", "label": "B-7", "at": "2026-10-17T09:00:00",
-    "reason": "Waiting for a fund on each line",
+    "reason": catalog_refusal("peer.journal_waiting_for_funds"),
     "fix": {"kind": "doc_funds", "document": True, "lines": [1], "revision": 2,
             "sent": {"doc_type": "bill", "doc_number": "B-7", "line_items": [
                 {"name": "Electricity", "quantity": 1, "unit_price": 50.0, "line_total": 50.0, "account_code": "6300"}]}},

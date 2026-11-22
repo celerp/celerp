@@ -62,6 +62,7 @@ from celerp import db_catalog
 from celerp.json_text import dump_json
 from celerp.importers.tabular import ZIP_ERRORS, open_zip_member, zip_directory_fits
 from celerp.migrations.compatibility import is_newer_than_running, running_version
+from celerp.services.dev_release_guard import PROJECTION_SEMANTICS
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.modules.importer import TABLE_NAME, InstalledModules, installed_modules
@@ -79,6 +80,8 @@ from celerp.services.lot_origin import place_company_stock
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
 from celerp.services.permissions import act_for
 from celerp.services.provisioning import create_install_owner, hold_owner, provision_restored_company
+from celerp.services import statement_line_upgrade as line_upgrade
+from celerp.services.field_fingerprints import fingerprint
 from ui.i18n import t
 
 logger = logging.getLogger(__name__)
@@ -178,9 +181,7 @@ MAX_ROW_DEPTH = 100
 BATCH_ROWS = 1000
 BATCH_BYTES = 1024 ** 2
 
-_NOT_RESTORED = " Nothing was restored."
 _NO_COPY_MADE = " No copy was made."
-_NOT_REPLACED = " Nothing was replaced."
 # Refusals, as locale keys: each is translated where the BackupError is raised.
 NOT_A_BACKUP = "company_backup.err_not_a_backup"
 SYSTEM_BACKUP = "company_backup.err_system_backup"
@@ -324,11 +325,12 @@ def _refusal(table: str, owners: dict[str, str]) -> BackupError:
 
 
 def _unsupported(label: str, owner: str | None, *, restoring: bool) -> BackupError:
-    status, verb, end = (422, "restore", _NOT_RESTORED) if restoring else (409, "copy", _NO_COPY_MADE)
+    status = 422 if restoring else 409
     if owner:
-        return BackupError(status, f"The {owner} module keeps data in {label} in a form Celerp "
-                                   f"cannot {verb} yet." + end)
-    return BackupError(status, f"This company has data Celerp cannot {verb} yet: {label}." + end)
+        return BackupError(status, t("company_backup.err_module_form_restore", owner=owner, label=label) if restoring
+                           else t("company_backup.err_module_form_copy", owner=owner, label=label))
+    return BackupError(status, t("company_backup.err_data_form_restore", label=label) if restoring
+                       else t("company_backup.err_data_form_copy", label=label))
 
 
 async def _pin(session: AsyncSession, *, restoring: bool) -> None:
@@ -374,8 +376,7 @@ async def _classify(session: AsyncSession, modules: InstalledModules, *, strict:
                 # The prefix came from another installed copy of the module than the one
                 # whose declarations and version a backup records.
                 if strict:
-                    raise BackupError(409, f"The {owner} module is installed more than once, with "
-                                           f"different table prefixes." + _NO_COPY_MADE)
+                    raise BackupError(409, t("company_backup.err_module_twice", owner=owner))
                 refused.add(name)
                 continue
             how = declarations[owner].get(name)
@@ -649,7 +650,7 @@ def _collect_urls(value, company_id, found: dict[str, str], types: dict[str, str
     if isinstance(value, str):
         name = attachments.company_file_name(company_id, value)
         if name is not None and found.setdefault(name, value) != value:
-            raise BackupError(409, f"This company has two attachment files named {name}." + _NO_COPY_MADE)
+            raise BackupError(409, t("company_backup.err_attachment_name_twice", name=name))
     elif isinstance(value, dict):
         if isinstance(value.get("url"), str) and isinstance(value.get("mime"), str):
             types.setdefault(value["url"], value["mime"])
@@ -668,8 +669,7 @@ def _backup_name(name: str, url: str, types: dict[str, str]) -> str:
     mime = attachments.stored_file_type(name) or types.get(url)
     backup_name = attachments.stored_file_name(name, mime) if mime else None
     if backup_name is None:
-        raise BackupError(409, f"This company has an attachment file of a type Celerp does not store: {url}."
-                          + _NO_COPY_MADE)
+        raise BackupError(409, t("company_backup.err_attachment_type_unstored", url=url))
     return backup_name
 
 
@@ -677,8 +677,8 @@ async def _share_schema(session: AsyncSession, *, restoring: bool) -> None:
     """Hold the schema key shared until the transaction ends, so no schema change runs
     meanwhile; refused at once while one runs or waits."""
     if not await celerp.db.share_schema(session):
-        raise BackupError(409, "Celerp is updating its database." + (_NOT_RESTORED if restoring else _NO_COPY_MADE)
-                          + " Try again in a moment.")
+        raise BackupError(409, t("company_backup.err_updating_restore") if restoring
+                          else t("company_backup.err_updating_copy"))
 
 
 # Who made each change travels as a label in the event's metadata: the person's name, and
@@ -793,11 +793,10 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
         owners = {plan.owners[t] for t in tables if t in plan.owners}
         for owner in sorted(owners):
             if modules.version(owner) is None:
-                raise BackupError(409, f"The {owner} module does not declare a valid version, so a "
-                                       f"backup of its data cannot say which version restores it."
-                                  + _NO_COPY_MADE)
+                raise BackupError(409, t("company_backup.err_module_no_version", owner=owner))
         manifest: dict = {
             "format": FORMAT, "format_version": FORMAT_VERSION, "celerp_version": running_version(),
+            "projection_semantics": PROJECTION_SEMANTICS,
             "backup_id": str(uuid.uuid4()),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "company": {"id": str(company.id), "lineage_id": lineage_of(company), "name": company.name,
@@ -831,8 +830,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
             for name in sorted(found):
                 backup_name = _backup_name(name, found[name], types)
                 if names.setdefault(backup_name, name) != name:
-                    raise BackupError(409, f"This company has two attachment files named {backup_name}."
-                                      + _NO_COPY_MADE)
+                    raise BackupError(409, t("company_backup.err_attachment_name_twice", name=backup_name))
             for backup_name, name in sorted(names.items()):
                 url = found[name]
                 try:
@@ -842,8 +840,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
                     logger.warning("Reading an attachment for a company backup failed", exc_info=True)
                     body = None
                 if body is None:
-                    raise BackupError(409, f"This company has an attachment file Celerp cannot read: {url}."
-                                      + _NO_COPY_MADE)
+                    raise BackupError(409, t("company_backup.err_attachment_unreadable", url=url))
                 zf.writestr(f"attachments/{backup_name}", body)
                 manifest["attachments"].append({"url": url, "name": backup_name, "size": len(body),
                                                 "sha256": hashlib.sha256(body).hexdigest()})
@@ -919,6 +916,13 @@ def _check_manifest(m) -> None:
             raise BackupError(422, t(DAMAGED))
         if newer:
             raise BackupError(422, t(NEWER))
+    # The projection rules the backup's records were built by; backups made before they
+    # were recorded were built by older rules.
+    rules = m.get("projection_semantics", 0)
+    if not isinstance(rules, int) or isinstance(rules, bool) or rules < 0:
+        raise BackupError(422, t(DAMAGED))
+    if rules > PROJECTION_SEMANTICS:
+        raise BackupError(422, t(NEWER))
     company, modules, tables, files = m.get("company"), m.get("modules"), m.get("tables"), m.get("attachments")
     ok = (_is_uuid(m.get("backup_id")) and isinstance(m.get("created_at"), str)
           and isinstance(company, dict) and _is_uuid(company.get("id"))
@@ -1057,6 +1061,7 @@ def read_backup(path: Path) -> BackupFile:
             for f in manifest["attachments"]:
                 _check_member(budget, zf, f"attachments/{f['name']}", f["sha256"], size=f["size"])
             event_types = _event_types(zf, manifest)
+            _upgrade_columns(manifest)
     except (zlib.error, EOFError):
         raise BackupError(422, t(INCOMPLETE)) from None
     except (zipfile.LargeZipFile, KeyError, *ZIP_ERRORS):
@@ -1123,6 +1128,99 @@ def _lines(zf: zipfile.ZipFile, name: str):
                 yield line
 
 
+# ── Rows of an older shape ───────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class _Upgrade:
+    """A table whose backup still holds ``retired``: its rows move to the shape the
+    schema upgrade gave the table, with ``added`` columns, through ``rows`` (called with a
+    reader of any table's stored rows)."""
+    retired: str
+    added: tuple[str, ...]
+    rows: object
+
+
+def _plain(value):
+    """A stored number by its text, so a fingerprint reads it as the database held it."""
+    return value[1:-1] if isinstance(value, str) and len(value) > 1 and value[0] == value[-1] == "\x00" else value
+
+
+def _bank_lines(read):
+    """Each line on its statement's bank, with the fingerprint, status, entry list and
+    suggestion the schema upgrade gives it. A line whose statement is missing is damage."""
+    statements = {s.get("id"): (s.get("bank_account_id"), s.get("statement_date"))
+                  for s in read("reconciliation_sessions")}
+    keys = []
+    for r in read("bank_statement_lines"):
+        if r.get("reconciliation_id") not in statements:
+            raise BackupError(422, t(DAMAGED))
+        bank, date = statements[r["reconciliation_id"]]
+        line = {"bank_account_id": bank, **{k: _plain(r.get(k)) for k in line_upgrade.BASE}}
+        # The first read keeps a line's order and a digest of what it shares with identical
+        # lines, not its text; the second read makes its fingerprint.
+        keys.append({"id": r.get("id"), "bank_account_id": bank, "statement_date": date, "created_at": r.get("created_at"),
+                     "line_date": line["line_date"], "amount": line["amount"],
+                     "same": fingerprint(list(line_upgrade.ident(line)))})
+    keys.sort(key=line_upgrade.order)
+    place = {k["id"]: n for k, n in line_upgrade.places(keys, ident_of=lambda k: k["same"])}
+    del keys
+    for r in read("bank_statement_lines"):
+        moved = line_upgrade.migrated_line(r)
+        row = {k: v for k, v in r.items() if k != "matched_je_id"}
+        line = {k: _plain(r.get(k)) for k in line_upgrade.BASE}
+        yield {**row, "bank_account_id": statements[r["reconciliation_id"]][0],
+               "fingerprint": line_upgrade.fingerprint_of(line, place[r.get("id")]), **moved}
+
+
+def _drop(table: str, column: str) -> _Upgrade:
+    def rows(read):
+        for row in read(table):
+            yield {k: v for k, v in row.items() if k != column}
+    return _Upgrade(column, (), rows)
+
+
+ROW_UPGRADES = {
+    "bank_statement_lines": _Upgrade("matched_je_id", ("bank_account_id", "fingerprint", "matched_je_ids", "suggestion"),
+                                     _bank_lines),
+    "reconciliation_sessions": _drop("reconciliation_sessions", "auto_matched_count"),
+    "reconciliation_rules": _drop("reconciliation_rules", "default_tax"),
+}
+
+
+def _upgrade_columns(manifest: dict) -> None:
+    """Give each table a backup holds in an older shape the columns its rows are upgraded
+    to (_table_lines); the stored list stays in ``stored_columns``."""
+    for name, up in ROW_UPGRADES.items():
+        meta = manifest["tables"].get(name)
+        if meta is not None and up.retired in meta["columns"]:
+            meta["stored_columns"] = meta["columns"]
+            meta["columns"] = [c for c in meta["columns"] if c != up.retired] + [
+                c for c in up.added if c not in meta["columns"]]
+
+
+def _stored_rows(zf: zipfile.ZipFile, manifest: dict, name: str):
+    meta = manifest["tables"].get(name)
+    if meta is None:
+        raise BackupError(422, t(DAMAGED))
+    stored = set(meta.get("stored_columns", meta["columns"]))
+    for line in _lines(zf, f"tables/{name}.jsonl"):
+        if _RAW_NUL.search(line):
+            raise BackupError(422, t(DAMAGED))
+        row = _parse_row(line)
+        if not isinstance(row, dict) or set(row) != stored:
+            raise BackupError(422, t(DAMAGED))
+        yield row
+
+
+def _table_lines(zf: zipfile.ZipFile, manifest: dict, name: str):
+    """The backup's rows of ``name`` as JSON lines in the shape its manifest columns name."""
+    if "stored_columns" not in manifest["tables"][name]:
+        yield from _lines(zf, f"tables/{name}.jsonl")
+        return
+    for row in ROW_UPGRADES[name].rows(lambda table: _stored_rows(zf, manifest, table)):
+        yield _NUMBER.sub(r"\1", dump_json(row)).encode() + b"\n"
+
+
 def _older(m: dict) -> bool:
     """Whether the backup was written in a format this Celerp no longer writes, so it may
     hold what this Celerp has since stopped backing up."""
@@ -1164,7 +1262,7 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
                 raise BackupError(422, t(DAMAGED))
             single = table.pk[0] if len(table.pk) == 1 and not table.columns[table.pk[0]].generated else None
             total = 0
-            for line in _lines(zf, f"tables/{name}.jsonl"):
+            for line in _table_lines(zf, m, name):
                 if _RAW_NUL.search(line):
                     raise BackupError(422, t(DAMAGED))
                 row = _parse_row(line)
@@ -1596,11 +1694,12 @@ def _row_batches(lines, limit: int):
         yield rows
 
 
-async def _insert(session: AsyncSession, zf: zipfile.ZipFile, table: str, columns: list[str],
+async def _insert(session: AsyncSession, zf: zipfile.ZipFile, manifest: dict, table: str,
                   id_map: dict[str, str], schema: db_catalog.Table, company_id) -> None:
     """Insert the backup's rows of ``table``. Its company column is the restored company,
     bound once for the whole statement: the source company every row was checked to name
     maps to it, so no restored row can name another company."""
+    columns = manifest["tables"][table]["columns"]
     cols = ", ".join(db_catalog.ident(c) for c in columns)
     company = f"CAST(CAST(:company AS text) AS {db_catalog.ident(schema.columns['company_id'].udt)})" \
         if "company_id" in columns else ""
@@ -1609,7 +1708,7 @@ async def _insert(session: AsyncSession, zf: zipfile.ZipFile, table: str, column
         f"INSERT INTO {db_catalog.ident(table)} ({cols}) SELECT {picked} "
         f"FROM jsonb_array_elements(CAST(:rows AS jsonb)) WITH ORDINALITY AS e(v, n), "
         f"jsonb_populate_record(NULL::{db_catalog.ident(table)}, e.v) AS r ORDER BY e.n")
-    batches = _row_batches(_lines(zf, f"tables/{table}.jsonl"), BATCH_ROWS)
+    batches = _row_batches(_table_lines(zf, manifest, table), BATCH_ROWS)
     while rows := await asyncio.to_thread(next, batches, None):
         await session.execute(statement, {"rows": _dump_rows(remap(rows, id_map)), "company": str(company_id)})
 
@@ -1650,14 +1749,20 @@ async def _as_replayed(session: AsyncSession, company_id) -> None:
     await session.flush()
 
 
-async def _check_replay(session: AsyncSession, company_id) -> None:
+async def _check_replay(session: AsyncSession, company_id, *, rebuild: bool) -> None:
     """Replay the restored ledger with the running modules and refuse the restore unless it
     produces exactly the records the backup holds. The replay itself is undone, so the
-    restored records keep their own times and versions."""
+    restored records keep their own times and versions. A backup whose records were built
+    by older projection rules (``rebuild``) keeps the replay instead, as an upgraded
+    database does (run_upgrade_guard)."""
     from celerp.projections.engine import ProjectionEngine
     restored = await _projection_states(session, company_id)
     # Taken outside the savepoint, so the replay's rollback keeps the lock.
     await lock_company(session, company_id)
+    if rebuild:
+        await ProjectionEngine.rebuild(session, company_id)
+        await session.flush()
+        return
     savepoint = await session.begin_nested()
     try:
         await ProjectionEngine.rebuild(session, company_id)
@@ -1723,7 +1828,7 @@ async def _turn_off_shop_sync(session: AsyncSession, company_id, actor_id) -> No
 def _chosen_name(name: str) -> str:
     name = name.strip()
     if (error := company_name_error(name)) is not None:
-        raise BackupError(422, error + _NOT_RESTORED, "name_invalid")
+        raise BackupError(422, t("company_backup.err_name_invalid", reason=error), "name_invalid")
     return name
 
 
@@ -1802,7 +1907,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     [found] = await take_company_locks(
                         session, lambda: lock_company_for_deletion(session, replacing.company_id))
                     if not found:
-                        raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
+                        raise BackupError(404, t("company_backup.err_company_gone_replace"))
                 else:
                     # Restored items are opted out of Shopify (_turn_off_shop_sync) under its fence.
                     await lock_connector_key(session, "shopify")
@@ -1888,13 +1993,14 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 act_for(session, new_id, user.id, "owner", LIFECYCLE)
                 try:
                     for name in checked.order:
-                        await _insert(session, zf, name, m["tables"][name]["columns"], id_map,
+                        await _insert(session, zf, m, name, id_map,
                                       checked.plan.schema[name], new_id)
                 except DBAPIError:
                     raise BackupError(422, t(UNSAVABLE)) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
             await _as_replayed(session, new_id)
-            await _check_replay(session, new_id)
+            await _check_replay(session, new_id,
+                                rebuild=m.get("projection_semantics", 0) < PROJECTION_SEMANTICS)
             if retain_peer_identities:
                 from celerp.services.peer_identity import seed_restored_identities
                 await seed_restored_identities(

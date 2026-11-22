@@ -27,6 +27,7 @@ import uuid
 import pytest
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
+from ui.i18n import refusal_text
 
 
 # ── helpers (mirror test_audits/test_writeoffs conventions) ────────────────────
@@ -325,7 +326,7 @@ async def test_export_lists_csv_matches_index_filters(client):
 
     r_bad = await client.get("/lists/export/csv?cols=ref_id,bogus_col", headers=_h(t))
     assert r_bad.status_code == 422
-    assert "bogus_col" in r_bad.json()["detail"]
+    assert "bogus_col" in refusal_text(r_bad.json()["detail"])
     assert a
 
 

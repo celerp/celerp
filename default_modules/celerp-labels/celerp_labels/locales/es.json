@@ -29,5 +29,15 @@
   "labels.selected": "Seleccionado: {ids}{more}",
   "labels.template_deleted": "Plantilla eliminada.",
   "labels.template_not_found": "Plantilla no encontrada.",
-  "labels.width_example": "p. ej., 50"
+  "labels.width_example": "p. ej., 50",
+  "labels.err_labels_not_printed_source_records": "No se imprimen etiquetas para los registros {source}.",
+  "labels.err_your_role_cannot_see_these_records": "Su rol no puede ver estos registros, por lo que no puede imprimir sus etiquetas.",
+  "labels.err_choose_records_print_labels": "Seleccione los registros para los que desea imprimir etiquetas.",
+  "labels.err_print_at_most_max_source_ids": "Imprima como máximo {max_source_ids} etiquetas a la vez.",
+  "tool.create_template_api_labels_templates_post": "Añada una plantilla de etiquetas con su tamaño y campos.",
+  "tool.update_template_api_labels_templates__template_id__put": "Modifique una plantilla de etiquetas.",
+  "tool.delete_template_api_labels_templates__template_id__delete": "Elimine una plantilla de etiquetas.",
+  "tool.print_single_api_labels_print__entity_id__post": "Genere una etiqueta PDF para un artículo del inventario.",
+  "tool.bulk_print_api_labels_bulk_print_post": "Genere una hoja PDF de etiquetas para varios artículos del inventario.",
+  "tool.print_source_api_labels_print_source_post": "Genere una hoja PDF de etiquetas para registros seleccionados de un tipo mediante la plantilla elegida."
 }

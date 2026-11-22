@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 from fastapi import HTTPException, status
+from ui.i18n import t
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,7 +87,7 @@ async def _ai_caller(company_id: str, db_session: "AsyncSession | None"):
     if caller is None or str(caller.company_id) != str(company_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="AI queries run only for the company of the signed-in request.",
+            detail=t("modules.err_ai_queries_run_only_company_signed"),
         )
     await admit_permission(db_session, caller.company_id, caller.role, "use_ai_assistant")
     return caller
@@ -147,5 +148,5 @@ async def ai_job(job_id: str, *, company_id: str, db_session: "AsyncSession | No
     caller = await _ai_caller(company_id, db_session)
     out = await jobs.question_result(uuid.UUID(str(job_id)), caller.company_id, caller.user.id)
     if out is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such AI question.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("modules.err_no_such_ai_question"))
     return _ai_outcome(out)

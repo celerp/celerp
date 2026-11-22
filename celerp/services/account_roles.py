@@ -42,6 +42,7 @@ from celerp.accounting_roles import (
 )
 from celerp.models.company import Company
 from celerp.models.projections import Projection
+from celerp.accounting_roles import Refused
 
 
 class PostingRoleError(HTTPException):
@@ -131,12 +132,14 @@ def reconciled_settings(settings: dict, accounts: dict[str, dict], claim=frozens
 
 
 def unmapped_roles(settings: dict | None) -> list[str]:
-    """The roles with no account, leaving out restricted net assets while funds are off:
-    it is mapped when funds are first turned on, and no posting reaches it before."""
+    """The roles with no account, leaving out the roles Celerp maps when their feature is
+    first used (restricted net assets while funds are off, Suspense until a bank line is
+    first posted there): no posting reaches them before."""
     from celerp.services.journal_accounts import funds_enabled
 
     current = role_map(settings)
     return [role.value for role in AccountRole if not current.get(role.value)
+            and role is not AccountRole.SUSPENSE
             and (role is not AccountRole.RESTRICTED_NET_ASSETS or funds_enabled(settings or {}))]
 
 
@@ -171,14 +174,11 @@ def source_controls(settings: dict | None, role) -> list[str]:
 def source_control(settings: dict | None, role) -> str:
     """The one account the source books kept ``role``'s balances on; a missing or
     ambiguous control is refused rather than guessed."""
-    from ui.i18n import t
-
     codes = source_controls(settings, role)
-    label = ROLE_LABELS[AccountRole(role)].lower().removeprefix("accounts ")
     if not codes:
-        raise ValueError(t("posting.source_control_missing", role=label))
+        raise Refused("posting.source_control_missing", role=AccountRole(role).value)
     if len(codes) > 1:
-        raise ValueError(t("posting.source_control_ambiguous", role=label, codes=", ".join(codes)))
+        raise Refused("posting.source_control_ambiguous", role=AccountRole(role).value, codes=", ".join(codes))
     return codes[0]
 
 

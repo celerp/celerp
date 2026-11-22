@@ -21,7 +21,7 @@ from fixtures.sage50_export import build
 from migration_support import real_engine  # noqa: F401
 from test_export_set_adapters import _broken_workbook, _qbo, _set, _xero
 from test_migration_e2e import _passing, migrate_set
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 ETB = MigrationDecisions(mode=CIFMode.FULL_HISTORY, mappings={"currency": "ETB"})
 CUTOVER = date(2024, 6, 30)
@@ -545,7 +545,7 @@ async def test_a_file_that_is_no_sage50_export_is_refused_with_422_when_sage50_i
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     r = await scan_upload(client, b"just some notes\n", name="notes.csv", source="sage50")
     assert r.status_code == 422, r.text
-    assert "is not a Sage 50 / Peachtree file" in r.json()["detail"]
+    assert "is not a Sage 50 / Peachtree file" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -558,7 +558,7 @@ async def test_a_currency_that_is_not_one_of_the_choices_is_refused_with_422(cli
     assert r.status_code == 200 and "scan_token" in r.json(), r.text
     r = await save_decisions(client, r.json()["scan_token"], mappings={"currency": "Birr"})
     assert r.status_code == 422, r.text
-    assert "currency" in r.json()["detail"]
+    assert "Currency these books are kept in" in refusal_text(r.json()["detail"])
 
 
 # ── End to end ────────────────────────────────────────────────────────────────

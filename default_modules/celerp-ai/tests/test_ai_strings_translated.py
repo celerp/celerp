@@ -8,7 +8,7 @@ import asyncio
 import json
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -21,6 +21,7 @@ from ui import i18n
 from ui.i18n import refusal_text
 
 _MARK = "QX:"
+_NO_LINE = str(uuid.uuid4())
 _EN = json.loads((Path(i18n.__file__).parent / "locales" / "en.json").read_text(encoding="utf-8"))
 
 
@@ -38,6 +39,16 @@ def _stand_in_language():
 
 def _english(texts) -> list[str]:
     return [text for text in texts if not text.startswith(_MARK)]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _app_capabilities():
+    """The app's compiled capabilities, built before the stand-in language replaces the
+    catalogs, so proposals build their cards from the real tool schemas."""
+    from celerp.ai.tools import compile_agent_capabilities
+    from test_helpers import real_agent_app
+
+    _Lookups._capabilities = compile_agent_capabilities(real_agent_app(), {})
 
 
 class _Lookups(routes._Lookups):
@@ -64,8 +75,8 @@ async def _proposal_texts(rows, extraction) -> list[str]:
     records, summary = await routes._bill_proposals(_Lookups(rows), entry, extraction, datetime.now(timezone.utc))
     texts = [summary]
     for record in records:
-        texts.append(record["title"])
-        texts.extend(record["warnings"])
+        texts.append(i18n.read_kept(record["title"]))
+        texts.extend(i18n.read_kept(w) for w in record["warnings"])
         notes = record["arguments"]["body"].get("notes")
         if notes:
             texts.append(notes)
@@ -281,8 +292,12 @@ async def _executor_errors(monkeypatch) -> list[dict]:
     async def big():
         return {"value": "x" * 200}
 
+    @app.get("/answered-refusal")
+    async def answered_refusal():
+        return {"error": "Not saved."}
+
     def cap(path, **extra):
-        return {"method": "GET", "path": path, "path_names": [], "query_names": [], "expects_body": False, **extra}
+        return {"encoding": "json", "method": "GET", "path": path, "path_names": [], "query_names": [], "expects_body": False, **extra}
 
     thing = cap("/thing/{item_id}", path_names=["item_id"])
     run = tools.execute_agent_capability
@@ -292,6 +307,8 @@ async def _executor_errors(monkeypatch) -> list[dict]:
         await run(app, "Bearer t", thing, {"path": {"item_id": "a/b"}}, "c"),
         await run(app, "Bearer t", cap("/text"), {}, "c"),
         await run(app, "Bearer t", cap("/big"), {}, "c", result_max_bytes=32),
+        await run(app, "Bearer t", cap("/text", uploads=("file",)), {"file_ids": ["gone"]}, "c"),
+        await run(app, "Bearer t", cap("/answered-refusal"), {}, "c"),
     ]
     monkeypatch.setattr(deadlines, "TOOL_STEP_S", 0.01)
     results.append(await run(app, "Bearer t", cap("/slow"), {}, "c"))
@@ -326,56 +343,51 @@ def test_every_agent_error_names_a_catalog_key():
     assert [where for where, key in calls if key not in _EN] == []
 
 
-class _Store:
-    """The one message whose proposals a confirmed action finalizes, as the database
-    would hold it between a reply and a reload."""
+async def _stored_message(session, record) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    """The one message whose proposals a confirmed action finalizes, as the database holds
+    it between a reply and a reload: (company, user, conversation, message) ids."""
+    from celerp.models.ai import AIConversation, AIMessage
+    from celerp.models.company import Company, User
+    company_id, user_id, conversation_id, message_id = (uuid.uuid4() for _ in range(4))
+    session.add(User(id=user_id, email=f"u-{user_id.hex[:8]}@example.test", name="Owner", auth_hash="x",
+                     is_active=True))
+    await session.flush()
+    session.add(Company(id=company_id, name="Co", slug=f"co-{company_id.hex[:8]}", settings={}))
+    await session.flush()
+    session.add(AIConversation(id=conversation_id, company_id=company_id, user_id=user_id))
+    await session.flush()
+    session.add(AIMessage(id=message_id, conversation_id=conversation_id, role="assistant", content="",
+                          tools_called=[record]))
+    await session.flush()
+    return company_id, user_id, conversation_id, message_id
 
-    def __init__(self, record):
-        self.message = type("Message", (), {"tools_called": [record], "conversation_id": uuid.uuid4()})()
 
-    async def get(self, model, message_id):
-        return self.message
-
-    def add(self, row):
-        pass
-
-    async def flush(self):
-        pass
-
-    async def commit(self):
-        pass
-
-
-async def _confirmed(monkeypatch, result) -> tuple[dict, dict]:
+async def _confirmed(session, monkeypatch, result) -> tuple[dict, dict]:
     """(live outcome, stored record) of confirming one proposal whose capability call
     returns ``result``, through the real confirm runner and store."""
     from types import SimpleNamespace
     from celerp.ai import conversations, tools
-    record = {"id": "call", "name": "create_contact", "status": "pending", "arguments": {}}
-    store = _Store(record)
+    # Keyed, so an answer that never came is retryable and keeps the route's own error.
+    expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    record = {"id": "call", "name": "create_contact", "status": "pending", "arguments": {},
+              "keyed": True, "expires_at": expires}
+    company_id, user_id, conversation_id, message_id = await _stored_message(session, record)
 
     async def resolved(session, **kw):
         return {}, None, record
 
-    async def claim(session, **kw):
-        return record
-
     async def execute(*args, **kw):
         return result
 
-    async def unlocked(session, conversation_id):
-        pass  # one store, no other writer to wait on
-
     monkeypatch.setattr(routes, "_resolved_action_arguments", resolved)
-    monkeypatch.setattr(conversations, "_lock_conversation", unlocked)
-    monkeypatch.setattr(conversations, "claim_tool_call", claim)
     monkeypatch.setattr(tools, "execute_agent_capability", execute)
     outcome = await routes._run_confirmed_action(
-        SimpleNamespace(app=None, headers={}), store, {"create_contact": {}},
-        conversation_id=uuid.uuid4(), message_id=uuid.uuid4(), tool_call_id="call",
-        company_id=uuid.uuid4(), user_id=uuid.uuid4(),
+        SimpleNamespace(app=None, headers={}), session, {"create_contact": {}},
+        conversation_id=conversation_id, message_id=message_id, tool_call_id="call",
+        company_id=company_id, user_id=user_id,
     )
-    return outcome, store.message.tools_called[0]
+    from celerp.models.ai import AIMessage
+    return outcome, (await session.get(AIMessage, message_id)).tools_called[0]
 
 
 def _retryable_route_refusal() -> dict:
@@ -385,7 +397,7 @@ def _retryable_route_refusal() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_action_reads_the_same_in_the_reply_and_after_a_reload(monkeypatch):
+async def test_a_failed_action_reads_the_same_in_the_reply_and_after_a_reload(session, monkeypatch):
     """Class guard at the store: every executor error and a keyed route refusal that
     comes back retryable is stored whole, so the reloaded thread says what the reply
     said, in the reader's language, never the English source."""
@@ -397,7 +409,7 @@ async def test_a_failed_action_reads_the_same_in_the_reply_and_after_a_reload(mo
     i18n._cached_load.cache_clear()
     i18n.set_lang("th")
     for result in results:
-        outcome, stored = await _confirmed(monkeypatch, result)
+        outcome, stored = await _confirmed(session, monkeypatch, result)
         live = ui_routes._outcome_text(outcome, "th")[1]
         english = (outcome["error"] or {}).get("message")
         assert stored["error"]["message_key"] == outcome["error"]["message_key"]
@@ -410,7 +422,7 @@ async def test_a_failed_action_reads_the_same_in_the_reply_and_after_a_reload(mo
 async def _route_refusals(client) -> list[dict]:
     """What the real app answers three confirmed AI actions it refuses with: an item
     created in a status only an action reaches, an import whose preview went stale and
-    a match for a statement line that already created its journal entry."""
+    accepting a suggestion for a bank statement group that is no longer open."""
     from test_helpers import register_admin
     h = {"Authorization": f"Bearer {await register_admin(client)}"}
     answers = [await client.post("/items", headers=h, json={
@@ -422,30 +434,17 @@ async def _route_refusals(client) -> list[dict]:
     assert preview.status_code == 200, preview.text
     answers.append(await client.post("/items/import/rows", headers=h, json={
         "rows": [dict(rows[0], quantity="2")], "preview_hash": preview.json()["preview_hash"], **batch}))
-    bank = await client.post("/accounting/bank-accounts", headers=h, json={
-        "bank_name": "Harbor Bank", "account_number": "0001", "bank_type": "checking",
-        "currency": "USD", "opening_balance": 1000.0})
-    assert bank.status_code == 200, bank.text
-    recon = await client.post("/accounting/reconciliation/start", headers=h, json={
-        "bank_account_id": bank.json()["id"], "statement_date": "2026-09-30", "statement_balance": 1020.0})
-    assert recon.status_code == 200, recon.text
-    sid = recon.json()["id"]
-    imported = await client.post(f"/accounting/reconciliation/{sid}/import-csv", headers=h, files={
-        "file": ("s.csv", b"Date,Description,Amount\n2026-09-05,Deposit,20.00\n", "text/csv")})
-    assert imported.status_code == 200, imported.text
-    body = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=h)).json()
-    (line,) = body.get("items") if isinstance(body, dict) else body
-    lines = f"/accounting/reconciliation/{sid}/lines/{line['id']}"
-    created = await client.post(f"{lines}/create", headers=h, json={"account_code": "4100"})
-    assert created.status_code == 200, created.text
-    answers.append(await client.post(f"{lines}/match", headers=h, json={"je_id": str(uuid.uuid4())}))
-    assert [r.status_code for r in answers] == [422, 409, 409], [r.text for r in answers]
+    import bank_statement_helpers as B
+    co = await B.co_of(client, h)
+    bank = await B.bank(client, h, name="Harbor Bank", opening=1000.0)
+    answers.append(await B.resolve(client, co, bank["id"], accept={"group_keys": ["A GROUP"], "line_ids": [_NO_LINE], "versions": {_NO_LINE: "0"}}))
+    assert [r.status_code for r in answers] == [422, 409, 404], [r.text for r in answers]
     return [{"ok": False, "status": r.status_code, "data": r.json()} for r in answers]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lang", ["qx", "th"])
-async def test_a_route_refusal_reads_the_same_on_the_card_and_after_a_reload(client, monkeypatch, lang):
+async def test_a_route_refusal_reads_the_same_on_the_card_and_after_a_reload(client, session, monkeypatch, lang):
     """Class guard at the route boundary: a refusal the app's own route answers a
     confirmed action with is stored whole, so the card and the reloaded thread read it
     alike in the reader's language (the qx stand-in proves no English source reaches
@@ -457,7 +456,7 @@ async def test_a_route_refusal_reads_the_same_on_the_card_and_after_a_reload(cli
     i18n.set_lang(lang)
     for result in results:
         detail = result["data"]["detail"]
-        outcome, stored = await _confirmed(monkeypatch, result)
+        outcome, stored = await _confirmed(session, monkeypatch, result)
         assert stored["error"] == outcome["error"] == {"code": detail.get("code", "route_error"), **detail}
         live = ui_routes._outcome_text(outcome, lang)[1]
         reloaded = [to_xml(ui_routes._action_card("c", "m", stored, lang)),

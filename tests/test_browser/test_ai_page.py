@@ -285,9 +285,9 @@ class TestChatView:
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
         file_input = page.locator("#ai-file-input")
         assert file_input.count() == 1
-        accept = file_input.get_attribute("accept")
-        assert "application/pdf" in accept
-        assert "image/jpeg" in accept
+        from celerp.ai.files import UPLOAD_ACCEPT
+
+        assert file_input.get_attribute("accept") == UPLOAD_ACCEPT
 
     def test_chat_has_dropzone(self, page, ui_server):
         """Drop zone exists below the text input row."""

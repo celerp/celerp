@@ -253,8 +253,9 @@ def _digest_lines(items: list[dict], line, limit: int = 5) -> str:
 
 async def run_all_alerts(session: AsyncSession, company_id) -> object | None:
     """Run every enabled proactive check and, on newly-alerting items, emit ONE
-    combined digest (notification + optional email). Idempotent per latch; each
-    check re-arms independently when an item leaves its alert set."""
+    combined digest notification. Idempotent per latch; each check re-arms
+    independently when an item leaves its alert set. The optional email copy is
+    sent by ``email_digest`` once this transaction has committed."""
     from celerp.notifications import service as notif_service
     from celerp.services.company_lock import locked_company
 
@@ -291,34 +292,40 @@ async def run_all_alerts(session: AsyncSession, company_id) -> object | None:
         session, company.id, "inventory", title, body,
         action_url="/dashboard", priority="high" if urgent else "medium",
     )
-    if settings.get("reorder_alert_email"):
-        await _send_combined_email(session, company, title, sections)
     await session.flush()
     return notif
 
 
-async def _send_combined_email(session: AsyncSession, company, title: str, sections) -> None:
-    """Best-effort: email the owner one combined digest. Never raises."""
+async def email_digest(session: AsyncSession, company_id, notif) -> None:
+    """Best-effort: email the owner a copy of the committed digest ``notif`` when the
+    company asks for it. Reads under its own short transaction and ends it before
+    sending, so the send never holds a lock. Never raises: the notification stands."""
     try:
         from celerp.models.accounting import UserCompany
-        from celerp.models.company import User
+        from celerp.models.company import Company, User
         from celerp.services.email import send_email
 
-        recipient = (await session.execute(
+        settings = (await session.execute(
+            select(Company.settings).where(Company.id == company_id)
+        )).scalar() or {}
+        recipient = settings.get("reorder_alert_email") and (await session.execute(
             select(User.email).join(UserCompany, UserCompany.user_id == User.id).where(
-                UserCompany.company_id == company.id,
+                UserCompany.company_id == company_id,
                 UserCompany.role == "owner",
                 UserCompany.is_active.is_(True),
             ).limit(1)
         )).scalar()
+        await session.commit()
         if not recipient:
             return
         blocks = ""
-        for label, newly, line in sections:
-            items = "".join(f"<li>{line(it)}</li>" for it in newly[:10])
-            blocks += f"<h3>{label} ({len(newly)})</h3><ul>{items}</ul>"
-        await send_email(recipient, title, f"<p>{title}.</p>{blocks}")
+        for section in notif.body.split("\n\n"):
+            head, *lines = section.split("\n")
+            items = "".join(f"<li>{line}</li>" for line in lines)
+            blocks += f"<h3>{head.rstrip(':')}</h3><ul>{items}</ul>"
+        await send_email(recipient, notif.title, f"<p>{notif.title}.</p>{blocks}")
     except Exception:
+        await session.rollback()
         log.warning("alerts: combined digest email failed", exc_info=True)
 
 
@@ -343,8 +350,10 @@ async def reorder_alert_loop() -> None:
                 await session.commit()
                 for company_id in due:
                     try:
-                        await run_all_alerts(session, company_id)
+                        notif = await run_all_alerts(session, company_id)
                         await session.commit()
+                        if notif is not None:
+                            await email_digest(session, company_id, notif)
                     except Exception as exc:
                         await session.rollback()
                         log.error("alerts: scan failed for %s: %s", company_id, exc)
