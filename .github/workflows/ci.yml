@@ -501,8 +501,9 @@ jobs:
       - name: Fail if the committed constraints are stale
         run: git diff --exit-code constraints.txt
 
-      # The [prod] extra (gunicorn + uvicorn-worker) is only ever installed here, so a
-      # pin that cannot actually serve the app would otherwise reach a release unnoticed.
+      # The [prod] extra (gunicorn + uvicorn-worker) ships in the bundled Python that
+      # scripts/download-python.sh builds, and no other CI job serves the app with it, so
+      # a pin that cannot actually serve the app would otherwise reach a release unnoticed.
       - name: Install the prod extra
         run: uv pip install --system ".[prod]" -c constraints.txt
       - name: Tune the throwaway Postgres
@@ -514,7 +515,6 @@ jobs:
       - name: Boot under gunicorn and check /health
         env:
           ALLOW_INSECURE_JWT: "true"
-          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp
         run: |
           set -eo pipefail
           gunicorn celerp.main:app --worker-class uvicorn_worker.UvicornWorker -w 1 \

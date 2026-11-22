@@ -32165,5 +32165,14 @@
     "tests/test_ai_usage_pending.py::test_a_settled_charge_replaces_the_larger_pending_charge_of_its_operation[reconcile]": 0.23894404497696087,
     "tests/test_ai_usage_pending.py::test_a_settled_charge_replaces_the_larger_pending_charge_of_its_operation[reply]": 0.10770339093869552,
     "tests/test_migrations/test_x7c8d9e0f1a2_ai_usage_one_row_per_operation.py::test_the_writers_settled_charge_wins_over_its_larger_pending_charge[SQL_ASCII]": 0.5910315919318236,
-    "tests/test_migrations/test_x7c8d9e0f1a2_ai_usage_one_row_per_operation.py::test_the_writers_settled_charge_wins_over_its_larger_pending_charge[UTF8]": 0.4690229269908741
+    "tests/test_migrations/test_x7c8d9e0f1a2_ai_usage_one_row_per_operation.py::test_the_writers_settled_charge_wins_over_its_larger_pending_charge[UTF8]": 0.4690229269908741,
+    "tests/test_dependency_refresh_workflow.py::test_branch_with_other_commits_is_never_replaced[constraints-by-hand]": 0.10315234202425927,
+    "tests/test_dependency_refresh_workflow.py::test_branch_with_other_commits_is_never_replaced[other-file]": 0.07162119797430933,
+    "tests/test_dependency_refresh_workflow.py::test_branch_with_other_commits_is_never_replaced[pyproject]": 0.07082773395814002,
+    "tests/test_dependency_refresh_workflow.py::test_current_branch_on_current_main_is_left_alone": 0.0697728109662421,
+    "tests/test_dependency_refresh_workflow.py::test_no_pr_and_merged_branch_is_replaced": 0.09524820593651384,
+    "tests/test_dependency_refresh_workflow.py::test_no_pr_and_no_branch_opens_a_pr": 0.06589776900364086,
+    "tests/test_dependency_refresh_workflow.py::test_own_commit_touching_more_than_constraints_is_never_replaced": 0.06756948202382773,
+    "tests/test_dependency_refresh_workflow.py::test_own_stale_branch_is_rebuilt[main-moved]": 0.15500114299356937,
+    "tests/test_dependency_refresh_workflow.py::test_own_stale_branch_is_rebuilt[new-release]": 0.09728424699278548
 }
