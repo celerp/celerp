@@ -32156,5 +32156,10 @@
     "tests/test_email_service.py::test_subscription_send_never_falls_through_after_ambiguous_relay_error[operation_in_progress]": 0.026675969013012946,
     "tests/test_email_service.py::test_subscription_send_never_falls_through_after_ambiguous_relay_error[server_error]": 0.003819040022790432,
     "tests/test_donors.py::test_a_statement_sent_by_the_earlier_build_is_never_sent_again[first-send]": 1.3420751149533316,
-    "tests/test_donors.py::test_a_statement_sent_by_the_earlier_build_is_never_sent_again[with-resend]": 0.7202211859403178
+    "tests/test_donors.py::test_a_statement_sent_by_the_earlier_build_is_never_sent_again[with-resend]": 0.7202211859403178,
+    "default_modules/celerp-accounting/tests/test_bank_questions_races_pg.py::test_the_same_answer_sent_while_the_first_stores_its_receipt_stores_one_file": 1.469090010970831,
+    "tests/test_donors_page.py::test_a_donors_activity_reads_not_confirmed_while_the_statement_email_is_with_the_mail_server": 0.7942113018943928,
+    "tests/test_donors_page.py::test_a_donors_activity_reads_sent_only_when_the_statement_email_went_out[False]": 0.5677330060279928,
+    "tests/test_donors_page.py::test_a_donors_activity_reads_sent_only_when_the_statement_email_went_out[True]": 0.5597139830351807,
+    "tests/test_donors_page.py::test_a_statement_the_earlier_build_recorded_reads_sent_in_activity": 0.00395619694609195
 }
