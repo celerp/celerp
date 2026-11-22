@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import random
 import threading
@@ -27,9 +28,11 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+import celerp.ai.service as ai_service
 from celerp.help.bundle import MAX_IMAGE_BYTES
 from celerp.help.checks import CAPTURE_MARKER, shipped_pages
 from celerp.services.business_time import business_today
+from celerp_ai.ui_routes import QUESTION_POLL_S
 from celerp_labels.presets import PRESET_TEMPLATES
 from test_helpers import grant_permission
 from ui.i18n import t
@@ -55,11 +58,13 @@ _PAGES = [p for p in shipped_pages() if isinstance(p.data, dict)]
 _EMPTY_STATE_SELECTOR = ", ".join((
     ".empty-state", ".empty-state-msg", ".empty-state-cta",
     ".cloud-hero", ".upgrade-banner", ".module-license-upsell", ".ai-showcase__headline",
+    ".ai-empty-state__welcome",
 ))
 # Steps whose text is about that empty or sales screen itself: "<page id>#<step>": why.
 _CONNECT_SALES = "the step names what Celerp Connect adds, which its sales page lists"
 _NO_TAX_REGIME = "no first-party module ships a tax regime, so the page shows where to get one"
 _SHOWS_EMPTY_STATE: dict[str, str] = {
+    "ai.ask-questions#2": "the step is about the box a question is typed into, which a new chat shows",
     "fixed-assets.tax-books#1": _NO_TAX_REGIME,
     "fixed-assets.tax-books#2": _NO_TAX_REGIME,
     "fixed-assets.year-end#1": _NO_TAX_REGIME,
@@ -105,7 +110,32 @@ def _subscription(kind: str | None):
             set_session_token("help-capture-session-token")
             stack.callback(set_session_token, "")
             stack.enter_context(patch("celerp.ai.quota.get_quota_status", AsyncMock(return_value=_AI_ACCOUNT)))
+            stack.enter_context(patch.object(ai_service, "complete", _scripted_model()))
+            # The answer lands at the question's next poll, after the API schema is built.
+            stack.callback(expect.set_options, timeout=5000)
+            expect.set_options(timeout=5000 + 4 * QUESTION_POLL_S * 1000)
         yield
+
+
+def _scripted_model():
+    """The model of an AI step, as tests/test_browser/test_ai_chat_journey.py scripts it: the
+    first request is answered with a proposal to add an item, so the step pictures its card."""
+    from celerp.ai.llm import ModelResult
+    from celerp.ai.tools import compile_agent_capabilities
+    from celerp.main import app
+
+    create_item = next(name for name, cap in compile_agent_capabilities(app, {}).items()
+                       if (cap["method"], cap["path"]) == ("POST", "/items"))
+    turns = [{"role": "assistant", "content": "I'll add the desk lamp once you confirm.", "tool_calls": [{
+        "id": "call-help-capture", "type": "function", "function": {"name": create_item, "arguments": json.dumps(
+            {"body": {"sku": "LAMP-001", "name": "Desk Lamp", "category": "Electronics", "retail_price": 45,
+                      "sell_by": "piece"}})}}]}]
+
+    async def complete(messages, **_kw) -> ModelResult:
+        message = turns.pop(0) if turns else {"role": "assistant", "content": "Desk Lamp is now in your stock."}
+        return ModelResult(message=message, model_used="help-capture", usage={}, reservation_id=None,
+                           remaining=None)
+    return complete
 
 
 async def _ok(response: httpx.Response) -> dict:
@@ -544,7 +574,7 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str) -> list[str]:
 
 
 @pytest.mark.parametrize("help_page", _PAGES, ids=[p.data.get("id", p.path.name) for p in _PAGES])
-def test_help_capture_every_page(demo_page, help_page):
+def test_help_capture_every_page(demo_page, help_page, tools_open_when_called):
     empty_states = []
     for n, step in enumerate(help_page.data["steps"], 1):
         step_id = f"{help_page.data['id']}#{n}"
