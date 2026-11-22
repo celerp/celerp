@@ -12,6 +12,7 @@ capture marker, the only way a help image is made.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.util
 import io
 import os
@@ -20,6 +21,7 @@ import threading
 import uuid
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -55,6 +57,7 @@ _EMPTY_STATE_SELECTOR = ", ".join((
     ".cloud-hero", ".upgrade-banner", ".module-license-upsell", ".ai-showcase__headline",
 ))
 # Steps whose text is about that empty or sales screen itself: "<page id>#<step>": why.
+_CONNECT_SALES = "the step names what Celerp Connect adds, which its sales page lists"
 _NO_TAX_REGIME = "no first-party module ships a tax regime, so the page shows where to get one"
 _SHOWS_EMPTY_STATE: dict[str, str] = {
     "fixed-assets.tax-books#1": _NO_TAX_REGIME,
@@ -62,7 +65,47 @@ _SHOWS_EMPTY_STATE: dict[str, str] = {
     "fixed-assets.year-end#1": _NO_TAX_REGIME,
     "fixed-assets.year-end#2": _NO_TAX_REGIME,
     "fixed-assets.year-end#3": _NO_TAX_REGIME,
+    "core.settings-payments#1": _CONNECT_SALES,
+    "backup.cloud-backup#1": _CONNECT_SALES,
+    "connectors.connect-store#1": _CONNECT_SALES,
+    "connectors.connect-store#2": _CONNECT_SALES,
+    "backup.local-backup#1": "the cloud recovery points beside the local section need Celerp Connect",
+    "backup.local-backup#2": "the cloud recovery points beside the local section need Celerp Connect",
+    "backup.local-backup#3": "the cloud recovery points beside the local section need Celerp Connect",
+    "core.accounting-sync-accounts#1": "a new company's accounts have nothing to fix, the state the step describes",
+    "core.accounting-sync-accounts#2": "a new company's accounts have nothing to fix, the state the step describes",
 }
+# Steps about what an active Celerp Connect subscription or Celerp AI account shows: the
+# installation is given one through the seams the Connect and AI browser tests use, for that
+# step only, so the steps about the sales pages still show them.
+_ACTIVE_RELAY = {"connected": True, "relay_status": "active", "public_url": "https://example.celerp.com",
+                 "tier": "cloud", "subscription_status": "active", "cloud_disconnected": False,
+                 "gateway_token_set": True, "entitlement_known": True, "entitled": True}
+_AI_ACCOUNT = {"allowed": True, "used": 0, "base_limit": 200, "topup_balance": 0, "remaining": 200,
+               "limit": 200, "topup_credits": 0, "resets_at": None, "tier": "ai"}
+_CONNECT, _AI = "connect", "ai"
+_SUBSCRIBED: dict[str, str] = {
+    "core.web-access#2": _CONNECT,
+    "backup.cloud-backup#2": _CONNECT, "backup.cloud-backup#3": _CONNECT,
+    "connectors.connect-store#3": _CONNECT, "connectors.connect-store#4": _CONNECT,
+    "connectors.connect-store#5": _CONNECT,
+    "ai.ask-questions#2": _AI, "ai.ask-questions#4": _AI,
+    **{f"ai.review-proposals#{n}": _AI for n in range(1, 5)},
+}
+
+
+@contextlib.contextmanager
+def _subscription(kind: str | None):
+    from celerp.gateway.state import set_session_token
+
+    with contextlib.ExitStack() as stack:
+        if kind == _CONNECT:
+            stack.enter_context(patch("ui.api_client.get_relay_status", AsyncMock(return_value=_ACTIVE_RELAY)))
+        elif kind == _AI:
+            set_session_token("help-capture-session-token")
+            stack.callback(set_session_token, "")
+            stack.enter_context(patch("celerp.ai.quota.get_quota_status", AsyncMock(return_value=_AI_ACCOUNT)))
+        yield
 
 
 async def _ok(response: httpx.Response) -> dict:
@@ -344,13 +387,14 @@ def test_help_capture_every_page(demo_page, help_page):
     empty_states = []
     for n, step in enumerate(help_page.data["steps"], 1):
         capture = step["capture"]
-        response = demo_page.goto(capture["route"])
-        assert response is not None and response.ok, f"step {n}: {capture['route']} did not load"
-        for action in capture["actions"]:
-            _run(demo_page, action)
+        step_id = f"{help_page.data['id']}#{n}"
+        with _subscription(_SUBSCRIBED.get(step_id)):
+            response = demo_page.goto(capture["route"])
+            assert response is not None and response.ok, f"step {n}: {capture['route']} did not load"
+            for action in capture["actions"]:
+                _run(demo_page, action)
         target = demo_page.locator(capture["selector"]).first
         expect(target).to_be_visible()
-        step_id = f"{help_page.data['id']}#{n}"
         if step_id not in _SHOWS_EMPTY_STATE and (shown := _empty_state_shown(target)):
             empty_states.append(f"{step_id} {shown}")
             continue
