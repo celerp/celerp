@@ -262,8 +262,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                     choices = [("true", "settings.yes"), ("false", "settings.no")]
                 else:
                     val = str(tax.get(field, "") or "")
-                    choices = [("sales", "settings.tax_type_sales"), ("purchase", "settings.tax_type_purchase"),
-                               ("both", "settings.tax_type_both")]
+                    choices = [(v, f"enum.tax_type.{v}") for v in TAX_TYPES]
                 return Td(
                     Select(
                         *[Option(t(label), value=v, selected=(v == val)) for v, label in choices],
