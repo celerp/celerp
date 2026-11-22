@@ -24,7 +24,7 @@ async def journal_rows(
     entry_ids: list[str] | None = None, account: str | None = None, days: tuple[str, str] | None = None,
     skip_ids=None,
 ) -> list[tuple[str, dict, str]]:
-    """All journal entry projections as (entity_id, state, date) tuples.
+    """All journal entry projections as (entity_id, state, date) tuples, in posting order.
 
     date is the entry's effective ISO date (YYYY-MM-DD, "" when the entry has none).
     Posted entries only by default; include_void=True adds voided entries for views
@@ -64,7 +64,10 @@ async def journal_rows(
     else:
         rows = (await session.execute(query)).scalars().all()
     out: list[tuple[str, dict, str]] = []
-    for row in rows:
+    # Posting order (the first event's time, rebuilt alike on replay), then the id: a
+    # reader sorting these by date alone lists entries of one day in the order they
+    # were posted, the same on every read and in every copy of the books.
+    for row in sorted(rows, key=lambda r: (r.created_at is None, r.created_at or 0, r.entity_id)):
         out.extend(entry_rows(row.entity_id, row.state, include_void=include_void))
     return out if days is None else [r for r in out if days[0] <= r[2] <= days[1]]
 

@@ -1380,8 +1380,8 @@ async def _journal_payload(
         if not (date_from and (not r[2] or r[2] < date_from))
         and not (r[2] and date_to and r[2] > date_to)
     ]
-    # Sort by date with entity_id as the deterministic, replay-stable tiebreak.
-    rows.sort(key=lambda r: (r[2], r[0]))
+    # By date; entries of one day keep journal_rows' posting order (a stable sort).
+    rows.sort(key=lambda r: r[2])
 
     accounts = (
         await session.execute(
@@ -2194,7 +2194,7 @@ async def account_ledger(
             })
 
     # Sort chronologically for running balance
-    lines.sort(key=lambda x: (x["date"], x["je_id"]))
+    lines.sort(key=lambda x: x["date"])
 
     # The running balance continues from what the account already held. Starting
     # a date-filtered view at zero would report a balance that ignores every
@@ -2359,7 +2359,7 @@ async def general_ledger(
     if include_lines and detail_jes:
         detail_refs = await _je_doc_refs(session, company_id, sorted(detail_jes))
         for rows_for_code in detail.values():
-            rows_for_code.sort(key=lambda l: (l["date"], l["je_id"]))
+            rows_for_code.sort(key=lambda l: l["date"])
             for line in rows_for_code:
                 ref = detail_refs.get(line["je_id"]) or {}
                 line["source_ref"] = ref.get("doc_ref")

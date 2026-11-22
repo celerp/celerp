@@ -418,8 +418,10 @@ async def seed_manufacturing(client: httpx.AsyncClient, auth: dict) -> None:
     order = await _ok(await client.post("/docs", headers=auth, json={"doc_type": "production_order", "line_items": [
         {"sku": "BNDL-001", "name": "Home Office Bundle", "entity_id": product, "quantity": 10, "unit_price": 950}]}))
     await _ok(await client.post(f"/docs/{order['id']}/finalize", headers=auth))
-    runs = [(await _ok(await client.post(f"/manufacturing/items/{product}/build", headers=auth,
-                                         json={"quantity": qty})))["id"] for qty in (2, 3, 1, 2)]
+    # A run's reference (WO- and the start of its id) follows the build's key: fixed keys give
+    # the same references in every capture.
+    runs = [(await _ok(await client.post(f"/manufacturing/items/{product}/build", headers=auth, json={
+        "quantity": qty, "idempotency_key": f"capture-run-{n}"})))["id"] for n, qty in enumerate((2, 3, 1, 2), 1)]
     _planned, issued, held, done = runs
     for run, steps in ((issued, ("start", "issue")), (held, ("start", "hold")), (done, ("complete",))):
         for step in steps:

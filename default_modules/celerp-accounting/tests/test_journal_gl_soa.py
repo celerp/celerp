@@ -533,7 +533,7 @@ async def test_journal_date_filter_and_order(client):
 
     data = await _journal(client, tok, date_from="2026-01-01", date_to="2026-01-31")
     got = [e["je_id"] for e in data["entries"]]
-    assert got == sorted(got, key=lambda i: ([e["ts"] for e in data["entries"] if e["je_id"] == i][0], i))
+    assert [e["ts"] for e in data["entries"]] == ["2026-01-10", "2026-01-20"]
     assert ids["2026-01-10"] in got and ids["2026-01-20"] in got
     assert ids["2026-02-05"] not in got
     # Edge dates are inclusive
@@ -541,6 +541,23 @@ async def test_journal_date_filter_and_order(client):
     assert [e["je_id"] for e in edge["entries"]] == [ids["2026-01-10"]]
     assert abs(edge["total_debit"] - 10.0) < 0.01
     assert abs(edge["total_credit"] - 10.0) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_entries_of_one_day_list_in_posting_order(client):
+    """Entries sharing a date read in the order they were posted, in the journal, an
+    account's ledger and the general ledger's lines, not in the order of their random ids."""
+    tok = await _reg(client)
+    posted = [(await _post_manual_je(client, tok, _bal(float(n)), ts="2026-03-03")).json()["je_id"]
+              for n in range(1, 9)]
+    journal = await _journal(client, tok, date_from="2026-03-03", date_to="2026-03-03")
+    assert [e["je_id"] for e in journal["entries"]] == posted
+    ledger = (await client.get("/accounting/ledger/1111", headers=_h(tok))).json()
+    assert [l["je_id"] for l in ledger["lines"]] == posted
+    gl = (await client.get("/accounting/general-ledger", headers=_h(tok), params={
+        "date_from": "2026-03-01", "date_to": "2026-03-31", "include_lines": "true"})).json()
+    cash = next(r for r in gl["rows"] if r["code"] == "1111")
+    assert [l["je_id"] for l in cash["lines"]] == posted
 
 
 @pytest.mark.asyncio
