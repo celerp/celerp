@@ -278,6 +278,20 @@ async def seed_documents(client: httpx.AsyncClient, auth: dict, contacts: list[d
                 "line_items": [{"description": "Packing boxes", "sku": "BOX-L", "quantity": 40,
                                 "unit_price": 2.5}]}})
     assert r.status_code == 302, r.text
+    # Moved in from another system: an unpaid invoice, and a bill for goods not yet received,
+    # that the opening balances hold.
+    vendor = next(c for c in contacts if c.get("contact_type") in ("vendor", "both"))
+    goods = {"item_id": lines[0]["entity_id"], "sku": lines[0]["sku"], "name": lines[0]["name"]}
+    for doc_type, contact, number, line in (("invoice", customer, "OLD-INV-118", {"name": "Office supplies"}),
+                                            ("bill", vendor, "OLD-BILL-207", goods)):
+        await _ok(await client.post("/docs/import", headers=auth, json={
+            "entity_id": f"doc:{number}", "event_type": "doc.created", "source": "csv",
+            "idempotency_key": f"help-capture-{number}", "data": {
+                "doc_type": doc_type, "ref_id": number, "contact_id": contact["id"], "currency": "USD",
+                "issue_date": f"{date.today().year - 1}-12-15", "status": "awaiting_payment",
+                "import_treatment": "opening_balances",
+                "line_items": [{**line, "quantity": 1, "unit_price": 400}],
+                "subtotal": 400, "total": 400, "amount_outstanding": 400}}))
 
 
 async def seed_manufacturing(client: httpx.AsyncClient, auth: dict) -> None:
@@ -507,27 +521,39 @@ def _write_image(target, path: Path) -> None:
     path.write_bytes(buf.getvalue())
 
 
+def _capture_step(demo_page, help_page, step: dict, step_id: str) -> list[str]:
+    """Opens one step's screen and checks it; the empty states it pictures, if any, else
+    takes its picture when writing."""
+    capture = step["capture"]
+    response = demo_page.goto(capture["route"])
+    assert response is not None and response.ok, f"{step_id}: {capture['route']} did not load"
+    for action in capture["actions"]:
+        _run(demo_page, action)
+    target = demo_page.locator(capture["selector"]).first
+    expect(target).to_be_visible()
+    if step_id not in _SHOWS_EMPTY_STATE and (shown := _empty_state_shown(target)):
+        return shown
+    for key in step["labels"].values():
+        label = _visible_label(key)
+        if label:
+            shown_label = demo_page.get_by_text(label).or_(demo_page.get_by_placeholder(label))
+            expect(shown_label.filter(visible=True).first).to_be_visible()
+    if _WRITE:
+        _write_image(target, help_page.help_dir / step["image"])
+    return []
+
+
 @pytest.mark.parametrize("help_page", _PAGES, ids=[p.data.get("id", p.path.name) for p in _PAGES])
 def test_help_capture_every_page(demo_page, help_page):
     empty_states = []
     for n, step in enumerate(help_page.data["steps"], 1):
-        capture = step["capture"]
         step_id = f"{help_page.data['id']}#{n}"
         with _subscription(_SUBSCRIBED.get(step_id)):
-            response = demo_page.goto(capture["route"])
-            assert response is not None and response.ok, f"step {n}: {capture['route']} did not load"
-            for action in capture["actions"]:
-                _run(demo_page, action)
-        target = demo_page.locator(capture["selector"]).first
-        expect(target).to_be_visible()
-        if step_id not in _SHOWS_EMPTY_STATE and (shown := _empty_state_shown(target)):
-            empty_states.append(f"{step_id} {shown}")
-            continue
-        for key in step["labels"].values():
-            label = _visible_label(key)
-            if label:
-                shown = demo_page.get_by_text(label).or_(demo_page.get_by_placeholder(label))
-                expect(shown.filter(visible=True).first).to_be_visible()
-        if _WRITE:
-            _write_image(target, help_page.help_dir / step["image"])
+            try:
+                if shown := _capture_step(demo_page, help_page, step, step_id):
+                    empty_states.append(f"{step_id} {shown}")
+            finally:
+                # Leave the page while the step's subscription still holds, so a request it
+                # has in flight never lands on the next step's state.
+                demo_page.goto("about:blank")
     assert not empty_states, "steps picturing an empty state:\n" + "\n".join(empty_states)
