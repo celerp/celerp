@@ -18,6 +18,7 @@ import io
 import json
 import os
 import random
+import sys
 import threading
 import uuid
 from datetime import date, timedelta
@@ -37,9 +38,12 @@ from celerp_labels.presets import PRESET_TEMPLATES
 from test_helpers import grant_permission
 from ui.i18n import t
 
-from .conftest import _TEST_EMAIL, set_session_cookies
+from .conftest import _test_db, clear_session_registry, set_session_cookies
 
 pytestmark = pytest.mark.browser
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "default_modules" / "celerp-subscriptions" / "tests"))
+from agreement_kit import freeze_day  # noqa: E402
 
 _SEED_PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "seed_demo.py"
 _spec = importlib.util.spec_from_file_location("seed_demo_help_capture", _SEED_PATH)
@@ -50,6 +54,14 @@ _WRITE = os.environ.get("HELP_CAPTURE_WRITE") == "1"
 _MAX_WIDTH = 1000
 _MAX_HEIGHT = 800  # CSS pixels: a taller element is cut to its top, where its screen starts
 _EXIF_DESCRIPTION = 0x010E
+# Who and what every picture shows: generic, the same every run.
+_CAPTURE_COMPANY = "Example Trading Co"
+_CAPTURE_NAME = "Alex Example"
+_CAPTURE_EMAIL = "alex@example.com"
+_CAPTURE_PASSWORD = "ExampleTrading1!"
+# The business day the company is seeded on and every picture is taken on, whatever day the
+# capture runs: the app's "today" (business_time) is frozen to it, as the agreement tests do.
+_CAPTURE_DAY = date(2026, 6, 15)
 _PAGES = [p for p in shipped_pages() if isinstance(p.data, dict)]
 # The app's own components for a screen with nothing to show: an empty list or report, the
 # Remote Access and Connect sales pages and banners, the AI page shown without an account, and
@@ -80,6 +92,9 @@ _SHOWS_EMPTY_STATE: dict[str, str] = {
     "core.accounting-sync-accounts#1": "a new company's accounts have nothing to fix, the state the step describes",
     "core.accounting-sync-accounts#2": "a new company's accounts have nothing to fix, the state the step describes",
 }
+# Pages whose steps add records (a sample import, an AI conversation and the item it adds):
+# each is taken on a company of its own.
+_ADDS_RECORDS = {"core.imports", "ai.ask-questions", "ai.review-proposals"}
 # Steps about what an active Celerp Connect subscription or Celerp AI account shows: the
 # installation is given one through the seams the Connect and AI browser tests use, for that
 # step only, so the steps about the sales pages still show them.
@@ -276,7 +291,7 @@ async def seed_subscriptions(client: httpx.AsyncClient, auth: dict, contacts: li
     await unattended(lambda: periodic.run_company(LifecycleSessionLocal, uuid.UUID(company["id"]), today=today))
 
 
-async def seed_documents(client: httpx.AsyncClient, auth: dict, contacts: list[dict]) -> None:
+async def seed_documents(client: httpx.AsyncClient, auth: dict, contacts: list[dict], today: date) -> None:
     """The document pages in use: a quotation, a stock count, a draft memo with lines and one
     issued, and an invoice another company sent, waiting in Received."""
     customer = next(c for c in contacts if c.get("contact_type") in ("customer", "both"))
@@ -304,7 +319,8 @@ async def seed_documents(client: httpx.AsyncClient, auth: dict, contacts: list[d
         "source": {"installation": "example-supplier", "document": "doc:INV-0042", "revision": 1},
         "doc": {"doc_type": "invoice", "ref_id": "INV-0042", "company_name": "Example Supplier Ltd",
                 "company_email": "billing@supplier.example.com", "contact_name": "Example Trading Co",
-                "currency": "USD", "issue_date": "2026-11-02", "due_date": "2026-12-02",
+                "currency": "USD", "issue_date": (today - timedelta(days=13)).isoformat(),
+                "due_date": (today + timedelta(days=17)).isoformat(),
                 "line_items": [{"description": "Packing boxes", "sku": "BOX-L", "quantity": 40,
                                 "unit_price": 2.5}]}})
     assert r.status_code == 302, r.text
@@ -318,7 +334,7 @@ async def seed_documents(client: httpx.AsyncClient, auth: dict, contacts: list[d
             "entity_id": f"doc:{number}", "event_type": "doc.created", "source": "csv",
             "idempotency_key": f"help-capture-{number}", "data": {
                 "doc_type": doc_type, "ref_id": number, "contact_id": contact["id"], "currency": "USD",
-                "issue_date": f"{date.today().year - 1}-12-15", "status": "awaiting_payment",
+                "issue_date": f"{today.year - 1}-12-15", "status": "awaiting_payment",
                 "import_treatment": "opening_balances",
                 "line_items": [{**line, "quantity": 1, "unit_price": 400}],
                 "subtotal": 400, "total": 400, "amount_outstanding": 400}}))
@@ -363,12 +379,41 @@ async def seed_company_details(client: httpx.AsyncClient, auth: dict, today: dat
                                  json={"opening_balance_date": f"{today.year}-01-01"}))
 
 
-@pytest.fixture(scope="module")
-def demo_token(api_server, api):
-    """A company of its own, filled with the same demo data every run."""
-    r = api.post("/companies", json={"name": f"Help capture {uuid.uuid4().hex[:6]}"})
-    assert r.status_code in (200, 201), r.text
-    token = r.json()["access_token"]
+@contextlib.contextmanager
+def _capture_clock():
+    with pytest.MonkeyPatch.context() as mp:
+        freeze_day(mp, _CAPTURE_DAY.isoformat())
+        yield
+
+
+def _sign_in(api_server: str, email: str) -> str:
+    """An access token for ``email``; the installation's one-session slot is left free, as
+    test_partner_claim_gate leaves it, so the suite's own sign-ins still go through."""
+    clear_session_registry()
+    try:
+        r = httpx.post(f"{api_server}/auth/login", json={"email": email, "password": _CAPTURE_PASSWORD},
+                       timeout=10)
+        assert r.status_code == 200, r.text
+        return r.json()["access_token"]
+    finally:
+        clear_session_registry()
+
+
+def capture_company(api_server: str, api, email: str) -> dict:
+    """The capture company, filled with the same demo data every run, and an access token of
+    its owner: a member named _CAPTURE_NAME who belongs to no other company, so a picture shows
+    the same company, person and company list wherever it is taken."""
+    r = api.post("/companies/me/users", json={"email": email, "name": _CAPTURE_NAME, "role": "viewer",
+                                              "password": _CAPTURE_PASSWORD})
+    assert r.status_code == 200, r.text
+    user_id = r.json()["id"]
+    r = httpx.post(f"{api_server}/companies", json={"name": _CAPTURE_COMPANY}, timeout=30,
+                   headers={"Authorization": f"Bearer {_sign_in(api_server, email)}"})
+    assert r.status_code == 200, r.text
+    # Added to the suite's company only to reach the companies route, then taken out of it.
+    r = api.patch(f"/companies/me/users/{user_id}", json={"is_active": False})
+    assert r.status_code == 200, r.text
+    token = _sign_in(api_server, email)
 
     async def seed():
         auth = {"Authorization": f"Bearer {token}"}
@@ -379,8 +424,8 @@ def demo_token(api_server, api):
             assert reseeded["ok"], reseeded
             await seed_demo.seed_items(client, token)
             contacts = await seed_demo.seed_contacts(client, token)
-            await seed_demo.seed_docs(client, token, contacts, "invoice", 12)
-            await seed_demo.seed_docs(client, token, contacts, "purchase_order", 6)
+            await seed_demo.seed_docs(client, token, contacts, "invoice", 12, _CAPTURE_DAY)
+            await seed_demo.seed_docs(client, token, contacts, "purchase_order", 6, _CAPTURE_DAY)
             # The fixed assets register shows nothing until its one-time start is
             # confirmed; help pages for it capture the register in its normal,
             # already-started state.
@@ -393,9 +438,7 @@ def demo_token(api_server, api):
             r = await client.patch("/fixed-assets/api/settings", headers=auth,
                                    json={"first_managed_period": r.json()["first_period"]["suggested"]})
             assert r.status_code == 200, r.text
-            users = (await _ok(await client.get("/companies/me/users", headers=auth)))
-            me = next(u for u in users.get("items", users) if u["email"] == _TEST_EMAIL)
-            await seed_fixed_assets(client, auth, me["id"], business_today(None))
+            await seed_fixed_assets(client, auth, user_id, business_today(None))
             # Donors and Subscribers show a donor's statement and a subscriber's quantities only
             # once there is one: a gift by bank transfer from a contact to a gift category's income
             # account, and an active agreement.
@@ -420,7 +463,7 @@ def demo_token(api_server, api):
             await seed_subscriptions(client, auth, contacts, date.fromisoformat(today))
             await seed_funds_and_deferred_revenue(client, auth, contacts, date.fromisoformat(today))
             await seed_bank_statement(client, auth, date.fromisoformat(today))
-            await seed_documents(client, auth, contacts)
+            await seed_documents(client, auth, contacts, date.fromisoformat(today))
             await seed_manufacturing(client, auth)
             await seed_company_details(client, auth, date.fromisoformat(today))
             # The default label templates are created through their write route, so no
@@ -444,11 +487,19 @@ def demo_token(api_server, api):
             error.append(exc)
 
     thread = threading.Thread(target=_run)
-    thread.start()
-    thread.join()
+    with _capture_clock():
+        thread.start()
+        thread.join()
     if error:
         raise error[0]
-    return token
+    r = httpx.get(f"{api_server}/companies/me", headers={"Authorization": f"Bearer {token}"}, timeout=10)
+    assert r.status_code == 200, r.text
+    return {"token": token, "id": r.json()["id"]}
+
+
+@pytest.fixture(scope="session")
+def demo_company(api_server, api):
+    return capture_company(api_server, api, _CAPTURE_EMAIL)
 
 
 async def seed_bank_statement(client: httpx.AsyncClient, auth: dict, today: date) -> None:
@@ -499,10 +550,44 @@ async def seed_bank_statement(client: httpx.AsyncClient, auth: dict, today: date
         "match_pattern": "OFFICE RENT", "target_account_code": rent}))
 
 
-@pytest.fixture
-def demo_page(page, browser_context, demo_token):
-    set_session_cookies(browser_context, demo_token)
-    return page
+def _records(company_id: str) -> int:
+    """How many records the company holds: its ledger and its AI conversations."""
+    conn = _test_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT (SELECT count(*) FROM ledger WHERE company_id = %s)"
+                        " + (SELECT count(*) FROM ai_conversations WHERE company_id = %s)", (company_id,) * 2)
+            return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _today_written(day: date) -> set[str]:
+    """``day`` as the app writes a date, and its month unless that is also _CAPTURE_DAY's."""
+    if day == _CAPTURE_DAY:
+        return set()
+    days = {day.isoformat(), f"{day.month:02d}/{day.day:02d}/{day.year}", f"{day.month}/{day.day}/{day.year}",
+            f"{day.day:02d}/{day.month:02d}/{day.year}", f"{day.day}/{day.month}/{day.year}",
+            f"{day:%b} {day.day}, {day.year}", f"{day:%B} {day.day}, {day.year}",
+            f"{day.day} {day:%b} {day.year}", f"{day.day} {day:%B} {day.year}"}
+    if (day.year, day.month) != (_CAPTURE_DAY.year, _CAPTURE_DAY.month):
+        days |= {f"{day:%B} {day.year}", f"{day:%b} {day.year}", f"{day.year}-{day.month:02d}"}
+    return days
+
+
+def _pictured_text(target) -> str:
+    """The text of the part of ``target`` a picture keeps."""
+    return target.evaluate("""(el, maxHeight) => {
+        const top = el.getBoundingClientRect().top, walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        const kept = [];
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            const range = document.createRange();
+            range.selectNodeContents(n);
+            const box = range.getBoundingClientRect();
+            if (box.height && box.top - top < maxHeight) kept.push(n.textContent);
+        }
+        return kept.join(" ");
+    }""", _MAX_HEIGHT)
 
 
 def _run(page, action: dict) -> None:
@@ -552,8 +637,8 @@ def _write_image(target, path: Path) -> None:
 
 
 def _capture_step(demo_page, help_page, step: dict, step_id: str) -> list[str]:
-    """Opens one step's screen and checks it; the empty states it pictures, if any, else
-    takes its picture when writing."""
+    """Opens one step's screen and checks it; the empty states or the run's own day it
+    pictures, if any, else takes its picture when writing."""
     capture = step["capture"]
     response = demo_page.goto(capture["route"])
     assert response is not None and response.ok, f"{step_id}: {capture['route']} did not load"
@@ -563,6 +648,9 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str) -> list[str]:
     expect(target).to_be_visible()
     if step_id not in _SHOWS_EMPTY_STATE and (shown := _empty_state_shown(target)):
         return shown
+    text = _pictured_text(target)
+    if dated := sorted(d for d in _today_written(date.today()) if d in text):
+        return [f"the day the capture ran: {dated}"]
     for key in step["labels"].values():
         label = _visible_label(key)
         if label:
@@ -574,16 +662,26 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str) -> list[str]:
 
 
 @pytest.mark.parametrize("help_page", _PAGES, ids=[p.data.get("id", p.path.name) for p in _PAGES])
-def test_help_capture_every_page(demo_page, help_page, tools_open_when_called):
-    empty_states = []
+def test_help_capture_every_page(page, browser_context, api_server, api, demo_company, help_page,
+                                 tools_open_when_called):
+    page_id = help_page.data["id"]
+    # A page that adds records is taken on a company of its own, so no other page's picture
+    # depends on which pages ran before it.
+    company = (capture_company(api_server, api, _CAPTURE_EMAIL.replace("@", f"+{page_id}@"))
+               if page_id in _ADDS_RECORDS else demo_company)
+    set_session_cookies(browser_context, company["token"])
+    records = _records(company["id"])
+    wrong = []
     for n, step in enumerate(help_page.data["steps"], 1):
-        step_id = f"{help_page.data['id']}#{n}"
-        with _subscription(_SUBSCRIBED.get(step_id)):
+        step_id = f"{page_id}#{n}"
+        with _capture_clock(), _subscription(_SUBSCRIBED.get(step_id)):
             try:
-                if shown := _capture_step(demo_page, help_page, step, step_id):
-                    empty_states.append(f"{step_id} {shown}")
+                if shown := _capture_step(page, help_page, step, step_id):
+                    wrong.append(f"{step_id} {shown}")
             finally:
                 # Leave the page while the step's subscription still holds, so a request it
                 # has in flight never lands on the next step's state.
-                demo_page.goto("about:blank")
-    assert not empty_states, "steps picturing an empty state:\n" + "\n".join(empty_states)
+                page.goto("about:blank")
+    assert not wrong, "steps picturing an empty state or the day the capture ran:\n" + "\n".join(wrong)
+    assert page_id in _ADDS_RECORDS or _records(company["id"]) == records, (
+        f"{page_id} added records to the capture company: list it in _ADDS_RECORDS")
