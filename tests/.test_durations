@@ -32285,5 +32285,10 @@
     "tests/test_ai_usage_pending.py::test_a_settled_charge_replaces_the_larger_pending_charge_of_its_operation[reconcile]": 0.23894404497696087,
     "tests/test_ai_usage_pending.py::test_a_settled_charge_replaces_the_larger_pending_charge_of_its_operation[reply]": 0.10770339093869552,
     "tests/test_migrations/test_x7c8d9e0f1a2_ai_usage_one_row_per_operation.py::test_the_writers_settled_charge_wins_over_its_larger_pending_charge[SQL_ASCII]": 0.5910315919318236,
-    "tests/test_migrations/test_x7c8d9e0f1a2_ai_usage_one_row_per_operation.py::test_the_writers_settled_charge_wins_over_its_larger_pending_charge[UTF8]": 0.4690229269908741
+    "tests/test_migrations/test_x7c8d9e0f1a2_ai_usage_one_row_per_operation.py::test_the_writers_settled_charge_wins_over_its_larger_pending_charge[UTF8]": 0.4690229269908741,
+    "tests/test_banned_terms.py::test_help_pages_carry_no_banned_term": 0.07296340697212145,
+    "tests/test_banned_terms.py::test_locale_catalogs_carry_no_banned_term": 0.0675342709873803,
+    "tests/test_banned_terms.py::test_module_manifests_carry_no_banned_term": 0.004859309061430395,
+    "tests/test_banned_terms.py::test_openapi_carries_no_banned_term": 4.637173212016933,
+    "tests/test_banned_terms.py::test_the_guard_finds_a_banned_term[Celerp Cloud]": 0.003092180995736271
 }
