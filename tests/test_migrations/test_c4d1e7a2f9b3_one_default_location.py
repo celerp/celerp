@@ -80,9 +80,10 @@ async def _start(async_url: str) -> None:
     from sqlalchemy.pool import NullPool
 
     from celerp.db import create_tables
+    from celerp.json_text import dump_json
     from celerp.services.location_default_notice import run_location_default_notice
 
-    engine = create_async_engine(async_url, poolclass=NullPool)
+    engine = create_async_engine(async_url, poolclass=NullPool, json_serializer=dump_json)
     try:
         await create_tables(engine)
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:

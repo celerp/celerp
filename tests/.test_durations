@@ -32290,5 +32290,10 @@
     "tests/test_banned_terms.py::test_locale_catalogs_carry_no_banned_term": 0.0675342709873803,
     "tests/test_banned_terms.py::test_module_manifests_carry_no_banned_term": 0.004859309061430395,
     "tests/test_banned_terms.py::test_openapi_carries_no_banned_term": 4.637173212016933,
-    "tests/test_banned_terms.py::test_the_guard_finds_a_banned_term[Celerp Cloud]": 0.003092180995736271
+    "tests/test_banned_terms.py::test_the_guard_finds_a_banned_term[Celerp Cloud]": 0.003092180995736271,
+    "tests/test_banned_terms.py::test_app_level_openapi_text_carries_no_banned_term": 0.026492743054404855,
+    "tests/test_banned_terms.py::test_readme_carries_no_banned_term": 0.002805329975672066,
+    "tests/test_location_default_notice_lock.py::test_a_concurrent_second_start_does_not_write_back_a_stale_sibling_key": 0.5958722190116532,
+    "tests/test_location_default_notice_lock.py::test_two_starts_tell_once_and_the_second_waits": 1.9095094169606455,
+    "tests/test_tax_settings_cells_ui.py::test_taxes_tab_tax_type_column_shows_the_same_label_as_the_select": 0.0050222029676660895
 }
