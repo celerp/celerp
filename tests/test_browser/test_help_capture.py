@@ -32,7 +32,7 @@ from celerp_labels.presets import PRESET_TEMPLATES
 from test_helpers import grant_permission
 from ui.i18n import t
 
-from .conftest import set_session_cookies
+from .conftest import _TEST_EMAIL, set_session_cookies
 
 pytestmark = pytest.mark.browser
 
@@ -101,6 +101,51 @@ async def seed_funds_and_deferred_revenue(client: httpx.AsyncClient, auth: dict,
     await _ok(await client.post(f"/docs/{docs[1]}/void", headers=auth, json={"reason": "Sent twice"}))
 
 
+async def _fa(client: httpx.AsyncClient, auth: dict, path: str, body: dict) -> dict:
+    """A fixed-assets change as its page makes it: the review, then the change confirmed
+    with the fingerprint the review returned."""
+    url, key = f"/fixed-assets/api{path}", uuid.uuid4().hex
+    seen = await _ok(await client.post(url, headers=auth, json={**body, "preview": True, "op_key": key}))
+    return await _ok(await client.post(url, headers=auth, json={**body, "op_key": key, "fingerprint": seen["fingerprint"]}))
+
+
+async def seed_fixed_assets(client: httpx.AsyncClient, auth: dict, user_id: str, today: date) -> None:
+    """The fixed asset pages in use: the sample bills' van, laptops and forklift registered
+    (the office fit-out still waits on the intake list), the last ended month depreciated, one
+    correction applied and one waiting, reminders and an impairment review falling due, the
+    laptops in the capture user's care and one finished register import."""
+    async def get(path: str) -> dict:
+        return await _ok(await client.get(f"/fixed-assets/api{path}", headers=auth))
+
+    classes = {c["name"]: c["id"] for c in (await get("/classes"))["items"]}
+    lines = (await get("/intake"))["items"]
+    for name, cls in (("Delivery van", "Vehicles"), ("Laptop", "Computer equipment"), ("Forklift", "Plant and machinery")):
+        line = next(i for i in lines if name in i["description"])
+        await _fa(client, auth, "/register", {"source": line["source"], "class_id": classes[cls]})
+    assets = {a["name"]: a["id"] for a in (await get("/assets"))["items"]}
+    last_month = today.replace(day=1) - timedelta(days=1)
+    await _fa(client, auth, "/runs", {"month": f"{last_month:%Y-%m}"})
+    van, laptops, forklift = assets["Delivery van"], assets["Laptop"], assets["Forklift"]
+    await _fa(client, auth, f"/assets/{forklift}/correct", {
+        "changes": {"life_months": 96}, "effective_date": today.replace(day=1).isoformat(),
+        "reason": "The supplier's service plan keeps it running eight years"})
+    await _ok(await client.post(f"/fixed-assets/api/assets/{van}/corrections", headers=auth, json={
+        "changes": {"life_months": 72}, "reason": "Fleet policy keeps vans six years", "op_key": uuid.uuid4().hex}))
+    for body in ({"kind": "maintenance", "work": "Annual service", "due": (today + timedelta(days=5)).isoformat()},
+                 {"kind": "insurance", "insurer": "Harbour Insurance", "due": (today - timedelta(days=3)).isoformat()}):
+        await _ok(await client.post(f"/fixed-assets/api/assets/{van}/reminders", headers=auth, json=body))
+    await _fa(client, auth, f"/assets/{laptops}/move", {"custodian": {"user_id": user_id}, "date": today.isoformat()})
+    # An intangible with an indefinite life is reviewed for impairment each year.
+    await _ok(await client.patch(f"/fixed-assets/api/classes/{classes['Other intangibles']}", headers=auth,
+                                 json={"method": "none", "life_months": None}))
+    setup = await get("/setup")
+    await _fa(client, auth, "/imports", {"as_at": setup["settings"]["cutover"], "rows": [
+        {"name": "Warehouse", "class": "Buildings", "available_date": "2020-01-01", "cost": "250000",
+         "accumulated_depreciation": "40000"},
+        {"name": "Trading licence", "class": "Other intangibles", "available_date": "2021-03-01", "cost": "8000",
+         "accumulated_depreciation": "4000"}]})
+
+
 @pytest.fixture(scope="module")
 def demo_token(api_server, api):
     """A company of its own, filled with the same demo data every run."""
@@ -111,6 +156,10 @@ def demo_token(api_server, api):
     async def seed():
         auth = {"Authorization": f"Bearer {token}"}
         async with httpx.AsyncClient(base_url=api_server, timeout=30.0) as client:
+            # The app's own sample records (the fixed asset bills) are added only while the
+            # company keeps no books of its own, so before anything below posts.
+            reseeded = await _ok(await client.post("/companies/me/demo/reseed", headers=auth))
+            assert reseeded["ok"], reseeded
             await seed_demo.seed_items(client, token)
             contacts = await seed_demo.seed_contacts(client, token)
             await seed_demo.seed_docs(client, token, contacts, "invoice", 12)
@@ -127,6 +176,9 @@ def demo_token(api_server, api):
             r = await client.patch("/fixed-assets/api/settings", headers=auth,
                                    json={"first_managed_period": r.json()["first_period"]["suggested"]})
             assert r.status_code == 200, r.text
+            users = (await _ok(await client.get("/companies/me/users", headers=auth)))
+            me = next(u for u in users.get("items", users) if u["email"] == _TEST_EMAIL)
+            await seed_fixed_assets(client, auth, me["id"], business_today(None))
             # Donors and Subscribers show a donor's statement and a subscriber's quantities only
             # once there is one: a gift by bank transfer from a contact to a gift category's income
             # account, and an active agreement.
