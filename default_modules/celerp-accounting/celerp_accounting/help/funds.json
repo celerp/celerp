@@ -99,8 +99,12 @@
       "image": "img/funds-5.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
-        "selector": "main",
-        "actions": []
+        "selector": "main details:has(> summary:has-text('Opening balances by fund'))",
+        "actions": [
+          {
+            "click": "summary:has-text('Opening balances by fund')"
+          }
+        ]
       }
     },
     {
@@ -111,8 +115,12 @@
       "image": "img/funds-6.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
-        "selector": "main",
-        "actions": []
+        "selector": "main details:has(> summary:has-text('Transfer between funds'))",
+        "actions": [
+          {
+            "click": "summary:has-text('Transfer between funds')"
+          }
+        ]
       }
     },
     {
@@ -123,8 +131,12 @@
       "image": "img/funds-7.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
-        "selector": "main",
-        "actions": []
+        "selector": "main details:has(> summary:has-text('Release from restriction'))",
+        "actions": [
+          {
+            "click": "summary:has-text('Release from restriction')"
+          }
+        ]
       }
     },
     {
@@ -136,7 +148,7 @@
       "image": "img/funds-8.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
-        "selector": "main",
+        "selector": "main details:has(> summary:has-text('Reallocate restricted funds'))",
         "actions": [
           {
             "click": "summary:has-text('Reallocate restricted funds')"

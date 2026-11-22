@@ -18,13 +18,13 @@
       "text": "{add} opens a page for a new bank account: its {bank}, {number} and {type}. Clicking a bank account in the list opens the same page to edit it.",
       "labels": {"add": "acct.add_bank_account", "bank": "acct.bank_name", "number": "acct.account_number", "type": "acct.account_type"},
       "image": "img/settings-2.webp",
-      "capture": {"route": "/settings/accounting/bank-accounts/new", "selector": "main table.detail-table", "actions": []}
+      "capture": {"route": "/settings/accounting/bank-accounts/new", "selector": "main", "actions": []}
     },
     {
       "text": "{add} opens a page for a new account in the chart: its {code}, {name} and type. Clicking an account in the chart opens the same page to edit it.",
       "labels": {"add": "acct.add_account", "code": "th.code", "name": "th.name"},
       "image": "img/settings-3.webp",
-      "capture": {"route": "/settings/accounting/chart/new", "selector": "main table.detail-table", "actions": []}
+      "capture": {"route": "/settings/accounting/chart/new", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to add a bank account or a chart account, set a posting account, lock a period or close the year. It shows each change as a card and makes it only when you confirm.",
