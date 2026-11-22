@@ -163,7 +163,8 @@ async def seed_fixed_assets(client: httpx.AsyncClient, auth: dict, user_id: str,
     """The fixed asset pages in use: the sample bills' van, laptops and forklift registered
     (the office fit-out still waits on the intake list), the last ended month depreciated, one
     correction applied and one waiting, reminders and an impairment review falling due, the
-    laptops in the capture user's care and one finished register import."""
+    laptops in the capture user's care, the van seen on an asset check and one finished
+    register import."""
     async def get(path: str) -> dict:
         return await _ok(await client.get(f"/fixed-assets/api{path}", headers=auth))
 
@@ -184,6 +185,8 @@ async def seed_fixed_assets(client: httpx.AsyncClient, auth: dict, user_id: str,
     for body in ({"kind": "maintenance", "work": "Annual service", "due": (today + timedelta(days=5)).isoformat()},
                  {"kind": "insurance", "insurer": "Harbour Insurance", "due": (today - timedelta(days=3)).isoformat()}):
         await _ok(await client.post(f"/fixed-assets/api/assets/{van}/reminders", headers=auth, json=body))
+    numbers = {a["id"]: a["number"] for a in (await get("/assets"))["items"]}
+    await _ok(await client.post("/fixed-assets/api/checks", headers=auth, json={"tag": numbers[van]}))
     await _fa(client, auth, f"/assets/{laptops}/move", {"custodian": {"user_id": user_id}, "date": today.isoformat()})
     # An intangible with an indefinite life is reviewed for impairment each year.
     await _ok(await client.patch(f"/fixed-assets/api/classes/{classes['Other intangibles']}", headers=auth,
@@ -245,7 +248,7 @@ async def seed_subscriptions(client: httpx.AsyncClient, auth: dict, contacts: li
 
 async def seed_documents(client: httpx.AsyncClient, auth: dict, contacts: list[dict]) -> None:
     """The document pages in use: a quotation, a stock count, a draft memo with lines and one
-    issued, a production order, and an invoice another company sent, waiting in Received."""
+    issued, and an invoice another company sent, waiting in Received."""
     customer = next(c for c in contacts if c.get("contact_type") in ("customer", "both"))
     stock = {i["sku"]: i for i in (await _ok(await client.get(
         "/items", headers=auth, params={"limit": 500})))["items"]}
@@ -266,8 +269,6 @@ async def seed_documents(client: httpx.AsyncClient, auth: dict, contacts: list[d
             await _ok(await client.post(f"/docs/{memo['id']}/finalize", headers=auth))
             await _ok(await client.post(f"/docs/{memo['id']}/fulfill-lines", headers=auth,
                                         json={"line_entity_ids": [lines[0]["entity_id"]]}))
-    await _ok(await client.post("/docs", headers=auth, json={
-        "doc_type": "production_order", "line_items": lines[:1]}))
     r = await client.post("/docs/import-bundle", headers=auth, follow_redirects=False, json={
         "version": 1,
         "source": {"installation": "example-supplier", "document": "doc:INV-0042", "revision": 1},
@@ -277,6 +278,45 @@ async def seed_documents(client: httpx.AsyncClient, auth: dict, contacts: list[d
                 "line_items": [{"description": "Packing boxes", "sku": "BOX-L", "quantity": 40,
                                 "unit_price": 2.5}]}})
     assert r.status_code == 302, r.text
+
+
+async def seed_manufacturing(client: httpx.AsyncClient, auth: dict) -> None:
+    """A product with a recipe, a production order for more of it than its runs cover, and
+    its work orders at every stage of the queue: planned, in progress with its components
+    issued, on hold, and completed."""
+    stock = {i["sku"]: i["id"] for i in (await _ok(await client.get(
+        "/items", headers=auth, params={"limit": 500})))["items"]}
+    product = (await _ok(await client.post("/items", headers=auth, json={
+        "sku": "BNDL-001", "name": "Home Office Bundle", "category": "Furniture", "quantity": 0,
+        "retail_price": 950, "status": "available", "sell_by": "piece"})))["id"]
+    await _ok(await client.put(f"/manufacturing/items/{product}/recipe", headers=auth, json={
+        "output_qty": 1, "labor": [], "overhead": [], "components": [
+            {"item_id": stock[sku], "quantity": 1} for sku in ("FURN-002", "ELEC-002", "ELEC-007")]}))
+    order = await _ok(await client.post("/docs", headers=auth, json={"doc_type": "production_order", "line_items": [
+        {"sku": "BNDL-001", "name": "Home Office Bundle", "entity_id": product, "quantity": 10, "unit_price": 950}]}))
+    await _ok(await client.post(f"/docs/{order['id']}/finalize", headers=auth))
+    runs = [(await _ok(await client.post(f"/manufacturing/items/{product}/build", headers=auth,
+                                         json={"quantity": qty})))["id"] for qty in (2, 3, 1, 2)]
+    _planned, issued, held, done = runs
+    for run, steps in ((issued, ("start", "issue")), (held, ("start", "hold")), (done, ("complete",))):
+        for step in steps:
+            await _ok(await client.post(f"/manufacturing/{run}/{step}", headers=auth, json={}))
+
+
+async def seed_company_details(client: httpx.AsyncClient, auth: dict, today: date) -> None:
+    """The company's own record with its billing and shipping addresses and a document on
+    file, and the opening balance date the tie-out report checks against."""
+    company = await _ok(await client.get("/companies/me", headers=auth))
+    own = company["settings"]["self_contact_id"]
+    for kind in ("billing", "shipping"):
+        await _ok(await client.post(f"/crm/contacts/{own}/addresses", headers=auth, json={
+            "address_type": kind, "line1": "1 Example Street", "city": "Springfield",
+            "postal_code": "10110", "country": "US"}))
+    r = await client.post(f"/crm/contacts/{own}/files", headers=auth, files={
+        "file": ("business-registration.txt", b"Example Trading Co business registration\n", "text/plain")})
+    assert r.status_code == 200, r.text
+    await _ok(await client.patch("/companies/me/books", headers=auth,
+                                 json={"opening_balance_date": f"{today.year}-01-01"}))
 
 
 @pytest.fixture(scope="module")
@@ -337,6 +377,8 @@ def demo_token(api_server, api):
             await seed_funds_and_deferred_revenue(client, auth, contacts, date.fromisoformat(today))
             await seed_bank_statement(client, auth, date.fromisoformat(today))
             await seed_documents(client, auth, contacts)
+            await seed_manufacturing(client, auth)
+            await seed_company_details(client, auth, date.fromisoformat(today))
             # The default label templates are created through their write route, so no
             # page's first read seeds them: which labels page reads first depends on test order.
             for preset in PRESET_TEMPLATES:
@@ -406,6 +448,11 @@ async def seed_bank_statement(client: httpx.AsyncClient, auth: dict, today: date
     r = await client.post(f"/accounting/reconciliation/bank/{bank_id}/ask", headers=auth, json={
         "line_ids": [atm["id"]], "note": "What was this cash for?", "idempotency_key": uuid.uuid4().hex})
     assert r.status_code == 200, r.text
+    # A rule that posts the monthly rent to the rent account.
+    chart = (await _ok(await client.get("/accounting/chart", headers=auth)))["items"]
+    rent = next(a["code"] for a in chart if a["name"] == "Rent")
+    await _ok(await client.post("/accounting/rules", headers=auth, json={
+        "match_pattern": "OFFICE RENT", "target_account_code": rent}))
 
 
 @pytest.fixture

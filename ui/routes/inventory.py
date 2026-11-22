@@ -6667,7 +6667,7 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
     if not images:
         return Div(
             section_header(t("inventory.product_images"), icon_name="camera"),
-            P(t("inventory.no_product_images"), cls="hint"),
+            P(t("inventory.no_product_images"), cls="empty-state"),
             cls="doc-section wf-gallery wf-gallery--empty",
             id="wf-gallery",
         )
@@ -7429,7 +7429,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
             cls="data-table js-table", id="wo-orders-table", **{"data-page-size": "25"},
         ),
         table_pager("wo-orders-table"),
-    ) if runs else P(t("inventory.no_work_orders"), cls="hint"))
+    ) if runs else P(t("inventory.no_work_orders"), cls="empty-state"))
 
     return Div(
         flash_el,
@@ -8416,7 +8416,7 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                         Button(t("btn.go"), type="submit", cls="btn btn--secondary btn--xs"),
                         cls="action-card-row",
                     ),
-                    P(t("inventory.revert_no_history"), cls="action-card-hint"),
+                    P(t("inventory.revert_no_history"), cls="empty-state"),
                     hx_post=f"/api/items/{entity_id}/revert-to-draft",
             hx_confirm=t("inventory.confirm_revert_draft"),
                     hx_target="#item-action-error",

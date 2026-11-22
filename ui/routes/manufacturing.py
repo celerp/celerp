@@ -238,7 +238,7 @@ def _demand_row(l: dict) -> FT:
 def _demand_table(lines: list[dict], kept_key: str = "") -> FT:
     if not lines:
         return Div(
-            P(t("manufacturing.demand_empty"), cls="hint"),
+            P(t("manufacturing.demand_empty"), cls="empty-state"),
             id="mfg-table",
         )
     return Table(
@@ -674,7 +674,7 @@ def setup_routes(app):
         head = (P(t("manufacturing.make_list", items=", ".join(
             f"{p.get('sku') or p.get('item_id')} ({_qty(p.get('quantity', 0), p.get('unit'))})"
             for p in products)), cls="hint") if products
-            else P(t("manufacturing.no_shortfall_selection"), cls="hint"))
+            else P(t("manufacturing.no_shortfall_selection"), cls="empty-state"))
         return await base_shell(
             page_header(
                 t("manufacturing.component_requirements"),

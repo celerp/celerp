@@ -103,7 +103,7 @@ def _mine_card(asset: dict) -> FT:
 def _checks_list(checks: list[dict], me: str) -> FT:
     """Recorded checks, newest first; the person who recorded one may remove it the same day."""
     if not checks:
-        return Div(P(t("fixed_assets.no_checks"), cls="form-hint"), id="fa-checks")
+        return Div(P(t("fixed_assets.no_checks"), cls="empty-state"), id="fa-checks")
     rows = [Tr(Td(c["date"]), Td(A(c["number"], href=f"/fixed-assets/assets/{c['asset_id']}")), Td(_text(c.get("name"))),
                Td(Button(t("fixed_assets.remove_check"), type="button", cls="btn btn--sm btn--secondary",
                          hx_delete=f"{_CHECKS}/{quote(c['id'], safe=':')}", hx_swap="none")

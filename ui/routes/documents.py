@@ -5165,7 +5165,7 @@ def setup_routes(app):
         if not locations:
             return await base_shell(
                 page_header(t("documents.new_audit_title")),
-                P(t("documents.audit_no_locations"), cls="hint"),
+                P(t("documents.audit_no_locations"), cls="empty-state"),
                 title=page_title("documents.new_audit_title"), nav_active="lists", request=request,
             )
         loc_options = [(l.get("id"), l.get("name") or l.get("id")) for l in locations]

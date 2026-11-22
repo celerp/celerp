@@ -6,13 +6,13 @@
   "routes": ["/manufacturing", "/manufacturing/production"],
   "permission": "manage_manufacturing",
   "order": 3,
-  "checked": "c86512efd1ca4b79d44ca9a1cfb4d49d693a129162778652c4c7c274e70db471",
+  "checked": "bfe36f5816302cace11ec2d6714e64688a836f38e43304835089823f3ce69066",
   "steps": [
     {
       "text": "Open the item and choose its {tab} tab. The recipe there lists the components and the quantity of each that one unit takes, so a recipe for pressed rapeseed oil lists the seed.",
       "labels": {"tab": "nav.manufacturing"},
       "image": "img/make-from-recipe-1.webp",
-      "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
+      "capture": {"route": "/inventory?q=BNDL-001", "selector": "main", "actions": [{"click": "a[href^=\"/inventory/item:\"]"}, {"wait": ".category-tabs"}, {"click": ".category-tabs a[href$=\"tab=manufacturing\"]"}, {"wait": ".category-tab--active[href$=\"tab=manufacturing\"]"}]}
     },
     {
       "text": "Say what to make and how many: add the item and quantity to a production order from {so} and finalize it. The line then shows on {dp}.",

@@ -651,7 +651,7 @@ def _templates_list(templates: list[dict], active_id: str | None = None) -> obje
         ))
     return Div(
         H3(t("page.templates"), cls="section-title"),
-        Ul(*items, cls="template-list") if items else P(t("label.no_templates_yet"), cls="text-muted"),
+        Ul(*items, cls="template-list") if items else P(t("label.no_templates_yet"), cls="empty-state"),
         Form(
             Input(name="name", placeholder=t("labels.new_template_name"), required=True, cls="form-input form-input--sm"),
             Button(t("btn._add"), type="submit", cls="btn btn--sm btn--primary"),

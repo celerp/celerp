@@ -99,7 +99,7 @@ def _reminder_actions(reminder: dict, today: str) -> FT:
 
 def _reminders_table(reminders: list[dict], members: dict[str, str], today: str) -> FT:
     if not reminders:
-        return P(t("fixed_assets.no_reminders"), cls="form-hint")
+        return P(t("fixed_assets.no_reminders"), cls="empty-state")
     insured = any(r["kind"] == "insurance" for r in reminders)
     extra = ("policy", "insured_value") if insured else ()
 
@@ -162,7 +162,7 @@ def _files_cell(asset_id: str, entry: dict) -> FT:
 
 def _maintenance_table(asset_id: str, log: list[dict], currency: str) -> FT:
     if not log:
-        return P(t("fixed_assets.no_maintenance"), cls="form-hint")
+        return P(t("fixed_assets.no_maintenance"), cls="empty-state")
 
     def action(m):
         if m.get("source"):

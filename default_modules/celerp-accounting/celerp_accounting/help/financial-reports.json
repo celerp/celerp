@@ -27,10 +27,10 @@
       "capture": {"route": "/reports/trial-balance", "selector": "main", "actions": []}
     },
     {
-      "text": "{soa} shows a customer's, supplier's or account's movements and balance; {pick}",
-      "labels": {"soa": "acct.soa_title", "pick": "acct.soa_pick_contact"},
+      "text": "{soa} shows a customer's, supplier's or account's movements and balance. Search for them in the picker, or click {ar} to show every customer who owes you.",
+      "labels": {"soa": "acct.soa_title", "ar": "acct.soa_pick_ar_balance"},
       "image": "img/financial-reports-4.webp",
-      "capture": {"route": "/reports/statement", "selector": "main", "actions": []}
+      "capture": {"route": "/reports/statement?pick=ar_balance", "selector": "main", "actions": []}
     },
     {
       "text": "{ej} lists every journal entry in the period, line by line.",

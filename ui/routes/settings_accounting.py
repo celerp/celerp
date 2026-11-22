@@ -682,7 +682,7 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
             [_older_lot_row(lot, currency) for lot in lots], **operation_key_attrs())
     else:
         lot_table = P(t("older_stock.no_match") if filters.get("account") or filters.get("q")
-                      else t("older_stock.empty"), cls="hint", id="older-stock-table")
+                      else t("older_stock.empty"), cls="empty-state", id="older-stock-table")
     return Div(
         flash(message, kind) if message else None,
         H3(t("older_stock.tab"), cls="section-title"),
@@ -716,13 +716,13 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
             Th(t("older_stock.col_transferred"), **number), Th(t("older_stock.col_recognized"), **number),
             Th(t("older_stock.col_unresolved"), **number), Th(t("older_stock.col_journal")), Th("")],
             [_placement_row(p, currency, filters, retained) for p in placements])
-        if placements else P(t("older_stock.no_placements"), cls="hint"),
+        if placements else P(t("older_stock.no_placements"), cls="empty-state"),
         pager("placements"),
         H4(t("older_stock.moves"), cls="mt-md"),
         table("older-stock-moves", [
             Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_lots"), **number),
             Th(t("older_stock.col_to")), Th(t("older_stock.col_value"), **number), Th("")],
-            [_move_row(m, currency, filters) for m in moves]) if moves else P(t("older_stock.no_moves"), cls="hint"),
+            [_move_row(m, currency, filters) for m in moves]) if moves else P(t("older_stock.no_moves"), cls="empty-state"),
         pager("moves"),
         H4(t("older_stock.corrections"), cls="mt-md"),
         table("older-stock-corrections", [
@@ -730,7 +730,7 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
             Th(t("older_stock.col_account")), Th(t("older_stock.col_amount"), **number),
             Th(t("older_stock.col_journal")), Th(t("older_stock.col_by"))],
             [_correction_row(c, currency) for c in corrections])
-        if corrections else P(t("older_stock.no_corrections"), cls="hint"),
+        if corrections else P(t("older_stock.no_corrections"), cls="empty-state"),
         pager("corrections"),
         cls="settings-card", id="older-stock-card",
     )

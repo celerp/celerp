@@ -334,7 +334,7 @@ def _categories_tab(
         )
     else:
         your_cats_body = Div(
-            P(t("settings.no_categories_applied"), cls="settings-hint"),
+            P(t("settings.no_categories_applied"), cls="empty-state"),
             add_form,
         )
 
@@ -435,7 +435,7 @@ def _categories_tab(
 }"""),
         )
     else:
-        browse_content = Div(P(t("settings_inventory.no_library_categories"), cls="settings-hint"))
+        browse_content = Div(P(t("settings_inventory.no_library_categories"), cls="empty-state"))
 
     section_c = Details(
         Summary(t("settings.browse_library")),
