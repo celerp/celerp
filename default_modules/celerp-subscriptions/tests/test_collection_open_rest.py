@@ -6,7 +6,7 @@ that may be collected is ever left with nothing asked and nobody told.
 
 Initial conditions per test (as test_collection_settlement): a newly registered company, a payer
 with a card on file, an agreement on Bill and collect automatically for 30.00 a month from 1 July
-2026, and Celerp Cloud as a stand-in.
+2026, and Celerp Connect as a stand-in.
 
 The state-machine test drives one agreement through the app's real entry points (dispatcher
 passes, Cloud's attempt and payment deliveries in any order, payments by hand and their voids,

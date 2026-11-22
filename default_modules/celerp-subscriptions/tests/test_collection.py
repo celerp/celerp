@@ -1,11 +1,11 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Automatic card collection on a sales agreement (Celerp Cloud collection protocol 2).
+"""Automatic card collection on a sales agreement (Celerp Connect collection protocol 2).
 
 Initial conditions per test: a newly registered company (its owner holds every permission)
-and a payer contact with an email address. Celerp Cloud is a stand-in (``cloud``) that records
+and a payer contact with an email address. Celerp Connect is a stand-in (``cloud``) that records
 each request the app sends it and answers what the test sets, after refusing every attempt
-Celerp Cloud refuses (_Cloud.refusal); its deliveries (collection.binding,
+Celerp Connect refuses (_Cloud.refusal); its deliveries (collection.binding,
 collection.attempt, invoice.payment) are handed to the app's delivery handlers directly, whose
 own sessions join the test's transaction. The collection protocol flag is 1 unless a test
 withdraws it. The business day is frozen per test.
@@ -31,14 +31,14 @@ pytestmark = pytest.mark.asyncio
 LINK = "https://cloud.test/consent/tok-1"
 
 
-# Celerp Cloud's states for an attempt that may still charge the card.
+# Celerp Connect's states for an attempt that may still charge the card.
 _CLOUD_OPEN = frozenset({"prepared", "submitted", "processing", "requires_action", "unknown"})
 _CLOUD_ENDED = frozenset({"succeeded", "failed", "canceled", "unverifiable"})
 MAX_ATTEMPTS = 4  # Cloud's: the first attempt and three retries
 
 
 class _Cloud:
-    """Celerp Cloud as the app sees it: ``calls`` holds (route, payload) per request; ``answers``
+    """Celerp Connect as the app sees it: ``calls`` holds (route, payload) per request; ``answers``
     maps a route's last segment to the (status, body) it answers, None for no readable answer,
     or a callable of the payload.
 
@@ -223,7 +223,7 @@ _REFUSALS = {
 
 @pytest.mark.parametrize("refusal", sorted(_REFUSALS))
 async def test_the_stand_in_cloud_refuses_each_attempt_cloud_refuses(monkeypatch, refusal):
-    """Every collection test's Cloud refuses what Celerp Cloud refuses, whatever the test answers,
+    """Every collection test's Cloud refuses what Celerp Connect refuses, whatever the test answers,
     so no test can pass on an attempt the real service would not take; the same history with an
     attempt Cloud takes is answered as the test says."""
     _at(monkeypatch, datetime(2026, 7, 3, tzinfo=timezone.utc))
@@ -240,7 +240,7 @@ async def test_the_stand_in_cloud_refuses_each_attempt_cloud_refuses(monkeypatch
 
 
 def stand_in(monkeypatch, session) -> _Cloud:
-    """Celerp Cloud replaced for one test: payments on, the app's collection protocol, the app's own
+    """Celerp Connect replaced for one test: payments on, the app's collection protocol, the app's own
     delivery sessions joining the test's transaction, each request answered by a _Cloud."""
     from sqlalchemy.ext.asyncio import AsyncSession
     from celerp.gateway import state
@@ -822,7 +822,7 @@ async def test_mode_manual_cancels_unsubmitted_attempts(client, session, monkeyp
 
 
 async def test_the_stand_in_cloud_cancels_by_attempt_number_as_cloud_does(monkeypatch):
-    """Every collection test's Cloud takes a cancel as Celerp Cloud does: it names the attempt by
+    """Every collection test's Cloud takes a cancel as Celerp Connect does: it names the attempt by
     number and request key; one Cloud has not seen is kept and that attempt, when it arrives, is
     answered canceled and charges nothing; another key for the number is refused; an attempt that
     ended answers as it ended; a cancel of attempt 1 leaves attempt 2 alone."""

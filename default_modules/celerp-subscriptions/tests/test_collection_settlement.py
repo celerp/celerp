@@ -5,7 +5,7 @@ Cloud withdrawing collection, a success delivered late.
 
 Initial conditions per test (as test_collection): a newly registered company, a payer with a card
 on file, an agreement on Bill and collect automatically for 30.00 a month from 1 July 2026, and
-Celerp Cloud as a stand-in that answers what the test sets. An amendment effective 15 July (17 of
+Celerp Connect as a stand-in that answers what the test sets. An amendment effective 15 July (17 of
 July's 31 days) taking the line from 1 to 1.6667 credits 16.45 against July's invoice and issues
 an invoice of 27.42 for the new terms: 30.00 - 16.45 + 27.42 = 40.97 is what the payer owes.
 """
