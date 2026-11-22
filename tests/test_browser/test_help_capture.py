@@ -104,6 +104,9 @@ _SHOWS_EMPTY_STATE: dict[str, str] = {
     "backup.local-backup#3": "the cloud recovery points beside the local section need Celerp Connect",
     "core.accounting-sync-accounts#1": "a new company's accounts have nothing to fix, the state the step describes",
     "core.accounting-sync-accounts#2": "a new company's accounts have nothing to fix, the state the step describes",
+    "connectors.connect-store#4": "the step is about a connection before its first sync, which has never synced",
+    "fixed-assets.settings#1": _NO_TAX_REGIME,
+    "fixed-assets.settings#3": _NO_TAX_REGIME,
 }
 # Pages whose steps add records (a sample import, an AI conversation and the item it adds):
 # each is taken on a company of its own.
@@ -126,6 +129,7 @@ _SUBSCRIBED: dict[str, str] = {
     "connectors.connect-store#3": _CONNECT, "connectors.connect-store#4": _CONNECT,
     "connectors.connect-store#5": _CONNECT,
     "ai.ask-questions#2": _AI, "ai.ask-questions#4": _AI,
+    **{f"ai.usage-settings#{n}": _AI for n in range(1, 4)},
     **{f"ai.review-proposals#{n}": _AI for n in range(1, 5)},
 }
 
@@ -395,6 +399,30 @@ async def seed_company_details(client: httpx.AsyncClient, auth: dict, today: dat
                                  json={"opening_balance_date": f"{today.year}-01-01"}))
 
 
+async def seed_ai_usage(company_id: str, user_id: str) -> None:
+    """Questions to Celerp AI the service has charged for this month, recorded as the app
+    records every reply, so the usage table lists who asked."""
+    from celerp.ai.usage import record_usage
+    from celerp.db import LifecycleSessionLocal
+
+    async with LifecycleSessionLocal() as session:
+        for credits in (1, 2, 1):
+            await record_usage(session, company_id=uuid.UUID(company_id), user_id=uuid.UUID(user_id),
+                               operation_id=uuid.uuid4(), credits=credits, known=True)
+        await session.commit()
+
+
+async def seed_store_connection(company_id: str) -> None:
+    """A Shopify store connected to the company, as connecting it records, so a connection's
+    own page shows its status, sync and disconnect."""
+    from celerp.connectors.ownership import claim_connector_ownership
+    from celerp.db import LifecycleSessionLocal
+
+    async with LifecycleSessionLocal() as session:
+        await claim_connector_ownership(session, company_id, "shopify", default_sync_frequency="realtime")
+        await session.commit()
+
+
 @contextlib.contextmanager
 def _capture_clock():
     """The business day is _CAPTURE_DAY and the wall clock subscriptions read (what their
@@ -486,6 +514,9 @@ def capture_company(api_server: str, api, email: str) -> dict:
             await seed_documents(client, auth, contacts, date.fromisoformat(today))
             await seed_manufacturing(client, auth)
             await seed_company_details(client, auth, date.fromisoformat(today))
+            company_id = (await _ok(await client.get("/companies/me", headers=auth)))["id"]
+            await seed_ai_usage(company_id, user_id)
+            await seed_store_connection(company_id)
             # The default label templates are created through their write route, so no
             # page's first read seeds them: which labels page reads first depends on test order.
             for preset in PRESET_TEMPLATES:
@@ -586,6 +617,11 @@ def _date_records(company_id: str, started: datetime) -> None:
 def core_sample_records_only():
     """The capture companies keep the sample records modules add (the asset bills the fixed
     asset pages register), whichever test creates them."""
+
+
+@pytest.fixture
+def _mock_get_modules_default():
+    """The modules page lists the modules the app finds, not the suite's default of none."""
 
 
 @pytest.fixture(scope="session")
@@ -784,7 +820,10 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
     wrong = []
     for n, step in enumerate(help_page.data["steps"], 1):
         step_id = f"{page_id}#{n}"
-        with _capture_clock(), _subscription(_SUBSCRIBED.get(step_id)):
+        # The installed modules as the app finds them, from the bundled tree (the suite's
+        # process runs with none, which the modules page would picture as none installed).
+        with _capture_clock(), _subscription(_SUBSCRIBED.get(step_id)), \
+                patch.dict(os.environ, {"MODULE_DIR": "default_modules"}):
             try:
                 if shown := _capture_step(page, help_page, step, step_id, suite_owner["names"]):
                     wrong.append(f"{step_id} {shown}")
