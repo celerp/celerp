@@ -36,7 +36,11 @@ def _strings(value, where: str):
 
 def _hits(surface: str, value) -> list[str]:
     return [f"{surface}{where}: {term!r}" for where, text in _strings(value, "")
-            for term in BANNED_TERMS if term in text]
+            for term in BANNED_TERMS if term.lower() in text.lower()]
+
+
+def _text_hits(surface: str, text: str) -> list[str]:
+    return [f"{surface}: {term!r}" for term in BANNED_TERMS if term.lower() in text.lower()]
 
 
 def _assert_none(found: list[str]) -> None:
@@ -73,6 +77,22 @@ def test_module_manifests_carry_no_banned_term():
     _assert_none([hit for name, _path, manifest in modules for hit in _hits(name, manifest)])
 
 
+def test_app_level_openapi_text_carries_no_banned_term():
+    """The published OpenAPI title, summary, description, and tag text (`celerp.main`), not
+    just the routes real_agent_app() copies in."""
+    import celerp.main as main_mod
+
+    found = _hits("openapi_settings", {"title": main_mod.app.title, **main_mod._openapi_settings()})
+    _assert_none(found)
+
+
+def test_readme_carries_no_banned_term():
+    found = _text_hits("README.md", (REPO_ROOT / "README.md").read_text(encoding="utf-8"))
+    _assert_none(found)
+
+
 @pytest.mark.parametrize("term", BANNED_TERMS)
 def test_the_guard_finds_a_banned_term(term):
     assert _hits("x", {"a": [f"Use {term} now."]}) == [f"x.a[0]: {term!r}"]
+    assert _hits("x", {"a": [f"use {term.lower()} now."]}) == [f"x.a[0]: {term!r}"]
+    assert _text_hits("y", f"Use {term} now.") == [f"y: {term!r}"]

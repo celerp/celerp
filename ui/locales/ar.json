@@ -1390,7 +1390,7 @@
   "settings.configure_reusable_terms_conditions_templates_assi": "تكوين قوالب الشروط والأحكام القابلة لإعادة الاستخدام. قم بتعيينهم لأنواع المستندات وتعيين الإعدادات الافتراضية.",
   "settings.confirm_password": "تأكيد كلمة المرور الجديدة",
   "settings.connect_to_celerp_cloud": "احصل على Celerp Connect",
-  "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "اتصل بـ Celerp Connect للحصول على URL عام مستقر، ونسخ احتياطية مشفرة، وموصلات، وAI.",
+  "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "استخدم Celerp Connect للحصول على URL عام مستقر، ونسخ احتياطية مشفرة، وموصلات، وAI.",
   "settings.connecting": "جارٍ الاتصال...",
   "settings.connection_timed_out_3s": "انتهت مهلة الاتصال (3ث).",
   "settings.current": "حاضِر:",

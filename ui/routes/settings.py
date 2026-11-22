@@ -2900,6 +2900,8 @@ def _tax_display_cell(idx: int, field: str, tax: dict, prefix: str = "taxes") ->
         display = f"{plain_number(float(val))}%" if val not in (None, "") else EMPTY
     elif field in _TAX_BOOL_FIELDS:
         display = t("settings.yes") if val else t("settings.no")
+    elif field == "tax_type":
+        display = t(f"enum.tax_type.{val}") if val in TAX_TYPES else EMPTY
     else:
         display = str(val) if val and str(val).strip() else EMPTY
     return Td(

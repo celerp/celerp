@@ -1390,7 +1390,7 @@
   "settings.configure_reusable_terms_conditions_templates_assi": "Định cấu hình các mẫu điều khoản và điều kiện có thể sử dụng lại. Gán chúng cho các loại tài liệu và đặt mặc định.",
   "settings.confirm_password": "Xác nhận mật khẩu mới",
   "settings.connect_to_celerp_cloud": "Nhận Celerp Connect",
-  "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "Kết nối với Celerp Connect để có được URL công khai ổn định, các bản sao lưu được mã hóa, trình kết nối và AI.",
+  "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "Sử dụng Celerp Connect để có được URL công khai ổn định, các bản sao lưu được mã hóa, trình kết nối và AI.",
   "settings.connecting": "Đang kết nối...",
   "settings.connection_timed_out_3s": "Đã hết thời gian kết nối (3 giây).",
   "settings.current": "Hiện hành:",

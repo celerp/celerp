@@ -1390,7 +1390,7 @@
   "settings.configure_reusable_terms_conditions_templates_assi": "Konfigurasikan templat syarat & ketentuan yang dapat digunakan kembali. Tetapkan mereka ke tipe dokumen dan atur default.",
   "settings.confirm_password": "Konfirmasi Kata Sandi Baru",
   "settings.connect_to_celerp_cloud": "Dapatkan Celerp Connect",
-  "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "Hubungkan ke Celerp Connect untuk mendapatkan URL publik yang stabil, cadangan terenkripsi, konektor, dan AI.",
+  "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "Gunakan Celerp Connect untuk mendapatkan URL publik yang stabil, cadangan terenkripsi, konektor, dan AI.",
   "settings.connecting": "Menghubungkan...",
   "settings.connection_timed_out_3s": "Waktu koneksi habis (3 detik).",
   "settings.current": "Saat ini:",

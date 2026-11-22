@@ -88,6 +88,15 @@ async def test_taxes_tab_shows_a_compound_column(ui_client):
     assert html.index("/0/is_default/edit") < html.index("/0/is_compound/edit")
 
 
+async def test_taxes_tab_tax_type_column_shows_the_same_label_as_the_select(ui_client):
+    from ui.routes.settings import _taxes_tab
+
+    from fasthtml.common import to_xml
+    html = to_xml(_taxes_tab(_taxes(), prefix="taxes"))
+    assert f">{t('enum.tax_type.both')}<" in html
+    assert ">both<" not in html
+
+
 async def test_tax_cell_display_get_refuses_bad_input_and_shows_api_error(ui_client):
     url = "/settings/taxes/{idx}/{field}/display"
     r = await ui_client.get(url.format(idx=0, field="name"))

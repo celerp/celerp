@@ -1390,7 +1390,7 @@
   "settings.configure_reusable_terms_conditions_templates_assi": "Configure modelos de termos e condições reutilizáveis. Atribua-os a tipos de documentos e defina padrões.",
   "settings.confirm_password": "Confirmar nova senha",
   "settings.connect_to_celerp_cloud": "Obter Celerp Connect",
-  "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "Conecte-se ao Celerp Connect para obter um URL público estável, backups criptografados, conectores e IA.",
+  "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "Use o Celerp Connect para obter um URL público estável, backups criptografados, conectores e IA.",
   "settings.connecting": "Conectando...",
   "settings.connection_timed_out_3s": "A conexão expirou (3s).",
   "settings.current": "Atual:",

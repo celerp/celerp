@@ -1494,7 +1494,7 @@
   "settings.configure_reusable_terms_conditions_templates_assi": "እንደገና ጥቅም ላይ ሊውሉ የሚችሉ የውል እና ሁኔታዎች አብነቶችን ያዋቅሩ። ለሰነድ ዓይነቶች ይመድቧቸው እና ነባሪዎችን ያዘጋጁ።",
   "settings.confirm_password": "አዲሱን የይለፍ ቃል ያረጋግጡ",
   "settings.connect_to_celerp_cloud": "Celerp Connect አግኝ",
-  "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "የተረጋጋ ይፋዊ URL፣ የተመሰጠሩ ምትኬዎች፣ አገናኞች እና AI ለማግኘት ከCelerp Connect ጋር ይገናኙ።",
+  "settings.connect_to_celerp_cloud_to_get_a_stable_public_url": "የተረጋጋ ይፋዊ URL፣ የተመሰጠሩ ምትኬዎች፣ አገናኞች እና AI ለማግኘት Celerp Connect ይጠቀሙ።",
   "settings.connecting": "በማገናኘት ላይ...",
   "settings.connection_timed_out_3s": "ግንኙነት ጊዜው አልፏል (3ሰ)።",
   "settings.current": "የአሁኑ፦ ",
