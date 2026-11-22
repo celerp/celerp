@@ -95,6 +95,9 @@ _SHOWS_EMPTY_STATE: dict[str, str] = {
 # Pages whose steps add records (a sample import, an AI conversation and the item it adds):
 # each is taken on a company of its own.
 _ADDS_RECORDS = {"core.imports", "ai.ask-questions", "ai.review-proposals"}
+# Pages open to the installation owner only, which show no company or person: taken as the
+# suite's user, who owns the installation; the capture refuses a picture that names it.
+_INSTALLATION_PAGES = {"backup.local-backup"}
 # Steps about what an active Celerp Connect subscription or Celerp AI account shows: the
 # installation is given one through the seams the Connect and AI browser tests use, for that
 # step only, so the steps about the sales pages still show them.
@@ -497,9 +500,25 @@ def capture_company(api_server: str, api, email: str) -> dict:
     return {"token": token, "id": r.json()["id"]}
 
 
+@pytest.fixture
+def core_sample_records_only():
+    """The capture companies keep the sample records modules add (the asset bills the fixed
+    asset pages register), whichever test creates them."""
+
+
 @pytest.fixture(scope="session")
 def demo_company(api_server, api):
     return capture_company(api_server, api, _CAPTURE_EMAIL)
+
+
+@pytest.fixture(scope="session")
+def suite_owner(api) -> dict:
+    """The suite's own company, as a capture company, and the names no picture may show: its
+    name and its owners' names and emails."""
+    me = api.get("/companies/me").json()
+    owners = [u for u in api.get("/companies/me/users").json()["items"] if u["role"] == "owner"]
+    return {"token": api.headers["Authorization"].removeprefix("Bearer "), "id": me["id"],
+            "names": {me["name"], *(u[k] for u in owners for k in ("name", "email"))}}
 
 
 async def seed_bank_statement(client: httpx.AsyncClient, auth: dict, today: date) -> None:
@@ -636,9 +655,9 @@ def _write_image(target, path: Path) -> None:
     path.write_bytes(buf.getvalue())
 
 
-def _capture_step(demo_page, help_page, step: dict, step_id: str) -> list[str]:
-    """Opens one step's screen and checks it; the empty states or the run's own day it
-    pictures, if any, else takes its picture when writing."""
+def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[str]) -> list[str]:
+    """Opens one step's screen and checks it; the empty states, the run's own day or the
+    ``foreign`` company and people it pictures, if any, else takes its picture when writing."""
     capture = step["capture"]
     response = demo_page.goto(capture["route"])
     assert response is not None and response.ok, f"{step_id}: {capture['route']} did not load"
@@ -651,6 +670,8 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str) -> list[str]:
     text = _pictured_text(target)
     if dated := sorted(d for d in _today_written(date.today()) if d in text):
         return [f"the day the capture ran: {dated}"]
+    if named := sorted(n for n in foreign if n in text):
+        return [f"not the capture company or user: {named}"]
     for key in step["labels"].values():
         label = _visible_label(key)
         if label:
@@ -662,13 +683,14 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str) -> list[str]:
 
 
 @pytest.mark.parametrize("help_page", _PAGES, ids=[p.data.get("id", p.path.name) for p in _PAGES])
-def test_help_capture_every_page(page, browser_context, api_server, api, demo_company, help_page,
+def test_help_capture_every_page(page, browser_context, api_server, api, demo_company, suite_owner, help_page,
                                  tools_open_when_called):
     page_id = help_page.data["id"]
     # A page that adds records is taken on a company of its own, so no other page's picture
     # depends on which pages ran before it.
     company = (capture_company(api_server, api, _CAPTURE_EMAIL.replace("@", f"+{page_id}@"))
-               if page_id in _ADDS_RECORDS else demo_company)
+               if page_id in _ADDS_RECORDS
+               else suite_owner if page_id in _INSTALLATION_PAGES else demo_company)
     set_session_cookies(browser_context, company["token"])
     records = _records(company["id"])
     wrong = []
@@ -676,12 +698,12 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
         step_id = f"{page_id}#{n}"
         with _capture_clock(), _subscription(_SUBSCRIBED.get(step_id)):
             try:
-                if shown := _capture_step(page, help_page, step, step_id):
+                if shown := _capture_step(page, help_page, step, step_id, suite_owner["names"]):
                     wrong.append(f"{step_id} {shown}")
             finally:
                 # Leave the page while the step's subscription still holds, so a request it
                 # has in flight never lands on the next step's state.
                 page.goto("about:blank")
-    assert not wrong, "steps picturing an empty state or the day the capture ran:\n" + "\n".join(wrong)
+    assert not wrong, "steps picturing an empty state, the day the capture ran or another company:\n" + "\n".join(wrong)
     assert page_id in _ADDS_RECORDS or _records(company["id"]) == records, (
         f"{page_id} added records to the capture company: list it in _ADDS_RECORDS")
