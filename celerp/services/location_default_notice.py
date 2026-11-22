@@ -35,7 +35,9 @@ async def run_location_default_notice(session: AsyncSession) -> None:
     row = await session.get(SystemRuntimeState, _SINGLETON_ID)
     if row is None or not (row.value or {}).get(RECORD):
         return
-    await session.refresh(row, with_for_update=True)
+    row = (await session.execute(
+        select(SystemRuntimeState).where(SystemRuntimeState.id == _SINGLETON_ID).with_for_update()
+        .execution_options(populate_existing=True))).scalar_one()
     pending = dict((row.value or {}).get(RECORD) or {})
     left = {}
     for company_id, entry in pending.items():
