@@ -95,7 +95,8 @@ async def _claimed(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, 
                    bank_id, result: dict, entity_id: str | None = None, data: dict | None = None) -> tuple[dict, bool]:
     """Store ``result`` as the answer to ``key`` in the caller's transaction; the caller commits.
     A run that stored under ``key`` first is waited for (the key's unique index): its answer
-    comes back with False, and another request under the key is refused (request.key_reused)."""
+    comes back with False and the caller's transaction is rolled back, so only the run that
+    holds the key keeps its writes; another request under the key is refused (request.key_reused)."""
     entity_id = entity_id or f"bankop:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{key}')}"
     entry = await emit_event(db, company_id=company_id, entity_id=entity_id,
                      entity_type="bank_operation", event_type="acc.bank_statement.done",
@@ -105,8 +106,10 @@ async def _claimed(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, 
                      metadata_={"request": request_fingerprint(_bound(request, operation)), "result": result})
     if not getattr(entry, "was_deduped", False):
         return result, True
-    refuse_other_request((entry.metadata_ or {}).get("request"), _bound(request, operation))
-    return (entry.metadata_ or {}).get("result"), False
+    meta = entry.metadata_ or {}
+    refuse_other_request(meta.get("request"), _bound(request, operation))
+    await db.rollback()
+    return meta.get("result"), False
 
 
 async def _recorded(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, request: dict, operation: str,
@@ -1955,8 +1958,6 @@ async def ask(bank_id: uuid.UUID, payload: Ask, company_id: uuid.UUID = Depends(
         if first:
             await SL.write_ask(db, company_id=company_id, lines=lines, plan=plan)
             await db.commit()
-        else:
-            await db.rollback()
     return await SL.email_ask(db, company_id=company_id, key=key)
 
 
@@ -2066,6 +2067,8 @@ async def answer_question(line_id: uuid.UUID, payload: Answer, company_id: uuid.
     try:
         async with storing(db, company_id) as store:
             await lock_company(db, company_id)  # every writer of a line holds the company lock
+            if (first := await _replayed(db, company_id, key, request, "answer")) is not None:
+                return first  # a run under the same key answered while this one waited: store no file
             line = (await SL.scoped(db, company_id, "line", [line_id]))[0]
             if not SL.asked(line):
                 raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_statement_line_not_found"))

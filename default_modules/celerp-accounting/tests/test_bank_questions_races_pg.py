@@ -138,3 +138,45 @@ async def test_a_receipt_answered_while_a_line_attachment_is_saved_keeps_both(co
     async with async_sessionmaker(bind=committed_engine)() as s:
         held = await s.scalar(select(BankStatementLine.attachment_ids).where(BankStatementLine.id == uuid.UUID(lid)))
     assert len(held) == 2, held
+
+
+async def test_the_same_answer_sent_while_the_first_stores_its_receipt_stores_one_file(committed_engine, own_client,
+                                                                                         monkeypatch):
+    """A second request with the key of an answer still storing its receipt waits for the company
+    lock, then gives the first answer and stores no file of its own: the line holds one receipt and
+    no file is left on disk without a record."""
+    from celerp_accounting import statement_lines
+    from celerp_accounting.models import BankStatementLine
+    from race_support import _until_waiting_or_done
+
+    c = own_client
+    co, bk, lines = await _setup(c, committed_engine)
+    lid = lines["WITHDRAWAL"]["id"]
+    _slow_transport(monkeypatch, asyncio.Event(), [])
+    monkeypatch.setitem(globals(), "SLOW_S", 0)
+    assert (await _ask(c, co, bk, lid, B.key())).status_code == 200
+    async with async_sessionmaker(bind=committed_engine)() as s:
+        client_h = await B.member(c, s, co, "viewer")
+        await s.commit()
+    entered, go, real, stored = asyncio.Event(), asyncio.Event(), statement_lines.attach_file, []
+
+    async def paused(*args, **kwargs):
+        stored.append(await real(*args, **kwargs))
+        if not entered.is_set():
+            entered.set()
+            await go.wait()
+        return stored[-1]
+    monkeypatch.setattr(statement_lines, "attach_file", paused)
+    fid = B.upload(co["company_id"], B.user_id(client_h), b"%PDF-1.4\n%%EOF\n", "slip.pdf", "application/pdf")
+    body = {"answer": "receipt", "file_ids": [fid], "idempotency_key": B.key()}
+    first = asyncio.create_task(c.post(f"/accounting/bank-questions/{lid}/answer", headers=client_h, json=body))
+    await asyncio.wait_for(entered.wait(), 10)
+    second = asyncio.create_task(c.post(f"/accounting/bank-questions/{lid}/answer", headers=client_h, json=body))
+    await _until_waiting_or_done(committed_engine, second)
+    go.set()
+    one, two = await asyncio.wait_for(asyncio.gather(first, second), 30)
+    assert one.status_code == 200 and two.status_code == 200, (one.text, two.text)
+    assert one.json() == two.json()
+    async with async_sessionmaker(bind=committed_engine)() as s:
+        held = await s.scalar(select(BankStatementLine.attachment_ids).where(BankStatementLine.id == uuid.UUID(lid)))
+    assert len(held) == 1 and len(stored) == 1, (held, stored)

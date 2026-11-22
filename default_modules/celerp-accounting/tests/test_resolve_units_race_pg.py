@@ -3,7 +3,7 @@
 """A resolve of decisions and accepted groups cut part way the way the assistant cuts a tool
 at its step deadline, and the same key sent again while the first run is still going, on
 real PostgreSQL connections against committed data: every line ends with one outcome and
-both answers report every line."""
+both answers report every line, and each rule counts each accepted line it suggested once."""
 from __future__ import annotations
 
 import asyncio
@@ -18,9 +18,14 @@ from test_resolve_units import done_lines, every_line_once, mixed
 pytestmark = pytest.mark.asyncio
 
 
-async def _check(committed_engine, client, co, bk, body, before) -> None:
+async def _check(committed_engine, client, co, bk, body, before, accept) -> None:
     async with async_sessionmaker(bind=committed_engine, expire_on_commit=False)() as session:
         await every_line_once(client, session, co, bk, body, before)
+    r = await client.get("/accounting/rules", headers=co["h"])
+    assert r.status_code == 200, r.text
+    posted = {x["line_id"] for x in body["results"] if x["ok"]} & set(accept["line_ids"])
+    assert len(posted) == len(accept["line_ids"])
+    assert sum(x["times_applied"] for x in r.json()["items"]) == len(posted), r.json()
 
 
 async def test_a_run_cut_at_the_step_deadline_is_finished_by_its_retry(committed_engine, own_client, monkeypatch):
@@ -39,7 +44,7 @@ async def test_a_run_cut_at_the_step_deadline_is_finished_by_its_retry(committed
     assert 0 < len(before) < 5, "the deadline did not cut the run part way"
     again = await B.resolve(own_client, co, bk["id"], idem=idem, **kw)
     assert again.status_code == 200, again.text
-    await _check(committed_engine, own_client, co, bk, again.json(), before)
+    await _check(committed_engine, own_client, co, bk, again.json(), before, kw["accept"])
 
 
 @pytest.mark.parametrize("k", [1, 3, 4])
@@ -70,4 +75,4 @@ async def test_the_same_key_sent_while_the_first_run_is_part_way(committed_engin
     assert second.status_code == 200, second.text
     assert one.status_code == 200, one.text
     assert one.json() == second.json()
-    await _check(committed_engine, own_client, co, bk, second.json(), before)
+    await _check(committed_engine, own_client, co, bk, second.json(), before, kw["accept"])
