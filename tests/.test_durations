@@ -32165,5 +32165,6 @@
     "tests/test_ai_usage_pending.py::test_a_settled_charge_replaces_the_larger_pending_charge_of_its_operation[reconcile]": 0.23894404497696087,
     "tests/test_ai_usage_pending.py::test_a_settled_charge_replaces_the_larger_pending_charge_of_its_operation[reply]": 0.10770339093869552,
     "tests/test_migrations/test_x7c8d9e0f1a2_ai_usage_one_row_per_operation.py::test_the_writers_settled_charge_wins_over_its_larger_pending_charge[SQL_ASCII]": 0.5910315919318236,
-    "tests/test_migrations/test_x7c8d9e0f1a2_ai_usage_one_row_per_operation.py::test_the_writers_settled_charge_wins_over_its_larger_pending_charge[UTF8]": 0.4690229269908741
+    "tests/test_migrations/test_x7c8d9e0f1a2_ai_usage_one_row_per_operation.py::test_the_writers_settled_charge_wins_over_its_larger_pending_charge[UTF8]": 0.4690229269908741,
+    "tests/test_ui.py::TestInventoryUXFixes::test_print_list_names_the_items_not_their_ids": 0.046405665983911604
 }
