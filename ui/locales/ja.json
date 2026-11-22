@@ -7521,6 +7521,8 @@
   "posting.income_account.not_revenue": "{item} は勘定 {code} で販売されていますが、この勘定は収益勘定ではありません。収益勘定を選択してください。",
   "perm.name.send_statements": "寄付者明細を送信",
   "event.crm.contact.statement_sent": "寄付者明細を送信しました",
+  "event.crm.contact.statement_sent.failed": "寄付者明細のメール送信に失敗しました",
+  "event.crm.contact.statement_sent.unconfirmed": "寄付者明細のメール送信は未確認です",
   "subscriptions.runs_collection": "{name} の承認により、各請求書の代金が顧客の登録済みカードから自動的に集金されます。",
   "subscriptions.runs_collection_lapsed": "自動集金はオンですが、実行されていません。承認者の {name} は、現在この操作に必要な権限を持っていません。権限のあるユーザーが一度オフにしてから再びオンにすると、改めて承認できます。",
   "posting.fund.funds_off": "基金が無効のため、仕訳明細に基金を設定できません。明細から基金を削除するか、会計設定で基金を有効にしてください。",

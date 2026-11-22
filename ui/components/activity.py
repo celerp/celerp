@@ -119,15 +119,28 @@ def _title_case(event_type: str) -> str:
     return event_type.replace(".", " ").replace("_", " ").title()
 
 
-def event_label(event_type: str) -> str:
+# Events kept as an email attempt record, written before the email goes out: the label follows
+# the attempt state in the event's metadata result (an earlier build's record holds only a sent
+# result). Sent reads as the event type's own label; failed as ``.failed``; anything else
+# (sending, or cut off unanswered) as ``.unconfirmed``.
+_ATTEMPT_EVENTS = frozenset({"crm.contact.statement_sent"})
+
+
+def event_label(event_type: str, metadata: dict | None = None) -> str:
     """Human label for a ledger event_type string, in the current request language.
 
     Known types resolve their label at render time via ``t()``; an unknown type
     falls back to a title-cased form of the raw string (a data enum we do not
-    ship a catalog entry for)."""
+    ship a catalog entry for). An email attempt event reads by the state its
+    ``metadata`` records (see _ATTEMPT_EVENTS); without an event's metadata (a list of
+    event types) it reads as its type."""
     if _is_file_event(event_type):
         key = _FILE_OP_LABELS.get(_file_op(event_type))
         return t(key) if key else _title_case(event_type)
+    if event_type in _ATTEMPT_EVENTS and metadata is not None:
+        state = (metadata.get("result") or {}).get("state")
+        return t(f"event.{event_type}" if state == "sent" else
+                 f"event.{event_type}.{'failed' if state == 'failed' else 'unconfirmed'}")
     key = EVENT_TYPE_LABELS.get(event_type)
     return t(key) if key else _title_case(event_type)
 
@@ -913,7 +926,7 @@ def _event_display(entry: dict) -> tuple[str, str]:
     Works with both ledger entries (entity_name) and dashboard activities (name).
     """
     event_type = str(entry.get("event_type") or "")
-    label = event_label(event_type)
+    label = event_label(event_type, entry.get("metadata"))
     if event_type == "doc.payment.received" and _is_vendor_doc(entry):
         label = t("event.doc.payment.made")
     entity_id = str(entry.get("entity_id") or "")
@@ -1447,7 +1460,7 @@ def history_rows(ledger: list[dict], *, currency: str | None = None,
     for e in ledger:
         specs = _entry_specs(e, currency, category_names, deleted, docs_on)
         base = {"id": e.get("id"), "when": format_timestamp(str(e.get("ts") or "")) or EMPTY,
-                "who": actor_label(e), "event": event_label(str(e.get("event_type") or ""))}
+                "who": actor_label(e), "event": event_label(str(e.get("event_type") or ""), e.get("metadata"))}
         data = e.get("data") or {}
         changes = (field_changes(data, str(e.get("event_type") or ""), currency, category_names)
                    if isinstance(data, dict) and _lifecycle_rows_spec(e, currency, category_names, deleted) is None

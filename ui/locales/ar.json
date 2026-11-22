@@ -7521,6 +7521,8 @@
   "posting.income_account.not_revenue": "يُباع {item} على الحساب {code}، وهو ليس حساب إيرادات. اختر له حساب إيرادات.",
   "perm.name.send_statements": "إرسال كشوف المتبرعين",
   "event.crm.contact.statement_sent": "تم إرسال كشف المتبرع",
+  "event.crm.contact.statement_sent.failed": "فشل بريد كشف المتبرع الإلكتروني",
+  "event.crm.contact.statement_sent.unconfirmed": "لم يتم تأكيد بريد كشف المتبرع الإلكتروني",
   "subscriptions.runs_collection": "يُحصَّل مبلغ كل فاتورة تلقائيًا من البطاقة المحفوظة للعميل بتفويض من {name}.",
   "subscriptions.runs_collection_lapsed": "التحصيل التلقائي مفعّل لكنه لا يعمل: لم يعد {name}، الذي فوّضه، يملك الإذن اللازم. يمكن لشخص يملك هذا الإذن إيقافه ثم تشغيله مجددًا لإعادة تفويضه.",
   "posting.fund.funds_off": "الصناديق معطّلة، لذلك لا يمكن إسناد صندوق إلى سطر قيد اليومية. أزل الصندوق من السطر أو فعّل الصناديق من إعدادات المحاسبة.",

@@ -7521,6 +7521,8 @@
   "posting.income_account.not_revenue": "{item} በመለያ {code} ይሸጣል፣ ይህ የገቢ መለያ አይደለም። የገቢ መለያ ይምረጡለት።",
   "perm.name.send_statements": "የለጋሾች መግለጫዎችን ላክ",
   "event.crm.contact.statement_sent": "የለጋሽ መግለጫ ተልኳል",
+  "event.crm.contact.statement_sent.failed": "የለጋሽ መግለጫ ኢሜይል አልተሳካም",
+  "event.crm.contact.statement_sent.unconfirmed": "የለጋሽ መግለጫ ኢሜይል አልተረጋገጠም",
   "subscriptions.runs_collection": "እያንዳንዱ የክፍያ መጠየቂያ በፋይል ላይ ካለው የደንበኛው ካርድ በራስ-ሰር ይሰበሰባል፤ ፈቃዱን የሰጠው {name} ነው።",
   "subscriptions.runs_collection_lapsed": "በራስ-ሰር መሰብሰብ በርቷል፣ ግን አይሠራም፤ ፈቃዱን የሰጠው {name} ከአሁን በኋላ ይህን ለማድረግ ፈቃድ የለውም። ፈቃድ ያለው ሰው አጥፍቶ እንደገና በማብራት አዲስ ፈቃድ ሊሰጥ ይችላል።",
   "posting.fund.funds_off": "ፈንዶች ተሰናክለዋል፤ ስለዚህ የመዝገብ መስመር ፈንድ ሊመደብለት አይችልም። ፈንዱን ከመስመሩ ያስወግዱ ወይም በሂሳብ ቅንብሮች ውስጥ ፈንዶችን ያንቁ።",

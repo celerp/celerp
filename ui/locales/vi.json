@@ -7521,6 +7521,8 @@
   "posting.income_account.not_revenue": "{item} được bán trên tài khoản {code}, đây không phải là tài khoản doanh thu. Hãy chọn một tài khoản doanh thu cho mặt hàng này.",
   "perm.name.send_statements": "Gửi bảng kê nhà tài trợ",
   "event.crm.contact.statement_sent": "Đã gửi bảng kê nhà tài trợ",
+  "event.crm.contact.statement_sent.failed": "Gửi email bảng kê nhà tài trợ thất bại",
+  "event.crm.contact.statement_sent.unconfirmed": "Chưa xác nhận email bảng kê nhà tài trợ",
   "subscriptions.runs_collection": "Mỗi hóa đơn được tự động thu tiền từ thẻ đã lưu của khách hàng, theo sự cho phép của {name}.",
   "subscriptions.runs_collection_lapsed": "Tính năng thu tiền tự động đã bật nhưng không chạy: {name}, người đã cấp quyền trước đây, không còn quyền thực hiện nữa. Người có quyền phù hợp có thể tắt rồi bật lại để cấp phép mới.",
   "posting.fund.funds_off": "Tính năng quỹ đang tắt nên dòng bút toán không thể gắn với quỹ. Hãy bỏ quỹ khỏi dòng đó hoặc bật quỹ trong cài đặt Kế toán.",

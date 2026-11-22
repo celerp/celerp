@@ -7521,6 +7521,8 @@
   "posting.income_account.not_revenue": "{item} se vende en la cuenta {code}, que no es una cuenta de ingresos. Elija una cuenta de ingresos para este artículo.",
   "perm.name.send_statements": "Enviar estados de donantes",
   "event.crm.contact.statement_sent": "Estado de donante enviado",
+  "event.crm.contact.statement_sent.failed": "Error en el correo del estado de donante",
+  "event.crm.contact.statement_sent.unconfirmed": "Correo del estado de donante sin confirmar",
   "subscriptions.runs_collection": "Cada factura se cobra automáticamente de la tarjeta registrada del cliente, con autorización de {name}.",
   "subscriptions.runs_collection_lapsed": "El cobro automático está habilitado, pero no se ejecuta: {name}, quien lo autorizó, ya no tiene permiso para hacerlo. Una persona con ese permiso puede desactivarlo y volver a activarlo para autorizarlo de nuevo.",
   "posting.fund.funds_off": "Los fondos están desactivados, por lo que una línea de asiento no puede tener un fondo. Quite el fondo de la línea o active los fondos en los ajustes de Contabilidad.",

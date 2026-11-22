@@ -7521,6 +7521,8 @@
   "posting.income_account.not_revenue": "{item} est vendu sur le compte {code}, qui n'est pas un compte de produits. Choisissez un compte de produits pour cet article.",
   "perm.name.send_statements": "Envoyer les relevés des donateurs",
   "event.crm.contact.statement_sent": "Relevé du donateur envoyé",
+  "event.crm.contact.statement_sent.failed": "Échec de l'e-mail du relevé du donateur",
+  "event.crm.contact.statement_sent.unconfirmed": "E-mail du relevé du donateur non confirmé",
   "subscriptions.runs_collection": "Chaque facture est encaissée automatiquement sur la carte enregistrée du client, avec l'autorisation de {name}.",
   "subscriptions.runs_collection_lapsed": "L'encaissement automatique est activé, mais ne s'exécute pas : {name}, qui l'avait autorisé, n'en a plus le droit. Une personne disposant de cette autorisation peut le désactiver puis le réactiver pour l'autoriser de nouveau.",
   "posting.fund.funds_off": "Les fonds sont désactivés. Une ligne d'écriture ne peut donc pas être affectée à un fonds. Retirez le fonds de la ligne ou activez les fonds dans les paramètres de Comptabilité.",

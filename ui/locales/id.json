@@ -7521,6 +7521,8 @@
   "posting.income_account.not_revenue": "{item} dijual pada akun {code}, yang bukan akun pendapatan. Pilih akun pendapatan untuknya.",
   "perm.name.send_statements": "Kirim laporan donatur",
   "event.crm.contact.statement_sent": "Laporan donatur terkirim",
+  "event.crm.contact.statement_sent.failed": "Email laporan donatur gagal",
+  "event.crm.contact.statement_sent.unconfirmed": "Email laporan donatur belum dikonfirmasi",
   "subscriptions.runs_collection": "Setiap tagihan ditarik secara otomatis dari kartu tersimpan milik pelanggan dengan otorisasi dari {name}.",
   "subscriptions.runs_collection_lapsed": "Penarikan pembayaran otomatis diaktifkan tetapi tidak berjalan: {name}, yang sebelumnya memberikan otorisasi, tidak lagi memiliki izin untuk itu. Pengguna yang memiliki izin dapat mematikan dan mengaktifkannya kembali untuk memberikan otorisasi baru.",
   "posting.fund.funds_off": "Fitur dana dinonaktifkan, sehingga baris jurnal tidak dapat memiliki dana. Hapus dana dari baris tersebut atau aktifkan dana di Pengaturan Akuntansi.",

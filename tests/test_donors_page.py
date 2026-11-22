@@ -8,6 +8,7 @@ made through the API; email goes to an in-memory mailbox (test_donors._mailbox).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -133,7 +134,6 @@ async def test_a_send_whose_answer_did_not_come_back_shows_each_statement_as_sto
     """A batch can take longer than the page waits for the API. When no answer comes back the
     send may still be running: the toast says so and names whose statement is still being sent,
     never a timeout or a failure, and the page reads each statement as stored, then as sent."""
-    import asyncio
     import ui.api_client as api
 
     await _statement_donors(owner_ui.api, AUTH)
@@ -192,3 +192,61 @@ async def test_a_pending_sends_status_check_failure_shows_as_pending_with_its_ow
     assert r.headers.get("HX-Redirect") == PAGE and toast.get("type") == "info", (r.status_code, toast)
     assert sentence("donors.done_pending") in toast["message"], toast
     assert "boom" in toast["message"], toast
+
+
+async def _activity(ui, contact: str) -> str:
+    r = await ui.get(f"/contacts/{contact}/tab/activity")
+    assert r.status_code == 200, r.text[:300]
+    return r.text
+
+
+@pytest.mark.parametrize("ok", [True, False])
+async def test_a_donors_activity_reads_sent_only_when_the_statement_email_went_out(owner_ui, monkeypatch, ok):
+    """The statement's event is the send's attempt record, kept whatever the email's outcome: the
+    donor's activity says the statement was sent only when the email went out, and that it failed
+    when the transport refused it."""
+    async def answer(to, subject, body_html, body_text="", **kw):
+        return EmailResult(ok=ok, detail="accepted" if ok else "refused")
+    monkeypatch.setattr("celerp.services.email.send_email", answer)
+    donors = await _statement_donors(owner_ui.api, AUTH)
+    await _send(owner_ui, confirm="on")
+    text = await _activity(owner_ui, donors["email"])
+    labels = {key: t(key) in text for key in ("event.crm.contact.statement_sent", "event.crm.contact.statement_sent.failed",
+                                              "event.crm.contact.statement_sent.unconfirmed")}
+    assert labels == {"event.crm.contact.statement_sent": ok, "event.crm.contact.statement_sent.failed": not ok,
+                      "event.crm.contact.statement_sent.unconfirmed": False}, labels
+
+
+async def test_a_donors_activity_reads_not_confirmed_while_the_statement_email_is_with_the_mail_server(
+        owner_ui, monkeypatch):
+    """While the email is with the mail server unanswered the donor's activity says it is not
+    confirmed, never sent; once the server accepts it, sent."""
+    going, release = asyncio.Event(), asyncio.Event()
+
+    async def slow(to, subject, body_html, body_text="", **kw):
+        going.set()
+        await release.wait()
+        return EmailResult(ok=True, detail="")
+    monkeypatch.setattr("celerp.services.email.send_email", slow)
+    donors = await _statement_donors(owner_ui.api, AUTH)
+    send = asyncio.ensure_future(_send(owner_ui, confirm="on"))
+    await asyncio.wait_for(going.wait(), 10)
+    text = await _activity(owner_ui, donors["email"])
+    assert t("event.crm.contact.statement_sent.unconfirmed") in text
+    assert t("event.crm.contact.statement_sent") not in text
+    release.set()
+    await asyncio.wait_for(send, 30)
+    text = await _activity(owner_ui, donors["email"])
+    assert t("event.crm.contact.statement_sent") in text
+    assert t("event.crm.contact.statement_sent.unconfirmed") not in text
+
+
+async def test_a_statement_the_earlier_build_recorded_reads_sent_in_activity():
+    """The earlier build kept only the answer ({"result": {"state": "sent"}}), written once the email
+    had gone out: the activity reader labels it sent. With no recorded outcome it is not confirmed."""
+    from ui.components.activity import history_rows
+    event = {"id": 1, "event_type": "crm.contact.statement_sent", "ts": "2026-03-31T00:00:00+00:00", "data": {}}
+    legacy = history_rows([{**event, "metadata": {"result": {"state": "sent", "sent": 1}}}])
+    bare = history_rows([{**event, "metadata": {}}])
+    assert [r["event"] for r in legacy] == [t("event.crm.contact.statement_sent")]
+    assert [r["event"] for r in bare] == [t("event.crm.contact.statement_sent.unconfirmed")]

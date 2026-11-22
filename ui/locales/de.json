@@ -7521,6 +7521,8 @@
   "posting.income_account.not_revenue": "{item} wird über Konto {code} verkauft, das kein Erlöskonto ist. Wählen Sie dafür ein Erlöskonto.",
   "perm.name.send_statements": "Spenderauszüge senden",
   "event.crm.contact.statement_sent": "Spenderauszug gesendet",
+  "event.crm.contact.statement_sent.failed": "E-Mail mit Spenderauszug fehlgeschlagen",
+  "event.crm.contact.statement_sent.unconfirmed": "E-Mail mit Spenderauszug nicht bestätigt",
   "subscriptions.runs_collection": "Jede Rechnung wird automatisch von der hinterlegten Karte des Kunden eingezogen. Dies wurde von {name} autorisiert.",
   "subscriptions.runs_collection_lapsed": "Der automatische Zahlungseinzug ist eingeschaltet, wird aber nicht ausgeführt: {name}, der ihn autorisiert hat, besitzt die dafür erforderliche Berechtigung nicht mehr. Eine berechtigte Person kann ihn aus- und wieder einschalten, um ihn erneut zu autorisieren.",
   "posting.fund.funds_off": "Fonds sind deaktiviert. Daher kann eine Buchungszeile keinem Fonds zugeordnet werden. Entfernen Sie den Fonds aus der Zeile oder aktivieren Sie Fonds in den Buchhaltungseinstellungen.",

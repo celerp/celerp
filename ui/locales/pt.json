@@ -7521,6 +7521,8 @@
   "posting.income_account.not_revenue": "{item} é vendido na conta {code}, que não é uma conta de receitas. Escolha uma conta de receitas para ele.",
   "perm.name.send_statements": "Enviar extratos de doadores",
   "event.crm.contact.statement_sent": "Extrato do doador enviado",
+  "event.crm.contact.statement_sent.failed": "Falha no e-mail do extrato do doador",
+  "event.crm.contact.statement_sent.unconfirmed": "E-mail do extrato do doador não confirmado",
   "subscriptions.runs_collection": "Cada fatura é cobrada automaticamente do cartão registrado do cliente, com autorização de {name}.",
   "subscriptions.runs_collection_lapsed": "A cobrança automática está ativada, mas não é executada: {name}, que a autorizou, não tem mais permissão para isso. Alguém com essa permissão pode desativá-la e reativá-la para conceder uma nova autorização.",
   "posting.fund.funds_off": "Os fundos estão desativados, por isso uma linha de lançamento não pode ter um fundo. Remova o fundo da linha ou ative os fundos nas configurações de Contabilidade.",
