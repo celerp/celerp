@@ -51,21 +51,31 @@ jobs:
             --json number \
             --jq '.[0].number // empty')"
 
-          branch_matches=false
-          if [[ -n "$open_pr" ]]; then
-            git fetch --quiet origin "$BRANCH"
-            if git diff --quiet FETCH_HEAD -- constraints.txt; then
-              branch_matches=true
+          # The job replaces the branch only when it is its own: nothing beyond main, or
+          # one "Refresh Python dependencies" commit that touches constraints.txt alone.
+          git fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"
+          lease=""
+          if [[ -n "$(git ls-remote --heads origin "refs/heads/$BRANCH")" ]]; then
+            git fetch --quiet origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+            lease="$(git rev-parse "origin/$BRANCH")"
+            if [[ -n "$(git rev-list "origin/main..$lease")" ]] && {
+              [[ "$(git log --format=%s "origin/main..$lease")" != "Refresh Python dependencies" ]] ||
+              [[ "$(git diff --name-only "origin/main...$lease")" != constraints.txt ]]; }; then
+              echo "$BRANCH carries commits other than the job's own refresh commit; leaving it unchanged"
+              exit 0
             fi
           fi
 
-          if git diff --quiet -- constraints.txt && { [[ -z "$open_pr" ]] || [[ "$branch_matches" == true ]]; }; then
+          if [[ -n "$open_pr" ]]; then
+            if git diff --quiet "$lease" -- constraints.txt &&
+              [[ "$(git merge-base origin/main "$lease")" == "$(git rev-parse origin/main)" ]]; then
+              echo "Dependency refresh PR #$open_pr is already current"
+              exit 0
+            fi
+            echo "Dependency refresh PR #$open_pr is open but stale; rebuilding it from current main"
+          elif git diff --quiet -- constraints.txt; then
             echo "constraints.txt is already current"
             exit 0
-          fi
-
-          if [[ -n "$open_pr" ]]; then
-            echo "Dependency refresh PR #$open_pr is open but stale; rebuilding it from current main"
           fi
 
           git config user.name "Noah Severs"
@@ -76,10 +86,9 @@ jobs:
             git commit -m "Refresh Python dependencies"
           fi
 
-          remote_sha="$(git ls-remote --heads origin "refs/heads/$BRANCH" | cut -f1)"
-          if [[ -n "$remote_sha" ]]; then
+          if [[ -n "$lease" ]]; then
             git push \
-              --force-with-lease="refs/heads/$BRANCH:$remote_sha" \
+              --force-with-lease="refs/heads/$BRANCH:$lease" \
               origin "HEAD:refs/heads/$BRANCH"
           else
             git push origin "HEAD:refs/heads/$BRANCH"
