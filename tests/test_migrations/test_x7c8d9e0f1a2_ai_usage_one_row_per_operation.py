@@ -7,16 +7,20 @@ pending charge, unresolved only when every row is, asked about again at the grou
 latest reconcile time); single rows stay as they are; the unique key is then (company,
 operation), on a SQL_ASCII database as on a UTF8 one, and the downgrade restores the old
 key. A seeded set of generated groups is checked against an independent oracle of that
-rule."""
+rule, and one operation is seeded by the live usage writer itself: a settled charge
+replaces the larger pending one (test_ai_usage_pending holds that contract)."""
 
 from __future__ import annotations
 
+import asyncio
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 from .conftest import throwaway_db, upgrade_to
 
@@ -95,6 +99,25 @@ def _seed(conn) -> tuple[list[dict], dict]:
     return rows, {"users": users, "cases": cases}
 
 
+async def _written(async_url: str, company, users) -> uuid.UUID:
+    """One operation as the usage writer records it under the old key: the first user's
+    replies report 3 and 4 while the charge is unnamed, then the second user's retry gets
+    the operation's whole charge, 5, named by the service."""
+    from celerp.ai import usage
+    from migration_support import maker
+
+    engine, op = create_async_engine(async_url, poolclass=NullPool), uuid.uuid4()
+    try:
+        async with maker(engine)() as s:
+            for user, credits, known in ((users[0], 3, False), (users[0], 4, False), (users[1], 5, True)):
+                await usage.record_usage(s, company_id=company, user_id=user, operation_id=op,
+                                         credits=credits, known=known)
+                await s.commit()
+    finally:
+        await engine.dispose()
+    return op
+
+
 def _read(conn) -> dict:
     return {(r["company_id"], r["operation_id"]): dict(r)
             for r in conn.execute(text(f"SELECT {_COLS} FROM ai_usage")).mappings()}
@@ -109,12 +132,18 @@ def _key(conn) -> str:
 def migrated(request):
     from alembic_support import alembic_run
 
-    with throwaway_db("aiusage", encoding=request.param) as (_, sync_url):
+    with throwaway_db("aiusage", encoding=request.param) as (async_url, sync_url):
         upgrade_to(sync_url, _PREV)
         eng = create_engine(sync_url)
         try:
             with eng.begin() as conn:
                 rows, ctx = _seed(conn)
+            company = ctx["cases"]["single_pending"][0]
+            ctx["written"] = (company, asyncio.run(_written(async_url, company, ctx["users"])))
+            with eng.connect() as conn:
+                ctx["written_rows"] = [dict(r) for r in conn.execute(text(
+                    f"SELECT {_COLS} FROM ai_usage WHERE operation_id = :op"), {"op": ctx["written"][1]}).mappings()]
+            rows = rows + ctx["written_rows"]
             upgrade_to(sync_url, _REV)
             with eng.connect() as conn:
                 up, up_key = _read(conn), _key(conn)
@@ -146,6 +175,13 @@ def _case(m, name) -> tuple:
 ])
 def test_an_operation_merges_into_its_earliest_row_with_the_strongest_charge_evidence(migrated, name, expected):
     assert _case(migrated, name) == expected
+
+
+def test_the_writers_settled_charge_wins_over_its_larger_pending_charge(migrated):
+    before = sorted((r["credits"], r["pending"]) for r in migrated["written_rows"])
+    assert before == [(5, False), (7, True)]
+    r = migrated["up"][migrated["written"]]
+    assert (migrated["users"].index(r["user_id"]), r["credits"], r["pending"], r["unresolved"]) == (0, 5, False, False)
 
 
 def test_every_merged_row_equals_the_oracle_and_single_rows_are_untouched(migrated):
