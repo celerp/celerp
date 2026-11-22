@@ -45,26 +45,36 @@ jobs:
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- constraints.txt; then
-            echo "constraints.txt is already current"
-            exit 0
-          fi
-
           open_pr="$(gh pr list \
             --state open \
             --head "$BRANCH" \
             --json number \
             --jq '.[0].number // empty')"
+
+          branch_matches=false
           if [[ -n "$open_pr" ]]; then
-            echo "Dependency refresh PR #$open_pr is already open"
+            git fetch --quiet origin "$BRANCH"
+            if git diff --quiet FETCH_HEAD -- constraints.txt; then
+              branch_matches=true
+            fi
+          fi
+
+          if git diff --quiet -- constraints.txt && { [[ -z "$open_pr" ]] || [[ "$branch_matches" == true ]]; }; then
+            echo "constraints.txt is already current"
             exit 0
+          fi
+
+          if [[ -n "$open_pr" ]]; then
+            echo "Dependency refresh PR #$open_pr is open but stale; rebuilding it from current main"
           fi
 
           git config user.name "Noah Severs"
           git config user.email "118095044+ngsevers@users.noreply.github.com"
           git switch -c "$BRANCH"
           git add constraints.txt
-          git commit -m "Refresh Python dependencies"
+          if ! git diff --cached --quiet; then
+            git commit -m "Refresh Python dependencies"
+          fi
 
           remote_sha="$(git ls-remote --heads origin "refs/heads/$BRANCH" | cut -f1)"
           if [[ -n "$remote_sha" ]]; then
@@ -75,10 +85,12 @@ jobs:
             git push origin "HEAD:refs/heads/$BRANCH"
           fi
 
-          gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "Refresh Python dependencies" \
-            --body "Refreshes the resolved production dependency graph from pyproject.toml. constraints.txt remains resolver-generated; normal CI validates the complete set before merge."
+          if [[ -z "$open_pr" ]]; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "Refresh Python dependencies" \
+              --body "Refreshes the resolved production dependency graph from pyproject.toml. constraints.txt remains resolver-generated; normal CI validates the complete set before merge."
+          fi
 
           gh workflow run ci.yml --ref "$BRANCH" -f dependency_refresh=true
