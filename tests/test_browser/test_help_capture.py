@@ -41,7 +41,7 @@ from celerp_labels.presets import PRESET_TEMPLATES
 from test_helpers import grant_permission
 from ui.i18n import t
 
-from .conftest import _test_db, clear_session_registry, set_session_cookies
+from .conftest import _test_db, clear_session_registry, htmx_idle, set_session_cookies
 
 pytestmark = pytest.mark.browser
 
@@ -139,6 +139,11 @@ _SENT_COPY = {"id": str(_SENT_COPY_ID), "link_id": str(_SENT_LINK_ID), "status":
               "can_restore": False, "opened": True, "downloaded": False, "company_opened": False,
               "sent_at": "2026-06-12T09:30:00+00:00", "expires_at": "2026-06-26T09:30:00+00:00",
               "firm_name": "Example Accounting"}
+# The free email quota the relay advertises to an installation that is not connected, which
+# offers "Send by email" on a document. The app keeps the relay's answer in a process cache it
+# fills on the first document opened, so it is pinned: otherwise a picture would show the offer
+# or not depending on which pages the run opened before it.
+_FREE_EMAIL_QUOTA = 50
 _SUBSCRIBED: dict[str, str] = {
     "core.company-handoff#2": _COPIES, "core.company-handoff#4": _COPIES,
     "core.web-access#2": _CONNECT,
@@ -811,7 +816,7 @@ def _empty_state_shown(target) -> list[str]:
 def _write_image(target, path: Path) -> None:
     from PIL import Image
 
-    with Image.open(io.BytesIO(target.screenshot())) as shot:
+    with Image.open(io.BytesIO(target.screenshot(animations="disabled"))) as shot:
         image = shot.convert("RGB")
     image = image.crop((0, 0, image.width, min(image.height, _MAX_HEIGHT)))
     if image.width > _MAX_WIDTH:
@@ -835,6 +840,8 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[s
     assert response is not None and response.ok, f"{step_id}: {capture['route']} did not load"
     for action in capture["actions"]:
         _run(demo_page, action)
+    demo_page.mouse.move(0, 0)  # no hover state where the last click left the pointer
+    htmx_idle(demo_page)
     target = demo_page.locator(capture["selector"]).first
     expect(target).to_be_visible()
     if step_id not in _SHOWS_EMPTY_STATE and (shown := _empty_state_shown(target)):
@@ -871,7 +878,8 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
         # The installed modules as the app finds them, from the bundled tree (the suite's
         # process runs with none, which the modules page would picture as none installed).
         with _capture_clock(), _subscription(_SUBSCRIBED.get(step_id)), \
-                patch.dict(os.environ, {"MODULE_DIR": "default_modules"}):
+                patch.dict(os.environ, {"MODULE_DIR": "default_modules"}), \
+                patch("ui.routes.documents._free_send_quota", return_value=_FREE_EMAIL_QUOTA):
             try:
                 if shown := _capture_step(page, help_page, step, step_id, suite_owner["names"]):
                     wrong.append(f"{step_id} {shown}")

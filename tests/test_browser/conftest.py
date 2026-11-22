@@ -430,6 +430,20 @@ def htmx_settled(locator) -> None:
     expect(locator.locator(".htmx-added")).to_have_count(0)
 
 
+def htmx_idle(page) -> None:
+    """Waits until htmx is quiet across the whole page: loaded, fonts in, no request in flight
+    and no swap still settling, and it stays so for three polls, because a fragment a swap
+    brings in can start its own load. Parts of a page that load after it
+    (``hx-trigger="load"``) are then in place, so what is read or pictured is the screen the
+    person sees, not one mid-load. A navigation in between starts the count again."""
+    page.wait_for_function("""() => {
+      const busy = document.readyState !== "complete" || document.fonts.status !== "loaded"
+        || document.querySelector(".htmx-request, .htmx-swapping, .htmx-settling, .htmx-added");
+      window.__htmxQuietPolls = busy ? 0 : (window.__htmxQuietPolls || 0) + 1;
+      return window.__htmxQuietPolls >= 3;
+    }""", polling=100)
+
+
 def settled_boxes(page, *selectors: str) -> list[dict]:
     """The box of the first element matching each selector, all read in one pass once the
     top bar has loaded (``wait_for_topbar``), web fonts have loaded and the layout has had two frames to settle. Boxes read one call at a
