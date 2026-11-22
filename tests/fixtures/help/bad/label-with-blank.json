@@ -16,7 +16,7 @@
       "labels": {
         "inv": "acct.post_again_back"
       },
-      "image": null,
+      "image": "img/ok.webp",
       "capture": {
         "route": "/inventory",
         "selector": "main",

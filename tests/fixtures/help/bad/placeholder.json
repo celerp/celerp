@@ -14,7 +14,7 @@
     {
       "text": "Open {inv} from the sidebar.",
       "labels": {},
-      "image": null,
+      "image": "img/ok.webp",
       "capture": {
         "route": "/inventory",
         "selector": "main",

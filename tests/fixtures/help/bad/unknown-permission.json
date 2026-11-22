@@ -16,7 +16,7 @@
       "labels": {
         "inv": "nav.inventory"
       },
-      "image": null,
+      "image": "img/ok.webp",
       "capture": {
         "route": "/inventory",
         "selector": "main",

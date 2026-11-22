@@ -37,7 +37,7 @@ No other keys are allowed, and a page file is at most 64 KB.
 |---|---|---|
 | `text` | string | up to 500 characters, with `{name}` placeholders for labels and no other braces |
 | `labels` | object | maps every placeholder name in `text` to a catalog key, and nothing else |
-| `image` | string or null | `img/<file>.webp` inside the help folder |
+| `image` | string or null | `img/<file>.webp` inside the help folder; required on every step of a first-party page |
 | `capture` | object | how the screenshot is taken and how the step is checked |
 
 `capture` has `route` (the screen to open), `selector` (the element the step is about) and

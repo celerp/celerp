@@ -183,9 +183,10 @@ def check_images(pages: list[PageFile]) -> list[str]:
     out = []
     total = 0
     for page in pages:
-        for step in _steps(page):
+        for n, step in enumerate(_steps(page), 1):
             image = step.get("image")
             if not isinstance(image, str):
+                out.append(f"{page.path.name}: step {n} has no image")
                 continue
             path = page.help_dir / image
             if not path.is_file():
