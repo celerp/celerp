@@ -174,21 +174,15 @@ async def sales_report(
     group_by=item: revenue/cost/profit per item (from line items).
     group_by=period: revenue/cost/profit aggregated by day/week/month.
     """
-    rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "doc",
-            )
-        )
-    ).scalars().all()
+    rows = (await session.execute(select(Projection.state, party_name_sql(party="customer")).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc"))).all()
 
-    # Only finalized (non-void, non-draft) invoices
+    # Only finalized (non-void, non-draft) invoices, each with the name its customer shows by
     invoices = [
-        r.state for r in rows
-        if r.state.get("doc_type", r.state.get("type", "")) in ("invoice", "Invoice")
-        and r.state.get("status", "") not in ("void", "draft")
-        and _in_range(r.state.get("date") or r.state.get("created_at"), date_from, date_to)
+        {**state, "_party_shown": shown} for state, shown in rows
+        if state.get("doc_type", state.get("type", "")) in ("invoice", "Invoice")
+        and state.get("status", "") not in ("void", "draft")
+        and _in_range(state.get("date") or state.get("created_at"), date_from, date_to)
     ]
 
     if group_by == "customer":
@@ -198,7 +192,7 @@ async def sales_report(
         })
         for inv in invoices:
             cid = inv.get("contact_id") or inv.get("customer_id") or "Unlinked"
-            data[cid]["name"] = inv.get("contact_name") or inv.get("customer_name") or cid
+            data[cid]["name"] = "Unlinked" if cid == "Unlinked" else (inv["_party_shown"] or EMPTY)
             data[cid]["invoice_count"] += 1
             data[cid]["total_revenue"] += _parse_d(inv.get("total"))
             data[cid]["total_cost"] += _doc_cogs(inv)
@@ -373,20 +367,14 @@ async def purchases_report(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Purchasing report from purchase order projections."""
-    rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "doc",
-            )
-        )
-    ).scalars().all()
+    rows = (await session.execute(select(Projection.state, party_name_sql(party="supplier")).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc"))).all()
 
     pos = [
-        r.state for r in rows
-        if r.state.get("doc_type", r.state.get("type", "")) in ("purchase_order", "PO")
-        and r.state.get("status", "") not in ("void", "draft")
-        and _in_range(r.state.get("date") or r.state.get("created_at"), date_from, date_to)
+        {**state, "_party_shown": shown} for state, shown in rows
+        if state.get("doc_type", state.get("type", "")) in ("purchase_order", "PO")
+        and state.get("status", "") not in ("void", "draft")
+        and _in_range(state.get("date") or state.get("created_at"), date_from, date_to)
     ]
 
     if group_by == "supplier":
@@ -395,7 +383,7 @@ async def purchases_report(
         })
         for po in pos:
             sid = po.get("contact_id") or po.get("supplier_id") or "Unlinked"
-            data[sid]["name"] = po.get("contact_name") or po.get("supplier_name") or sid
+            data[sid]["name"] = "Unlinked" if sid == "Unlinked" else (po["_party_shown"] or EMPTY)
             data[sid]["po_count"] += 1
             data[sid]["total_spend"] += _parse_d(po.get("total"))
         lines = [

@@ -734,7 +734,10 @@ async def withdraw(session, company_id, user_id, correction_id: str) -> dict:
 async def records(session, company_id, asset_id: str | None = None) -> list[dict]:
     rows = [{"id": eid, **s} for eid, s in await _entities(session, company_id, "fa_correction")
             if asset_id is None or s.get("asset_id") == asset_id]
-    return sorted(rows, key=lambda r: r.get("applied_at") or r.get("requested_at") or "", reverse=True)
+    # Newest first; corrections made in the same instant by asset number, then id, so the list
+    # reads the same on every load.
+    return sorted(rows, key=lambda r: (r.get("applied_at") or r.get("requested_at") or "", r.get("number") or "", r["id"]),
+                  reverse=True)
 
 
 # ── Undo ─────────────────────────────────────────────────────────────────────

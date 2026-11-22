@@ -5,9 +5,10 @@ with demo data, runs its actions, and the step's selector and the English text o
 every label it names must be visible (as text or as a field's placeholder; a hidden
 copy elsewhere on the page, such as in a closed menu, does not count). The pictured part of the
 screen must not show the app's own empty-list, Connect sales or nothing-selected components unless
-the step is listed in _SHOWS_EMPTY_STATE. With HELP_CAPTURE_WRITE=1 each step
+the step is listed in _SHOWS_EMPTY_STATE, nor a record's internal id in place of its name.
+With HELP_CAPTURE_WRITE=1 each step
 is written as a webp of the selector's element (its top 800 pixels when taller) carrying the
-capture marker, the only way a help image is made.
+capture marker, the only way a help image is made; the images are put in place when the run ends.
 """
 from __future__ import annotations
 
@@ -86,6 +87,12 @@ _EMPTY_MESSAGES = sorted({
     for key, text in json.loads(catalog.read_text(encoding="utf-8")).items()
     if _EMPTY_KEY.search(key.rsplit(".", 1)[-1]) and len(text.split("{", 1)[0].strip()) >= 12
 })
+# A record's internal id ("contact:<uuid>", "item:<uuid>"): a screen showing one in place of a
+# name shows the reader a random string where its text names a record, and a different one
+# every run.
+_RAW_ID = re.compile(r"\b[a-z_]+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+# The capture runs only the bundled modules, each matching the lock, so none reads as sideloaded.
+_SIDELOADED = t("modules.src_sideloaded", "en")
 # Steps whose text is about that empty or sales screen itself: "<page id>#<step>": why.
 _CONNECT_SALES = "the step names what Celerp Connect adds, which its sales page lists"
 _NO_TAX_REGIME = "no first-party module ships a tax regime, so the page shows where to get one"
@@ -144,6 +151,12 @@ _SENT_COPY = {"id": str(_SENT_COPY_ID), "link_id": str(_SENT_LINK_ID), "status":
 # fills on the first document opened, so it is pinned: otherwise a picture would show the offer
 # or not depending on which pages the run opened before it.
 _FREE_EMAIL_QUOTA = 50
+# Charts draw with an animation the screenshot's own "animations disabled" cannot stop (it is
+# script, not CSS), so a picture would catch a chart part-way through. Chart.js is switched to
+# draw at once the moment its script defines it, in the capture's browser only.
+_CHARTS_DRAWN_AT_ONCE = """Object.defineProperty(window, "Chart", {configurable: true,
+  set(chart) { chart.defaults.animation = false;
+               Object.defineProperty(window, "Chart", {value: chart, writable: true, configurable: true}); }});"""
 _SUBSCRIBED: dict[str, str] = {
     "core.company-handoff#2": _COPIES, "core.company-handoff#4": _COPIES,
     "core.web-access#2": _CONNECT,
@@ -813,6 +826,20 @@ def _empty_state_shown(target) -> list[str]:
     }""", [_EMPTY_STATE_SELECTOR, _MAX_HEIGHT, _EMPTY_MESSAGES])
 
 
+# Pictures a write run has taken, put in place when the run ends: an image under a module
+# changes that module's digest, which the app checks against the lock it loaded at start, so
+# an image written mid-run would make every later picture show its module as sideloaded.
+_TAKEN: dict[Path, bytes] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _put_pictures_in_place():
+    yield
+    for path, data in _TAKEN.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+
 def _write_image(target, path: Path) -> None:
     from PIL import Image
 
@@ -828,8 +855,7 @@ def _write_image(target, path: Path) -> None:
         image.save(buf, "WEBP", quality=quality, method=6, exif=exif)
         if buf.tell() <= MAX_IMAGE_BYTES:
             break
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(buf.getvalue())
+    _TAKEN[path] = buf.getvalue()
 
 
 def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[str]) -> list[str]:
@@ -851,6 +877,10 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[s
         return [f"the day the capture ran: {dated}"]
     if named := sorted(n for n in foreign if n in text):
         return [f"not the capture company or user: {named}"]
+    if ids := sorted(set(_RAW_ID.findall(text))):
+        return [f"a record id in place of its name: {ids}"]
+    if _SIDELOADED in text:
+        return ["a bundled module shown as sideloaded: its files differ from the module lock"]
     for key in step["labels"].values():
         label = _visible_label(key)
         if label:
@@ -871,6 +901,7 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
                if page_id in _ADDS_RECORDS
                else suite_owner if page_id in _INSTALLATION_PAGES else demo_company)
     set_session_cookies(browser_context, company["token"])
+    page.add_init_script(_CHARTS_DRAWN_AT_ONCE)
     records = _records(company["id"])
     wrong = []
     for n, step in enumerate(help_page.data["steps"], 1):
@@ -887,6 +918,6 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
                 # Leave the page while the step's subscription still holds, so a request it
                 # has in flight never lands on the next step's state.
                 page.goto("about:blank")
-    assert not wrong, "steps picturing an empty state, the day the capture ran or another company:\n" + "\n".join(wrong)
+    assert not wrong, "steps picturing a screen other than the one their text describes:\n" + "\n".join(wrong)
     assert page_id in _ADDS_RECORDS or _records(company["id"]) == records, (
         f"{page_id} added records to the capture company: list it in _ADDS_RECORDS")
