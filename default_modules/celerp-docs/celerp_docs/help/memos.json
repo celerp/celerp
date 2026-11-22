@@ -6,6 +6,7 @@
   "routes": ["/docs?type=memo"],
   "permission": "view_documents",
   "order": 2,
+  "checked": "a9d518c86c8436dae092b9075428fc0ca348c8f620b8fadf08b5ad44b1f4685f",
   "steps": [
     {
       "text": "Open {co} from the sidebar and click {new} to start a memo for the customer receiving the goods.",
@@ -39,6 +40,12 @@
     },
     {
       "text": "The totals on the memo show what each invoice took and what is still on memo. Once nothing is out, click Close. A closed memo can be reopened.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to create a memo, mark lines shipped or available, invoice lines or close the memo. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": null,
       "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}

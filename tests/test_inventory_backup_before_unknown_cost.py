@@ -22,6 +22,7 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD, SEEDED_TARGETS, R
 from migration_support import code_config, maker, real_client, real_engine  # noqa: F401
 from test_company_backup import _BK_UUID, _bk_local, _bk_restore_new, _bk_setup
 from test_company_backup_snapshot import _replayed_states
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 FIXTURE = Path(__file__).parent / "fixtures" / "inv_unknown_cost"
@@ -181,4 +182,4 @@ async def test_a_table_this_installation_lacks_still_refuses_when_the_copy_holds
     await _fresh_installation(real_engine)
     r = await _r_bread(real_client, data, code_config)
     _r_refused(r)
-    assert "newer version" in r.json()["detail"], r.text
+    assert "newer version" in refusal_text(r.json()["detail"]), r.text

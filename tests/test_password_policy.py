@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import select
 
 from test_helpers import make_authed_token
+from ui.i18n import refusal_text
 
 
 def test_validate_password_rejects_short():
@@ -46,8 +47,8 @@ async def test_first_admin_rejects_short_password(client):
         json={"company_name": "PolCo", "email": "owner@example.com", "name": "Owner", "password": "short7x"[:7]},
     )
     assert r.status_code == 400
-    assert "8" in r.json()["detail"] or "characters" in r.json()["detail"].lower()
-    assert "password_too_short" not in r.json()["detail"]
+    assert "8" in refusal_text(r.json()["detail"]) or "characters" in refusal_text(r.json()["detail"]).lower()
+    assert "password_too_short" not in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -66,7 +67,7 @@ async def test_company_user_creation_rejects_short_password_for_new_global_user(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 400
-    assert "8" in r.json()["detail"] or "characters" in r.json()["detail"].lower()
+    assert "8" in refusal_text(r.json()["detail"]) or "characters" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,25 @@
+{
+  "id": "fixed-assets.reconciliation",
+  "title": "Reconcile the register with the ledger",
+  "summary": "Compare the register with the ledger on each asset account.",
+  "keywords": ["reconciliation", "register", "ledger", "difference"],
+  "routes": ["/fixed-assets/reconciliation"],
+  "permission": "view_fixed_assets",
+  "order": 9,
+  "checked": "2d54ad67741bf1eedf7dbe796499045e9280da97c360e0c18294d114dcc84fcf",
+  "steps": [
+    {
+      "text": "{title} compares the register with the ledger on each asset account at the date in {at}. Each difference shows its cause and what clears it.",
+      "labels": {"title": "fixed_assets.recon_title", "at": "fixed_assets.recon_at"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/reconciliation", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant whether the register agrees with the ledger, and what any difference comes from.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/reconciliation", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register"]
+}

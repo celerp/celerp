@@ -6,10 +6,17 @@
   "routes": ["/fixed-assets/mine"],
   "permission": null,
   "order": 4,
+  "checked": "57b9259f0cad48ebe9d56b523cfe30113df8425e6f1ebe8fd0f3f989bfe52a1b",
   "steps": [
     {
       "text": "Open {mine} from the sidebar; it only appears when an asset is held in your name.",
       "labels": {"mine": "nav.my_assets"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/mine", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which assets are in your care, to confirm you still hold one, or to report a problem with one. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/fixed-assets/mine", "selector": "main", "actions": []}
     }

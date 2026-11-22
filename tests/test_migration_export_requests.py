@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from company_backup_support import company, member, owner, token
 from migration_support import auth, multipart, real_client, real_engine  # noqa: F401
 from test_export_set_adapters import _without, _xero
+from ui.i18n import refusal_text
 
 MAGIC = b"CELERP-COPY\x01"
 BASE = "/migrations/export-requests"
@@ -196,7 +197,7 @@ async def test_a_send_is_refused_with_the_reason(real_engine, real_client, relay
     headers = auth(await token(real_engine, user, firm))
 
     manager = await real_client.post(BASE, json=_ask(source="manager_io"), headers=headers)
-    assert manager.status_code == 422 and "has no list of files to export" in manager.json()["detail"]
+    assert manager.status_code == 422 and "has no list of files to export" in refusal_text(manager.json()["detail"])
     for bad in ({"recipient": "not an email"}, {"client_name": "  "}, {"firm_name": ""},
                 {"operation_id": "not-a-uuid"}):
         assert (await real_client.post(BASE, json=_ask(**bad), headers=headers)).status_code == 422, bad
@@ -204,14 +205,14 @@ async def test_a_send_is_refused_with_the_reason(real_engine, real_client, relay
 
     relay.no_account = True
     needed = await real_client.post(BASE, json=_ask(), headers=headers)
-    assert needed.status_code == 428 and "free Celerp account" in needed.json()["detail"]
+    assert needed.status_code == 428 and "free Celerp account" in refusal_text(needed.json()["detail"])
     relay.no_account = False
     relay.refuse = httpx.Response(403, json={"detail": "Use your verified account email as the reply-to address"})
     mismatch = await real_client.post(BASE, json=_ask(), headers=headers)
-    assert mismatch.status_code == 403 and "verified account email" in mismatch.json()["detail"]
+    assert mismatch.status_code == 403 and "verified account email" in refusal_text(mismatch.json()["detail"])
     relay.refuse = httpx.Response(502, json={"detail": "The email could not be sent. Try again"})
     unsent = await real_client.post(BASE, json=_ask(), headers=headers)
-    assert unsent.status_code == 502 and "Retry" in unsent.json()["detail"]
+    assert unsent.status_code == 502 and "Retry" in refusal_text(unsent.json()["detail"])
 
     staff = await owner(real_engine, "staff@example.com", "Staff")
     await member(real_engine, staff, firm, "admin")
@@ -233,11 +234,11 @@ async def test_files_that_cannot_be_read_are_never_added(real_engine, real_clien
     secret = _decode(relay.posted[0]["key"])
 
     empty = await real_client.post(f"{BASE}/{request_id}/add", json={}, headers=headers)
-    assert empty.status_code == 422 and "No files have arrived" in empty.json()["detail"]
+    assert empty.status_code == 422 and "No files have arrived" in refusal_text(empty.json()["detail"])
 
     relay.client_uploads(request_id, os.urandom(32), "Contacts.csv", b"*ContactName\r\n")   # another key
     wrong = await real_client.post(f"{BASE}/{request_id}/add", json={}, headers=headers)
-    assert wrong.status_code == 422 and "Contacts.csv" in wrong.json()["detail"]
+    assert wrong.status_code == 422 and "Contacts.csv" in refusal_text(wrong.json()["detail"])
     scans = tmp_path / "migration_scans"
     assert not scans.exists() or not any(scans.iterdir())      # no draft was made of an unreadable file
 
@@ -251,13 +252,13 @@ async def test_files_that_cannot_be_read_are_never_added(real_engine, real_clien
 
     relay.fetch_status = 410
     closed = await real_client.post(f"{BASE}/{request_id}/add", json={}, headers=headers)
-    assert closed.status_code == 410 and "closed" in closed.json()["detail"]
+    assert closed.status_code == 410 and "closed" in refusal_text(closed.json()["detail"])
     relay.fetch_status = 200
 
     # An installation that does not hold the key cannot read the files and says so.
     files.forget_export_request_key(relay.rows[request_id]["operation_id"])
     keyless = await real_client.post(f"{BASE}/{request_id}/add", json={}, headers=headers)
-    assert keyless.status_code == 409 and "does not hold the key" in keyless.json()["detail"]
+    assert keyless.status_code == 409 and "does not hold the key" in refusal_text(keyless.json()["detail"])
     listed = (await real_client.get(BASE, headers=headers)).json()["items"]
     assert listed[0]["readable"] is False
     unknown = await real_client.post(f"{BASE}/{uuid.uuid4()}/add", json={}, headers=headers)

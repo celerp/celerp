@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from celerp import db_catalog
 from company_backup_support import manifest, members, token
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
+from ui.i18n import refusal_text
 from test_company_backup import (
     _bk_cb,
     _bk_cloud,
@@ -266,7 +267,7 @@ async def test_export_unreadable_attachment_removes_partial(real_engine, real_cl
     for params in (None, {"run_id": str(await _bk_run(real_engine, user, cid))}):
         r = await real_client.get("/company-backups/download", params=params, headers=auth(tok))
         assert r.status_code == 409, (params, r.text)
-        detail = r.json()["detail"]
+        detail = refusal_text(r.json()["detail"])
         assert url in detail and "No copy was made." in detail, detail
         assert not [p for p in folder.rglob("*") if p.is_file()]
     out = tmp_path / "bk-out" / "books.celerp-company"
@@ -322,8 +323,8 @@ async def test_export_snapshot_archive_format_unchanged(real_engine, real_client
     assert set(parts) == ({"manifest.json", "attachments/photo.png"}
                           | {f"tables/{t}.jsonl" for t in m["tables"]})
     assert json.loads(parts["manifest.json"]) == m
-    assert set(m) == {"format", "format_version", "celerp_version", "backup_id", "created_at", "company", "provenance",
-                      "modules", "tables", "attachments"}
+    assert set(m) == {"format", "format_version", "celerp_version", "projection_semantics", "backup_id",
+                      "created_at", "company", "provenance", "modules", "tables", "attachments"}
     assert (m["format"], m["format_version"], m["provenance"]) == ("celerp-company-backup", 2, _PROVENANCE)
     assert set(m["company"]) == {"id", "lineage_id", "name", "settings"} and m["company"]["id"] == str(cid)
     assert set(m["modules"]) == {"enabled", "versions"}

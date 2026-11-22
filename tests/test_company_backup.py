@@ -195,7 +195,8 @@ async def _bk_seed_portable(engine, cid, marker: str) -> None:
                                     statement_balance=100)
         s.add(rec)
         await s.flush()
-        s.add(BankStatementLine(company_id=cid, reconciliation_id=rec.id, line_date="2026-01-15",
+        s.add(BankStatementLine(company_id=cid, reconciliation_id=rec.id, bank_account_id=bank.id,
+                                fingerprint=f"{marker[:10]}-fp", line_date="2026-01-15",
                                 description=f"{marker} deposit", amount=100))
         s.add(ReconciliationRule(company_id=cid, bank_account_id=bank.id, match_pattern=f"{marker} fee",
                                  target_account_code="1111"))
@@ -295,7 +296,7 @@ async def _bk_refused(engine, client, tok: str, user_id, tmp_path, data: bytes, 
     r = await read(client, tok, data)
     assert r.status_code == status, r.text
     for message in messages:
-        assert message in r.json()["detail"], r.json()["detail"]
+        assert message in refusal_text(r.json()["detail"]), refusal_text(r.json()["detail"])
     with pytest.raises(cb.BackupError) as err:
         await cb.restore_company(_bk_file(tmp_path, data), mode="new_company", user_id=user_id)
     assert err.value.status_code == status
@@ -320,7 +321,7 @@ async def _bk_modules_required(engine, client, tok: str, user_id, tmp_path, data
     assert needed[module]["status"] == status, r.json()["modules"]
     refused = await client.post("/company-backups/restore", json=confirm(r), headers=auth(tok))
     assert refused.status_code == 409 and refused.json()["code"] == "modules_required", refused.text
-    assert needed[module]["label"] in refused.json()["detail"]
+    assert needed[module]["label"] in refusal_text(refused.json()["detail"])
     with pytest.raises(cb.ModulesRequired) as err:
         await cb.restore_company(_bk_file(tmp_path, data), mode="new_company", user_id=user_id)
     assert "Nothing was restored." in err.value.detail, err.value.detail
@@ -645,6 +646,86 @@ async def test_no_cross_company_rows(real_engine, real_client, tmp_path, monkeyp
                     assert row["company_id"] == str(a), name
 
 
+def _bk_in_older_shape(data: bytes) -> bytes:
+    """The backup as a Celerp from before statement lines knew their bank wrote it: each line
+    holds one matched entry, a statement counts its auto-matched lines and a rule names a
+    default tax."""
+    parts, m = members(data), manifest(data)
+    added = {"bank_statement_lines": ["bank_account_id", "fingerprint", "counterparty_key", "counterparty_account",
+                                      "suggestion", "matched_je_ids", "client_query", "fitid"],
+             "reconciliation_sessions": ["period_start", "opening_balance", "source_file_id"],
+             "reconciliation_rules": ["match_amount", "contact_id", "target_bank_id", "origin"],
+             "bank_accounts": ["statement_column_map"]}
+    retired = {"bank_statement_lines": {"matched_je_id": "je:older-entry", "status": "matched"},
+               "reconciliation_sessions": {"auto_matched_count": 0}, "reconciliation_rules": {"default_tax": None}}
+    for table, columns in added.items():
+        name = f"tables/{table}.jsonl"
+        rows = [json.loads(line) for line in parts[name].split(b"\n") if line.strip()]
+        rows = [{**{k: v for k, v in row.items() if k not in columns}, **retired.get(table, {})} for row in rows]
+        parts[name] = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+        meta = m["tables"][table]
+        meta["columns"] = [c for c in meta["columns"] if c not in columns] + [
+            c for c in retired.get(table, {}) if c not in meta["columns"]]
+        meta["sha256"] = hashlib.sha256(parts[name]).hexdigest()
+    parts["manifest.json"] = json.dumps(m).encode()
+    return rezip(parts)
+
+
+async def test_backup_from_before_lines_knew_their_bank_restores_them_on_their_bank(
+        real_engine, real_client, tmp_path, monkeypatch):
+    """A line restored from an older backup belongs to the restored statement's bank, holds its
+    entry in the list, and keeps the identity a statement read again on that bank finds."""
+    from celerp.services.field_fingerprints import statement_line
+    _bk_local(monkeypatch, tmp_path)
+    _user, cid, tok = await _bk_setup(real_engine)
+    await _bk_seed_portable(real_engine, cid, "alpha-marker")
+    restored = await _bk_restore_new(real_client, tok, _bk_in_older_shape(await download(real_client, tok)))
+    async with maker(real_engine)() as s:
+        line = (await s.execute(text(
+            "SELECT l.bank_account_id, s.bank_account_id AS statement_bank, l.fingerprint, l.status, "
+            "CAST(l.matched_je_ids AS text) AS je_ids, l.suggestion FROM bank_statement_lines l "
+            "JOIN reconciliation_sessions s ON s.id = l.reconciliation_id WHERE l.company_id = :c"),
+            {"c": restored})).mappings().one()
+        rule_origin = await s.scalar(text("SELECT origin FROM reconciliation_rules WHERE company_id = :c"),
+                                     {"c": restored})
+    assert line["bank_account_id"] == line["statement_bank"]
+    assert line["fingerprint"] == statement_line("2026-01-15", 100, "alpha-marker deposit", None, None, 0)
+    assert (line["status"], json.loads(line["je_ids"]), line["suggestion"]) == ("matched", ["je:older-entry"], None)
+    assert rule_origin == "user"
+
+
+def test_older_bank_line_whose_statement_is_missing_is_refused_as_damaged():
+    """An older backup's line is put on its statement's bank: a line naming a statement the
+    backup does not hold has no bank to go on, so the backup is refused as damaged."""
+    from celerp.services import company_backup as cb
+    line = {"id": "l1", "reconciliation_id": "s-gone", "created_at": "t", "status": "matched", "matched_je_id": "je:1",
+            "line_date": "2026-01-15", "amount": 100, "description": "x", "reference": None, "raw_balance": None}
+    tables = {"reconciliation_sessions": [{"id": "s1", "bank_account_id": "b1", "statement_date": "2026-01-31"}],
+              "bank_statement_lines": [line]}
+    with pytest.raises(cb.BackupError) as e:
+        list(cb._bank_lines(lambda name: iter(tables[name])))
+    assert e.value.detail == cb.t(cb.DAMAGED)
+
+
+def test_each_older_bank_line_gets_the_fingerprint_of_its_own_text():
+    """Two lines of one statement each keep the identity a statement read again finds for
+    that line, and two identical lines are numbered apart."""
+    from celerp.services import company_backup as cb
+    from celerp.services.field_fingerprints import statement_line
+
+    def line(i, description):
+        return {"id": f"l{i}", "reconciliation_id": "s1", "created_at": f"t{i}", "status": "unmatched",
+                "matched_je_id": None, "line_date": "2026-01-15", "amount": 100 + i, "description": description,
+                "reference": None, "raw_balance": None}
+    rows = [line(1, "rent"), line(2, "fee"), {**line(3, "fee"), "amount": 102}]
+    tables = {"reconciliation_sessions": [{"id": "s1", "bank_account_id": "b1", "statement_date": "2026-01-31"}],
+              "bank_statement_lines": rows}
+    got = {r["id"]: r["fingerprint"] for r in cb._bank_lines(lambda name: iter(tables[name]))}
+    assert got == {"l1": statement_line("2026-01-15", 101, "rent", None, None, 0),
+                   "l2": statement_line("2026-01-15", 102, "fee", None, None, 0),
+                   "l3": statement_line("2026-01-15", 102, "fee", None, None, 1)}
+
+
 async def test_excluded_installation_state(real_engine, real_client, tmp_path, monkeypatch):
     """Users, passwords, emails and memberships never leave with a backup, and a restore
     brings in no user of the source installation."""
@@ -899,7 +980,7 @@ async def test_export_refuses_unclassified_table(real_engine, real_client, tmp_p
     try:
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == t(cb.UNSUPPORTED)
+        assert refusal_text(r.json()["detail"]) == t(cb.UNSUPPORTED)
         async with maker(real_engine)() as s:
             assert "bk_unknown_things" not in await cb.classify(s)
         out = tmp_path / "bk-out" / "books.celerp-company"
@@ -931,7 +1012,7 @@ async def test_export_refusal_surfaces_on_settings_and_migration_download(real_e
         for params in ({}, {"run_id": str(run)}):
             r = await real_client.get("/company-backups/download", params=params or None, headers=auth(tok))
             assert r.status_code == 409, (params, r.text)
-            detail = r.json()["detail"]
+            detail = refusal_text(r.json()["detail"])
             assert named in detail and "No copy was made." in detail, detail
     finally:
         await _bk_drop(real_engine, "bk_unknown_things")
@@ -1080,7 +1161,7 @@ async def test_overlapping_hand_copied_prefix_stops_the_export_instead_of_droppi
                       i=uuid.uuid4(), c=cid)
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
-        detail = r.json()["detail"]
+        detail = refusal_text(r.json()["detail"])
         assert detail == t(cb.UNSUPPORTED) and "No copy was made." in detail, detail
     finally:
         await _bk_drop(real_engine, "zz_widgets")
@@ -1105,7 +1186,7 @@ async def test_module_table_outside_invariants_refused(real_engine, real_client,
     try:
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
-        detail = r.json()["detail"]
+        detail = refusal_text(r.json()["detail"])
         assert "Widgets" in detail and "zz_" not in detail and "No copy was made." in detail
     finally:
         await _bk_drop(real_engine, "zz_widgets")
@@ -1169,7 +1250,7 @@ async def test_module_tables_referencing_in_a_loop_refused(real_engine, real_cli
             await _bk_sql(real_engine, sql)
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
-        assert "Widgets" in r.json()["detail"] and "zz_" not in r.json()["detail"]
+        assert "Widgets" in refusal_text(r.json()["detail"]) and "zz_" not in refusal_text(r.json()["detail"])
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data)
     finally:
         await _bk_drop(real_engine, "zz_gadgets", "zz_widgets")
@@ -1247,7 +1328,7 @@ async def test_a_key_one_partition_holds_stops_the_export(real_engine, real_clie
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == _bk_unsupported()
+        assert refusal_text(r.json()["detail"]) == _bk_unsupported()
     finally:
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
@@ -1305,7 +1386,7 @@ async def test_a_key_naming_a_partition_of_a_carried_table_stops_the_export(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == _bk_unsupported()
+        assert refusal_text(r.json()["detail"]) == _bk_unsupported()
     finally:
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
 
@@ -1348,7 +1429,7 @@ async def test_a_table_inheriting_from_a_carried_table_stops_the_export(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == _bk_unsupported()
+        assert refusal_text(r.json()["detail"]) == _bk_unsupported()
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
@@ -1462,7 +1543,7 @@ async def test_a_carried_table_changing_shape_as_the_export_begins_stops_it(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == _BK_RESHAPED_DETAIL
+        assert refusal_text(r.json()["detail"]) == _BK_RESHAPED_DETAIL
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
@@ -1493,7 +1574,7 @@ async def test_a_table_joined_to_a_carried_table_while_it_is_read_stops_the_expo
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == _BK_RESHAPED_DETAIL
+        assert refusal_text(r.json()["detail"]) == _BK_RESHAPED_DETAIL
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
@@ -1598,7 +1679,7 @@ async def test_a_carried_table_dropped_as_the_export_begins_stops_it(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == t("company_backup.err_reshaped", "en", table="zz_gadgets")
+        assert refusal_text(r.json()["detail"]) == t("company_backup.err_reshaped", "en", table="zz_gadgets")
     finally:
         await _bk_drop(real_engine, "zz_gadgets")
 
@@ -2169,7 +2250,7 @@ async def test_a_carried_table_another_schema_inherits_from_is_refused(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == _bk_unsupported()
+        assert refusal_text(r.json()["detail"]) == _bk_unsupported()
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_Gadgets")
@@ -2218,10 +2299,10 @@ async def test_a_carried_table_under_row_security_is_refused_whole(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == _bk_unsupported()
+        assert refusal_text(r.json()["detail"]) == _bk_unsupported()
         r = await restore(real_client, tok, made.content, mode="new_company")
         assert r.status_code == 422, r.text[:200]
-        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
+        assert refusal_text(r.json()["detail"]) == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
                                       "restore yet. Nothing was restored.")
         assert await _bk_scalar(real_engine, "SELECT count(*) FROM companies") == companies
     finally:
@@ -2249,10 +2330,10 @@ async def test_a_carried_table_the_role_cannot_read_is_refused_whole(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == _bk_unsupported()
+        assert refusal_text(r.json()["detail"]) == _bk_unsupported()
         r = await restore(real_client, tok, made.content, mode="new_company")
         assert r.status_code == 422, r.text[:200]
-        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
+        assert refusal_text(r.json()["detail"]) == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
                                       "restore yet. Nothing was restored.")
         assert await _bk_scalar(real_engine, "SELECT count(*) FROM companies") == companies
     finally:
@@ -2284,7 +2365,7 @@ async def test_row_security_forced_as_the_export_begins_stops_it(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == t("company_backup.err_reshaped", "en", table="zz_gadgets")
+        assert refusal_text(r.json()["detail"]) == t("company_backup.err_reshaped", "en", table="zz_gadgets")
     finally:
         await _bk_drop(real_engine, "zz_gadgets")
 
@@ -2330,11 +2411,11 @@ async def test_a_table_in_a_schema_ahead_of_celerps_stops_the_backup(real_engine
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == (f"This company has data Celerp cannot copy yet: {role}.ext_notes. "
+        assert refusal_text(r.json()["detail"]) == (f"This company has data Celerp cannot copy yet: {role}.ext_notes. "
                                       "No copy was made.")
         r = await restore(real_client, tok, made.content, mode="new_company")
         assert r.status_code == 422, r.text[:200]
-        assert r.json()["detail"] == (f"This company has data Celerp cannot restore yet: {role}.ext_notes. "
+        assert refusal_text(r.json()["detail"]) == (f"This company has data Celerp cannot restore yet: {role}.ext_notes. "
                                       "Nothing was restored.")
         assert await _bk_scalar(real_engine, "SELECT count(*) FROM public.companies") == companies
         assert await _bk_scalar(real_engine, f"SELECT count(*) FROM {role}.ext_notes") == 1
@@ -2415,7 +2496,7 @@ async def test_a_module_table_not_declared_names_the_module(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == t(_bk_cb().UNDECLARED, "en", label=module_label(_BK_MODULE))
+        assert refusal_text(r.json()["detail"]) == t(_bk_cb().UNDECLARED, "en", label=module_label(_BK_MODULE))
     finally:
         await _bk_drop(real_engine, "zz_Gadgets")
 
@@ -2434,7 +2515,7 @@ async def test_a_carried_table_a_restore_cannot_name_is_refused(real_engine, rea
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == _bk_unsupported()
+        assert refusal_text(r.json()["detail"]) == _bk_unsupported()
     finally:
         await _bk_drop(real_engine, "zz_Gadgets")
 
@@ -2908,7 +2989,7 @@ async def test_upload_size_limit_refused(real_engine, real_client, tmp_path, mon
     monkeypatch.setattr(cb, "MAX_UPLOAD_BYTES", len(data) - 1)
     before = await snapshot(real_engine)
     r = await read(real_client, tok, data)
-    assert r.status_code == 413 and "larger than 2 GB" in r.json()["detail"], r.text
+    assert r.status_code == 413 and "larger than 2 GB" in refusal_text(r.json()["detail"]), r.text
     assert await snapshot(real_engine) == before
     monkeypatch.setattr(cb, "MAX_UPLOAD_BYTES", len(data))
     assert (await read(real_client, tok, data)).status_code == 200
@@ -2999,7 +3080,7 @@ async def test_record_too_large_to_restore_is_not_backed_up(real_engine, real_cl
     monkeypatch.setattr(cb, "MAX_ROW_BYTES", max(len(line) for line in rows) - 1)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t(cb.ROW_TOO_LARGE_TO_BACK_UP)
+    assert refusal_text(r.json()["detail"]) == t(cb.ROW_TOO_LARGE_TO_BACK_UP)
 
 
 @pytest.mark.parametrize("limit", [("MAX_ROW_NODES", 3), ("MAX_ROW_DEPTH", 1)])
@@ -3011,8 +3092,8 @@ async def test_record_too_large_to_parse_is_not_backed_up(real_engine, real_clie
     monkeypatch.setattr(cb, *limit)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t(cb.ROW_TOO_LARGE_TO_BACK_UP)
-    assert "too large for a company copy" in r.json()["detail"]
+    assert refusal_text(r.json()["detail"]) == t(cb.ROW_TOO_LARGE_TO_BACK_UP)
+    assert "too large for a company copy" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.parametrize("limit", ["MAX_MEMBERS", "MAX_MEMBER_BYTES", "MAX_TOTAL_BYTES", "MAX_UPLOAD_BYTES"])
@@ -3033,7 +3114,7 @@ async def test_backup_restore_would_refuse_is_not_made(real_engine, real_client,
                                     "MAX_UPLOAD_BYTES": len(data) - 64}[limit])
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t(cb.TOO_LARGE_TO_BACK_UP)
+    assert refusal_text(r.json()["detail"]) == t(cb.TOO_LARGE_TO_BACK_UP)
 
 
 @pytest.mark.parametrize("header", ["honest", "understated"])
@@ -3057,7 +3138,7 @@ async def test_zip_bomb_refused_before_writes(real_engine, real_client, tmp_path
         before = await snapshot(real_engine)
         r = await read(real_client, tok, bomb)
         assert r.status_code == 422, r.text
-        detail = r.json()["detail"]
+        detail = refusal_text(r.json()["detail"])
         assert "too large" in detail or "damaged or was changed" in detail, detail
         assert await snapshot(real_engine) == before
 
@@ -3418,7 +3499,7 @@ def _r_created(r) -> dict:
 
 def _r_refused(r) -> None:
     assert r.status_code in (409, 422), r.text
-    assert "Nothing was restored." in r.json()["detail"], r.text
+    assert "Nothing was restored." in refusal_text(r.json()["detail"]), r.text
 
 
 def _r_table_lines(data: bytes, table: str) -> list[bytes]:
@@ -3899,7 +3980,7 @@ async def test_concurrent_restore_creates_one_company(real_engine, real_client, 
     assert answered, "the second restore waited for the first"
     r = await refused
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t(cb.RESTORE_RUNNING if second == "the same backup" else cb.OTHER_RESTORE_RUNNING,
+    assert refusal_text(r.json()["detail"]) == t(cb.RESTORE_RUNNING if second == "the same backup" else cb.OTHER_RESTORE_RUNNING,
                                     "en")
     assert await count(real_engine, "companies") == companies + 1
     assert await count(real_engine, "projections", "company_id = :c", c=uuid.UUID(created["company_id"])) == 1
@@ -4080,7 +4161,7 @@ async def test_id_of_another_company_outside_foreign_keys_refused(real_engine, r
     async with _r_company_insert_probe(real_engine) as reached:
         r = await restore(real_client, tok, changed)
         _r_refused(r)
-        assert "a different company" in r.json()["detail"], r.text
+        assert "a different company" in refusal_text(r.json()["detail"]), r.text
         assert not await reached()
     assert await snapshot(real_engine) == before
 
@@ -4425,7 +4506,7 @@ async def test_bootstrap_upload_limits_refused(real_engine, real_client, tmp_pat
     before = await snapshot(real_engine)
     r = await _r_bread(real_client, data, code_config)
     assert r.status_code == (413 if limit == "MAX_UPLOAD_BYTES" else 422), r.text
-    assert ("larger than" if limit == "MAX_UPLOAD_BYTES" else "too large") in r.json()["detail"]
+    assert ("larger than" if limit == "MAX_UPLOAD_BYTES" else "too large") in refusal_text(r.json()["detail"])
     assert await snapshot(real_engine) == before
 
 
@@ -4521,7 +4602,7 @@ async def test_attachment_named_before_type_extensions_round_trips(real_engine, 
     await _bk_set_data(real_engine, cid, state)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert "a type Celerp does not store" in r.json()["detail"] and "No copy was made." in r.json()["detail"]
+    assert "a type Celerp does not store" in refusal_text(r.json()["detail"]) and "No copy was made." in refusal_text(r.json()["detail"])
 
 
 async def test_team_count_stated_in_preview_and_result(real_engine, real_client, tmp_path, monkeypatch):
@@ -5053,7 +5134,7 @@ async def test_concurrent_same_backup_restore_with_existing_destination(real_eng
     added = await first
     assert added.status_code == 200, added.text
     assert added.json()["company_id"] == dest and added.json()["team_members"] == 2
-    assert (refused.status_code, refused.json()["detail"]) == (409, t(cb.RESTORE_RUNNING, "en"))
+    assert (refused.status_code, refusal_text(refused.json()["detail"])) == (409, t(cb.RESTORE_RUNNING, "en"))
     assert len(await _r_memberships(real_engine, dest)) == 3
     assert await count(real_engine, "companies") == companies
 
@@ -5394,7 +5475,7 @@ async def test_module_tables_travel_only_as_their_manifest_declares(real_engine,
         _bk_fake_module(tmp_path, monkeypatch, backup={"zz_tokens": "exclude"})
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
-        detail = r.json()["detail"]
+        detail = refusal_text(r.json()["detail"])
         assert "Widgets" in detail and "zz_" not in detail and "No copy was made." in detail
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data)
     finally:

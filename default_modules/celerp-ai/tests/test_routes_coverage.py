@@ -20,6 +20,8 @@ Covers uncovered route lines:
 
 from __future__ import annotations
 
+import functools
+
 import json
 import os
 import uuid
@@ -32,8 +34,8 @@ import pytest
 from celerp.config import settings
 from celerp.ai import jobs
 from celerp.ai.service import AgentResult, PendingAction
-from ui.i18n import refusal_text, t
-from test_helpers import asked_in_thread
+from ui.i18n import read_kept, refusal_text, t
+from test_helpers import answered_continuation, asked_in_thread
 
 
 # `session` (Postgres, rollback-isolated) comes from the root conftest.
@@ -210,7 +212,7 @@ async def test_include_protected_rejects_nonzero_offset(auth_client):
     c, h = auth_client
     r = await c.get("/ai/conversations?include_protected=true&offset=1", headers=h)
     assert r.status_code == 400
-    assert r.json()["detail"] == "include_protected requires offset=0"
+    assert r.json()["detail"]["message_key"] == "ai.err_include_protected_requires_offset_0"
 
 
 @pytest.mark.asyncio
@@ -234,6 +236,15 @@ async def test_rename_conversation_404(auth_client):
     c, h = auth_client
     fake_id = str(uuid.uuid4())
     r = await c.patch(f"/ai/conversations/{fake_id}", headers=h, json={"title": "nope"})
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_older_actions_404(auth_client):
+    c, h = auth_client
+    fake_id = str(uuid.uuid4())
+    r = await c.get(f"/ai/conversations/{fake_id}/older-actions", headers=h,
+                     params={"before_at": "2026-11-01T10:00:00+00:00", "before_id": str(uuid.uuid4())})
     assert r.status_code == 404
 
 
@@ -355,12 +366,13 @@ async def test_confirm_action_executes_pending(auth_client):
     message_id, tool_call_id = await _propose_action(c, h, conv_id)
 
     exec_mock = AsyncMock(return_value={"ok": True, "status": 201, "data": {"id": "new"}, "error": None})
-    with patch("celerp.ai.tools.compile_agent_capabilities", return_value={"create_contact": {"method": "POST"}}), \
-         patch("celerp.ai.tools.execute_agent_capability", exec_mock):
-        r = await c.post(
-            f"/ai/conversations/{conv_id}/confirm", headers=h,
-            json={"message_id": message_id, "tool_call_id": tool_call_id},
-        )
+    async with answered_continuation():
+        with patch("celerp.ai.tools.compile_agent_capabilities", return_value={"create_contact": {"method": "POST"}}), \
+             patch("celerp.ai.tools.execute_agent_capability", exec_mock):
+            r = await c.post(
+                f"/ai/conversations/{conv_id}/confirm", headers=h,
+                json={"message_id": message_id, "tool_call_id": tool_call_id},
+            )
     assert r.status_code == 200
     assert r.json()["ok"] is True
     assert r.json()["status"] == 201
@@ -571,7 +583,16 @@ async def _finished_job(session, c, h, conv_id, files):
 
 
 def _capabilities(*names):
-    return {n: {"name": n} for n in names}
+    """The app's own compiled capabilities named ``names``."""
+    return {n: _compiled()[n] for n in names}
+
+
+@functools.cache
+def _compiled() -> dict:
+    from celerp.ai.tools import compile_agent_capabilities
+    from test_helpers import real_agent_app
+
+    return compile_agent_capabilities(real_agent_app(), {})
 
 
 def _executor(contacts=(), items=()):
@@ -634,7 +655,7 @@ async def test_proposals_idempotent_and_vendor_resolved(auth_client, session):
     assert actions[0]["file_id"] == "ai_up_1"
     assert "ai_up_1" not in str(bill)
     assert actions[0]["warnings"] == []
-    assert actions[0]["title"] == "Create bill from Acme Supplies"
+    assert read_kept(actions[0]["title"]) == "Create bill from Acme Supplies"
     assert actions[0]["message_id"] == first["message_id"]
     assert "r2.jpg: could not be read." in first["answer"]
     # No write ran while proposing: every capability call was a list lookup.
@@ -642,6 +663,124 @@ async def test_proposals_idempotent_and_vendor_resolved(auth_client, session):
 
     status = (await c.get(f"/ai/batch/{job_id}", headers=h)).json()
     assert status["proposal_message_id"] == first["message_id"]
+
+
+async def _proposals_setup(session, c, h):
+    """A finished one-receipt job, and a proposals call that builds its proposals (patched in)."""
+    conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
+    job_id = await _finished_job(session, c, h, conv_id, [
+        {"file_id": "ai_up_1", "filename": "r1.jpg", "status": "success", "answer": "", "extraction": _RECEIPT, "credits": 1},
+    ])
+    caps = _capabilities("create_doc_docs_post", "list_contacts_crm_contacts_get",
+                         "create_contact_crm_contacts_post", "list_items_items_get")
+
+    async def propose():
+        with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+             patch("celerp.ai.tools.execute_agent_capability", _executor()):
+            r = await c.post(f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h)
+        assert r.status_code == 200, r.text
+        return r.json()
+    return conv_id, job_id, propose
+
+
+async def _set_proposal_message(session, job_id, message_id) -> None:
+    from celerp.models.ai import AIBatchJob
+    job = await session.get(AIBatchJob, uuid.UUID(job_id))
+    await session.refresh(job)
+    job.results = {**(job.results or {}), "proposal_message_id": message_id}
+    await session.commit()
+
+
+async def _expire(session, message_id) -> None:
+    from celerp.models.ai import AIMessage
+    msg = await session.get(AIMessage, uuid.UUID(message_id))
+    await session.refresh(msg)
+    msg.tools_called = [{**r, "expires_at": "2000-01-01T00:00:00+00:00"} if r.get("name") else r
+                        for r in msg.tools_called]
+    await session.commit()
+
+
+async def _message_count(session, conv_id) -> int:
+    from sqlalchemy import func, select
+    from celerp.models.ai import AIMessage
+    return await session.scalar(select(func.count()).select_from(AIMessage)
+                                .where(AIMessage.conversation_id == uuid.UUID(conv_id)))
+
+
+def _recorded_meanwhile(monkeypatch, message_id):
+    """Another request records ``message_id`` as the job's proposals while this one builds its own."""
+    from celerp_ai import routes
+    real = routes._proposals_locked
+
+    async def other_first(session, job, seen_id):
+        await jobs.lock_for_ai(session, job.company_id)  # the other request writes under the same lock
+        job.results = {**(job.results or {}), "proposal_message_id": message_id}
+        await session.flush()
+        return await real(session, job, seen_id)
+    monkeypatch.setattr(routes, "_proposals_locked", other_first)
+
+
+@pytest.mark.asyncio
+async def test_expired_proposals_are_proposed_again_under_new_ids(auth_client, session):
+    c, h = auth_client
+    _, job_id, propose = await _proposals_setup(session, c, h)
+    first = await propose()
+    await _expire(session, first["message_id"])
+    again = await propose()
+    assert again["message_id"] != first["message_id"]
+    assert [a["name"] for a in again["pending_actions"]] == [a["name"] for a in first["pending_actions"]]
+    assert not {a["id"] for a in again["pending_actions"]} & {a["id"] for a in first["pending_actions"]}
+    assert (await c.get(f"/ai/batch/{job_id}", headers=h)).json()["proposal_message_id"] == again["message_id"]
+
+
+@pytest.mark.asyncio
+async def test_proposals_another_request_recorded_first_are_returned_not_built_twice(
+        auth_client, session, monkeypatch):
+    c, h = auth_client
+    conv_id, job_id, propose = await _proposals_setup(session, c, h)
+    first = await propose()
+    count = await _message_count(session, conv_id)
+    await _set_proposal_message(session, job_id, None)  # this request read the job before the first one wrote it
+    _recorded_meanwhile(monkeypatch, first["message_id"])
+    assert await propose() == first
+    assert await _message_count(session, conv_id) == count
+
+
+@pytest.mark.asyncio
+async def test_expired_proposals_another_request_refreshed_first_are_returned_not_refreshed_twice(
+        auth_client, session, monkeypatch):
+    c, h = auth_client
+    conv_id, job_id, propose = await _proposals_setup(session, c, h)
+    first = await propose()
+    await _expire(session, first["message_id"])
+    refreshed = await propose()
+    count = await _message_count(session, conv_id)
+    await _set_proposal_message(session, job_id, first["message_id"])  # read before the refresh was recorded
+    _recorded_meanwhile(monkeypatch, refreshed["message_id"])
+    assert await propose() == refreshed
+    assert await _message_count(session, conv_id) == count
+
+
+@pytest.mark.asyncio
+async def test_a_proposed_bill_card_shows_its_supplier_by_name(auth_client, session):
+    c, h = auth_client
+    r = await c.post("/crm/contacts", headers=h, json={"name": "acme supplies", "contact_type": "vendor"})
+    assert r.status_code in (200, 201), r.text
+    contact_id = r.json()["id"]
+    conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
+    job_id = await _finished_job(session, c, h, conv_id, [
+        {"file_id": "ai_up_1", "filename": "r1.jpg", "status": "success", "answer": "", "extraction": _RECEIPT, "credits": 1},
+    ])
+    caps = _capabilities("create_doc_docs_post", "list_contacts_crm_contacts_get",
+                         "create_contact_crm_contacts_post", "list_items_items_get")
+    executor = _executor(contacts=[{"id": contact_id, "name": "acme supplies", "contact_type": "vendor"}], items=[])
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+         patch("celerp.ai.tools.execute_agent_capability", executor):
+        r = await c.post(f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h)
+    assert r.status_code == 200, r.text
+    [bill] = r.json()["pending_actions"]
+    assert bill["arguments"]["body"]["contact_id"] == contact_id
+    assert bill["names"] == {contact_id: "acme supplies"}
 
 
 @pytest.mark.asyncio
@@ -706,7 +845,7 @@ async def test_proposal_flags_total_mismatch(auth_client, session):
         "target_path": ["body", "contact_id"],
     }]
     assert "issue_date" not in bill
-    warnings = bill_action["warnings"]
+    warnings = [read_kept(w) for w in bill_action["warnings"]]
     assert any("27.50" in w and "30.00" in w for w in warnings)
     assert any("No date" in w for w in warnings)
     assert "photo.jpg: read as a document that is not a receipt or invoice" in r.json()["answer"]
@@ -739,31 +878,32 @@ async def test_unknown_vendor_dependency_resolves_across_confirmations(auth_clie
             return {"ok": True, "status": 201, "data": {"id": "doc:bill-1"}}
         raise AssertionError(capability["name"])
 
-    with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
-         patch("celerp.ai.tools.execute_agent_capability", _exec), \
-         patch("celerp_ai.routes._attach_confirmed_bill_receipt", new_callable=AsyncMock) as attached:
-        proposed = (await c.post(
-            f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h,
-        )).json()
-        vendor, bill = proposed["pending_actions"]
-        # Out-of-order single confirmation is non-terminal: the bill remains pending.
-        early = await c.post(
-            f"/ai/conversations/{conv_id}/confirm", headers=h,
-            json={"message_id": proposed["message_id"], "tool_call_id": bill["id"]},
-        )
-        assert early.status_code == 200
-        assert early.json()["action_status"] == "pending"
-        assert early.json()["error"]["code"] == "action_dependency_not_ready"
-        vendor_done = await c.post(
-            f"/ai/conversations/{conv_id}/confirm", headers=h,
-            json={"message_id": proposed["message_id"], "tool_call_id": vendor["id"]},
-        )
-        assert vendor_done.status_code == 200
-        bill_done = await c.post(
-            f"/ai/conversations/{conv_id}/confirm", headers=h,
-            json={"message_id": proposed["message_id"], "tool_call_id": bill["id"]},
-        )
-        assert bill_done.status_code == 200
+    async with answered_continuation():
+        with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+             patch("celerp.ai.tools.execute_agent_capability", _exec), \
+             patch("celerp_ai.routes._attach_confirmed_bill_receipt", new_callable=AsyncMock) as attached:
+            proposed = (await c.post(
+                f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h,
+            )).json()
+            vendor, bill = proposed["pending_actions"]
+            # Out-of-order single confirmation is non-terminal: the bill remains pending.
+            early = await c.post(
+                f"/ai/conversations/{conv_id}/confirm", headers=h,
+                json={"message_id": proposed["message_id"], "tool_call_id": bill["id"]},
+            )
+            assert early.status_code == 200
+            assert early.json()["action_status"] == "pending"
+            assert early.json()["error"]["code"] == "action_dependency_not_ready"
+            vendor_done = await c.post(
+                f"/ai/conversations/{conv_id}/confirm", headers=h,
+                json={"message_id": proposed["message_id"], "tool_call_id": vendor["id"]},
+            )
+            assert vendor_done.status_code == 200
+            bill_done = await c.post(
+                f"/ai/conversations/{conv_id}/confirm", headers=h,
+                json={"message_id": proposed["message_id"], "tool_call_id": bill["id"]},
+            )
+            assert bill_done.status_code == 200
 
     writes = [(name, args) for name, args, _ in calls if not name.startswith("list_")]
     assert [name for name, _ in writes] == [
@@ -833,7 +973,7 @@ async def test_dismiss_one_action_persists_and_a_second_dismiss_is_409(auth_clie
     url = f"/ai/conversations/{conv_id}/dismiss"
     first = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_id": call_id})
     assert first.status_code == 200
-    assert first.json() == {"dismissed": True, "tool_call_id": call_id}
+    assert first.json() == {"dismissed": True, "tool_call_id": call_id, "continued_job_id": None}
     thread = (await c.get(f"/ai/conversations/{conv_id}", headers=h)).json()
     assert thread["messages"][-1]["pending_actions"] == []
     again = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_id": call_id})
@@ -872,12 +1012,13 @@ async def test_confirm_all_executes_in_order(auth_client):
         return {"ok": True, "status": 201, "data": {"id": "doc-1"}}
 
     caps = {"create_contact": {"method": "POST"}, "create_doc": {"method": "POST"}}
-    with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
-         patch("celerp.ai.tools.execute_agent_capability", _exec):
-        r = await c.post(f"/ai/conversations/{conv_id}/confirm-all", headers=h, json={"message_id": message_id})
-        assert r.status_code == 200, r.text
-        body = r.json()
-        r2 = await c.post(f"/ai/conversations/{conv_id}/confirm-all", headers=h, json={"message_id": message_id})
+    async with answered_continuation():
+        with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+             patch("celerp.ai.tools.execute_agent_capability", _exec):
+            r = await c.post(f"/ai/conversations/{conv_id}/confirm-all", headers=h, json={"message_id": message_id})
+            assert r.status_code == 200, r.text
+            body = r.json()
+            r2 = await c.post(f"/ai/conversations/{conv_id}/confirm-all", headers=h, json={"message_id": message_id})
     assert seen == [expected_a, expected_b]
     assert body["completed"] == 1 and body["failed"] == 1
     assert [x["tool_call_id"] for x in body["results"]] == ["call_a", "call_b"]
@@ -913,13 +1054,14 @@ async def test_confirm_all_selection_runs_only_selected_in_order(auth_client):
 
     caps = {"create_contact": {"method": "POST"}}
     url = f"/ai/conversations/{conv_id}/confirm-all"
-    with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
-         patch("celerp.ai.tools.execute_agent_capability", _exec):
-        r = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["call_c", "call_a", "ghost"]})
-        assert r.status_code == 200, r.text
-        body = r.json()
-        r2 = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["call_b"]})
-        r3 = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["ghost"]})
+    async with answered_continuation():
+        with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+             patch("celerp.ai.tools.execute_agent_capability", _exec):
+            r = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["call_c", "call_a", "ghost"]})
+            assert r.status_code == 200, r.text
+            body = r.json()
+            r2 = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["call_b"]})
+            r3 = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["ghost"]})
     assert seen == [expected_a, expected_c, expected_b]
     assert [x["tool_call_id"] for x in body["results"]] == ["call_a", "call_c", "ghost"]
     assert body["results"][0]["name"] == "create_contact"

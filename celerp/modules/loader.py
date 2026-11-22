@@ -1201,7 +1201,11 @@ def module_label(pkg_name: str) -> str:
     no manifest, so its package name is shown as words ("celerp-accounting" ->
     "Accounting") rather than as an identifier."""
     path = resolve_runtime_module_path(pkg_name, module_search_path())
-    meta = read_manifest_metadata(path) if path is not None else {}
+    return manifest_label(pkg_name, read_manifest_metadata(path) if path is not None else {})
+
+
+def manifest_label(pkg_name: str, meta: dict) -> str:
+    """The display name ``meta`` (the module's manifest) gives, else its package name as words."""
     return (meta.get("display_name") or meta.get("label")
             or pkg_name.removeprefix("celerp-").replace("-", " ").replace("_", " ").title())
 
@@ -2614,6 +2618,7 @@ _CALLABLE_SLOTS = {
     "fixed_asset_rules": ("handler", False),
     "label_source": ("handler", True),
     "import_target": ("handler", True),
+    "record_names": ("handler", True),
     "turn_off_preflight": ("handler", True),
 }
 # Callable slots core calls with keyword arguments only, and those arguments. The
@@ -2631,6 +2636,7 @@ _HANDLER_KEYWORDS = {
     "doc_posting_dependents": ("session", "company_id", "user_id", "doc_id", "relabel"),
     "label_source": ("session", "company_id", "ids"),
     "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
+    "record_names": ("session", "company_id", "settings", "role", "ids"),
     "turn_off_preflight": ("session", "company_id"),
 }
 # Entry keys naming a permission. Gating surfaces index the permission registry,
@@ -2803,6 +2809,7 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "label_source": {"entity_type": (_TEXT, True), "label_key": (_TEXT, True), "keys": ((list,), True),
                      "preset": ((dict,), True)},
     "import_target": {"kind": (_TEXT, True)},
+    "record_names": {},
     "turn_off_preflight": {},
 }
 _TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",

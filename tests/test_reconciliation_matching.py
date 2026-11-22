@@ -3,8 +3,8 @@
 """Every path that matches book entries to a reconciliation accepts only entries that
 belong in it: this company's posted entries with a line on this bank account, never
 the opening entry, and never one already matched to another line of the session. A
-transfer sits in both of its accounts' reconciliations. Bulk confirm revalidates each
-suggestion and reports the ones it skips, the same way on every retry."""
+transfer sits in both of its accounts' reconciliations. Post ticked on the bank page
+counts the lines it could not post and says why."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from sqlalchemy import text
 from company_backup_support import token
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
 from test_company_reset_payments import _harbor
+import bank_statement_helpers as B
 from test_reconciliation_history import OPENING, admin, bank, deposit, legacy_session, match, start
 
 pytestmark = pytest.mark.asyncio
@@ -28,25 +29,18 @@ async def _session(client, h, b, day="2026-09-30", balance=OPENING) -> str:
     return r.json()["id"]
 
 
-async def _lines(client, h, sid, rows: list[tuple[str, str, float]]) -> list[dict]:
-    csv = "Date,Description,Amount\n" + "".join(f"{d},{desc},{amt}\n" for d, desc, amt in rows)
-    r = await client.post(f"/accounting/reconciliation/{sid}/import-csv", headers=h,
-                          files={"file": ("s.csv", csv.encode(), "text/csv")})
+async def _lines(client, h, b, rows: list[tuple[str, str, str]]) -> tuple[str, list[dict]]:
+    """A September statement on bank ``b`` that ties: its session id and its lines."""
+    closing = OPENING + sum(float(amount) for _, _, amount in rows)
+    return await B.lines_on(client, await B.co_of(client, h), b["id"], rows, opening=f"{OPENING:.2f}",
+                            closing=f"{closing:.2f}", start="2026-09-01", end="2026-09-30")
+
+
+async def _match_line(client, h, b, line: dict, je: str) -> dict:
+    r = await B.resolve(client, await B.co_of(client, h), b["id"],
+                        decisions=[{"line_ids": [line["id"]], "kind": "match", "je_ids": [je]}])
     assert r.status_code == 200, r.text
-    return await _read_lines(client, h, sid)
-
-
-async def _read_lines(client, h, sid) -> list[dict]:
-    body = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=h)).json()
-    return body.get("items") if isinstance(body, dict) else body
-
-
-async def _suggest(session, line_id: str, je_id: str) -> None:
-    """A suggestion as auto-match leaves it on a statement line."""
-    await session.execute(text(
-        "UPDATE bank_statement_lines SET status = 'suggested', matched_je_id = :je WHERE id = :l"),
-        {"je": je_id, "l": line_id})
-    await session.commit()
+    return r.json()["results"][0]
 
 
 async def _held(client, h, sid) -> list[str]:
@@ -60,14 +54,11 @@ async def test_match_refuses_an_entry_of_another_bank_account(client, session):
     a = await bank(client, h)
     other = await bank(client, h, name="Second Bank", number="0002")
     je = await deposit(client, h, other, "2026-09-05", 20.0)
-    sid = await _session(client, h, a)
+    sid, (line,) = await _lines(client, h, a, [("2026-09-05", "Deposit", "20.00")])
     r = await match(client, h, sid, [je])
     assert r.status_code == 400, r.text
     assert je not in await _held(client, h, sid)
-    line = (await _lines(client, h, sid, [("2026-09-05", "Deposit", "20.00")]))[0]
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{line['id']}/match",
-                          headers=h, json={"je_id": je})
-    assert r.status_code == 400, r.text
+    assert (await _match_line(client, h, a, line, je))["ok"] is False
 
 
 async def test_match_refuses_another_companys_entry(real_engine, real_client):
@@ -103,15 +94,10 @@ async def test_match_refuses_an_entry_already_matched_to_another_line(client, se
     _, h = await admin(client)
     b = await bank(client, h)
     je = await deposit(client, h, b, "2026-09-05", 20.0)
-    sid = await _session(client, h, b, balance=OPENING + 20.0)
-    first, second = await _lines(client, h, sid, [("2026-09-05", "Deposit", "20.00"),
-                                                    ("2026-09-06", "Deposit again", "20.00")])
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{first['id']}/match",
-                          headers=h, json={"je_id": je})
-    assert r.status_code == 200, r.text
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{second['id']}/match",
-                          headers=h, json={"je_id": je})
-    assert r.status_code == 409, r.text
+    _, (first, second) = await _lines(client, h, b, [("2026-09-05", "Deposit", "20.00"),
+                                                      ("2026-09-06", "Deposit again", "20.00")])
+    assert (await _match_line(client, h, b, first, je))["ok"] is True
+    assert (await _match_line(client, h, b, second, je))["ok"] is False
     # A statement held twice (rows from before one session per date): the other session
     # of the same date already counts the entry.
     other = await bank(client, h, name="Second Bank", number="0002")
@@ -128,7 +114,7 @@ async def test_transfer_can_be_matched_in_both_accounts(client, session):
     a = await bank(client, h)
     b = await bank(client, h, name="Second Bank", number="0002")
     r = await client.post("/accounting/transfers", headers=h, json={
-        "from_bank_id": a["id"], "to_bank_id": b["id"], "amount": 30.0, "date": "2026-09-05"})
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": a["id"], "to_bank_id": b["id"], "amount": 30.0, "date": "2026-09-05"})
     assert r.status_code == 200, r.text
     body = r.json()
     je = body.get("je_id") or body.get("id")
@@ -149,84 +135,44 @@ async def test_repeated_match_is_idempotent(client, session):
     assert (await _held(client, h, sid)).count(je) == 1
 
 
-async def test_auto_match_offers_only_eligible_entries(client, session):
+async def test_suggest_offers_only_eligible_entries(client, session):
     _, h = await admin(client)
     b = await bank(client, h)
     je = await deposit(client, h, b, "2026-09-05", 20.0)
-    sid = await _session(client, h, b, balance=OPENING + 20.0)
-    # The same statement held a second time (a row from before one session per date)
-    # already counts the entry, so this session may not take it.
-    await legacy_session(session, b, "2026-09-30", je_ids=[je], balance=OPENING + 20.0)
-    line = (await _lines(client, h, sid, [("2026-09-05", "Deposit", "20.00")]))[0]
-    assert (await client.post(f"/accounting/reconciliation/{sid}/auto-match", headers=h)).status_code == 200
-    got = {l["id"]: l for l in await _read_lines(client, h, sid)}[line["id"]]
-    assert got["matched_je_id"] != je, "an entry the same statement already counts was offered"
-    assert je not in await _held(client, h, sid)
+    # An earlier statement (a row from before statements were imported) already counts
+    # the entry, so no line of this one may be offered it.
+    await legacy_session(session, b, "2026-08-31", je_ids=[je], balance=OPENING + 20.0)
+    _, (line,) = await _lines(client, h, b, [("2026-09-05", "Deposit", "20.00")])
+    co = await B.co_of(client, h)
+    assert (await client.post(f"{B.API}/bank/{b['id']}/suggest", json={"idempotency_key": B.key()},
+                              headers=h)).status_code == 200
+    got = next(l for l in B.all_lines(await B.groups(client, co, b["id"], view="all")) if l["id"] == line["id"])
+    assert je not in ((got.get("suggestion") or {}).get("je_ids") or []), "an entry another statement counts was offered"
 
 
-# --- Bulk confirm ---------------------------------------------------------------------
+# --- Post ticked ----------------------------------------------------------------------
 
-async def _bulk_setup(client, session, h):
-    b = await bank(client, h)
-    good = await deposit(client, h, b, "2026-09-05", 20.0)
-    gone = await deposit(client, h, b, "2026-09-06", 30.0)
-    held = await deposit(client, h, b, "2026-09-07", 40.0)
-    sid = await _session(client, h, b, balance=OPENING + 60.0)
-    l1, l2, l3, l4 = await _lines(client, h, sid, [
-        ("2026-09-05", "A", "20.00"), ("2026-09-06", "B", "30.00"),
-        ("2026-09-07", "C", "40.00"), ("2026-09-07", "D", "40.00")])
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{l3['id']}/match",
-                          headers=h, json={"je_id": held})
-    assert r.status_code == 200, r.text
-    await _suggest(session, l1["id"], good)
-    await _suggest(session, l2["id"], gone)
-    await _suggest(session, l4["id"], held)
-    assert (await client.post(f"/accounting/journal-entries/{gone}/void", headers=h, json={})).status_code == 200
-    return sid, good, gone, held, l1, l2, l4
-
-
-async def test_bulk_confirm_skips_stale_lines_and_reports_each(client, session):
-    _, h = await admin(client)
-    sid, good, gone, held, l1, l2, l4 = await _bulk_setup(client, session, h)
-    r = await client.post(f"/accounting/reconciliation/{sid}/bulk-confirm", headers=h)
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["confirmed"] == 1
-    assert {s["line_id"]: s["reason"] for s in body["skipped"]} == {
-        l2["id"]: "acct.err_recon_book_entry_missing", l4["id"]: "acct.err_recon_book_entry_matched"}
-    held_ids = await _held(client, h, sid)
-    assert good in held_ids and gone not in held_ids and held_ids.count(held) == 1
-    lines = {l["id"]: l for l in await _read_lines(client, h, sid)}
-    assert lines[l2["id"]]["status"] == "unmatched" and lines[l4["id"]]["status"] == "unmatched"
-
-
-@pytest.mark.parametrize("stale, toast", [
-    (2, "2 lines weren't confirmed. Each one shows why."),
-    (1, "1 line wasn't confirmed. It shows why."),
-])
-async def test_bulk_confirm_toast_counts_the_skipped_lines(client, session, stale, toast):
+async def test_post_ticked_counts_the_lines_it_could_not_post_and_says_why(client, session):
+    """One group's suggestion posts, the other names an account the chart does not hold:
+    the outcome counts the refused line and gives its reason."""
     from test_reconciliation_reopen import _ui_as
     tok, h = await admin(client)
-    sid, *_, l4 = await _bulk_setup(client, session, h)
-    if stale == 1:
-        await session.execute(text(
-            "UPDATE bank_statement_lines SET status = 'unmatched', matched_je_id = NULL WHERE id = :l"), {"l": l4["id"]})
-        await session.commit()
+    b = await bank(client, h)
+    _, (good, bad) = await _lines(client, h, b, [("2026-09-05", "ALPHA SHOP", "-20.00"),
+                                                  ("2026-09-06", "BETA SHOP", "-30.00")])
+    for line, code in ((good, "6800"), (bad, "9999")):
+        await session.execute(text("UPDATE bank_statement_lines SET suggestion = CAST(:s AS JSON) WHERE id = :l"),
+                              {"s": f'{{"kind": "post", "account_code": "{code}", "source": "rule", "reason": "r"}}',
+                               "l": line["id"]})
+    await session.commit()
+    table = await B.groups(client, await B.co_of(client, h), b["id"])
+    ticked = B.accept(table, [g["key"] for g in table["groups"]])
     async with _ui_as(tok) as ui:
-        page = (await ui.post(f"/accounting/reconcile/{sid}/bulk-confirm")).text
-    assert toast.replace("'", "&#x27;") in page or toast in page
-
-
-async def test_bulk_confirm_retry_is_deterministic(client, session):
-    _, h = await admin(client)
-    sid, *_ = await _bulk_setup(client, session, h)
-    first = (await client.post(f"/accounting/reconciliation/{sid}/bulk-confirm", headers=h)).json()
-    held = await _held(client, h, sid)
-    second = (await client.post(f"/accounting/reconciliation/{sid}/bulk-confirm", headers=h)).json()
-    assert first["skipped"] and second == {"confirmed": 0, "skipped": []}
-    lines = {l["id"]: l for l in await _read_lines(client, h, sid)}
-    assert all(lines[s["line_id"]]["status"] == "unmatched" for s in first["skipped"])
-    assert await _held(client, h, sid) == held
+        page = (await ui.post(f"/accounting/reconcile/bank/{b['id']}/post-ticked", data={
+            "group_key": ticked["group_keys"], "line_id": ticked["line_ids"],
+            "version": [ticked["versions"][i] for i in ticked["line_ids"]], "idempotency_key": B.key()})).text
+    assert "Posted 1 lines." in page
+    assert "1 lines were not posted:" in page
 
 
 # --- Lock order -----------------------------------------------------------------------
@@ -247,3 +193,44 @@ async def test_matcher_and_bulk_void_of_one_bank_do_not_deadlock(real_engine, re
         held = (await s.execute(text("SELECT reconciled_je_ids FROM reconciliation_sessions WHERE id = :s"),
                                 {"s": sid})).scalar()
     assert set(ids[:2]) <= set(held)
+
+
+async def _refused_key(client, h, b, lines: list[dict], je_ids: list[str]) -> str:
+    r = await B.resolve(client, await B.co_of(client, h), b["id"],
+                        decisions=[{"line_ids": [l["id"] for l in lines], "kind": "match", "je_ids": je_ids}])
+    assert r.status_code == 200, r.text
+    res = r.json()["results"][0]
+    assert res["ok"] is False, r.text
+    return res["reason"]["message_key"]
+
+
+async def test_match_with_no_entry_is_refused_even_when_the_lines_cancel_out(client, session):
+    _, h = await admin(client)
+    b = await bank(client, h)
+    sid, lines = await _lines(client, h, b, [("2026-09-05", "In", "20.00"), ("2026-09-06", "Back out", "-20.00")])
+    assert await _refused_key(client, h, b, lines, []) == "acct.err_recon_match_needs_entry"
+    assert await _held(client, h, sid) == []
+
+
+async def test_match_to_an_entry_of_another_amount_is_refused_with_both_totals(client, session):
+    _, h = await admin(client)
+    b = await bank(client, h)
+    je = await deposit(client, h, b, "2026-09-05", 15.0)
+    sid, (line,) = await _lines(client, h, b, [("2026-09-05", "Deposit", "20.00")])
+    assert await _refused_key(client, h, b, [line], [je]) == "acct.err_recon_match_total"
+    assert je not in await _held(client, h, sid)
+
+
+async def test_an_entry_a_line_of_another_statement_date_holds_is_not_matched_again(client, session):
+    """Each statement counts the entries cleared up to its date, but one bank movement is
+    one line: an entry a September line is matched to cannot also settle an October line."""
+    _, h = await admin(client)
+    b = await bank(client, h)
+    je = await deposit(client, h, b, "2026-09-05", 20.0)
+    _, (september,) = await _lines(client, h, b, [("2026-09-05", "Deposit", "20.00")])
+    assert (await _match_line(client, h, b, september, je))["ok"] is True
+    sid, (october,) = await B.lines_on(client, await B.co_of(client, h), b["id"], [("2026-10-05", "Deposit", "20.00")],
+                                       opening=f"{OPENING + 20:.2f}", closing=f"{OPENING + 40:.2f}",
+                                       start="2026-10-01", end="2026-10-31")
+    assert await _refused_key(client, h, b, [october], [je]) == "acct.err_recon_book_entry_matched"
+    assert je not in await _held(client, h, sid)

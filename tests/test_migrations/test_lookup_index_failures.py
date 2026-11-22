@@ -92,7 +92,9 @@ class _Op:
                         op.failed = True  # the build finished but left the index invalid
                     return _Result(op.state.get(name))
                 if "to_regclass" in str(statement):
-                    return _Result(params["name"] if op.state.get(params["name"]) is not None else None)
+                    # A name outside the index table is a table the revision indexes: it exists.
+                    name = params["name"]
+                    return _Result(name if name not in op.state or op.state[name] is not None else None)
                 return _Result(None)
 
         return _Bind()

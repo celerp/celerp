@@ -31,7 +31,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import POSTABLE_ROLES, ROLE_LABELS, AccountRole, is_role
+from celerp.accounting_roles import POSTABLE_ROLES, ROLE_LABELS, AccountRole, catalog_refusal, is_role
 from celerp.importers.results import failure_reason
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
@@ -41,6 +41,7 @@ from celerp.services.account_roles import role_map
 from celerp.services.company_lock import locked_company
 from celerp.services.journal_accounts import chart_access
 from celerp.services.money import books_currency
+from ui.i18n import t
 
 # Where a company sees the accounts sync held, added, or is waiting for it to review.
 ACCOUNTS_PAGE = "/accounting/sync-accounts"
@@ -78,13 +79,13 @@ def parse(value) -> dict[str, dict]:
     if value is None:
         return {}
     if not isinstance(value, dict) or len(value) > _MAX_ACCOUNTS:
-        raise HTTPException(422, "Invalid accounts")
+        raise HTTPException(422, t("peer.err_invalid_accounts"))
     try:
         out = {code: _Account.model_validate(a).model_dump() for code, a in value.items()}
     except ValidationError:
-        raise HTTPException(422, "Invalid accounts") from None
+        raise HTTPException(422, t("peer.err_invalid_accounts")) from None
     if any(code != a["code"] for code, a in out.items()) or len({a["id"] for a in out.values()}) != len(out):
-        raise HTTPException(422, "Invalid accounts")
+        raise HTTPException(422, t("peer.err_invalid_accounts"))
     return out
 
 
@@ -294,17 +295,20 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
             role_label = ROLE_LABELS[AccountRole(role)]
             target = local.get(roles.get(role) or "")
             if target is None:
-                has = "you have" if receiver is None else f"{receiver} has"
+                reason = (t("peer.err_role_account_none_yours", account=label(other), role=role_label,
+                            sender=sender, role2=role_label) if receiver is None else
+                          t("peer.err_role_account_none_other", account=label(other), role=role_label,
+                            sender=sender, receiver=receiver, role2=role_label))
                 raise AccountHold(
-                    f"{label(other)} is the {role_label} account of {sender}, and {has} no "
-                    f"{role_label} account chosen. Choose it in Settings > Accounting > Posting accounts.",
+                    reason,
                     _fix("role", other, add=False, role=role, href=POSTING_ACCOUNTS))
             if _kind(target, books) != _kind(other, books):
-                whose = "your" if receiver is None else f"{receiver}'s"
+                facts = dict(account=label(other), role=role_label, sender=sender, kind=_kind_text(other, books),
+                             role2=role_label, target=label(target), target_kind=_kind_text(target, books))
+                reason = (t("peer.err_role_account_differs_yours", **facts) if receiver is None else
+                          t("peer.err_role_account_differs_other", receiver=receiver, **facts))
                 raise AccountHold(
-                    f"{label(other)} is the {role_label} account of {sender}, {_kind_text(other, books)}, "
-                    f"and {whose} {role_label} account {label(target)} is {_kind_text(target, books)}. "
-                    f"Choose one that matches in Settings > Accounting > Posting accounts.",
+                    reason,
                     _fix("role", other, add=False, role=role, href=POSTING_ACCOUNTS))
             if not target["is_active"]:
                 raise _archived(names, other, target)
@@ -314,12 +318,12 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
         target = by_id.get(row.account_id) if row is not None else None
         how = None
         if target is not None:
-            _differs(names, other, target, books, f"{label(target)}, where it posts in {names.chart},",
+            _differs(names, other, target, books, t("peer.where_it_posts", account=label(target), chart=names.chart),
                      next_free(code, set(local)), parent)
             plan.seen.append((row, other))
         elif other["yours"] in by_id:
             target, how = by_id[other["yours"]], "match"
-            _differs(names, other, target, books, f"{label(target)}, where {sender} posts it in {names.chart},",
+            _differs(names, other, target, books, t("peer.where_sender_posts", account=label(target), sender=sender, chart=names.chart),
                      next_free(code, set(local)), parent)
         else:
             same = local.get(code)
@@ -333,18 +337,19 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
                 continue
             elif same is not None:
                 suggested = next_free(code, set(local))
-                _differs(names, other, same, books, f"{label(same)} in {names.chart}", suggested, parent)
+                _differs(names, other, same, books, t("peer.where_in", account=label(same), chart=names.chart), suggested, parent)
                 held_role = role_of.get(code)
-                why = (f", the {ROLE_LABELS[AccountRole(held_role)]} account there, which {sender} does not "
-                       f"post it as" if held_role else "")
+                facts = dict(sender=sender, account=label(other), local=label(same), chart=names.chart,
+                             local2=label(same), suggested=suggested)
+                reason = (t("peer.err_account_same_code_role", role=ROLE_LABELS[AccountRole(held_role)],
+                            sender2=sender, **facts) if held_role else t("peer.err_account_same_code", **facts))
                 raise AccountHold(
-                    f"{sender}'s account {label(other)} has the same code as {label(same)} in "
-                    f"{names.chart}{why}. Use {label(same)} for it, or add it as {suggested}.",
+                    reason,
                     _fix("collision", other, local=same, suggested=suggested, parent=parent))
             elif _currency(other, books) != books:
                 raise AccountHold(
-                    f"{sender}'s account {label(other)} is kept in {_currency(other, books)}, and "
-                    f"{names.chart} has no account for it. Use an account kept in {_currency(other, books)}.",
+                    t("peer.err_account_currency_no_account", sender=sender, account=label(other),
+                      currency=_currency(other, books), chart=names.chart, currency2=_currency(other, books)),
                     _fix("currency", other, add=False))
             else:
                 plan.adds.append(other)
@@ -356,7 +361,7 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
         if how is not None:
             plan.links.append((other, target, how))
     if waiting:
-        raise AccountHold(f"Waiting for {receiver or company.name} to review accounts.",
+        raise AccountHold(t("peer.err_waiting_review_accounts", company=receiver or company.name),
                           _fix("review", waiting[0], add=False, accounts=waiting))
     await _write(session, company_id, source_company_id, plan, accounts, local, by_id, linked,
                  sender=sender, record=record)
@@ -368,7 +373,7 @@ def _kind(account: dict, books: str) -> tuple[str, str]:
 
 
 def _kind_text(account: dict, books: str) -> str:
-    return f"{_article(account['account_type'])} account kept in {_currency(account, books)}"
+    return t("peer.kind_text", type_a=_article(account["account_type"]), currency=_currency(account, books))
 
 
 def _differs(names: _Names, other: dict, target: dict, books: str, where: str, suggested: str,
@@ -377,15 +382,15 @@ def _differs(names: _Names, other: dict, target: dict, books: str, where: str, s
     kept in another currency."""
     if target["account_type"] != other["account_type"]:
         raise AccountHold(
-            f"{names.sender}'s account {label(other)} is {_article(other['account_type'])} account, "
-            f"and {where} is {_article(target['account_type'])} account. "
-            f"Use another {other['account_type']} account, or add it as {suggested}.",
+            t("peer.err_sender_account_type_differs", sender=names.sender, account=label(other),
+              type_a=_article(other["account_type"]), where=where, target_type_a=_article(target["account_type"]),
+              type=other["account_type"], suggested=suggested),
             _fix("type", other, local=target, suggested=suggested, parent=parent))
     if _currency(target, books) != _currency(other, books):
         raise AccountHold(
-            f"{names.sender}'s account {label(other)} is kept in {_currency(other, books)}, and "
-            f"{where} is kept in {_currency(target, books)}. "
-            f"Use an account kept in {_currency(other, books)}.",
+            t("peer.err_sender_account_currency_differs", sender=names.sender, account=label(other),
+              currency=_currency(other, books), where=where, target_currency=_currency(target, books),
+              currency2=_currency(other, books)),
             _fix("currency", other, local=target, add=False))
 
 
@@ -394,9 +399,7 @@ def _by_link(names: _Names, code: str, rows: list[CompanyPeerAccount], by_id: di
     of it: the one account a link of that code points to, else the record is held."""
     target = by_id.get(rows[0].account_id) if len(rows) == 1 else None
     if target is None:
-        raise HTTPException(409, f"{names.sender} sent {record} without the name, type and currency of "
-                                 f"its account {code}, so it is not matched to an account in {names.chart}. "
-                                 f"It posts when {names.sender} sends it again with them.")
+        raise HTTPException(409, t("peer.err_sender_sent_record_without_name_type", sender=names.sender, record=record, code=code, chart=names.chart, sender2=names.sender))
     if not target["is_active"]:
         raise _archived(names, {"code": code, "name": rows[0].other_name}, target)
     return target["code"]
@@ -404,8 +407,8 @@ def _by_link(names: _Names, code: str, rows: list[CompanyPeerAccount], by_id: di
 
 def _archived(names: _Names, other: dict, target: dict) -> AccountHold:
     return AccountHold(
-        f"Account {label(target)}, which {names.who} archived, is where {names.sender}'s "
-        f"{label(other)} posts. Unarchive it, or use another account.",
+        t("peer.err_account_archived", target=label(target), who=names.who, sender=names.sender,
+          account=label(other)),
         _fix("archived", other, local=target))
 
 
@@ -433,7 +436,7 @@ async def _write(session: AsyncSession, company_id: uuid.UUID, source_company_id
         await peer_attention.record(
             session, company_id=company_id, source_company_id=source_company_id,
             kind=peer_attention.ADDED, entity_type=ACCOUNT, source_entity_id=other["id"],
-            label=label(made), reason=f"Added by sync from {sender} with {record}.",
+            label=label(made), reason=catalog_refusal("peer.attention_account_added", company=sender, record=record),
             fix={"kind": "added", "code": made["code"]})
         params = dict(account=label(made), record=record, company=sender)
         if why is None:
@@ -477,17 +480,15 @@ async def _notify(session: AsyncSession, company_id: uuid.UUID, key: str, **para
 def use_problem(other: dict, target: dict | None, code: str, books: str) -> str | None:
     """Why ``target`` cannot take the place of the other company's ``other``, or None."""
     if target is None:
-        return f"Account {code} is not in the chart of accounts."
+        return t("posting.older_stock.not_in_chart", code=code)
     if not target["is_active"]:
-        return f"Account {code} is inactive. Choose an active account."
+        return t("posting.destination.inactive", code=code)
     if target["has_children"]:
-        return f"Account {code} is a header account. Choose one of the accounts under it."
+        return t("posting.destination.header", code=code)
     if target["account_type"] != other["account_type"]:
-        return (f"{label(other)} is {_article(other['account_type'])} account. "
-                f"Use another {other['account_type']} account.")
+        return t("peer.err_account_type_differs", label=label(other), type=other["account_type"])
     if _currency(target, books) != _currency(other, books):
-        return (f"{label(other)} is kept in {_currency(other, books)}. "
-                f"Use an account kept in {_currency(other, books)}.")
+        return t("peer.err_account_currency_differs", label=label(other), currency=_currency(other, books))
     return None
 
 
@@ -507,9 +508,9 @@ async def _item_to_change(session: AsyncSession, company_id: uuid.UUID, item_id,
 
 
 async def held_item(session: AsyncSession, company_id: uuid.UUID, item_id) -> CompanyPeerAttention:
-    item = await _item_to_change(session, company_id, item_id, "This item is not open.")
+    item = await _item_to_change(session, company_id, item_id, t("peer.err_item_not_open"))
     if not item.fix:
-        raise HTTPException(404, "This item is not open.")
+        raise HTTPException(404, t("peer.err_item_not_open"))
     return item
 
 
@@ -518,7 +519,7 @@ async def use_account(session: AsyncSession, company_id: uuid.UUID, source_compa
     """Post the other company's ``other`` to the receiver's ``code`` from now on."""
     chart = chart_access()
     if chart is None:
-        raise HTTPException(409, "Accounting is not running.")
+        raise HTTPException(409, t("peer.err_accounting_not_running"))
     company = await session.get(Company, company_id)
     rows = {a["code"]: a for a in await chart.list_accounts(session, company_id)}
     problem = use_problem(other, rows.get(code), code, books_currency(company.settings or {}))
@@ -532,11 +533,10 @@ async def add_account(session: AsyncSession, company_id: uuid.UUID, source_compa
                       other: dict, code: str, parent: str | None) -> dict:
     """Add the other company's ``other`` to the receiver's chart as ``code`` and post it there."""
     if chart_access() is None:
-        raise HTTPException(409, "Accounting is not running.")
+        raise HTTPException(409, t("peer.err_accounting_not_running"))
     company = await session.get(Company, company_id)
     if _currency(other, books_currency(company.settings or {})) != books_currency(company.settings or {}):
-        raise HTTPException(422, f"{label(other)} is kept in {other['currency']}. Add a bank account kept in "
-                                 f"{other['currency']} in Banking, then use it.")
+        raise HTTPException(422, t("peer.err_label_kept_currency_add_bank_account", label=label(other), currency=other['currency'], currency2=other['currency']))
     made, _ = await create(session, company_id, other, code, parent)
     await link(session, company_id=company_id, source_company_id=source_company_id,
                other=other, local=made, how="chosen")
@@ -549,36 +549,36 @@ async def fix_hold(session: AsyncSession, company_id: uuid.UUID, item: CompanyPe
     fix = item.fix or {}
     other = fix.get("other")
     if fix.get("kind") in ("role", "review", "added") or not isinstance(other, dict):
-        raise HTTPException(422, "This item is not fixed here.")
+        raise HTTPException(422, t("peer.err_item_not_fixed_here"))
     if action == "use" and account:
         await use_account(session, company_id, item.source_company_id, other, account)
     elif action == "add" and code and fix.get("add"):
         await add_account(session, company_id, item.source_company_id, other, code, fix.get("parent"))
     elif action == "add":
-        raise HTTPException(422, f"{label(other)} cannot be added here. Use an account kept in {other['currency']}.")
+        raise HTTPException(422, t("peer.err_label_cannot_added_here_use_account", label=label(other), currency=other['currency']))
     else:
-        raise HTTPException(422, "Choose an account to use, or a code to add it as.")
+        raise HTTPException(422, t("peer.err_choose_account_use_code_add_as"))
 
 
 async def holds(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
     """Every record of a connected company held here for an account, newest first."""
     rows = await peer_attention.open_items(session, [company_id])
     return [{"id": str(r.id), "source_company_id": str(r.source_company_id), "label": r.label,
-             "reason": r.reason, "fix": r.fix, "at": r.created_at.isoformat()}
+             "reason": peer_attention.reason_of(r), "fix": r.fix, "at": r.created_at.isoformat()}
             for r in rows if r.kind == peer_attention.REFUSED and r.fix]
 
 
 async def added(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
     """Every account sync added here that is not yet kept, archived or removed."""
     rows = await peer_attention.open_items(session, [company_id])
-    return [{"id": str(r.id), "label": r.label, "reason": r.reason, "code": (r.fix or {}).get("code"),
+    return [{"id": str(r.id), "label": r.label, "reason": peer_attention.reason_of(r), "code": (r.fix or {}).get("code"),
              "at": r.created_at.isoformat()} for r in rows if r.kind == peer_attention.ADDED]
 
 
 async def added_item(session: AsyncSession, company_id: uuid.UUID, item_id) -> CompanyPeerAttention:
-    item = await _item_to_change(session, company_id, item_id, "This notice is closed.")
+    item = await _item_to_change(session, company_id, item_id, t("peer.err_notice_closed"))
     if item.kind != peer_attention.ADDED:
-        raise HTTPException(404, "This notice is closed.")
+        raise HTTPException(404, t("peer.err_notice_closed"))
     return item
 
 
@@ -694,17 +694,18 @@ async def answer_review(session: AsyncSession, company_id: uuid.UUID, source_com
     for answer in answers:
         other = others.get(answer.get("account"))
         if other is None or answer.get("account") not in pending:
-            raise HTTPException(422, "That account is not waiting for review.")
+            raise HTTPException(422, t("peer.err_account_not_waiting_review"))
         if answer.get("use"):
             await use_account(session, company_id, source_company_id, other, answer["use"])
         elif answer.get("add"):
             await add_account(session, company_id, source_company_id, other, answer["add"], None)
         else:
-            raise HTTPException(422, f"Choose an account for {label(other)}, or a code to add it as.")
+            raise HTTPException(422, t("peer.err_choose_account_label_code_add_as", label=label(other)))
     if finish:
         company = await locked_company(session, company_id)
         settings = dict(company.settings or {})
         settings[REVIEWED_KEY] = sorted(set(settings.get(REVIEWED_KEY) or []) | {str(source_company_id)})
         company.settings = settings
         for item in waited:
-            item.fix, item.reason = {**item.fix, "fixed": True}, "Accounts reviewed. It posts on the next sync."
+            item.fix = {**item.fix, "fixed": True}
+            item.reason = peer_attention.stored(catalog_refusal("peer.attention_accounts_reviewed"))

@@ -16,7 +16,7 @@ import ui.api_client as api
 from ui.components.icons import icon, import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
-from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
+from ui.components.shell import base_shell, page_header, flash, toast_header, page_title, error_flash
 from ui.components.table import EMPTY, editable_cell, searchable_select, unwrap_address
 from celerp.tax_regimes import TAX_TYPES, country_name, missing_pack_refusal, pack_missing, tax_country
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
@@ -1234,14 +1234,14 @@ def setup_routes(app):
             users = (await api.get_users(token)).get("items", [])
             settings = (await api.get_company(token)).get("settings")
         except APIError as e:
-            return flash(str(e.detail))
+            return error_flash(e)
         target = next((u for u in users if u.get("id") == user_id), {})
         try:
             await api.transfer_install_owner(token, user_id)
             notice = flash(t("settings.install_owner_moved", lang,
                              name=target.get("name") or target.get("email") or ""), "success")
         except APIError as e:
-            notice = flash(str(e.detail))
+            notice = error_flash(e)
         return await users_tab_for(request, token, users, settings, lang, notice)
 
     # ── Role permission matrix ───────────────────────────────────────
@@ -1898,7 +1898,7 @@ def setup_routes(app):
         try:
             url = await api.get_billing_portal_url(token)
         except APIError as e:
-            return await base_shell(flash(str(e.detail)), nav_active="web-access", request=request)
+            return await base_shell(error_flash(e), nav_active="web-access", request=request)
         return RedirectResponse(url, status_code=302)
 
     def _relay_base() -> str:

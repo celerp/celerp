@@ -310,7 +310,7 @@ async def test_export_docs_csv_columns_follow_cols_param(client):
 
     r_bad = await client.get("/docs/export/csv?cols=doc_number,bogus_col", headers=_h(tok))
     assert r_bad.status_code == 422
-    assert "bogus_col" in r_bad.json()["detail"]
+    assert "bogus_col" in refusal_text(r_bad.json()["detail"])
 
 
 # ===========================================================================

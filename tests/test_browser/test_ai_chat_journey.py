@@ -25,8 +25,9 @@ from playwright.sync_api import Page, expect
 
 import celerp.ai.service as ai_service
 from celerp.ai.llm import ModelResult
+from celerp_ai.ui_routes import QUESTION_POLL_S
 
-pytestmark = pytest.mark.browser
+pytestmark = [pytest.mark.browser, pytest.mark.usefixtures("tools_open_when_called")]
 
 
 # ── Fake model scripting ──────────────────────────────────────────────────────
@@ -93,6 +94,14 @@ def item_create_cap(agent_caps) -> str:
     return agent_caps[("POST", "/items")]["name"]
 
 
+# A reply lands in the thread at the question bubble's next poll. The first question a
+# server answers also builds its API schema, so on a slow runner the answer can land just
+# after the first poll and show at the second: every wait here covers two polls more
+# than Playwright's default.
+_PLAYWRIGHT_WAIT_MS = 5000  # Playwright's default for expect()
+_REPLY_WAIT_MS = _PLAYWRIGHT_WAIT_MS + 2 * QUESTION_POLL_S * 1000
+
+
 @pytest.fixture(autouse=True)
 def agent_env():
     """Report an active cloud subscription and swap in the fake model.
@@ -107,6 +116,8 @@ def agent_env():
         stack.enter_context(patch("celerp.ai.quota.get_quota_status",
                                   new=AsyncMock(return_value=_FAKE_STATUS)))
         stack.enter_context(patch.object(ai_service, "complete", _fake_complete))
+        stack.callback(expect.set_options, timeout=_PLAYWRIGHT_WAIT_MS)
+        expect.set_options(timeout=_REPLY_WAIT_MS)
         yield
     _SCRIPT.clear()
     set_session_token("")
@@ -341,3 +352,87 @@ def test_sidebar_header_input_layout_intact(page: Page, ui_server):
     assert abs(header["width"] - inp["width"]) <= 2
     # The composer is stacked below the header, not overlapping it.
     assert inp["y"] >= header["y"] + header["height"] - 2
+
+
+def test_bulk_card_lists_every_record_in_a_scrolling_box(page: Page, ui_server, agent_caps):
+    """A propose_for_each card at its largest set shows every record and the values it
+    writes in a box that scrolls on the page, amounts right-aligned under their header."""
+    rule = agent_caps[("PATCH", "/accounting/rules/{rule_id}")]["name"]
+    records = [{"path": {"rule_id": str(uuid.uuid4())},
+                "body": {"match_pattern": f"RENT-{n:04}", "match_amount": 1000 + n}}
+               for n in range(ai_service.MAX_FOR_EACH)]
+    _SCRIPT.append(_tool_call(ai_service.PROPOSE_FOR_EACH, {"tool": rule, "records": records},
+                              "I'll change these rules once you confirm."))
+    _open_chat(page, ui_server)
+    _send(page, "update the rent rules")
+
+    box = page.locator(".ai-action__card .ai-action__records")
+    expect(box).to_be_visible()
+    rows = box.locator("tbody tr")
+    expect(rows).to_have_count(ai_service.MAX_FOR_EACH)
+    assert box.evaluate("e => e.scrollHeight > e.clientHeight")
+    amount = box.locator("th.cell--number")
+    expect(amount).to_have_count(1)
+    assert amount.evaluate("e => getComputedStyle(e).textAlign") == "right"
+    rows.last.scroll_into_view_if_needed()
+    expect(rows.last).to_be_in_viewport()
+    expect(rows.last).to_contain_text("RENT-0199")
+
+
+def test_bulk_card_wide_records_scroll_inside_their_own_box_not_the_page(page: Page, ui_server, agent_caps):
+    """A for_each table with enough columns to need horizontal scrolling scrolls inside
+    its own box; it never pushes the page itself wider than the viewport."""
+    rule = agent_caps[("PATCH", "/accounting/rules/{rule_id}")]["name"]
+    long = "x" * 120
+    records = [{"path": {"rule_id": str(uuid.uuid4())},
+                "body": {"match_pattern": f"{long}-{n}", "match_amount": 1000 + n,
+                         "note_a": long, "note_b": long, "note_c": long}}
+               for n in range(5)]
+    _SCRIPT.append(_tool_call(ai_service.PROPOSE_FOR_EACH, {"tool": rule, "records": records},
+                              "I'll change these rules once you confirm."))
+    _open_chat(page, ui_server)
+    _send(page, "update the rent rules")
+
+    box = page.locator(".ai-action__card .ai-action__records")
+    expect(box).to_be_visible()
+    assert box.evaluate("e => e.scrollWidth > e.clientWidth")
+    assert box.evaluate("e => getComputedStyle(e).overflowX") == "auto", \
+        "the records box must scroll its own overflow, not clip it"
+    overflow = page.evaluate(
+        "() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
+    assert overflow <= 0, f"horizontal overflow of {overflow}px"
+
+
+def test_bulk_confirm_updates_only_the_selected_row_whatever_the_call_ids_hold(page: Page, ui_server, item_create_cap,
+                                                                               agent_caps, monkeypatch):
+    """A model may name its tool calls with spaces and selector characters; the review
+    table still swaps the outcome into the row that was confirmed and no other."""
+    import json
+    import celerp_ai.ui_routes as ui_routes
+    monkeypatch.setattr(ui_routes, "TABLE_FROM", 2)  # a turn proposes at most MAX_TOOL_CALLS_PER_TURN
+    ids = ["a b#c.d:e", "a b#c.d:f", "a b#c.d:g"]
+    bodies = [(agent_caps[("POST", "/companies/me/locations")]["name"], {"name": "Odd Id Shelf"}),
+              (item_create_cap, {"name": "Odd Id Widget", "sell_by": "piece"}),
+              (agent_caps[("POST", "/companies/me/categories")]["name"], {"name": "Odd Id Category"})]
+    calls = [{"id": cid, "type": "function", "function": {"name": name, "arguments": json.dumps({"body": body})}}
+             for cid, (name, body) in zip(ids, bodies)]
+    _SCRIPT.append(ModelResult(
+        message={"role": "assistant", "content": "I'll add these once you confirm.", "tool_calls": calls},
+        model_used="fake-model", usage={}, reservation_id=None, remaining=None))
+    _open_chat(page, ui_server)
+    _send(page, "add the widgets")
+
+    table = page.locator(".ai-action-table")
+    rows = table.locator("tbody tr.data-row")
+    expect(rows).to_have_count(len(ids))
+    assert page.evaluate("[...document.querySelectorAll('[id]')].filter(e => /[^A-Za-z0-9_-]/.test(e.id)).length") == 0
+    for n in range(len(ids)):
+        if n != 1:
+            rows.nth(n).locator(".bulk-select").uncheck()
+    page.locator(".bulkbar .bulk-action-select").select_option("confirm")
+
+    expect(rows.nth(1).locator(".ai-action-table__status")).to_contain_text("Applied")
+    for n in range(len(ids)):
+        if n != 1:
+            expect(rows.nth(n).locator(".bulk-select")).to_have_count(1)
+            expect(rows.nth(n).locator(".ai-action-table__status")).not_to_contain_text("Applied")

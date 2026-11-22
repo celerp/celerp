@@ -15,8 +15,10 @@ log = logging.getLogger(__name__)
 
 def setup_ui_routes(app) -> None:
     """Register all manufacturing UI routes into the FastHTML app."""
+    from ui.routes.csv_import import serve_import_template
     from ui.routes.manufacturing import setup_routes as setup_orders
     from ui.routes.settings_manufacturing import setup_routes as setup_settings
+    serve_import_template(app, "/manufacturing", "/manufacturing")
     setup_orders(app)
     setup_settings(app)
     log.info("celerp-manufacturing: UI routes registered")

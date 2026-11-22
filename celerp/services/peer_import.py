@@ -14,14 +14,16 @@ from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictInt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import one_unit
-from celerp.importers.results import failure_reason
+from celerp.accounting_roles import catalog_refusal
+from celerp.importers.results import keyed_reason, row_refusal
 from celerp.services import peer_access, peer_attention
 from celerp.services.company_lock import lock_company
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
-PEER_ONLY = "Only a connected company's integration key may send a source revision."
-UNEXPECTED = "The receiving company could not apply this record. Its owner can see why in the server log."
+PEER_ONLY = "peer.err_peer_only"
+UNEXPECTED = "peer.err_record_not_applied"
 # The field every import record model carries for a connected company's records.
 SourceRevision = Annotated[int | None, Field(ge=1, le=2**63 - 1)]
 class ContactData(BaseModel):
@@ -65,7 +67,7 @@ class StockCountData(BaseModel):
 def refuse_source_revision(records) -> None:
     """A signed-in user's import is never treated as a connected company's."""
     if any(record.source_revision is not None for record in records):
-        raise HTTPException(422, PEER_ONLY)
+        raise HTTPException(422, t(PEER_ONLY))
 
 
 async def _contact(session, **kw) -> str:
@@ -127,13 +129,13 @@ async def receive_file(ctx, session: AsyncSession, source_doc_id: str, file, ent
     name those ids, None: the route then stores the file with its tag and description."""
     if ctx.peer is None:
         if source_file_id is not None or sha256_hex is not None:
-            raise HTTPException(422, PEER_ONLY)
+            raise HTTPException(422, t(PEER_ONLY))
         return None
     from celerp.services.peer_attachments import receive_attachment
     if entity_type != "doc":  # a connected company sends files to documents only
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, t("error.err_not_found"))
     if source_file_id is None or sha256_hex is None:
-        raise HTTPException(422, "A connected company's file needs its file id and checksum.")
+        raise HTTPException(422, t("peer.err_connected_company_s_file_needs_its"))
     grant = await _grant(session, ctx.peer)
     peer_access.mark_used(grant)
     status = await receive_attachment(
@@ -158,7 +160,7 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
     that was not applied, naming the sender's record and the reason."""
     receive = RECEIVERS[peer.scope]
     counts = {"created": 0, "updated": 0, "skipped": 0}
-    errors: list[str] = []
+    errors: list[dict] = []
     grant = await _grant(session, peer)
     peer_access.mark_used(grant)
     await session.commit()
@@ -167,7 +169,7 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
     for record in records:
         try:
             if record.source_revision is None:
-                raise HTTPException(422, "A connected company's record needs its source revision.")
+                raise HTTPException(422, catalog_refusal("peer.err_connected_company_s_record_needs_its"))
             grant = await _grant(session, peer)
             # The company first, then the record's identity and attention rows, in every receiver.
             await lock_company(session, grant.company_id)
@@ -181,11 +183,11 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
             if isinstance(exc, HTTPException) and exc.status_code == 401:
                 raise  # the key stopped working mid-batch; nothing further is applied
             if isinstance(exc, (HTTPException, ValueError)):
-                reason = failure_reason(exc)
+                reason = keyed_reason(exc)
             else:
                 log.exception("connected company record %s failed", record.entity_id)
-                reason = UNEXPECTED
-            errors.append(f"{record.entity_id}: {reason}")
+                reason = catalog_refusal(UNEXPECTED)
+            errors.append(row_refusal(record.entity_id, reason))
             # The rollback released the company lock: the key is judged again under it
             # before the note is written, and a key that stopped working stops the batch.
             await _grant(session, peer)

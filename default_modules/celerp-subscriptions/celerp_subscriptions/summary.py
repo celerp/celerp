@@ -142,7 +142,7 @@ async def _rows(session: AsyncSession, company_id, settings: dict) -> list[dict]
     an email waiting to go out on its own, a mode whose authorization lapsed, a billing failure).
     A keyed row whose time is older than SUMMARY_WINDOW is left out (one whose time cannot be
     read stays)."""
-    replayable = await billing.replayable_operations(session, company_id)
+    attempts = await billing.attempt_times(session, company_id)
     today = await company_today(session, company_id)
     # One whose stored schedule can't be read reports nothing here; the list and its page name it.
     rows = await billing.agreements(session, company_id)
@@ -163,7 +163,7 @@ async def _rows(session: AsyncSession, company_id, settings: dict) -> list[dict]
             if kind and kind != "sent_by_hand" and (status == "waiting" or began):
                 found.append({**base, "kind": kind, "send": status, "at": began, "lasts": status == "waiting",
                               "error_key": send.get("error_key"), "attempt": int(send.get("n") or 0),
-                              "again": billing.sends_again(status, send, replayable),
+                              "again": billing.sends_again(status, send, attempts),
                               "retry_url": (f"/subscriptions/{row.entity_id}/periods/{k}/send"
                                             if status != "sent" else None)})
         if failure := billing.failure_of(state):

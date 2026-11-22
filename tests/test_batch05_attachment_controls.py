@@ -43,6 +43,7 @@ async def test_unsupported_executable_has_a_clear_type_error(client):
     eid=(await client.post('/docs',headers=h,json={'doc_type':'invoice'})).json()['id']
     r=await client.post(f'/docs/{eid}/files',headers=h,files={'file':('bad.exe',b'MZ','application/x-msdownload')})
     assert r.status_code in (413,415),r.text
-    from ui.i18n import t
-    assert r.json()['detail'] == t('error.file_type_unsupported', mime='application/x-msdownload')
+    from ui.i18n import refusal_text, t
+    assert r.json()['detail']['message_key'] == 'error.file_type_unsupported'
+    assert refusal_text(r.json()['detail']) == t('error.file_type_unsupported', mime='application/x-msdownload')
     assert (await client.get(f'/docs/{eid}',headers=h)).json()['files']==[]

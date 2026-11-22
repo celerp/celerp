@@ -1,0 +1,37 @@
+{
+  "id": "core.company-handoff",
+  "title": "Send and restore company copies",
+  "summary": "Send an encrypted copy of the company to an accountant, and put back a version a copy replaced.",
+  "keywords": ["company copy", "handoff", "accountant", "send", "restore", "saved copies"],
+  "routes": ["/settings/company-handoff", "/settings/company-handoffs", "/settings/saved-copies"],
+  "permission": "manage_company_settings",
+  "order": 9,
+  "checked": "ef84eebf46260a0381b7d9b67a405efb5da1e8e896eecd70b364bbada3ea77f5",
+  "steps": [
+    {
+      "text": "On {title}, enter the {firm} and the {to} and send. Celerp encrypts the copy on your computer before it leaves.",
+      "labels": {"title": "company_backup.send_title", "firm": "company_backup.firm_label", "to": "company_backup.recipient_label"},
+      "image": null,
+      "capture": {"route": "/settings/company-handoff", "selector": ".migration-wizard", "actions": []}
+    },
+    {
+      "text": "{title} lists every copy you sent, with who it went to and how it stands. Revoke a copy's link, or send a new one.",
+      "labels": {"title": "company_backup.handoffs_title"},
+      "image": null,
+      "capture": {"route": "/settings/company-handoffs", "selector": ".migration-wizard", "actions": []}
+    },
+    {
+      "text": "Each time a copy replaces this company, {title} keeps the version it replaced until you delete it, so you can download it or put it back.",
+      "labels": {"title": "company_backup.saved_title"},
+      "image": null,
+      "capture": {"route": "/settings/saved-copies", "selector": ".migration-wizard", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which copies you sent, or to revoke a copy's link. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/company-handoffs", "selector": ".migration-wizard", "actions": []}
+    }
+  ],
+  "related": ["backup.local-backup", "backup.cloud-backup"]
+}

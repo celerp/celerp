@@ -3,9 +3,10 @@
   "title": "Run depreciation, then move, sell or dispose of an asset",
   "summary": "Run a month's depreciation, and act on assets ticked on the register.",
   "keywords": ["depreciation", "depreciation run", "dispose", "disposal", "move", "sell", "write off"],
-  "routes": ["/fixed-assets/runs", "/fixed-assets/move", "/fixed-assets/dispose", "/fixed-assets/assets/{entity_id}/dispose", "/fixed-assets/assets/{entity_id}/move", "/fixed-assets/assets/{entity_id}/sell"],
+  "routes": ["/fixed-assets/runs", "/fixed-assets/move", "/fixed-assets/dispose", "/fixed-assets/assets/{entity_id}/dispose", "/fixed-assets/assets/{entity_id}/move", "/fixed-assets/assets/{entity_id}/sell", "/fixed-assets/runs/{month}"],
   "permission": "manage_accounting",
   "order": 2,
+  "checked": "dbf4583887adf3e999c907b5f5cfb428cd5cbd6492cbe9e2801aecaa66c5633f",
   "steps": [
     {
       "text": "Open {runs} to run a month's depreciation; each run shows its journal before it posts.",
@@ -24,6 +25,18 @@
       "labels": {"dispose": "fixed_assets.dispose"},
       "image": null,
       "capture": {"route": "/fixed-assets/dispose", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click a month on {runs} to open that run: each asset's charge, the total and the journal it posted.",
+      "labels": {"runs": "fixed_assets.runs_title"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to run depreciation, or to move, sell or dispose of assets. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": []}
     }
   ],
   "related": ["fixed-assets.register", "fixed-assets.settings"]

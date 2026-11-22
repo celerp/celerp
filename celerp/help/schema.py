@@ -13,20 +13,20 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from celerp.help.bundle import MAX_IMAGE_BYTES, MAX_STEPS, TOPIC_ID, entry_problems, is_webp
+
 PAGE_KEYS = frozenset({"id", "title", "summary", "keywords", "routes", "permission",
                        "order", "steps", "related"})
+# Optional page key: the content hash of the screens the page was last checked against.
+OPTIONAL_PAGE_KEYS = frozenset({"checked"})
 STEP_KEYS = frozenset({"text", "labels", "image", "capture"})
 CAPTURE_KEYS = frozenset({"route", "selector", "actions"})
 # One verb per action; "fill" also carries the text to type.
 ACTION_VERBS = frozenset({"click", "fill", "press", "wait"})
 
-MAX_TITLE = 120
-MAX_STEP_TEXT = 500
-MAX_STEPS = 20
 MAX_FILE_BYTES = 64 * 1024
-MAX_IMAGE_BYTES = 60 * 1024
 
-_ID = re.compile(r"^[a-z0-9-]+\.[a-z0-9-]+$")
+_CHECKED = re.compile(r"^[0-9a-f]{64}$")
 PLACEHOLDER = re.compile(r"\{([a-z0-9_]+)\}")
 _IMAGE = re.compile(r"^img/[A-Za-z0-9][A-Za-z0-9_-]*\.webp$")
 
@@ -60,8 +60,8 @@ def _str_list(value) -> bool:
     return isinstance(value, list) and all(isinstance(v, str) for v in value)
 
 
-def _keys(where: str, data: dict, allowed: frozenset[str]) -> list[str]:
-    errors = [f"{where}unknown key {k!r}" for k in sorted(set(data) - allowed)]
+def _keys(where: str, data: dict, allowed: frozenset[str], optional: frozenset[str] = frozenset()) -> list[str]:
+    errors = [f"{where}unknown key {k!r}" for k in sorted(set(data) - allowed - optional)]
     errors += [f"{where}missing key {k!r}" for k in sorted(allowed - set(data))]
     return errors
 
@@ -98,10 +98,6 @@ def _step_errors(n: int, step) -> list[str]:
     if errors:
         return errors
     text, labels, image = step["text"], step["labels"], step["image"]
-    if not isinstance(text, str) or not text.strip():
-        errors.append(f"{where}text must be a non-empty string")
-    elif len(text) > MAX_STEP_TEXT:
-        errors.append(f"{where}text is longer than {MAX_STEP_TEXT} characters")
     if not isinstance(labels, dict) or not all(
             isinstance(k, str) and isinstance(v, str) and v for k, v in labels.items()):
         errors.append(f"{where}labels must map each placeholder name to a catalog key")
@@ -121,21 +117,18 @@ def validate(data, help_dir: Path, prefix: str) -> tuple[HelpPage | None, list[s
     owning module's short name (see module_prefix); the page id must start with it."""
     if not isinstance(data, dict):
         return None, ["page must be a JSON object"]
-    errors = _keys("", data, PAGE_KEYS)
+    errors = _keys("", data, PAGE_KEYS, OPTIONAL_PAGE_KEYS)
     if errors:
         return None, errors
     page_id = data["id"]
-    if not isinstance(page_id, str) or not _ID.match(page_id):
+    if not isinstance(page_id, str) or not TOPIC_ID.match(page_id):
         errors.append("id must look like <module>.<page>, lower case letters, digits and -")
     elif page_id.split(".", 1)[0] != prefix:
         errors.append(f"id must start with {prefix!r}, the module that ships the page")
-    title = data["title"]
-    if not isinstance(title, str) or not title.strip():
-        errors.append("title must be a non-empty string")
-    elif len(title) > MAX_TITLE:
-        errors.append(f"title is longer than {MAX_TITLE} characters")
-    if not isinstance(data["summary"], str) or not data["summary"].strip():
-        errors.append("summary must be a non-empty string")
+    title, steps = data["title"], data["steps"]
+    texts = [s.get("text") if isinstance(s, dict) else None for s in steps] \
+        if isinstance(steps, list) else steps
+    errors += entry_problems(title, data["summary"], texts, None)
     for key in ("keywords", "related"):
         if not _str_list(data[key]):
             errors.append(f"{key} must be a list of strings")
@@ -145,12 +138,9 @@ def validate(data, help_dir: Path, prefix: str) -> tuple[HelpPage | None, list[s
         errors.append("permission must be a permission key or null")
     if not isinstance(data["order"], int) or isinstance(data["order"], bool):
         errors.append("order must be a whole number")
-    steps = data["steps"]
-    if not isinstance(steps, list) or not steps:
-        errors.append("steps must be a non-empty list")
-    elif len(steps) > MAX_STEPS:
-        errors.append(f"a page has at most {MAX_STEPS} steps")
-    else:
+    if "checked" in data and not (isinstance(data["checked"], str) and _CHECKED.match(data["checked"])):
+        errors.append("checked must be 64 lower case hex digits")
+    if isinstance(steps, list) and len(steps) <= MAX_STEPS:
         for n, step in enumerate(steps, 1):
             errors += _step_errors(n, step)
     if errors:
@@ -171,12 +161,6 @@ def load_file(path: Path, help_dir: Path, prefix: str) -> tuple[HelpPage | None,
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return None, [f"not readable as JSON ({exc})"]
     return validate(data, help_dir, prefix)
-
-
-def _is_webp(data: bytes) -> bool:
-    """A whole WebP file: the RIFF header names WEBP and its size covers exactly the bytes."""
-    return (len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
-            and int.from_bytes(data[4:8], "little") + 8 == len(data))
 
 
 def read_image(page: HelpPage, step: int) -> bytes | None:
@@ -204,4 +188,4 @@ def read_image(page: HelpPage, step: int) -> bytes | None:
             data = f.read(MAX_IMAGE_BYTES + 1)
     except OSError:
         return None
-    return data if len(data) <= MAX_IMAGE_BYTES and _is_webp(data) else None
+    return data if len(data) <= MAX_IMAGE_BYTES and is_webp(data) else None

@@ -131,7 +131,7 @@ async def _aging(session: AsyncSession, company_id: uuid.UUID, *, party: str, de
     return {"as_of": today.isoformat(), "lines": lines, "buckets": totals}
 
 
-@router.get("/ar-aging")
+@router.get("/ar-aging", openapi_extra={"x-celerp-agent": True}, summary="Show how long each customer's unpaid invoices have been open, in aging buckets.")
 async def ar_aging(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
@@ -142,7 +142,7 @@ async def ar_aging(
                         credit_types=("credit_note",), due_fallback="date", unlinked=("unlinked", "Unlinked Invoices"))
 
 
-@router.get("/ap-aging")
+@router.get("/ap-aging", openapi_extra={"x-celerp-agent": True}, summary="Show how long each supplier's unpaid bills have been open, in aging buckets.")
 async def ap_aging(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
@@ -158,7 +158,7 @@ async def ap_aging(
 # Sales report
 # ---------------------------------------------------------------------------
 
-@router.get("/sales")
+@router.get("/sales", openapi_extra={"x-celerp-agent": True}, summary="Show sales over a period by customer, item or month.")
 async def sales_report(
     group_by: str = "customer",  # customer | item | period
     period: str = "monthly",     # daily | weekly | monthly (for group_by=period)
@@ -363,7 +363,7 @@ async def sales_report(
 # Purchasing report
 # ---------------------------------------------------------------------------
 
-@router.get("/purchases")
+@router.get("/purchases", openapi_extra={"x-celerp-agent": True}, summary="Show purchases over a period by supplier, item or month.")
 async def purchases_report(
     group_by: str = "supplier",  # supplier | item | period
     period: str = "monthly",
@@ -529,7 +529,7 @@ async def purchases_report(
 # Expiring items report
 # ---------------------------------------------------------------------------
 
-@router.get("/expiring")
+@router.get("/expiring", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True}, summary="List the inventory items expiring within a number of days, soonest first.")
 async def expiring_items(
     days: int = 30,
     company_id: uuid.UUID = Depends(get_current_company_id),

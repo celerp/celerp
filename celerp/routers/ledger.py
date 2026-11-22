@@ -25,6 +25,9 @@ from celerp.services.permissions import carry_authority, get_current_company_set
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
+# Why every role reaches the ledger reads: each is narrowed to the events the role may read.
+READABLE_EVENTS = "only the events this role may read, with costs hidden from a role without them"
+
 # The most events one read returns: a record's history is read a page at a time.
 MAX_PAGE = 500
 
@@ -82,7 +85,7 @@ def _scope(stmt: Select, company_id, settings, role, entity_id=None, entity_type
     return stmt
 
 
-@router.get("")
+@router.get("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": READABLE_EVENTS, "x-celerp-agent-result-permissions": "*"}, summary="List ledger entries, newest first, filtered by record, event type, user or date.")
 async def list_entries(
     entity_id: str | None = None,
     entity_type: str | None = None,
@@ -107,7 +110,7 @@ async def list_entries(
     With ``history`` only the events History shows are read and counted."""
     filters = (company_id, settings, role, entity_id, entity_type, event_type, field, who, history)
     if offset is not None and (before is not None or after is not None):
-        raise HTTPException(status_code=422, detail="offset cannot be combined with before or after")
+        raise HTTPException(status_code=422, detail=t("error.err_offset_cannot_combined_with_before_after"))
     q = _scope(select(LedgerEntry), *filters)
     if after is not None:
         rows = list(reversed((await session.execute(
@@ -139,7 +142,7 @@ async def list_entries(
             "newer": newer, "has_older": has_older}
 
 
-@router.get("/facets")
+@router.get("/facets", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": READABLE_EVENTS, "x-celerp-agent-result-permissions": "*"}, summary="List the event types and users a record's history can be filtered by.")
 async def history_facets(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -150,7 +153,7 @@ async def history_facets(
     """What a record's History filters can offer, over its whole history: the event types, the
     fields its events changed, and who made them (``actor_key`` is the Who filter's value)."""
     if not entity_id.strip():
-        raise HTTPException(status_code=422, detail="entity_id must name a record")
+        raise HTTPException(status_code=422, detail=t("error.err_entity_id_must_name_record"))
     filters = (company_id, settings, role, entity_id)
     event_types = (await session.execute(_scope(select(LedgerEntry.event_type).distinct(), *filters, history=True))).scalars().all()
     changed = shown_data(settings, role).op("->", return_type=JSONB)("fields_changed")
@@ -164,7 +167,7 @@ async def history_facets(
     return {"event_types": sorted(event_types), "fields": sorted(fields), "actors": actors}
 
 
-@router.get("/{entry_id}")
+@router.get("/{entry_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": READABLE_EVENTS, "x-celerp-agent-result-permissions": "*"}, summary="Read one ledger entry in full: what changed, who changed it and when.")
 async def get_entry(entry_id: int, company_id: str = Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await session.get(LedgerEntry, entry_id)
     if entry is None or entry.company_id != company_id or not can_read_event(entry.event_type, settings, role):
@@ -172,7 +175,7 @@ async def get_entry(entry_id: int, company_id: str = Depends(get_current_company
     return serialize_event(entry, settings, role)
 
 
-@router.post("/rebuild")
+@router.post("/rebuild", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/history"}, summary="Rebuild every record of the company from its ledger history.")
 async def rebuild(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("manage_company_lifecycle"),

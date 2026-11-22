@@ -415,3 +415,58 @@ async def test_two_loops_on_the_same_tick_send_one_notice(committed_engine, monk
     now = datetime(2026, 7, 5, 14, 0, tzinfo=timezone.utc)
     yesterday = {"reorder_last_scan_at": (now - timedelta(days=1)).isoformat()}
     assert await _notices_after_tick(committed_engine, monkeypatch, now, yesterday, loops=2) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_daily_digest_email_goes_out_after_the_scan_commits(committed_engine, monkeypatch):
+    """The digest email reaches the owner: it is sent once the scan's transaction has
+    committed, never while the scan holds the company lock (a send refused there is lost)."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    import celerp.db
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import User
+    from celerp.services import email as email_service
+    from celerp.services import reorder
+    from celerp.services.company_lock import refuse_held_transaction
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    cid, uid = uuid.uuid4(), uuid.uuid4()
+    async with factory() as s:
+        s.add(User(id=uid, email=f"owner-{uid.hex[:8]}@example.com", name="Owner"))
+        await s.commit()
+        s.add(Company(id=cid, name="MailCo", slug=f"mail-{cid.hex[:8]}", settings={"reorder_alert_email": True}))
+        await s.flush()
+        s.add(UserCompany(user_id=uid, company_id=cid, role="owner", is_active=True))
+        await s.commit()
+
+    sent: list = []
+
+    async def _send(to, subject, body_html, **_kw):
+        refuse_held_transaction("an email is sent")
+        sent.append((to, subject, body_html))
+
+    async def _detect(session, company):
+        return [{"entity_id": "item:low", "name": "Low"}] if company.id == cid else []
+
+    @asynccontextmanager
+    async def _session_ctx():
+        async with factory() as s:
+            yield s
+
+    async def _stop(_seconds):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(reorder, "_CHECKS", (reorder._AlertCheck(None, "test_alerted_ids", "Test", _detect, str),))
+    monkeypatch.setattr(reorder, "_scan_due", lambda company, now: company.id == cid)
+    monkeypatch.setattr(celerp.db, "get_session_ctx", _session_ctx)
+    monkeypatch.setattr(reorder.asyncio, "sleep", _stop)
+    monkeypatch.setattr(email_service, "send_email", _send)
+    with pytest.raises(asyncio.CancelledError):
+        await reorder.reorder_alert_loop()
+
+    assert [(to, subject) for to, subject, _ in sent] == [(f"owner-{uid.hex[:8]}@example.com", "1 alert need attention")]
+    assert "<h3>Test (1)</h3>" in sent[0][2] and "<li>" in sent[0][2]

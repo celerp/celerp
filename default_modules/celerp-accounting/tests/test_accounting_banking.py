@@ -117,6 +117,7 @@ async def test_transfer_between_accounts(client):
     r3 = await client.post(
         "/accounting/transfers",
         json={
+            "idempotency_key": _uuid.uuid4().hex,
             "from_bank_id": from_id,
             "to_bank_id": to_id,
             "amount": 5000.0,

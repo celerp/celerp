@@ -39,6 +39,7 @@ from celerp.services.recognition import (
     PREFIX, REVERSAL, SCHEDULE, Ledger, amended_segments, amendment, month_end, parse_run, posted_amount,
     record_amendment, run_ledger, segment_runs,
 )
+from celerp_accounting.routes import open_period
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -457,7 +458,7 @@ async def _overview(session, company_id) -> tuple[dict, dict, list[dict]]:
     return await _settings(session, company_id), schedules, runs
 
 
-@router.get("/recognition")
+@router.get("/recognition", openapi_extra={"x-celerp-agent": True}, summary="List the revenue recognition runs by month, newest first, with the amounts each posted.")
 async def list_recognition(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -476,7 +477,7 @@ async def list_recognition(
             "enabled": bool((settings.get("consents") or {}).get(CONSENT))}
 
 
-@router.get("/recognition/summary")
+@router.get("/recognition/summary", openapi_extra={"x-celerp-agent": True}, summary="Show the deferred revenue balance and what is still to be recognized.")
 async def recognition_summary(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -486,22 +487,24 @@ async def recognition_summary(
     return summary(settings, runs)
 
 
-@router.get("/recognition/roll-forward")
+@router.get("/recognition/roll-forward", openapi_extra={"x-celerp-agent": True}, summary="Show how deferred revenue moved over a period, from opening to closing balance.")
 async def recognition_roll_forward(
-    date_from: date,
-    date_to: date,
+    date_from: str | None = None,
+    date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
     _: None = require_permission("view_financial_reports"),
 ) -> dict:
+    """The roll-forward for the period; an open end runs from the first entry or to today."""
+    date_from, date_to = await open_period(session, company_id, date_from, date_to)
     settings, schedules, runs = await _overview(session, company_id)
     accounts = {s["deferred_account"] for s in schedules.values()}
     journals = {entity_id: state for entity_id, state in (await _states(session, company_id, "journal_entry")).items()
                 if any(e.get("account") in accounts for e in state.get("entries") or ())}
-    return roll_forward(schedules, journals, runs, date_from.isoformat(), date_to.isoformat(), funds_enabled(settings))
+    return roll_forward(schedules, journals, runs, date_from, date_to, funds_enabled(settings))
 
 
-@router.get("/recognition/setting")
+@router.get("/recognition/setting", openapi_extra={"x-celerp-agent": True}, summary="Show whether revenue recognition posts automatically and who turned it on.")
 async def recognition_setting(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -514,7 +517,7 @@ async def recognition_setting(
             "lapsed": settings.get(LAPSED) if consent else None}
 
 
-@router.put("/recognition/setting")
+@router.put("/recognition/setting", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"}, summary="Turn automatic revenue recognition posting on or off.")
 async def set_recognition_setting(
     payload: SettingIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -528,7 +531,7 @@ async def set_recognition_setting(
     return answer
 
 
-@router.post("/recognition/{month}/post")
+@router.post("/recognition/{month}/post", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"}, summary="Post the revenue recognition of one month to the books.")
 async def post_month(
     month: str,
     payload: PostIn | None = None,
@@ -542,7 +545,7 @@ async def post_month(
     return answer
 
 
-@router.post("/recognition/{month}/reverse")
+@router.post("/recognition/{month}/reverse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"}, summary="Reverse the revenue recognition posted for one month.")
 async def reverse_month(
     month: str,
     payload: ReverseIn | None = None,
@@ -556,7 +559,7 @@ async def reverse_month(
     return answer
 
 
-@router.post("/recognition/schedules/{schedule_id}/amend")
+@router.post("/recognition/schedules/{schedule_id}/amend", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"}, summary="Change a revenue recognition schedule from a date, such as a new end date for the service.")
 async def post_amendment(
     schedule_id: str,
     payload: AmendIn,

@@ -4,29 +4,26 @@
 from __future__ import annotations
 
 import logging
-import hashlib
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.db import get_session
 from celerp.events.engine import (
     emit_event, keyed_event, refuse_other_request, request_fingerprint, write_period_lock,
 )
-from celerp.importers.results import failure_reason
-from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
+from celerp.importers.results import BatchImportResult, record_refused, row_n, row_refusal
 from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.ledger_sources import SOURCE_KEYS, record_entry_ids, source_meta
 from celerp.services.periods import first_fiscal_year_end, fiscal_year_start_month, last_fiscal_year_end
@@ -48,17 +45,19 @@ from celerp_accounting.chart_rules import (
 from celerp_accounting.funds import post_fund_movement
 from celerp_accounting.import_service import AccImportRecord, ImportFundChoices
 from celerp_accounting.ledger_accounts import require_money_account
-from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
+from celerp_accounting.models import (Account, BankAccount, BankStatementLine, ReconciliationRule,
+                                      ReconciliationSession, stored_text)
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, catalog_refusal, refusal
-from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
+from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many
 from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
+from celerp.services.business_time import company_today
 from celerp.services.ledger_display import readable_memo
 from celerp.services.lot_origin import rerun_after_placing
-from celerp.services import peer_accounts, peer_journals
+from celerp.services import peer_accounts, peer_attention, peer_journals
 from celerp.services.peer_lines import UNRESTRICTED, held_accounts, waits_for_funds
 from celerp.services.attachments import (
-    company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
+    company_file_name, delete_stored_file, stored_file_type, storing, upload_mime,
 )
 from celerp.services import peer_access
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
@@ -76,7 +75,8 @@ from celerp.services.money import (
 )
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
-from ui.i18n import refusal_text, t
+from ui.i18n import t
+from celerp.agent_markers import agent_excluded
 
 logger = logging.getLogger(__name__)
 
@@ -186,13 +186,6 @@ class AccBatchImportRequest(BaseModel):
     fund_choices: ImportFundChoices | None = None
 
 
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str]
-
-
 class ChartImportRequest(BaseModel):
     """Rows of a chart of accounts file. Each row is checked on its own, so one
     malformed row is reported instead of refusing the whole file."""
@@ -209,7 +202,7 @@ class ChartImportRequest(BaseModel):
 class ChartImportResult(BaseModel):
     created: int
     skipped: int
-    errors: list[str]
+    errors: list[str | dict]
     skipped_codes: list[str]
 
 
@@ -495,7 +488,7 @@ class ChartImportPlan:
 
     to_create: list[dict]
     skipped_codes: list[str]
-    errors: list[str]
+    errors: list[str | dict]
 
 
 def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: dict[str, list[str]]) -> ChartImportPlan:
@@ -511,23 +504,20 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
     itself, makes the row invalid, and so does a parent that is inactive or of a
     type the row cannot sit under, and a chain of parents that runs into a loop.
     """
-    row_errors: dict[int, str] = {}
+    row_errors: dict[int, str | dict] = {}
     skipped_codes: list[str] = []
     valid: dict[int, dict] = {}
 
-    def label(i: int, code: str | None = None) -> str:
-        return f"Row {i + 1} ({code})" if code else f"Row {i + 1}"
-
     for i, rec in enumerate(records):
         if not isinstance(rec, dict):
-            row_errors[i] = f"{label(i)}: each row must be an object with code, name and account_type."
+            row_errors[i] = record_refused(row_n(i), "not_a_chart_row")
             continue
         raw_code = rec.get("code")
         shown = raw_code.strip() if isinstance(raw_code, str) else None
         try:
             code = checked_account_code(raw_code)
         except HTTPException as exc:
-            row_errors[i] = f"{label(i, shown)}: {failure_reason(exc)}"
+            row_errors[i] = row_refusal(row_n(i, shown), exc)
             continue
         if code in existing:
             skipped_codes.append(code)
@@ -541,7 +531,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
                 "is_active": _parsed_is_active(rec.get("is_active")),
             }
         except HTTPException as exc:
-            row_errors[i] = f"{label(i, code)}: {failure_reason(exc)}"
+            row_errors[i] = row_refusal(row_n(i, code), exc)
 
     in_file: dict[str, list[int]] = {}
     for i, rec in enumerate(records):
@@ -552,13 +542,13 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
         if len(rows) > 1 and code not in existing:
             for i in rows:
                 valid.pop(i, None)
-                row_errors.setdefault(i, f"{label(i, code)}: this code appears more than once in the file.")
+                row_errors.setdefault(i, record_refused(row_n(i, code), "code_repeated"))
 
     # Drop rows whose parent cannot exist, then rows caught in a loop of parents,
     # until every remaining row hangs off the chart it will produce.
     while True:
         adding = {row["code"]: i for i, row in valid.items()}
-        bad: dict[int, str] = {}
+        bad: dict[int, str | dict] = {}
         for i, row in valid.items():
             parent = row["parent_code"]
             if parent is None:
@@ -568,12 +558,12 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
                     row["account_type"], existing.get(parent) or valid[adding[parent]], parent, targets,
                 )
                 if problem:
-                    bad[i] = f"{label(i, row['code'])}: {refusal_text(problem)}"
+                    bad[i] = row_refusal(row_n(i, row["code"]), problem)
                 continue
             if parent in in_file:
-                bad[i] = f"{label(i, row['code'])}: its parent {parent} in this file could not be added."
+                bad[i] = record_refused(row_n(i, row["code"]), "parent_not_added", parent=parent)
             else:
-                bad[i] = f"{label(i, row['code'])}: its parent {parent} is not in the chart or in this file."
+                bad[i] = record_refused(row_n(i, row["code"]), "parent_missing", parent=parent)
         if not bad:
             parents = {
                 **{code: acc["parent_code"] for code, acc in existing.items()},
@@ -588,8 +578,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
                     seen.add(node)
                     node = parents.get(node)
                 if node is not None:
-                    bad[i] = (f"{label(i, row['code'])}: its parent accounts form a loop "
-                              f"({' > '.join([*chain, node])}).")
+                    bad[i] = record_refused(row_n(i, row["code"]), "parent_loop", chain=" > ".join([*chain, node]))
         if not bad:
             break
         for i, message in bad.items():
@@ -603,7 +592,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
     )
 
 
-@router.get("/chart")
+@router.get("/chart", openapi_extra={"x-celerp-agent": True}, summary="List the chart of accounts with each account's code, name and type.")
 async def get_chart(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -619,7 +608,7 @@ async def get_chart(
     return {"items": items, "total": len(items)}
 
 
-@router.post("/chart/seed")
+@router.post("/chart/seed", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Set up the default chart of accounts for the company.")
 async def seed_chart_endpoint(
     company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
@@ -665,7 +654,7 @@ async def seed_chart_endpoint(
     return {"added": added, "already_existed": len(existing_codes), "not_added": not_added}
 
 
-@router.post("/accounts")
+@router.post("/accounts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Add a new account to the chart of accounts.")
 async def create_account(
     payload: AccountCreate,
     company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
@@ -683,7 +672,7 @@ async def create_account(
     return _account_to_dict(acc)
 
 
-@router.patch("/accounts/{code}")
+@router.patch("/accounts/{code}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Change an account's name, type or parent, or archive it.")
 async def patch_account(
     code: str,
     payload: AccountPatch,
@@ -710,7 +699,7 @@ async def _planned_chart_import(
 ) -> ChartImportPlan:
     """Check the request and decide every row against the company's chart."""
     if request.query_params:
-        raise HTTPException(status_code=422, detail="The chart import takes no query parameters.")
+        raise HTTPException(status_code=422, detail=t("acct.err_chart_import_takes_no_query_parameters"))
     if body.upsert:
         raise HTTPException(
             status_code=422,
@@ -748,7 +737,7 @@ def _chart_import_result(plan: ChartImportPlan) -> ChartImportResult:
     )
 
 
-@router.post("/accounts/import/preview", response_model=ChartImportResult)
+@router.post("/accounts/import/preview", response_model=ChartImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False}, summary="Check chart of accounts rows before importing, showing what would be added or changed.")
 async def preview_chart_import(
     request: Request,
     body: ChartImportRequest,
@@ -761,7 +750,7 @@ async def preview_chart_import(
     return _chart_import_result(await _planned_chart_import(request, body, company_id, session))
 
 
-@router.post("/accounts/import/batch", response_model=ChartImportResult)
+@router.post("/accounts/import/batch", response_model=ChartImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting", "x-celerp-agent-selection": "records"}, summary="Add accounts to the chart of accounts from a chart file.")
 async def import_chart_accounts(
     request: Request,
     body: ChartImportRequest,
@@ -791,7 +780,7 @@ async def import_chart_accounts(
     return _chart_import_result(plan)
 
 
-@router.get("/import/template", response_class=PlainTextResponse, include_in_schema=False)
+@router.get("/import/template", response_class=PlainTextResponse, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/accounting/import/template"}, summary="Download the spreadsheet template for importing accounting records.")
 async def import_accounting_template(
     _: None = require_permission("manage_accounting"),
 ):
@@ -802,7 +791,7 @@ async def import_accounting_template(
     )
 
 
-@router.post("/import/batch", response_model=BatchImportResult)
+@router.post("/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records"}, summary="Import a batch of accounting records from a spreadsheet.")
 async def batch_import_accounting(
     body: AccBatchImportRequest,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -864,6 +853,19 @@ def _require_date_range(date_from: str | None, date_to: str | None) -> None:
             status_code=422,
             detail=t("acct.err_date_range", start=date_from, end=date_to),
         )
+
+
+async def open_period(session: AsyncSession, company_id, date_from: str | None,
+                      date_to: str | None) -> tuple[str, str]:
+    """The period of a report asked for "All time" or with one end open: a missing start is
+    the day of the first posted journal entry, a missing end the business today. A given end
+    is checked by _require_date_range."""
+    _require_date_range(date_from, date_to)
+    end = date_to or (await company_today(session, company_id)).isoformat()
+    if date_from:
+        return date_from, end
+    first = min((day for _, _, day in await journal_rows(session, company_id) if day), default=end)
+    return min(first, end), end
 
 
 # The longest free-text search the journal accepts. Long enough for a memo or a
@@ -1473,7 +1475,7 @@ async def _journal_payload(
     }, refs, base)
 
 
-@router.get("/journal")
+@router.get("/journal", openapi_extra={"x-celerp-agent": True}, summary="List journal entries with their lines, source documents and currency details, filtered by date or account.")
 async def journal(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -1662,7 +1664,7 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
     return lines, "untied"
 
 
-@router.get("/extended-journal")
+@router.get("/extended-journal", openapi_extra={"x-celerp-agent": True}, summary="List journal entries with the inventory item behind each posting named where it can be.")
 async def extended_journal(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -1708,7 +1710,7 @@ async def _party_names(session: AsyncSession, company_id: uuid.UUID, ids: set[st
     return {r.entity_id: str((r.state or {}).get("name") or "") for r in rows}
 
 
-@router.get("/journal/by-doc/{doc_id:path}")
+@router.get("/journal/by-doc/{doc_id:path}", openapi_extra={"x-celerp-agent": True}, summary="Show every journal entry one document posted to the books.")
 async def journal_by_doc(
     doc_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -1838,7 +1840,7 @@ class BulkJEVoidPayload(BaseModel):
     reversal_date: str | None = None
 
 
-@router.post("/journal-entries")
+@router.post("/journal-entries", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_token"}, summary="Post a manual journal entry with its debit and credit lines.")
 async def create_manual_journal_entry(
     payload: ManualJECreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -1853,7 +1855,7 @@ async def create_manual_journal_entry(
     if len(payload.entries) < 2:
         raise HTTPException(status_code=422, detail=t("acct.err_je_two_lines"))
     if not payload.idempotency_token:
-        raise HTTPException(status_code=422, detail="idempotency_token is required.")
+        raise HTTPException(status_code=422, detail=t("acct.err_idempotency_token_required"))
     # The token is bound to the whole request: sent again unchanged it answers with the
     # entry it posted (even once the period is locked), with any change it is refused.
     request = payload.model_dump(mode="json", exclude=_NOT_FINGERPRINTED)
@@ -1914,11 +1916,10 @@ async def create_manual_journal_entry(
         # currencies the difference is the exchange difference the author still
         # has to post, and it is the figure they need rather than one to work out.
         gap = abs(total_debit - total_credit)
-        short = "credit" if total_debit > total_credit else "debit"
         raise HTTPException(
             status_code=422,
-            detail=t(f"acct.err_je_unbalanced_{short}", base=base,
-                     debits=total_debit, credits=total_credit, gap=gap),
+            detail=t("acct.err_je_unbalanced_credit" if total_debit > total_credit else "acct.err_je_unbalanced_debit",
+                     base=base, debits=total_debit, credits=total_credit, gap=gap),
         )
     # A line on a bank account kept in another currency than the books' carries its
     # amount in that currency, so the account's reconciliation can read it.
@@ -2033,7 +2034,7 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
     return {"je_id": entity_id, "status": "void", "void_reason": reason, "reversed_on": data.get("reversed_on")}
 
 
-@router.post("/journal-entries/bulk-void")
+@router.post("/journal-entries/bulk-void", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting", "x-celerp-agent-selection": "je_ids", "x-celerp-agent-bulk-of": "POST /accounting/journal-entries/{entity_id}/void"}, summary="Void several manual journal entries at once.")
 async def bulk_void_journal_entries(
     payload: BulkJEVoidPayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2081,7 +2082,7 @@ async def bulk_void_journal_entries(
     return {"results": results, "voided": voided, "refused": len(results) - voided}
 
 
-@router.post("/journal-entries/{entity_id}/void")
+@router.post("/journal-entries/{entity_id}/void", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Void a manual journal entry, reversing it in the books.")
 async def void_manual_journal_entry(
     entity_id: str,
     payload: ManualJEVoidPayload | None = None,
@@ -2099,7 +2100,7 @@ async def void_manual_journal_entry(
     )
 
 
-@router.get("/ledger/{account_code}")
+@router.get("/ledger/{account_code}", openapi_extra={"x-celerp-agent": True}, summary="Show one account's postings with its opening balance and running balance.")
 async def account_ledger(
     account_code: str,
     date_from: str | None = None,
@@ -2224,7 +2225,7 @@ async def account_ledger(
     }
 
 
-@router.get("/trial-balance")
+@router.get("/trial-balance", openapi_extra={"x-celerp-agent": True}, summary="Show the trial balance with the debit and credit total of every account.")
 async def trial_balance(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -2288,7 +2289,7 @@ async def trial_balance(
     }
 
 
-@router.get("/general-ledger")
+@router.get("/general-ledger", openapi_extra={"x-celerp-agent": True}, summary="Show each account's opening balance, debits, credits and closing balance for a period.")
 async def general_ledger(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -2413,7 +2414,7 @@ async def general_ledger(
     }
 
 
-@router.get("/pnl")
+@router.get("/pnl", openapi_extra={"x-celerp-agent": True}, summary="Show the profit and loss statement for a period.")
 async def profit_and_loss(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -2470,7 +2471,7 @@ async def profit_and_loss(
     }
 
 
-@router.get("/balance-sheet")
+@router.get("/balance-sheet", openapi_extra={"x-celerp-agent": True}, summary="Show the balance sheet on a date.")
 async def balance_sheet(
     as_of: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2570,7 +2571,7 @@ def _tie_out_check(key: str, ledger: Decimal, documents: list[tuple], base: str,
     }
 
 
-@router.get("/opening-tie-out")
+@router.get("/opening-tie-out", openapi_extra={"x-celerp-agent": True}, summary="Compare the documents imported as opening balances with what the ledger holds for them.")
 async def opening_tie_out(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
@@ -2649,7 +2650,7 @@ async def opening_tie_out(
 _CONTROL_ROLES = frozenset({AccountRole.RECEIVABLE.value, AccountRole.PAYABLE.value})
 
 
-@router.get("/soa/{contact_id}")
+@router.get("/soa/{contact_id}", openapi_extra={"x-celerp-agent": True}, summary="Show the statement of account of one customer or vendor with a running balance.")
 async def statement_of_account(
     contact_id: str,
     date_from: str | None = None,
@@ -2759,25 +2760,27 @@ async def statement_of_account(
 # Bank Accounts CRUD
 # ---------------------------------------------------------------------------
 
-_BANK_TYPES = frozenset({"checking", "savings", "credit_card"})
+_BANK_TYPES = frozenset({"checking", "savings", "credit_card", "cash"})
 
 
 class BankAccountCreate(BaseModel):
-    bank_name: str
-    account_number: str
-    bank_type: str  # checking|savings|credit_card
-    currency: str
+    bank_name: stored_text(BankAccount.bank_name)
+    account_number: stored_text(BankAccount.account_number) = ""  # a cash box, or a bank read from a statement that prints none
+    bank_type: stored_text(BankAccount.bank_type)  # checking|savings|credit_card|cash
+    currency: stored_text(BankAccount.currency)
     opening_balance: FiniteFloat = 0.0
+    # The day the opening balance stands on; the company's today when not given.
+    opening_date: date | None = None
     # Converts an opening balance in another currency than the books' into them.
-    rate: FiniteFloat | None = None
+    rate: PositiveFloat | None = None
     account_code: str | None = None  # optional override; auto-assigned if None
 
 
 class BankAccountPatch(BaseModel):
-    bank_name: str | None = None
-    account_number: str | None = None
-    bank_type: str | None = None
-    currency: str | None = None
+    bank_name: stored_text(BankAccount.bank_name) | None = None
+    account_number: stored_text(BankAccount.account_number) | None = None
+    bank_type: stored_text(BankAccount.bank_type) | None = None
+    currency: stored_text(BankAccount.currency) | None = None
     is_active: bool | None = None
 
 
@@ -2855,7 +2858,7 @@ async def _company_bank(
 
 @router.get(
     "/bank-accounts",
-    summary="List the company's bank and card accounts",
+    summary="List the company's bank accounts with their balances.",
     openapi_extra={"x-celerp-agent": True},
 )
 async def list_bank_accounts(
@@ -2873,7 +2876,7 @@ async def list_bank_accounts(
     return {"items": items, "total": len(items)}
 
 
-@router.get("/bank-accounts/{bank_id}")
+@router.get("/bank-accounts/{bank_id}", openapi_extra={"x-celerp-agent": True}, summary="Read one bank account in full.")
 async def get_bank_account(
     bank_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2884,7 +2887,7 @@ async def get_bank_account(
     return (await _bank_dicts(session, company_id, [b]))[0]
 
 
-@router.get("/bank-accounts/{bank_id}/reconciliations")
+@router.get("/bank-accounts/{bank_id}/reconciliations", openapi_extra={"x-celerp-agent": True}, summary="List every reconciliation of one bank account, newest statement first.")
 async def list_bank_reconciliations(
     bank_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2903,14 +2906,24 @@ async def list_bank_reconciliations(
     return {"items": items, "total": len(items)}
 
 
-@router.post("/bank-accounts")
-async def create_bank_account(
-    payload: BankAccountCreate,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
+async def post_opening(session: AsyncSession, company_id: uuid.UUID, actor_id, bank: BankAccount, je_id: str,
+                       amount: Decimal, when: str, rate: Decimal | None, memo: str) -> None:
+    """Post ``amount`` onto the bank against equity (the retained earnings account) as
+    entry ``je_id`` dated ``when``: the opening balance, or a later change to it."""
+    base = await _base_currency(session, company_id)
+    retained = await resolve(session, company_id, AccountRole.RETAINED_EARNINGS)
+    entries = _bank_entries(bank, base, rate, [({"account": retained}, abs(amount))], inflow=amount > 0)
+    for event_type, data, suffix in (("acc.journal_entry.created", {"memo": memo, "ts": when, "entries": entries}, "c"),
+                                     ("acc.journal_entry.posted", {"ts": when}, "p")):
+        await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+                         event_type=event_type, data=data, actor_id=actor_id, location_id=None,
+                         source="bank_account_opening", idempotency_key=f"{je_id}:{suffix}",
+                         metadata_={"bank_account_id": str(bank.id)} if suffix == "c" else {})
+
+
+async def add_bank(session: AsyncSession, company_id: uuid.UUID, actor_id, payload: BankAccountCreate) -> BankAccount:
+    """Add a bank account and post its opening balance; the caller commits (a statement
+    import adds its bank in the same transaction as its statements)."""
     await hold_fund_ledger(session, company_id)  # before any row lock: its opening balance posts
     if payload.bank_type not in _BANK_TYPES:
         raise HTTPException(status_code=422, detail=t("acct.err_bank_type", types=_enum_labels("bank_type", sorted(_BANK_TYPES))))
@@ -2920,9 +2933,7 @@ async def create_bank_account(
 
     opening = bool(payload.opening_balance)
     base = await _base_currency(session, company_id)
-    roles = [AccountRole.CASH_AND_EQUIVALENTS] + ([AccountRole.RETAINED_EARNINGS] if opening else [])
-    targets = await resolve_many(session, company_id, roles)
-    cash_header = targets[AccountRole.CASH_AND_EQUIVALENTS.value]
+    cash_header = await resolve(session, company_id, AccountRole.CASH_AND_EQUIVALENTS)
     # Resolve or auto-assign chart account code
     code = (
         checked_account_code(payload.account_code) if (payload.account_code or "").strip()
@@ -2941,49 +2952,29 @@ async def create_bank_account(
         opening_balance=payload.opening_balance,
     )
 
-    # Create opening balance JE if opening_balance != 0
     if opening:
-        rate = _bank_rate(bank, base, payload.rate)
-        retained = targets[AccountRole.RETAINED_EARNINGS.value]
-        je_id = _opening_je_id(bank.id)
-        idem_c = f"opening:{bank.id}:c"
-        idem_p = f"opening:{bank.id}:p"
-        from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa
-        # The balance is as of the company's today, in its own timezone.
-        from celerp.models.company import Company
-        from celerp.services.business_time import business_date_at
-        company = await session.get(Company, company_id)
-        today = business_date_at(datetime.now(timezone.utc), (company.settings or {}).get("timezone"))
-        ob = to_decimal(payload.opening_balance)
-        # Debit the bank account, credit equity (the retained earnings account)
-        entries = _bank_entries(bank, base, rate, [({"account": retained}, abs(ob))], inflow=ob > 0)
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=je_id,
-            entity_type="journal_entry",
-            event_type="acc.journal_entry.created",
-            data={"memo": f"Opening balance for {payload.bank_name}", "ts": today, "entries": entries},
-            actor_id=user.id,
-            location_id=None,
-            source="bank_account_opening",
-            idempotency_key=idem_c,
-            metadata_={"bank_account_id": str(bank.id)},
-        )
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=je_id,
-            entity_type="journal_entry",
-            event_type="acc.journal_entry.posted",
-            data={"ts": today},
-            actor_id=user.id,
-            location_id=None,
-            source="bank_account_opening",
-            idempotency_key=idem_p,
-            metadata_={},
-        )
+        if payload.opening_date is not None:
+            when = payload.opening_date.isoformat()
+        else:   # the balance is as of the company's today, in its own timezone
+            from celerp.models.company import Company
+            from celerp.services.business_time import business_date_at
+            company = await session.get(Company, company_id)
+            when = business_date_at(datetime.now(timezone.utc), (company.settings or {}).get("timezone"))
+        await post_opening(session, company_id, actor_id, bank, _opening_je_id(bank.id), to_decimal(payload.opening_balance),
+                           when, _bank_rate(bank, base, payload.rate), f"Opening balance for {payload.bank_name}")
 
+    return bank
+
+
+@router.post("/bank-accounts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Add a new bank account, with its name, currency and ledger account.")
+async def create_bank_account(
+    payload: BankAccountCreate,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    bank = await add_bank(session, company_id, user.id, payload)
     await session.commit()
     return (await _bank_dicts(session, company_id, [bank]))[0]
 
@@ -3037,7 +3028,7 @@ async def set_bank_currency(session: AsyncSession, company_id: uuid.UUID, bank: 
     return None
 
 
-@router.patch("/bank-accounts/{bank_id}")
+@router.patch("/bank-accounts/{bank_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Change a bank account's name, number or currency.")
 async def patch_bank_account(
     bank_id: uuid.UUID,
     payload: BankAccountPatch,
@@ -3087,22 +3078,57 @@ class FundShare(BaseModel):
 class TransferCreate(BaseModel):
     from_bank_id: uuid.UUID
     to_bank_id: uuid.UUID
-    amount: FiniteFloat
-    date: str  # ISO date "YYYY-MM-DD"
-    description: str = ""
-    reference: str = ""
+    amount: PositiveFloat
+    date: date
+    description: str = Field("", max_length=500)
+    reference: str = Field("", max_length=128)
     # Converts the amount, in the source account's currency, into the books' currency
     # when that account is kept in another.
-    rate: FiniteFloat | None = None
+    rate: PositiveFloat | None = None
     # What the destination account receives in its own currency, when it is kept in
     # another currency than both the source account and the books.
-    to_amount: FiniteFloat | None = None
+    to_amount: PositiveFloat | None = None
     # Each fund's share of the amount, in the books' currency, replacing the split pro rata
     # to what each fund holds on the source account.
     allocation: list[FundShare] | None = None
+    idempotency_key: str = Field(min_length=8, max_length=200)
 
 
-@router.post("/transfers")
+async def transfer_entries(session: AsyncSession, company_id: uuid.UUID, from_bank: BankAccount, to_bank: BankAccount,
+                           amount: Decimal, when: str, *, rate: float | None, to_amount: float | None,
+                           allocation: list[tuple[str | None, Decimal]] | None = None) -> list[dict]:
+    """The lines of one transfer of ``amount`` (in the source account's currency) between two
+    of the company's bank accounts, the one way ``POST /transfers`` and a statement line's
+    transfer or cash decision build it. A destination kept in another currency than both the
+    source and the books receives ``to_amount`` of its own currency."""
+    from celerp_accounting.statement_lines import money_value
+
+    if from_bank.id == to_bank.id:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_transfer_same_bank"))
+    money_value(amount, from_bank.currency)
+    await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code})
+    base = await _base_currency(session, company_id)
+    to_fields = {"account": to_bank.chart_account_code}
+    entries = _bank_entries(from_bank, base, _bank_rate(from_bank, base, rate), [(to_fields, amount)], inflow=False)
+    if to_bank.currency != from_bank.currency:
+        # The destination moves the same books-currency amount, held in its own currency.
+        moved = to_decimal(entries[0]["credit"])
+        if to_bank.currency == base:
+            entries[1] = _money_line(to_fields, base, None, moved, moved, debit=True)
+        else:
+            received = round_money(to_amount or 0, to_bank.currency)
+            if received <= 0 or moved <= 0:
+                raise HTTPException(status_code=422, detail=t("acct.err_transfer_to_amount", currency=to_bank.currency))
+            entries[1] = _money_line(to_fields, to_bank.currency, checked_exchange_rate(moved / received),
+                                     received, moved, debit=True)
+    moved = to_decimal(entries[0]["credit"])
+    return split_lines_by_fund(entries, await pooled_split(
+        session, company_id, from_bank.chart_account_code, moved, base, as_of=when, allocation=allocation), base)
+
+
+@router.post("/transfers", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+                                          "x-celerp-agent-key": "idempotency_key"},
+             summary="Record a transfer of money between two of the company's bank accounts.")
 async def create_transfer(
     payload: TransferCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -3110,60 +3136,24 @@ async def create_transfer(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    if payload.amount <= 0:
-        raise HTTPException(status_code=422, detail="Transfer amount must be positive")
+    from celerp_accounting.statement_lines import scoped
+
     await lock_company(session, company_id)
-
-    from_bank = (
-        await session.execute(
-            select(BankAccount).where(
-                BankAccount.id == payload.from_bank_id,
-                BankAccount.company_id == company_id,
-                BankAccount.is_active.is_(True),
-            )
-        )
-    ).scalar_one_or_none()
-    if not from_bank:
-        raise HTTPException(status_code=404, detail="Source bank account not found")
-
-    to_bank = (
-        await session.execute(
-            select(BankAccount).where(
-                BankAccount.id == payload.to_bank_id,
-                BankAccount.company_id == company_id,
-                BankAccount.is_active.is_(True),
-            )
-        )
-    ).scalar_one_or_none()
-    if not to_bank:
-        raise HTTPException(status_code=404, detail="Destination bank account not found")
-    await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code})
-
-    je_id = f"je:transfer:{uuid.uuid4()}"
+    from_bank, = await scoped(session, company_id, "bank", [payload.from_bank_id])
+    to_bank, = await scoped(session, company_id, "bank", [payload.to_bank_id])
+    when = payload.date.isoformat()
+    je_id = f"je:transfer:{uuid.uuid5(uuid.NAMESPACE_URL, f'celerp:transfer:{company_id}:{payload.idempotency_key}')}"
     idem_c = f"transfer:{je_id}:c"
     idem_p = f"transfer:{je_id}:p"
-    memo = payload.description or f"Transfer {str(payload.from_bank_id)[:8]} → {str(payload.to_bank_id)[:8]}"
+    request = payload.model_dump(mode="json")
+    if (stored := await keyed_event(session, company_id, idem_c, request)) is not None:
+        return _transfer_answer(je_id, payload, stored.data)
+    memo = payload.description or f"Transfer {str(payload.from_bank_id)[:8]} to {str(payload.to_bank_id)[:8]}"
     base = await _base_currency(session, company_id)
-    to_fields = {"account": to_bank.chart_account_code}
-    entries = _bank_entries(from_bank, base, _bank_rate(from_bank, base, payload.rate),
-                            [(to_fields, to_decimal(payload.amount))], inflow=False)
-    if to_bank.currency != from_bank.currency:
-        # The destination moves the same books-currency amount, held in its own currency.
-        moved = to_decimal(entries[0]["credit"])
-        if to_bank.currency == base:
-            entries[1] = _money_line(to_fields, base, None, moved, moved, debit=True)
-        else:
-            received = round_money(payload.to_amount or 0, to_bank.currency)
-            if received <= 0 or moved <= 0:
-                raise HTTPException(status_code=422, detail=t("acct.err_transfer_to_amount", currency=to_bank.currency))
-            entries[1] = _money_line(to_fields, to_bank.currency, checked_exchange_rate(moved / received),
-                                     received, moved, debit=True)
-    moved = to_decimal(entries[0]["credit"])
     allocation = None if payload.allocation is None else [
         (share.fund, round_money(share.amount, base)) for share in payload.allocation]
-    entries = split_lines_by_fund(entries, await pooled_split(
-        session, company_id, from_bank.chart_account_code, moved, base, as_of=payload.date, allocation=allocation), base)
-
+    entries = await transfer_entries(session, company_id, from_bank, to_bank, to_decimal(payload.amount), when,
+                                     rate=payload.rate, to_amount=payload.to_amount, allocation=allocation)
     await emit_event(
         session,
         company_id=company_id,
@@ -3172,7 +3162,7 @@ async def create_transfer(
         event_type="acc.journal_entry.created",
         data={
             "memo": memo,
-            "ts": payload.date,
+            "ts": when,
             "entries": entries,
             "je_type": "transfer",
             "reference": payload.reference,
@@ -3183,7 +3173,7 @@ async def create_transfer(
         location_id=None,
         source="transfer",
         idempotency_key=idem_c,
-        metadata_={},
+        metadata_={"request": request_fingerprint(request)},
     )
     await emit_event(
         session,
@@ -3191,7 +3181,7 @@ async def create_transfer(
         entity_id=je_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={"ts": payload.date},
+        data={"ts": when},
         actor_id=user.id,
         location_id=None,
         source="transfer",
@@ -3199,15 +3189,19 @@ async def create_transfer(
         metadata_={},
     )
     await session.commit()
+    return _transfer_answer(je_id, payload, {"ts": when, "memo": memo, "entries": entries})
 
+
+def _transfer_answer(je_id: str, payload: TransferCreate, data: dict) -> dict:
+    """What a transfer answers, first time and on a retry under its key."""
     return {
         "je_id": je_id,
         "from_bank_id": str(payload.from_bank_id),
         "to_bank_id": str(payload.to_bank_id),
         "amount": payload.amount,
-        "date": payload.date,
-        "memo": memo,
-        "entries": entries,
+        "date": data["ts"],
+        "memo": data["memo"],
+        "entries": data["entries"],
     }
 
 
@@ -3354,7 +3348,6 @@ def _recon_to_dict(r: ReconciliationSession) -> dict:
         "reconciled_je_ids": list(r.reconciled_je_ids or []),
         "csv_filename": r.csv_filename,
         "csv_row_count": r.csv_row_count or 0,
-        "auto_matched_count": r.auto_matched_count or 0,
         "manual_matched_count": r.manual_matched_count or 0,
         "created_count": r.created_count or 0,
         "tolerance": float(r.tolerance) if r.tolerance is not None else 1.0,
@@ -3383,7 +3376,7 @@ def _stmt_line_to_dict(l: BankStatementLine) -> dict:
         "raw_balance": float(l.raw_balance) if l.raw_balance is not None else None,
         "reference": l.reference,
         "status": l.status,
-        "matched_je_id": l.matched_je_id,
+        "matched_je_ids": list(l.matched_je_ids or []),
         "attachments": [_line_attachment(l.company_id, url) for url in l.attachment_ids or []],
         "raw_csv_row": dict(l.raw_csv_row or {}),
         "created_at": l.created_at.isoformat(),
@@ -3394,13 +3387,16 @@ def _rule_to_dict(r: ReconciliationRule) -> dict:
     return {
         "id": str(r.id),
         "company_id": str(r.company_id),
-        "bank_account_id": str(r.bank_account_id),
+        "bank_account_id": None if r.bank_account_id is None else str(r.bank_account_id),
         "match_field": r.match_field,
         "match_pattern": r.match_pattern,
         "match_type": r.match_type,
+        "match_amount": None if r.match_amount is None else str(r.match_amount),
         "target_account_code": r.target_account_code,
+        "target_bank_id": None if r.target_bank_id is None else str(r.target_bank_id),
+        "contact_id": r.contact_id,
+        "origin": r.origin,
         "default_memo": r.default_memo,
-        "default_tax": r.default_tax,
         "is_active": r.is_active,
         "times_applied": r.times_applied or 0,
         "created_at": r.created_at.isoformat(),
@@ -3510,15 +3506,19 @@ def _bank_entries(bank: BankAccount, base: str, rate: Decimal | None, offsets: l
 
 
 async def _je_entries_for_account(
-    session: AsyncSession, company_id: uuid.UUID, bank: BankAccount
+    session: AsyncSession, company_id: uuid.UUID, bank: BankAccount, *, days: tuple[str, str] | None = None,
+    entry_ids: list[str] | None = None, skip_ids=None,
 ) -> list[dict]:
     """Posted JE lines on a bank account's ledger account as {je_id, ts, memo, amount,
     debit, credit}, the amounts in the bank account's currency (None when unknown, see
-    ``_bank_line_amounts``). An entry's lines moving money the same way are one row, so
-    an entry split by fund reads as the single amount the bank moved."""
+    ``_bank_line_amounts``), only those dated within ``days``, of the entries ``entry_ids``
+    and not skipped by ``skip_ids`` (see ``journal_rows``) when given. An entry's lines
+    moving money the same way are one row, so an entry split by fund reads as the single
+    amount the bank moved."""
     base = await _base_currency(session, company_id)
     rows: dict[tuple, dict] = {}
-    for je_id, state, _ in await journal_rows(session, company_id):
+    for je_id, state, _ in await journal_rows(session, company_id, account=bank.chart_account_code, days=days,
+                                              entry_ids=entry_ids, skip_ids=skip_ids):
         for entry in state.get("entries", []):
             if entry.get("account") == bank.chart_account_code:
                 if _line_amounts(entry) is None:
@@ -3548,24 +3548,26 @@ async def _je_entries_for_account(
 
 async def _eligible_entries(
     db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, recon: ReconciliationSession,
-    je_ids: list[str], *, line_id: uuid.UUID | None = None,
+    je_ids: list[str], *, line_ids: list[uuid.UUID] | None = None,
 ) -> dict[str, str | None]:
-    """Whether each book entry may be matched on *recon* (by its statement line *line_id*
-    when given): None when it may, otherwise the reason key. An entry must be one of the
+    """Whether each book entry may be matched on *recon* (by its statement lines *line_ids*
+    when given, which may share it): None when it may, otherwise the reason key. An entry must be one of the
     account's posted entries, never the opening entry, carry an amount in the account's
     currency (nothing else can be matched or balanced), and not be counted already by
     another line of this session or by another session of the same statement. Sessions
     of other statement dates and of other accounts may count it too: each statement
     counts every entry cleared up to its date, and a transfer is reconciled on both
     accounts."""
-    amounts = {e["je_id"]: e["amount"] for e in await _je_entries_for_account(db, company_id, bank)}
+    amounts = {e["je_id"]: e["amount"] for e in await _je_entries_for_account(db, company_id, bank, entry_ids=je_ids)}
     amounts.pop(_opening_je_id(bank.id), None)
-    own = None
-    if line_id is not None:
-        line = await db.get(BankStatementLine, line_id)
-        if line is not None and line.status in ("matched", "created"):
-            own = line.matched_je_id
-    taken = set(recon.reconciled_je_ids or []) - {own} if line_id is not None else set()
+    taken: set[str] = set()
+    if line_ids is not None:
+        own: set[str] = set()
+        for line_id in line_ids:
+            line = await db.get(BankStatementLine, line_id)
+            if line is not None and line.status in ("matched", "posted"):
+                own.update(line.matched_je_ids or [])
+        taken = set(recon.reconciled_je_ids or []) - own
     for other in (await db.execute(select(ReconciliationSession.reconciled_je_ids).where(
         ReconciliationSession.company_id == company_id,
         ReconciliationSession.bank_account_id == bank.id,
@@ -3592,7 +3594,7 @@ def _refuse_ineligible(reasons: dict[str, str | None]) -> None:
 
 @router.post(
     "/reconciliation/start",
-    summary="Start reconciling a bank or card statement",
+    summary="Start reconciling a bank or card statement.",
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
 )
 async def start_reconciliation(
@@ -3639,16 +3641,20 @@ async def start_reconciliation(
     return _recon_to_dict(recon)
 
 
-@router.get("/reconciliation/{session_id}")
+@router.get("/reconciliation/{session_id}", summary="One imported statement: its bank, the book entries it covers, "
+            "which are matched, and the balance and difference.", openapi_extra={"x-celerp-agent": True})
 async def get_reconciliation(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
+    from celerp_accounting.bank_statements import read_counted
+
     recon = await _get_recon(db, session_id, company_id)
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
+    await read_counted(db, company_id, bank, recon)
     cleared = _cleared_je_ids(recon, bank)
     unreconciled = [e for e in all_entries if e["je_id"] not in cleared]
     reconciled = [e for e in all_entries if e["je_id"] in cleared]
@@ -3670,7 +3676,8 @@ async def get_reconciliation(
     return d
 
 
-@router.post("/reconciliation/{session_id}/match")
+@router.post("/reconciliation/{session_id}/match", summary="Mark book entries as matched on a statement.",
+             openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def match_reconciliation(
     session_id: uuid.UUID,
     payload: ReconciliationMatch,
@@ -3689,7 +3696,8 @@ async def match_reconciliation(
 
 @router.post(
     "/reconciliation/{session_id}/unmatch",
-    summary="Undo matching book entries that no statement line holds",
+    summary="Undo matching book entries that no statement line holds.",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
 )
 async def unmatch_reconciliation(
     session_id: uuid.UUID,
@@ -3701,12 +3709,10 @@ async def unmatch_reconciliation(
     """The undo of ``match_reconciliation``. An entry a statement line holds is let go
     of by undoing that line, so the line and the session never disagree."""
     recon, _bank = await _lock_recon(db, session_id, company_id, editable=True)
-    on_lines = set((await db.execute(select(BankStatementLine.matched_je_id).where(
-        BankStatementLine.reconciliation_id == recon.id,
-        BankStatementLine.matched_je_id.in_(payload.je_ids),
-    ))).scalars())
-    if on_lines:
-        raise HTTPException(status_code=409, detail=t("acct.err_recon_book_entry_matched"))
+    on_lines = {je for ids in (await db.execute(select(BankStatementLine.matched_je_ids).where(
+        BankStatementLine.reconciliation_id == recon.id))).scalars() for je in ids or []}
+    if on_lines & set(payload.je_ids):
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_book_entry_matched"))
     drop = set(payload.je_ids)
     recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j not in drop]
     await db.commit()
@@ -3714,38 +3720,8 @@ async def unmatch_reconciliation(
 
 
 @router.post(
-    "/reconciliation/{session_id}/complete",
-    summary="Complete the reconciliation once the difference is zero",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def complete_reconciliation(
-    session_id: uuid.UUID,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    recon, _bank = await _lock_recon(db, session_id, company_id, editable=False)
-    if recon.status == "completed":
-        return _recon_to_dict(recon)
-
-    bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
-    difference = await _settled_difference(db, recon, bank, all_entries)
-
-    if difference != 0:
-        raise HTTPException(
-            status_code=422,
-            detail=catalog_refusal("acct.err_recon_unbalanced", difference=_money_text(difference, bank.currency)),
-        )
-
-    recon.status = "completed"
-    recon.completed_at = datetime.now(timezone.utc)
-    await db.commit()
-    return _recon_to_dict(recon)
-
-
-@router.post(
     "/reconciliation/{session_id}/reopen",
-    summary="Put a completed reconciliation back in progress",
+    summary="Put a completed reconciliation back in progress.",
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
 )
 async def reopen_reconciliation(
@@ -3796,7 +3772,7 @@ def _capped(rows: list, cap: int = AGENT_WORKBENCH_CAP) -> tuple[list, bool]:
 
 @router.get(
     "/reconciliation/{session_id}/workbench",
-    summary="Statement lines still to resolve, unreconciled book entries, and the remaining difference",
+    summary="Statement lines still to resolve, unreconciled book entries, and the remaining difference.",
     openapi_extra={"x-celerp-agent": True},
 )
 async def reconciliation_workbench(
@@ -3829,38 +3805,7 @@ async def reconciliation_workbench(
     }
 
 
-# ── Reconciliation V2 — CSV import, statement lines, auto-match, rules ────────
-
-class StmtLineMatchPayload(BaseModel):
-    je_id: str
-    confidence: str = "manual"
-
-
-class StmtLineCreatePayload(BaseModel):
-    account_code: str
-    memo: str = ""
-    amount: FiniteFloat | None = None  # defaults to line amount
-    date: str | None = None      # defaults to line_date
-    # A bank line settled straight to a control account belongs to a party, and
-    # this is the only chance to say which: nothing downstream can infer it.
-    contact: str | None = None
-    rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
-    # The fund the entry belongs to, both its lines; none puts it in the unrestricted group.
-    fund_id: str | None = None
-
-
-class StmtLineSplitPayload(BaseModel):
-    splits: list[dict]  # [{account_code, amount, memo, contact, fund_id}]
-    rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
-
-
-class StmtLinePatch(BaseModel):
-    status: str | None = None
-
-
-class BulkConfirmPayload(BaseModel):
-    confidence: str | None = None  # if set, only confirm at this confidence level or above
-
+# ── Reconciliation: statement lines, write-off, rules ────────
 
 class WriteOffPayload(BaseModel):
     account_code: str | None = None  # unset: the company's general expense account
@@ -3868,224 +3813,58 @@ class WriteOffPayload(BaseModel):
     rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
 
 
+_RULE_FIELDS = Literal["description", "reference", "counterparty_account", "counterparty_key"]
+_RULE_TYPES = Literal["contains", "exact", "starts_with"]
+
+
 class ReconRuleCreate(BaseModel):
-    bank_account_id: uuid.UUID
-    match_field: str = "description"
-    match_pattern: str
-    match_type: str = "contains"
-    target_account_code: str
-    default_memo: str | None = None
-    default_tax: str | None = None
+    """A rule on one bank, or every bank when ``bank_account_id`` is empty. A rule on a
+    sparse counterparty key (a bare WITHDRAWAL or TRANSFER) names its amount too."""
+    bank_account_id: uuid.UUID | None = None
+    match_field: _RULE_FIELDS = "description"
+    match_pattern: stored_text(ReconciliationRule.match_pattern, min_length=1)
+    match_type: _RULE_TYPES = "contains"
+    match_amount: FiniteFloat | None = None
+    target_account_code: stored_text(ReconciliationRule.target_account_code, min_length=1)
+    contact_id: stored_text(ReconciliationRule.contact_id) | None = None
+    default_memo: stored_text(ReconciliationRule.default_memo) | None = None
 
 
 class ReconRulePatch(BaseModel):
-    match_field: str | None = None
-    match_pattern: str | None = None
-    match_type: str | None = None
-    target_account_code: str | None = None
-    default_memo: str | None = None
-    default_tax: str | None = None
+    match_field: _RULE_FIELDS | None = None
+    match_pattern: stored_text(ReconciliationRule.match_pattern, min_length=1) | None = None
+    match_type: _RULE_TYPES | None = None
+    match_amount: FiniteFloat | None = None
+    target_account_code: stored_text(ReconciliationRule.target_account_code, min_length=1) | None = None
+    contact_id: stored_text(ReconciliationRule.contact_id) | None = None
+    default_memo: stored_text(ReconciliationRule.default_memo) | None = None
     is_active: bool | None = None
 
 
-class StatementFileImport(BaseModel):
-    file_id: str
-    column_map: dict[str, str] | None = None  # {canonical_field: column header}
+async def _rule_amount(db: AsyncSession, company_id: uuid.UUID, bank_id, pattern: str, amount) -> Decimal | None:
+    """The rule's amount as money in its bank's currency (the books' for an every-bank
+    rule); a sparse key without one is refused, since the key alone names nobody."""
+    from celerp_accounting.statement_lines import money_value
+    if amount is None:
+        if pattern.startswith("SPARSE:"):
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_rule_sparse_amount"))
+        return None
+    currency = None
+    if bank_id is not None:
+        currency = (await db.execute(select(BankAccount.currency).where(
+            BankAccount.id == bank_id, BankAccount.company_id == company_id))).scalar_one_or_none()
+    return money_value(amount, currency or await _base_currency(db, company_id))
 
 
-def _statement_csv_bytes(content: bytes, filename: str, content_type: str | None) -> bytes:
-    """Spreadsheet statements are read through the shared table reader and
-    handed on as CSV so one parser serves both file types."""
-    if content_type == XLSX_CONTENT_TYPE or filename.lower().endswith(".xlsx"):
-        try:
-            cols, rows = read_table(content, "statement.xlsx")
-        except TabularError as e:
-            raise HTTPException(status_code=422, detail=e.detail)
-        return _rows_to_csv(rows, cols).encode("utf-8")
-    return content
-
-
-async def _import_statement_lines(
-    db: AsyncSession,
-    recon: ReconciliationSession,
-    company_id: uuid.UUID,
-    content: bytes,
-    filename: str,
-    col_map: dict[str, str] | None,
-) -> dict:
-    """Parse a statement with retry-safe replacement semantics.
-
-    An exact file+mapping replay is a no-op. A changed statement may replace only
-    an untouched session; once reconciliation work exists it is refused so a retry
-    can never erase matching progress.
-    """
-    from celerp_accounting.csv_parser import parse_bank_csv
-
-    try:
-        parsed = parse_bank_csv(content, col_map)
-    except TabularError as e:
-        raise HTTPException(status_code=422, detail=e.detail)
-
-    if parsed["needs_mapping"]:
-        return {
-            "needs_mapping": True,
-            "headers": parsed["headers"],
-            "preview": parsed["preview"],
-            "session_id": str(recon.id),
-        }
-
-    existing = (await db.execute(
-        select(BankStatementLine).where(
-            BankStatementLine.reconciliation_id == recon.id
-        ).order_by(BankStatementLine.created_at, BankStatementLine.id)
-    )).scalars().all()
-
-    # Exact replay is a true no-op: keep line ids, match state, attachments and
-    # counters intact. Include both the raw row and its canonical interpretation:
-    # the same bytes with a different column mapping are a deliberate replacement,
-    # not a replay. Decimal normalization avoids DB scale differences turning a
-    # genuine retry into a destructive replacement.
-    def _number(value):
-        if value in (None, ""):
-            return None
-        return Decimal(str(value)).normalize()
-
-    incoming_rows = [
-        (
-            str(line.get("line_date") or ""),
-            str(line.get("description") or ""),
-            _number(line.get("amount")),
-            _number(line.get("raw_balance")),
-            str(line.get("reference") or ""),
-            dict(line.get("raw_csv_row") or {}),
-        )
-        for line in parsed["lines"]
-    ]
-    existing_rows = [
-        (
-            str(line.line_date or ""),
-            str(line.description or ""),
-            _number(line.amount),
-            _number(line.raw_balance),
-            str(line.reference or ""),
-            dict(line.raw_csv_row or {}),
-        )
-        for line in existing
-    ]
-    if existing and incoming_rows == existing_rows:
-        return {
-            "needs_mapping": False,
-            "session_id": str(recon.id),
-            "rows_imported": len(existing),
-            "csv_filename": recon.csv_filename or filename,
-            "replayed": True,
-        }
-
-    if existing:
-        has_progress = bool(recon.reconciled_je_ids) or any(
-            line.status != "unmatched"
-            or line.matched_je_id is not None
-            or bool(line.attachment_ids)
-            for line in existing
-        )
-        if has_progress:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "statement_has_progress",
-                    **catalog_refusal("acct.err_statement_has_progress"),
-                },
-            )
-        for line in existing:
-            await db.delete(line)
-
-    new_lines = []
-    for raw_line in parsed["lines"]:
-        sl = BankStatementLine(
-            id=uuid.uuid4(),
-            company_id=company_id,
-            reconciliation_id=recon.id,
-            line_date=raw_line.get("line_date", ""),
-            description=raw_line.get("description", ""),
-            amount=raw_line.get("amount", "0"),
-            raw_balance=raw_line.get("raw_balance"),
-            reference=raw_line.get("reference"),
-            status="unmatched",
-            attachment_ids=[],
-            raw_csv_row=raw_line.get("raw_csv_row", {}),
-        )
-        db.add(sl)
-        new_lines.append(sl)
-
-    recon.csv_filename = filename
-    recon.csv_row_count = len(new_lines)
-    recon.imported_at = datetime.now(timezone.utc)
-    recon.auto_matched_count = 0
-    recon.manual_matched_count = 0
-    recon.created_count = 0
-
-    await db.commit()
-    return {
-        "needs_mapping": False,
-        "session_id": str(recon.id),
-        "rows_imported": len(new_lines),
-        "csv_filename": filename,
-    }
-
-
-@router.post("/reconciliation/{session_id}/import-csv")
-async def import_recon_csv(
-    session_id: uuid.UUID,
-    file: UploadFile = File(...),
-    column_map: str | None = FastForm(None),  # JSON-encoded dict
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    """Upload and parse a bank statement CSV, store lines."""
-    import json as _json
-
-    recon, _bank = await _lock_recon(db, session_id, company_id, editable=True)
-    try:
-        content = await read_upload_bytes(file)
-    except TabularError as e:
-        raise HTTPException(status_code=413, detail=e.detail)
-    col_map = _json.loads(column_map) if column_map else None
-    return await _import_statement_lines(db, recon, company_id, content, file.filename or "statement.csv", col_map)
-
-
-@router.post(
-    "/reconciliation/{session_id}/import-file",
-    summary="Import an uploaded statement file (csv or xlsx) into the reconciliation",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def import_recon_file(
-    session_id: uuid.UUID,
-    payload: StatementFileImport,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    from celerp.ai.files import load_file
-    recon, _bank = await _lock_recon(db, session_id, company_id, editable=True)
-    try:
-        content, meta = load_file(payload.file_id, company_id, user.id)
-    except (FileNotFoundError, PermissionError):
-        raise HTTPException(status_code=422, detail=refusal("error.file_not_found", t("error.file_not_found", "en")))
-    filename = str(meta.get("filename") or "statement.csv")
-    content = _statement_csv_bytes(content, filename, meta.get("content_type"))
-    return await _import_statement_lines(db, recon, company_id, content, filename, payload.column_map)
-
-
-@router.get("/reconciliation/{session_id}/statement-lines")
+@router.get("/reconciliation/{session_id}/statement-lines", summary="The lines of one imported statement, oldest first.",
+            openapi_extra={"x-celerp-agent": True})
 async def get_statement_lines(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
-    recon = await _get_recon(db, session_id, company_id)
+    await _get_recon(db, session_id, company_id)
 
     lines = (await db.execute(
         select(BankStatementLine).where(
@@ -4096,390 +3875,8 @@ async def get_statement_lines(
     return {"items": [_stmt_line_to_dict(l) for l in lines], "total": len(lines)}
 
 
-@router.post(
-    "/reconciliation/{session_id}/auto-match",
-    summary="Match statement lines to book entries automatically",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def auto_match_recon(
-    session_id: uuid.UUID,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    """Run the auto-matching algorithm against all unmatched statement lines."""
-    from celerp_accounting.matcher import auto_match
-
-    recon, bank = await _lock_recon(db, session_id, company_id, editable=True)
-
-    stmt_lines = (await db.execute(
-        select(BankStatementLine).where(
-            BankStatementLine.reconciliation_id == session_id,
-            BankStatementLine.status == "unmatched",
-        )
-    )).scalars().all()
-
-    book_entries = await _je_entries_for_account(db, company_id, bank)
-    cleared = _cleared_je_ids(recon, bank)
-    reasons = await _eligible_entries(db, company_id, bank, recon, [e["je_id"] for e in book_entries])
-    # An entry with no amount in the account's currency has nothing to match a statement line on.
-    unmatched_entries = [e for e in book_entries if e["je_id"] not in cleared and reasons[e["je_id"]] is None
-                         and e["amount"] is not None]
-
-    stmt_dicts = [_stmt_line_to_dict(l) for l in stmt_lines]
-    matches = auto_match(stmt_dicts, unmatched_entries)
-
-    high_conf = 0
-    med_conf = 0
-    line_map = {str(l.id): l for l in stmt_lines}
-
-    for line_id, je_id, confidence in matches:
-        sl = line_map.get(line_id)
-        if not sl:
-            continue
-        sl.status = "matched" if confidence == "high" else "suggested"
-        sl.matched_je_id = je_id
-        if confidence == "high":
-            high_conf += 1
-            existing = list(recon.reconciled_je_ids or [])
-            if je_id not in existing:
-                existing.append(je_id)
-                recon.reconciled_je_ids = existing
-        else:
-            med_conf += 1
-
-    recon.auto_matched_count = high_conf
-    await db.commit()
-
-    return {
-        "matched": high_conf,
-        "suggested": med_conf,
-        "total_processed": len(stmt_lines),
-    }
-
-
-async def _next_reconciliation_je_id(
-    db: AsyncSession, company_id: uuid.UUID, base_id: str,
-) -> str:
-    """Return the next usable deterministic JE id after any voided prior attempts.
-
-    The statement-line row lock serializes this allocation. Exact retries of a
-    successful attempt never reach here because the line is already ``created``;
-    after an explicit unmatch has voided that attempt, the next correction gets
-    a new immutable journal entry instead of trying to resurrect a voided one.
-    """
-    attempt = 1
-    while True:
-        entity_id = base_id if attempt == 1 else f"{base_id}:{attempt}"
-        row = await db.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-        if row is None:
-            return entity_id
-        if row.entity_type != "journal_entry":
-            raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_entry_exists"))
-        if (row.state or {}).get("status") != "void":
-            raise HTTPException(
-                status_code=409,
-                detail=catalog_refusal("acct.err_recon_line_has_entry"),
-            )
-        attempt += 1
-
-
-async def _void_reconciliation_created_je(
-    db: AsyncSession,
-    *,
-    company_id: uuid.UUID,
-    actor_id,
-    line: BankStatementLine,
-) -> None:
-    """Void the deterministic JE created from a statement line before unmatching it."""
-    from celerp.services.je_keys import je_void_data
-
-    je_id = line.matched_je_id
-    if not je_id:
-        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_no_entry"))
-    row = await db.get(Projection, {"company_id": company_id, "entity_id": je_id})
-    if row is None or row.entity_type != "journal_entry":
-        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_entry_gone"))
-    state = row.state or {}
-    if state.get("status") == "void":
-        return
-    if state.get("je_type") not in {"recon_create", "recon_split"}:
-        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_foreign"))
-    await emit_event(
-        db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-        event_type="acc.journal_entry.voided",
-        data=je_void_data("Reconciliation line unmatched", state),
-        actor_id=actor_id, location_id=None, source="reconciliation",
-        idempotency_key=f"{je_id}:reconciliation-unmatch:void", metadata_={},
-    )
-
-
-@router.post(
-    "/reconciliation/{session_id}/lines/{line_id}/match",
-    summary="Match a statement line to a book entry",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def match_stmt_line(
-    session_id: uuid.UUID,
-    line_id: uuid.UUID,
-    payload: StmtLineMatchPayload,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    if sl.status == "created":
-        if sl.matched_je_id == payload.je_id:
-            return _stmt_line_to_dict(sl)
-        raise HTTPException(
-            status_code=409,
-            detail=refusal("acct.err_recon_line_created",
-                           "This line already created a journal entry. Unmatch it first so that entry is reversed."),
-        )
-    bank = await db.get(BankAccount, recon.bank_account_id)
-    _refuse_ineligible(await _eligible_entries(db, company_id, bank, recon, [payload.je_id], line_id=sl.id))
-    old_je_id = sl.matched_je_id if sl.status in ("matched", "created") else None
-    was_resolved = sl.status in ("matched", "created")
-    sl.status = "matched"
-    sl.matched_je_id = payload.je_id
-    existing = list(recon.reconciled_je_ids or [])
-    if old_je_id and old_je_id != payload.je_id and old_je_id in existing:
-        existing.remove(old_je_id)
-    if payload.je_id not in existing:
-        existing.append(payload.je_id)
-    recon.reconciled_je_ids = existing
-    if not was_resolved:
-        recon.manual_matched_count = (recon.manual_matched_count or 0) + 1
-    await db.commit()
-    return _stmt_line_to_dict(sl)
-
-
-@router.post(
-    "/reconciliation/{session_id}/lines/{line_id}/unmatch",
-    summary="Undo the match on a statement line",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def unmatch_stmt_line(
-    session_id: uuid.UUID,
-    line_id: uuid.UUID,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    old_je_id = sl.matched_je_id
-    created = sl.status == "created"
-    # The session lets go of the entry before the entry it created is voided, so the
-    # completed-history check sees no session of this line holding it.
-    if old_je_id:
-        recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j != old_je_id]
-        await db.flush()
-    if created:
-        await _void_reconciliation_created_je(
-            db, company_id=company_id, actor_id=user.id, line=sl,
-        )
-    sl.status = "unmatched"
-    sl.matched_je_id = None
-    await db.commit()
-    return _stmt_line_to_dict(sl)
-
-
-@router.post(
-    "/reconciliation/{session_id}/lines/{line_id}/create",
-    summary="Post a journal entry for a statement line with no book entry",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def create_je_from_line(
-    session_id: uuid.UUID,
-    line_id: uuid.UUID,
-    payload: StmtLineCreatePayload,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    _m: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    """Create a journal entry from a bank statement line and auto-match it."""
-    from celerp.services.je_keys import je_idempotency_key
-
-    recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    if sl.status == "created":
-        return _stmt_line_to_dict(sl)
-    if sl.status == "matched":
-        raise HTTPException(
-            status_code=409,
-            detail=refusal("acct.err_recon_line_matched",
-                           "This line is already matched. Unmatch it before creating a journal entry."),
-        )
-    bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
-    if not bank:
-        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_bank_account_not_found"))
-    await require_destinations(db, company_id, {payload.account_code})
-
-    line_amount = abs(float(sl.amount))
-    if payload.amount is not None and abs(float(payload.amount) - line_amount) >= 0.005:
-        raise HTTPException(
-            status_code=422,
-            detail=catalog_refusal("acct.err_recon_partial"),
-        )
-    entry_date = payload.date or sl.line_date
-    memo = payload.memo or sl.description
-    je_id = await _next_reconciliation_je_id(db, company_id, f"je:recon:{sl.id}")
-
-    idem_c = je_idempotency_key(je_id, "recon_create", "c")
-    idem_p = je_idempotency_key(je_id, "recon_create", "p")
-
-    # The bank side has no party by nature; the offset side carries the one the
-    # operator named, so a bank line settled to a control account lands on that
-    # party's statement instead of in the unattributed bucket.
-    offset = {"account": payload.account_code}
-    if payload.contact:
-        offset["contact"] = payload.contact
-    if payload.fund_id:
-        offset["fund_id"] = payload.fund_id
-    base = await _base_currency(db, company_id)
-    rate = _bank_rate(bank, base, payload.rate)
-    offsets = await _pooled_offsets(db, company_id, bank, base, rate, [(offset, abs(to_decimal(sl.amount)))],
-                                    inflow=sl.amount > 0, as_of=entry_date)
-    entries = _bank_entries(bank, base, rate, offsets, inflow=sl.amount > 0)
-    await import_service.check_line_contacts(db, company_id, entries)
-
-    await emit_event(
-        db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-        event_type="acc.journal_entry.created",
-        data={"memo": memo, "ts": entry_date, "entries": entries, "je_type": "recon_create"},
-        actor_id=user.id, location_id=None, source="reconciliation",
-        idempotency_key=idem_c, metadata_={"recon_session_id": str(session_id)},
-    )
-    await emit_event(
-        db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-        event_type="acc.journal_entry.posted",
-        data={"ts": entry_date}, actor_id=user.id, location_id=None, source="reconciliation",
-        idempotency_key=idem_p, metadata_={},
-    )
-
-    sl.status = "created"
-    sl.matched_je_id = je_id
-    existing = list(recon.reconciled_je_ids or [])
-    if je_id not in existing:
-        existing.append(je_id)
-        recon.reconciled_je_ids = existing
-    recon.created_count = (recon.created_count or 0) + 1
-    await db.commit()
-    return _stmt_line_to_dict(sl)
-
-
-@router.post("/reconciliation/{session_id}/lines/{line_id}/split")
-async def split_stmt_line(
-    session_id: uuid.UUID,
-    line_id: uuid.UUID,
-    payload: StmtLineSplitPayload,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    _m: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    """Split a bank line into multiple JE lines across different accounts."""
-    from celerp.services.je_keys import je_idempotency_key
-
-    recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    if sl.status == "created":
-        return _stmt_line_to_dict(sl)
-    if sl.status == "matched":
-        raise HTTPException(
-            status_code=409,
-            detail="This line is already matched. Unmatch it before creating a split journal entry.",
-        )
-    bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
-    if not bank:
-        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
-
-    if not payload.splits:
-        raise HTTPException(status_code=422, detail=t("acct.at_least_one_split_entry_required"))
-    if any(not s.get("account_code") for s in payload.splits):
-        raise HTTPException(status_code=422, detail=refusal(
-            "reconciliation.split.account_required", "Choose an account for every split."))
-    await require_destinations(db, company_id, {s["account_code"] for s in payload.splits})
-
-    je_id = await _next_reconciliation_je_id(db, company_id, f"je:recon:split:{sl.id}")
-    idem_c = je_idempotency_key(je_id, "recon_split", "c")
-    idem_p = je_idempotency_key(je_id, "recon_split", "p")
-
-    offsets = []
-    for s in payload.splits:
-        split = {"account": s["account_code"]}
-        if s.get("contact"):
-            split["contact"] = s["contact"]
-        if s.get("fund_id"):
-            split["fund_id"] = s["fund_id"]
-        offsets.append((split, to_decimal(s.get("amount", 0))))
-    if sum((a for _, a in offsets), Decimal(0)) != abs(to_decimal(sl.amount)):
-        raise HTTPException(status_code=422, detail=t(
-            "acct.err_split_total", total=_money_text(sum((a for _, a in offsets), Decimal(0)), bank.currency),
-            amount=_money_text(abs(to_decimal(sl.amount)), bank.currency)))
-    base = await _base_currency(db, company_id)
-    rate = _bank_rate(bank, base, payload.rate)
-    offsets = await _pooled_offsets(db, company_id, bank, base, rate, offsets, inflow=sl.amount >= 0, as_of=sl.line_date)
-    entries = _bank_entries(bank, base, rate, offsets, inflow=sl.amount >= 0)
-    await import_service.check_line_contacts(db, company_id, entries)
-
-    await emit_event(
-        db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-        event_type="acc.journal_entry.created",
-        data={"memo": sl.description, "ts": sl.line_date, "entries": entries, "je_type": "recon_split"},
-        actor_id=user.id, location_id=None, source="reconciliation",
-        idempotency_key=idem_c, metadata_={"recon_session_id": str(session_id)},
-    )
-    await emit_event(
-        db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-        event_type="acc.journal_entry.posted",
-        data={"ts": sl.line_date}, actor_id=user.id, location_id=None, source="reconciliation",
-        idempotency_key=idem_p, metadata_={},
-    )
-
-    sl.status = "created"
-    sl.matched_je_id = je_id
-    existing = list(recon.reconciled_je_ids or [])
-    if je_id not in existing:
-        existing.append(je_id)
-        recon.reconciled_je_ids = existing
-    recon.created_count = (recon.created_count or 0) + 1
-    await db.commit()
-    return _stmt_line_to_dict(sl)
-
-
-@router.patch(
-    "/reconciliation/{session_id}/lines/{line_id}",
-    summary="Set a statement line's status, for example skip a line that needs no entry",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def patch_stmt_line(
-    session_id: uuid.UUID,
-    line_id: uuid.UUID,
-    payload: StmtLinePatch,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    if payload.status is not None:
-        if payload.status not in ("unmatched", "skipped"):
-            raise HTTPException(
-                status_code=422,
-                detail=catalog_refusal("acct.err_recon_status_set"),
-            )
-        if sl.status in ("matched", "created"):
-            raise HTTPException(
-                status_code=409,
-                detail=catalog_refusal("acct.err_recon_status_matched"),
-            )
-        sl.status = payload.status
-        sl.matched_je_id = None
-    await db.commit()
-    return _stmt_line_to_dict(sl)
-
-
-@router.post("/reconciliation/{session_id}/lines/{line_id}/attach")
+@router.post("/reconciliation/{session_id}/lines/{line_id}/attach", summary="Attach a receipt or document to a "
+             "statement line.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/reconcile/start"})
 async def attach_to_line(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
@@ -4493,28 +3890,18 @@ async def attach_to_line(
     The stored id is derived from the line and the content, so attaching the same file to
     the same line again returns the attachment it already holds, and the same file on two
     lines is two files that are removed independently."""
+    from celerp_accounting.statement_lines import attach_file
+
     content = await file.read()
-    mime = upload_mime(file)
-    att_id = hashlib.sha256(str(line_id).encode() + content).hexdigest()[:32]
     async with storing(db, company_id) as store:
         _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-        name = stored_file_name(att_id, mime)
-        held = next((u for u in sl.attachment_ids or [] if name and company_file_name(company_id, u) == name), None)
-        if held is not None:
-            return {"attachment_id": name, "url": held, "filename": file.filename}
-        try:
-            meta = await store.file(content, file.filename, mime, att_id=att_id)
-        except ValueError:
-            raise HTTPException(status_code=413, detail=refusal(
-                "accounting.statement_attachment_refused",
-                "This file cannot be attached. Attach a PDF, image, video, Word or text "
-                "file of at most 50 MB."))
-        sl.attachment_ids = [*(sl.attachment_ids or []), meta["url"]]
+        meta = await attach_file(store, company_id, sl, content, file.filename, upload_mime(file))
     return {"attachment_id": company_file_name(company_id, meta["url"]), "url": meta["url"],
             "filename": meta["filename"]}
 
 
-@router.delete("/reconciliation/{session_id}/lines/{line_id}/attach/{att_id}")
+@router.delete("/reconciliation/{session_id}/lines/{line_id}/attach/{att_id}", summary="Remove an attachment from a "
+               "statement line and delete its file.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/reconcile/start"})
 async def remove_line_attachment(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
@@ -4547,53 +3934,8 @@ async def remove_line_attachment(
 
 
 @router.post(
-    "/reconciliation/{session_id}/bulk-confirm",
-    summary="Confirm every suggested match",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def bulk_confirm_recon(
-    session_id: uuid.UUID,
-    payload: BulkConfirmPayload | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    """Confirm every suggested match that is still valid. A suggestion whose entry is
-    gone from the account or counted elsewhere meanwhile is left unmatched, its
-    suggestion cleared, and reported with its reason."""
-    recon, bank = await _lock_recon(db, session_id, company_id, editable=True)
-
-    lines = (await db.execute(
-        select(BankStatementLine).where(
-            BankStatementLine.company_id == company_id,
-            BankStatementLine.reconciliation_id == session_id,
-            BankStatementLine.status == "suggested",
-        ).order_by(BankStatementLine.line_date, BankStatementLine.created_at).with_for_update()
-    )).scalars().all()
-    reasons = await _eligible_entries(db, company_id, bank, recon, [sl.matched_je_id for sl in lines if sl.matched_je_id])
-
-    confirmed, skipped = 0, []
-    existing = list(recon.reconciled_je_ids or [])
-    for sl in lines:
-        reason = (reasons[sl.matched_je_id] if sl.matched_je_id else "acct.err_recon_book_entry_missing") \
-            or ("acct.err_recon_book_entry_matched" if sl.matched_je_id in existing else None)
-        if reason:
-            sl.status, sl.matched_je_id = "unmatched", None
-            skipped.append({"line_id": str(sl.id), "reason": reason})
-            continue
-        sl.status = "matched"
-        existing.append(sl.matched_je_id)
-        confirmed += 1
-
-    recon.reconciled_je_ids = existing
-    recon.manual_matched_count = (recon.manual_matched_count or 0) + confirmed
-    await db.commit()
-    return {"confirmed": confirmed, "skipped": skipped}
-
-
-@router.post(
     "/reconciliation/{session_id}/write-off",
-    summary="Write off a remaining difference within tolerance",
+    summary="Write off a remaining difference within tolerance.",
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
 )
 async def write_off_difference(
@@ -4674,7 +4016,7 @@ async def write_off_difference(
 
 # ── Reconciliation Rules ───────────────────────────────────────────────────────
 
-@router.get("/rules")
+@router.get("/rules", openapi_extra={"x-celerp-agent": True}, summary="List the rules that match bank transactions to accounts automatically.")
 async def get_recon_rules(
     bank_account_id: uuid.UUID | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -4688,21 +4030,26 @@ async def get_recon_rules(
     return {"items": [_rule_to_dict(r) for r in rows], "total": len(rows)}
 
 
-@router.post("/rules")
+@router.post("/rules", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Add a rule that matches bank transactions to an account automatically.")
 async def create_recon_rule(
     payload: ReconRuleCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    from celerp_accounting.statement_lines import chart_account
+
     await lock_company(db, company_id)
-    bank = (await db.execute(select(BankAccount.id).where(
-        BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
-    ))).scalar_one_or_none()
-    if bank is None:
-        raise HTTPException(status_code=404, detail=refusal(
-            "accounting.bank_not_found",
-            "That bank account was not found in this company. Choose one of the company's bank accounts."))
+    await chart_account(db, company_id, payload.target_account_code)
+    if payload.bank_account_id is not None:
+        bank = (await db.execute(select(BankAccount.id).where(
+            BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
+        ))).scalar_one_or_none()
+        if bank is None:
+            raise HTTPException(status_code=404, detail=refusal(
+                "accounting.bank_not_found",
+                "That bank account was not found in this company. Choose one of the company's bank accounts."))
+    amount = await _rule_amount(db, company_id, payload.bank_account_id, payload.match_pattern, payload.match_amount)
     rule = ReconciliationRule(
         id=uuid.uuid4(),
         company_id=company_id,
@@ -4710,9 +4057,11 @@ async def create_recon_rule(
         match_field=payload.match_field,
         match_pattern=payload.match_pattern,
         match_type=payload.match_type,
+        match_amount=amount,
         target_account_code=payload.target_account_code,
+        contact_id=payload.contact_id,
         default_memo=payload.default_memo,
-        default_tax=payload.default_tax,
+        origin="user",
         is_active=True,
         times_applied=0,
     )
@@ -4735,7 +4084,7 @@ async def _locked_rule(db: AsyncSession, company_id: uuid.UUID, rule_id: uuid.UU
     return rule
 
 
-@router.patch("/rules/{rule_id}")
+@router.patch("/rules/{rule_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Change a bank matching rule.")
 async def patch_recon_rule(
     rule_id: uuid.UUID,
     payload: ReconRulePatch,
@@ -4743,17 +4092,24 @@ async def patch_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    from celerp_accounting.statement_lines import chart_account
+
     rule = await _locked_rule(db, company_id, rule_id)
+    if payload.target_account_code is not None:
+        await chart_account(db, company_id, payload.target_account_code)
     for field in ("match_field", "match_pattern", "match_type", "target_account_code",
-                  "default_memo", "default_tax", "is_active"):
+                  "contact_id", "default_memo", "is_active"):
         val = getattr(payload, field)
         if val is not None:
             setattr(rule, field, val)
+    if payload.match_amount is not None or rule.match_amount is None:
+        rule.match_amount = await _rule_amount(db, company_id, rule.bank_account_id, rule.match_pattern,
+                                               payload.match_amount)
     await db.commit()
     return _rule_to_dict(rule)
 
 
-@router.delete("/rules/{rule_id}")
+@router.delete("/rules/{rule_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Delete a bank matching rule.")
 async def delete_recon_rule(
     rule_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -4831,7 +4187,7 @@ def _split_cash_movement(
     return out
 
 
-@router.get("/cash-flow")
+@router.get("/cash-flow", openapi_extra={"x-celerp-agent": True}, summary="Show the cash flow statement for a period.")
 async def cash_flow(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -4998,7 +4354,7 @@ async def _posting_accounts(session: AsyncSession, company_id) -> dict:
     return await panel(session, company_id) or {"roles": [], "older_stock": {"candidates": []}}
 
 
-@router.get("/posting-accounts")
+@router.get("/posting-accounts", openapi_extra={"x-celerp-agent": True}, summary="List the account each posting role uses, such as sales, stock and receivables.")
 async def get_posting_accounts(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -5008,7 +4364,7 @@ async def get_posting_accounts(
     return await _posting_accounts(session, company_id)
 
 
-@router.put("/posting-accounts/{role}")
+@router.put("/posting-accounts/{role}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Choose the account a posting role uses for new postings.")
 async def set_posting_account(
     role: str,
     payload: PostingAccountIn,
@@ -5052,7 +4408,7 @@ class PlacementCorrectionIn(BaseModel):
     kind: str = ""
 
 
-@router.get("/older-stock")
+@router.get("/older-stock", openapi_extra={"x-celerp-agent": True}, summary="List the opening inventory lots placed on inventory accounts automatically, with their moves and corrections.")
 async def get_older_stock(
     account: str | None = None,
     q: str | None = None,
@@ -5074,7 +4430,7 @@ async def get_older_stock(
     return await older_stock_view(session, company_id, account, q, offsets, limit)
 
 
-@router.post("/older-stock/move")
+@router.post("/older-stock/move", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Move chosen opening inventory lots onto another inventory account, with their value.")
 @rerun_after_placing
 async def move_older_stock(
     payload: OlderStockMoveIn,
@@ -5091,7 +4447,7 @@ async def move_older_stock(
     return {**await older_stock_view(session, company_id), "result": result}
 
 
-@router.post("/older-stock/move-all")
+@router.post("/older-stock/move-all", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Move every opening inventory lot that matches the filters onto another inventory account.")
 async def move_all_older_stock(
     payload: OlderStockMoveAllIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5110,7 +4466,7 @@ async def move_all_older_stock(
     return {**await older_stock_view(session, company_id), "result": result}
 
 
-@router.post("/older-stock/moves/{move_id}/undo")
+@router.post("/older-stock/moves/{move_id}/undo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Undo an opening inventory move, putting its lots back on the accounts they came from.")
 async def undo_older_stock_move(
     move_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5126,7 +4482,7 @@ async def undo_older_stock_move(
     return await older_stock_view(session, company_id)
 
 
-@router.post("/older-stock/retry")
+@router.post("/older-stock/retry", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Try again to place the opening inventory still waiting for an account.")
 async def retry_older_stock(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
@@ -5140,7 +4496,7 @@ async def retry_older_stock(
     return {**await older_stock_view(session, company_id), "result": {"placed": placed}}
 
 
-@router.post("/older-stock/corrections")
+@router.post("/older-stock/corrections", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Correct how opening inventory placements booked their difference.")
 async def correct_older_stock(
     payload: PlacementCorrectionIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5161,7 +4517,7 @@ class CloseYearPayload(BaseModel):
     fiscal_year_end: str  # ISO date, e.g. "2025-12-31"
 
 
-@router.get("/period-lock")
+@router.get("/period-lock", openapi_extra={"x-celerp-agent": True}, summary="Show the date the books are locked through.")
 async def get_period_lock(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -5195,7 +4551,7 @@ class PeerJournalBatch(BaseModel):
     records: list[PeerJournalRecord] = Field(..., max_length=500)
 
 
-@router.get("/peer/journals")
+@router.get("/peer/journals", openapi_extra=agent_excluded("machine"))
 async def peer_journal_feed(
     after: str = Query("", max_length=512),
     auth: AuthContext = Depends(get_auth_context),
@@ -5206,7 +4562,7 @@ async def peer_journal_feed(
     return await peer_journals.journal_feed(session, auth, after)
 
 
-@router.post("/peer/journals")
+@router.post("/peer/journals", openapi_extra=agent_excluded("machine"))
 async def peer_journal_receive(
     body: PeerJournalBatch,
     auth: AuthContext = Depends(get_auth_context),
@@ -5215,11 +4571,11 @@ async def peer_journal_receive(
     """A client's journal entries and its answers to this company's; a connected
     company's key only."""
     if auth.peer is None:
-        raise HTTPException(status_code=403, detail=peer_access.UNAVAILABLE)
+        raise HTTPException(status_code=403, detail=t(peer_access.UNAVAILABLE))
     return await peer_batch(auth, session, body.records)
 
 
-@router.get("/peer/lock")
+@router.get("/peer/lock", openapi_extra=agent_excluded("machine"))
 async def peer_lock(
     auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
@@ -5228,7 +4584,7 @@ async def peer_lock(
     return await peer_journals.lock_feed(session, auth)
 
 
-@router.get("/journal-entries/from-accountant")
+@router.get("/journal-entries/from-accountant", openapi_extra={"x-celerp-agent": True}, summary="List the journal entries the accountant posted in these books, newest first.")
 async def journals_from_accountant(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
@@ -5238,7 +4594,7 @@ async def journals_from_accountant(
     return {"items": await peer_journals.from_accountant(session, company_id)}
 
 
-@router.post("/journal-entries/{entity_id}/reverse")
+@router.post("/journal-entries/{entity_id}/reverse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Reverse a journal entry the accountant posted, or undo that reversal.")
 async def reverse_from_accountant(
     entity_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5250,7 +4606,7 @@ async def reverse_from_accountant(
     return await peer_journals.reverse(session, company_id, user.id, entity_id)
 
 
-@router.get("/journal-entries/{entity_id}/prefill")
+@router.get("/journal-entries/{entity_id}/prefill", openapi_extra={"x-celerp-agent": True}, summary="Copy a journal entry's fields into a new entry dated on the first open day.")
 async def prefill_journal(
     entity_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5317,7 +4673,7 @@ async def _held_fund_lines(session: AsyncSession, company_id: uuid.UUID, items: 
                               for code in held_accounts(item["fix"])]
 
 
-@router.get("/peer/holds")
+@router.get("/peer/holds", openapi_extra={"x-celerp-agent": True}, summary="List the records a connected company sent that wait for one of their accounts to be fixed.")
 async def peer_holds(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
@@ -5341,7 +4697,7 @@ class PeerAddedAction(BaseModel):
     action: str = Field(pattern="^(keep|archive|remove)$")
 
 
-@router.post("/peer/added/{item_id}")
+@router.post("/peer/added/{item_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Keep, archive or remove an account the accountant sync added.")
 async def settle_peer_added(
     item_id: str,
     body: PeerAddedAction,
@@ -5362,7 +4718,7 @@ async def settle_peer_added(
     return {"ok": True}
 
 
-@router.post("/peer/holds/{item_id}/fix")
+@router.post("/peer/holds/{item_id}/fix", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Fix a record held by the accountant sync by choosing another account or adding a new one.")
 async def fix_peer_hold(
     item_id: str,
     body: PeerHoldFix,
@@ -5376,17 +4732,18 @@ async def fix_peer_hold(
     item = await peer_accounts.held_item(session, company_id, item_id)
     if body.action == "unarchive":
         if (item.fix or {}).get("kind") != "archived" or not item.fix.get("local"):
-            raise HTTPException(status_code=422, detail="This record is not held by an archived account.")
+            raise HTTPException(status_code=422, detail=t("acct.err_record_not_held_by_archived_account"))
         await change_account(session, company_id, item.fix["local"], is_active=True)
     else:
         await peer_accounts.fix_hold(session, company_id, item, action=body.action,
                                      account=body.account, code=body.code)
-    item.fix, item.reason = {**item.fix, "fixed": True}, "Fixed. It posts on the next sync."
+    item.fix = {**item.fix, "fixed": True}
+    item.reason = peer_attention.stored(catalog_refusal("sync_accounts.fixed"))
     await session.commit()
     return {"ok": True}
 
 
-@router.post("/peer/holds/{item_id}/funds")
+@router.post("/peer/holds/{item_id}/funds", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "finalize_documents", "fulfill_documents", "record_payments", "set_inventory_prices", "set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Post a record held by the accountant sync once its funds are chosen.")
 async def post_peer_hold_funds(
     item_id: str,
     body: PeerHeldFunds,
@@ -5406,7 +4763,7 @@ async def post_peer_hold_funds(
     return posted
 
 
-@router.get("/peer/review")
+@router.get("/peer/review", openapi_extra={"x-celerp-agent": True}, summary="List each client whose accounts wait for review by this company, with the accounts.")
 async def peer_review(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
@@ -5416,7 +4773,7 @@ async def peer_review(
     return {"companies": await peer_accounts.review(session, company_id)}
 
 
-@router.post("/peer/review")
+@router.post("/peer/review", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Link or add a client's reviewed accounts, or finish the review.")
 async def answer_peer_review(
     body: PeerReview,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5431,7 +4788,7 @@ async def answer_peer_review(
     return {"ok": True}
 
 
-@router.post("/period-lock")
+@router.post("/period-lock", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Lock the books through a date so nothing earlier can change, or unlock them.")
 async def set_period_lock(
     payload: PeriodLockPayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5455,7 +4812,7 @@ async def set_period_lock(
     return _period_lock_state(settings)
 
 
-@router.post("/close-year")
+@router.post("/close-year", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting", "x-celerp-agent-result-permissions": "*"}, summary="Close a fiscal year, moving the year's net income to retained earnings.")
 async def close_fiscal_year(
     payload: CloseYearPayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5574,7 +4931,7 @@ class ReverseClosePayload(BaseModel):
     reason: str = Field(min_length=1)
 
 
-@router.post("/close-year/{year_end}/reverse")
+@router.post("/close-year/{year_end}/reverse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting", "x-celerp-agent-result-permissions": "*"}, summary="Undo the latest close of a fiscal year.")
 async def reverse_year_close(
     year_end: str,
     payload: ReverseClosePayload,

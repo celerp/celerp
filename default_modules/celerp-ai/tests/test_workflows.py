@@ -42,9 +42,11 @@ from celerp.modules.loader import (
     load_all,
     register_api_routes,
 )
-from test_helpers import asked_in_thread, perm_setup
+from test_helpers import answered_continuation, asked_in_thread, perm_setup
 
 from _fixtures import tool_call, tool_result
+
+pytestmark = pytest.mark.usefixtures("tools_open_when_called")
 
 
 # ── Scripted model ────────────────────────────────────────────────────────────
@@ -258,10 +260,11 @@ async def test_restock_with_reorder_suggestion(client, session, agent_caps, ai_s
     assert pa["name"] == create_doc_op
 
     # Confirming lands the draft purchase order.
-    r2 = await client.post(
-        f"/ai/conversations/{conv_id}/confirm", headers=admin,
-        json={"message_id": body["id"], "tool_call_id": pa["id"]},
-    )
+    async with answered_continuation():
+        r2 = await client.post(
+            f"/ai/conversations/{conv_id}/confirm", headers=admin,
+            json={"message_id": body["id"], "tool_call_id": pa["id"]},
+        )
     assert r2.status_code == 200, r2.text
     confirmed = r2.json()
     assert confirmed["ok"] is True
@@ -296,10 +299,11 @@ async def test_draft_document_requires_confirmation(client, session, agent_caps,
     assert (await client.get("/docs", headers=admin)).json()["total"] == before
 
     # Confirming writes exactly one document.
-    r2 = await client.post(
-        f"/ai/conversations/{conv_id}/confirm", headers=admin,
-        json={"message_id": body["id"], "tool_call_id": pa["id"]},
-    )
+    async with answered_continuation():
+        r2 = await client.post(
+            f"/ai/conversations/{conv_id}/confirm", headers=admin,
+            json={"message_id": body["id"], "tool_call_id": pa["id"]},
+        )
     assert r2.status_code == 200, r2.text
     assert r2.json()["ok"] is True
     assert (await client.get("/docs", headers=admin)).json()["total"] == before + 1
@@ -376,10 +380,11 @@ async def test_supplier_catalog_xlsx_preview_then_commit(client, session, agent_
     assert pa["arguments"]["body"]["preview_hash"] == preview_fed["preview_hash"]
 
     # Confirming commits the import: one item created.
-    r2 = await client.post(
-        f"/ai/conversations/{conv_id}/confirm", headers=admin,
-        json={"message_id": body["id"], "tool_call_id": pa["id"]},
-    )
+    async with answered_continuation():
+        r2 = await client.post(
+            f"/ai/conversations/{conv_id}/confirm", headers=admin,
+            json={"message_id": body["id"], "tool_call_id": pa["id"]},
+        )
     assert r2.status_code == 200, r2.text
     confirmed = r2.json()
     assert confirmed["ok"] is True

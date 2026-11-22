@@ -24,7 +24,7 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD, Refused, refusal
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.importers.results import ImportOutcome
+from celerp.importers.results import BatchImportResult as _BatchImportResult, ImportOutcome, record_refused
 from celerp.importers.schema import IMPORT_ITEM_STATUSES
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
@@ -1650,10 +1650,10 @@ async def set_external_link_state(
         with_for_update=True, populate_existing=True,
     )
     if row is None or row.entity_type != "item":
-        raise ValueError(t("inventory.err_items_not_found"))
+        raise Refused("inventory.err_items_not_found")
     current = external_link_for_state(row.state or {}, platform)
     if not current:
-        raise ValueError(t("inventory.err_store_not_linked", platform=platform))
+        raise Refused("inventory.err_store_not_linked", platform=platform)
     if expected_identity is not None and external_identity_key(platform, current) != expected_identity:
         raise ExternalLinkConflictError(t("inventory.err_store_product_changed"))
     updated = dict(current)
@@ -1685,7 +1685,7 @@ async def set_external_link(
         with_for_update=True, populate_existing=True,
     )
     if row is None or row.entity_type != "item":
-        raise ValueError(t("inventory.err_items_not_found"))
+        raise Refused("inventory.err_items_not_found")
     state = dict(row.state or {})
     if expected_sku is not None and normalize_sku(state.get("sku")) != normalize_sku(expected_sku):
         raise ExternalLinkConflictError(t("inventory.err_sku_changed_while_running"))
@@ -1895,7 +1895,7 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
     cid = uuid.UUID(str(company_id))
     row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
-        raise ValueError(t("inventory.err_items_not_found"))
+        raise Refused("inventory.err_items_not_found")
     state = row.state or {}
 
     catalog_item_id = state.get("catalog_item_id")
@@ -1908,7 +1908,7 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
             or parent.entity_type != "item"
             or not _is_structural_product_anchor_state(parent.state or {})
         ):
-            raise ValueError(t("inventory.err_product_link_missing"))
+            raise Refused("inventory.err_product_link_missing")
         return parent
 
     parent_item_id = state.get("parent_item_id")
@@ -1941,8 +1941,8 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
 
     sku = normalize_sku(state.get("sku"))
     if not sku:
-        raise ValueError(t("inventory.err_no_sku_for_product"))
-    raise ValueError(t("inventory.err_sku_not_one_product", sku=state.get("sku")))
+        raise Refused("inventory.err_no_sku_for_product")
+    raise Refused("inventory.err_sku_not_one_product", sku=state.get("sku"))
 
 
 def _is_explicit_catalog_anchor_state(state: dict) -> bool:
@@ -2490,7 +2490,7 @@ async def update_item_from_connector(session: AsyncSession, entity_id: str, data
     # a sync that lowers the quantity is judged against what invoices hold under it.
     row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
     if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found_2"))
     state = row.state or {}
     if is_deleted(state):
         return False
@@ -2629,11 +2629,7 @@ class ImportRecord(BaseModel):
     source_revision: SourceRevision = None  # a connected company's records only
 
 
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str | dict]
+class BatchImportResult(_BatchImportResult):
     batch_id: str | None = None
     # Rows an earlier run of this same import already wrote; nothing was duplicated.
     already_imported: int = 0
@@ -4319,12 +4315,6 @@ def _row_refused(data: dict, reason) -> dict:
     return refusal("import.row_refused", f"Row (SKU={sku}): {text}", sku=sku, refusal=reason)
 
 
-def _record_refused(entity_id: str, key: str, message: str, **params) -> dict:
-    """Why an import record was refused, naming the record by its id."""
-    return refusal("import.record_refused", f"{entity_id}: {message}", entity_id=entity_id,
-                   refusal=refusal(f"import.record.{key}", message, **params))
-
-
 # Codes the writer allocates for a blank cell, so a retry that leaves them blank still repeats its write.
 _ALLOCATED_CODES = frozenset({"sku", "barcode"})
 
@@ -4459,12 +4449,12 @@ async def write_import_batch(
                 if primary.event_type == "item.patched" and primary.entity_id == entity_id:
                     outcome.add(entity_id, "skipped")
                 else:
-                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
+                    outcome.add(entity_id, "rejected", record_refused(entity_id, "key_reused"))
                 continue
         elif event_type == "item.created":
             if primary is not None:
                 if primary.event_type != "item.created" or primary.entity_id != entity_id:
-                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
+                    outcome.add(entity_id, "rejected", record_refused(entity_id, "key_reused"))
                     continue
                 if not body.upsert:
                     outcome.add(primary.entity_id, "skipped")
@@ -4487,17 +4477,17 @@ async def write_import_batch(
                     if replay.event_type == "item.patched" and replay.entity_id == entity_id:
                         outcome.add(entity_id, "skipped")
                     else:
-                        outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
+                        outcome.add(entity_id, "rejected", record_refused(entity_id, "key_reused"))
                     continue
         elif event_type == "item.snapshot":
             if primary is not None:
                 if primary.event_type == "item.snapshot" and primary.entity_id == entity_id:
                     outcome.add(entity_id, "skipped")
                 else:
-                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
+                    outcome.add(entity_id, "rejected", record_refused(entity_id, "key_reused"))
                 continue
         else:
-            outcome.add(entity_id, "rejected", _record_refused(entity_id, "not_import_safe", f"event type '{event_type}' is not import-safe", event_type=str(event_type)))
+            outcome.add(entity_id, "rejected", record_refused(entity_id, "not_import_safe", event_type=str(event_type)))
             continue
 
         # A status changes through the status action, never through an upsert patch.
@@ -4517,14 +4507,14 @@ async def write_import_batch(
                 Projection, {"company_id": company_id, "entity_id": entity_id}
             )
             if stored_proj is None or stored_proj.entity_type != "item":
-                outcome.add(entity_id, "rejected", _record_refused(entity_id, "not_found", "upsert target was not found"))
+                outcome.add(entity_id, "rejected", record_refused(entity_id, "not_found"))
                 continue
         else:
             existing_projection = await session.get(
                 Projection, {"company_id": company_id, "entity_id": entity_id}
             )
             if existing_projection is not None:
-                outcome.add(entity_id, "rejected", _record_refused(entity_id, "exists", "entity already exists"))
+                outcome.add(entity_id, "rejected", record_refused(entity_id, "exists"))
                 continue
         # A refused row names its SKU, from the stored item when the row does not carry one.
         named = {**data, "sku": data.get("sku") or ((stored_proj.state or {}).get("sku") if stored_proj is not None else None)}

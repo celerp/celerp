@@ -6,6 +6,7 @@
   "routes": ["/contacts/customers", "/contacts/{contact_id}"],
   "permission": "view_contacts",
   "order": 1,
+  "checked": "aff28b2c00db9790edb0beb4442ef4c8c830812393ce2dee29187720f5dfc717",
   "steps": [
     {
       "text": "Open {cust} from the sidebar to see the customer list.",
@@ -16,6 +17,12 @@
     {
       "text": "Click {new} to create a blank customer. Its detail page opens so you can fill in addresses, people and other fields.",
       "labels": {"new": "contacts.new_customer"},
+      "image": null,
+      "capture": {"route": "/contacts/customers", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to add or update customers, add a note, a person or an address, tag or merge contacts. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/contacts/customers", "selector": "main", "actions": []}
     }

@@ -24,7 +24,7 @@ from celerp.services.reorder import is_below_reorder
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
-@router.get("/kpis")
+@router.get("/kpis", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["edit_inventory", "view_documents", "view_inventory", "view_inventory_costs"], "x-celerp-agent-field-visibility": True}, summary="Show the dashboard figures, such as sales, unpaid invoices and stock value.")
 async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     rows = (await session.execute(select(Projection).where(Projection.company_id == company_id))).scalars().all()
     items = [r for r in rows if r.entity_type == "item"]
@@ -142,7 +142,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
     }
 
 
-@router.get("/activity")
+@router.get("/activity", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": "*"}, summary="List the latest activity across the company, newest first.")
 async def get_activity(limit: int = Query(default=15, le=100), company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.services.activity_redaction import readable_events
 
@@ -152,7 +152,7 @@ async def get_activity(limit: int = Query(default=15, le=100), company_id=Depend
     return {"activities": await _hydrate_entries(rows, company_id, session, settings, role)}
 
 
-@router.get("/activity/search")
+@router.get("/activity/search", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": "*"}, summary="Search the company's activity by text, user or record.")
 async def search_activity(
     q: str = Query(default=""),
     date_from: str = Query(default=""),

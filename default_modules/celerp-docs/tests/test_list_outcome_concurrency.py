@@ -25,6 +25,7 @@ import uuid
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.requests import Request
 
 from celerp.events.engine import emit_event
 from celerp.services.account_roles import reconcile_company
@@ -33,6 +34,11 @@ from celerp.models.company import Company, User
 from celerp.models.projections import Projection
 from celerp.services.lot_origin import recognize_opening_lots
 from test_helpers import remove_company
+
+
+def _scan_request():
+    """The request a scan route answers a replayed run's conflict through."""
+    return Request({"type": "http", "method": "POST", "path": "/scan", "headers": [], "query_string": b""})
 
 
 def _factory(engine):
@@ -131,7 +137,7 @@ async def test_two_concurrent_scan_batches_both_survive(_db_engine):
         async def _scan(label, barcode, run_key, session):
             try:
                 outcome[label] = await scan_list(
-                    list_id, ScanBody(barcode=barcode, run_key=run_key),
+                    list_id, ScanBody(barcode=barcode, run_key=run_key), request=_scan_request(),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - captured for the race assertion
                 outcome[label] = exc
@@ -447,7 +453,7 @@ async def test_scan_versus_versioned_save_never_drops_scanned_line(_db_engine):
         async def _scan(session):
             try:
                 outcome["scan"] = await scan_list(
-                    list_id, ScanBody(barcode=bc_x, run_key="kX"),
+                    list_id, ScanBody(barcode=bc_x, run_key="kX"), request=_scan_request(),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - captured for the race assertion
                 outcome["scan"] = exc
@@ -513,7 +519,7 @@ async def test_scan_versus_finalize_audit_freezes_consistently(_db_engine):
         async def _scan(session):
             try:
                 outcome["scan"] = await scan_list(
-                    list_id, ScanBody(barcode=bc_z, run_key="kZ"),
+                    list_id, ScanBody(barcode=bc_z, run_key="kZ"), request=_scan_request(),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - captured for the race assertion
                 outcome["scan"] = exc

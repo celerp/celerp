@@ -14,7 +14,7 @@ from sqlalchemy import create_engine, text
 
 from .conftest import run_migration_ops, throwaway_db, upgrade_to
 
-PREVIOUS = "v5w6x7y8z9a0"
+PREVIOUS = "y8d9e0f1a2b3"
 REVISION = "c4d1e7a2f9b3"
 
 

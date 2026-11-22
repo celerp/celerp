@@ -20,13 +20,15 @@ may share one control. It is not collapsed into AccountRole.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextvars import ContextVar
 from datetime import date
+from decimal import Decimal
 
 from celerp.compat import StrEnum
 
 # Bumped when a release adds a role. Older companies and backups stay readable:
 # an unmapped role only fails the operation that needs it.
-POSTING_ROLES_SCHEMA = 4
+POSTING_ROLES_SCHEMA = 5
 
 # Company.settings keys. ``posting_roles`` is the current target per role;
 # ``posting_role_scopes`` is every account that has legitimately served the role,
@@ -113,6 +115,7 @@ class AccountRole(StrEnum):
     DEFERRED_REVENUE = "deferred_revenue"
     DISPUTED_PAYMENTS = "disputed_payments"
     PAYMENT_DISPUTE_LOSSES = "payment_dispute_losses"
+    SUSPENSE = "suspense"
 
 
 R = AccountRole
@@ -156,6 +159,7 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.DEFERRED_REVENUE: "Deferred revenue",
     R.DISPUTED_PAYMENTS: "Disputed payments",
     R.PAYMENT_DISPUTE_LOSSES: "Payment dispute losses",
+    R.SUSPENSE: "Suspense",
 }
 
 _ASSET = frozenset({"asset"})
@@ -202,6 +206,7 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.DEFERRED_REVENUE: frozenset({"liability"}),
     R.DISPUTED_PAYMENTS: _ASSET,
     R.PAYMENT_DISPUTE_LOSSES: _EXPENSE,
+    R.SUSPENSE: _ASSET,
 }
 
 # Roles a posting lands on directly, so the target must be a concrete account,
@@ -256,6 +261,7 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
 # and maps the role to it when the feature posting there is first turned on, never before.
 ADDED_WHEN_TURNED_ON: dict[AccountRole, tuple[str, str, str]] = {
     R.RESTRICTED_NET_ASSETS: ("3500", "Restricted Net Assets", "3000"),
+    R.SUSPENSE: ("1190", "Suspense", "1100"),
 }
 
 # The default code of every role: the seeded account, or the one added when turned on.
@@ -307,6 +313,7 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
     "online_payments": (R.ONLINE_PAYMENT_FEES, R.DISPUTED_PAYMENTS, R.PAYMENT_DISPUTE_LOSSES),
     "funds": (R.RESTRICTED_NET_ASSETS,),
     "recognition": (R.DEFERRED_REVENUE,),
+    "bank": (R.SUSPENSE,),
 }
 
 # Roles whose accounts hold stock or its cost. Stock is always unrestricted: a journal
@@ -365,13 +372,48 @@ def account_label(account: Mapping | None) -> str:
     return code or name or ""
 
 
+# A refusal resolved on one page: its key -> (that page, formatted with the refusal's params;
+# the catalog key naming the page; the permission the page needs to take the step).
+REFUSAL_FIXES = {
+    "error.period_locked": (PERIOD_LOCK_PATH, "page.period_lock", "manage_accounting"),
+    "mfg.period_locked": (PERIOD_LOCK_PATH, "page.period_lock", "manage_accounting"),
+    "error.recon_entry_held": ("/accounting/reconcile/bank/{bank_id}?view=posted", "recon.view_completed",
+                               "manage_accounting"),
+    "error.recon_period_changed": ("/accounting/reconcile/bank/{bank_id}?view=posted", "recon.view_completed",
+                                   "manage_accounting"),
+    "reconciliation.no_client_user": ("/settings/general?tab=users", "settings.tab_users", "manage_company_settings"),
+}
+# The settings of the company the current request acts in (get_auth_context): who holds a
+# fix page's permission there. Outside a request the registry's default grants answer.
+REQUEST_COMPANY_SETTINGS: ContextVar[dict | None] = ContextVar("request_company_settings", default=None)
+
+
+def refusal_fix(key: str, params: dict) -> dict | None:
+    """The way out of the refusal ``key``: the page that resolves it and the roles that may
+    take the step there in the request's company, so each reader sees the link when their
+    role may use it and who to ask when it may not (ui.components.shell.refusal_fix)."""
+    fix = REFUSAL_FIXES.get(key)
+    if fix is None:
+        return None
+    from celerp.services.permissions import ROLES, resolved_grant_roles
+
+    granted = resolved_grant_roles(REQUEST_COMPANY_SETTINGS.get(), fix[2])
+    return {"href": fix[0].format(**params), "label_key": fix[1],
+            "roles": [r.key for r in reversed(ROLES) if r.key in granted]}
+
+
 def refusal(key: str, message: str, /, **params) -> dict:
     """A message the UI can show in the user's language: ``message`` is the English text,
     ``message_key`` and ``params`` let a translation say the same thing (ui.i18n.refusal_text).
     A ``role`` param is shown as that posting role's label, ``type`` and ``types`` as
-    account types; a date travels as its ISO day and is shown as a date in the reader's language."""
-    params = {name: value.isoformat() if isinstance(value, date) else value for name, value in params.items()}
-    return {"message": message, "message_key": key, "params": params}
+    account types; a date travels as its ISO day and is shown as a date in the reader's language;
+    an amount travels as its exact digits, so the refusal is always a JSON body. A refusal one
+    page resolves carries its ``fix`` (refusal_fix)."""
+    params = {name: value.isoformat() if isinstance(value, date) else str(value) if isinstance(value, Decimal)
+              else value for name, value in params.items()}
+    out = {"message": message, "message_key": key, "params": params}
+    fix = refusal_fix(key, params)
+    return {**out, "fix": fix} if fix else out
 
 
 def catalog_refusal(key: str, /, **params) -> dict:
@@ -417,8 +459,23 @@ class Refused(KeyedRefusal, ValueError):
 
 def refusal_detail(exc: Exception):
     """The detail a route answers a caught exception with: its own ``detail`` when it has
-    one, so a keyed refusal keeps its key, else its text."""
-    return getattr(exc, "detail", str(exc))
+    one, so a keyed refusal keeps its key, else its text: a t() text raised as its one
+    argument is answered as raised, so it keeps its key (str() writes it as plain text)."""
+    from ui.i18n import Text  # ui.i18n reads prices, whose cost rules raise a refusal
+
+    if hasattr(exc, "detail"):
+        return exc.detail
+    return exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], Text) else str(exc)
+
+
+def field_refusal(field: str, text) -> dict:
+    """The refusal of one form ``field``: ``text`` (a t() text or a ``refusal``) as the
+    refusal it reads as, plain text under the generic key, naming the field. A form refused
+    field by field answers a list of them under ``errors``."""
+    from celerp.error_body import as_refusal, as_written, keyed
+
+    refused = as_refusal(text)
+    return {**(refused if keyed(refused) else as_written(refused)), "field": field}
 
 
 def no_account_chosen() -> dict:

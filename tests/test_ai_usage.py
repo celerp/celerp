@@ -86,7 +86,7 @@ def _relay(monkeypatch, replies: list) -> list:
 
     set_session_token("s" * 64)
     monkeypatch.setattr(service, "complete", _complete)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     return sent
 
 
@@ -185,7 +185,7 @@ async def test_credits_kept_when_a_later_turn_fails(client, session, owner, monk
         raise RelayError("service_unavailable", "relay down")
 
     monkeypatch.setattr(service, "complete", _complete)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     operation = uuid.uuid4()
     async with jobs.gate.slot("interactive"):
         result = await run_agent(
@@ -220,7 +220,7 @@ async def test_credits_kept_when_the_relay_refuses_a_later_turn(client, session,
         raise HTTPException(status_code=413, detail={"code": "free_text_too_large", "message": "too long"})
 
     monkeypatch.setattr(service, "complete", _complete)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     conv = await _conversation(client, token)
     _, reply = await _asked(client, token, conv, uuid.uuid4())
     assert reply["error_code"] == "too_much_data"
@@ -309,6 +309,29 @@ async def test_answered_question_returns_its_answer_without_asking(client, owner
     assert again.json()["answer"] == reply["content"] and again.json()["asked_again"] is True
     assert len(await _messages(client, token, conv)) == 2
     assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
+
+
+async def test_question_answered_after_its_send_read_the_thread_returns_that_answer(client, owner, monkeypatch):
+    """The send read the thread before the first run's answer landed: it returns that answer
+    and never runs the question a second time."""
+    from celerp_ai import routes
+    token, _, _ = owner
+    sent = _relay(monkeypatch, [_answer()])
+    conv = await _conversation(client, token)
+    question = uuid.uuid4()
+    _, reply = await _asked(client, token, conv, question)
+    find = routes._find_question
+
+    async def read_before_the_answer(*a, **kw):
+        job, asked, _ = await find(*a, **kw)
+        return job, asked, None
+
+    monkeypatch.setattr(routes, "_find_question", read_before_the_answer)
+    again = await _ask(client, token, conv, question)
+    assert again.status_code == 200, again.text
+    assert (again.json()["answer"], again.json()["asked_again"]) == (reply["content"], True)
+    assert sent == [question]
+    assert len(await _messages(client, token, conv)) == 2
 
 
 def _refused_as_operation_conflict(r) -> None:
@@ -486,7 +509,7 @@ async def test_question_sent_again_while_it_is_answered_runs_once(client, owner,
 
     set_session_token("s" * 64)
     monkeypatch.setattr(service, "complete", _held)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     conv = await _conversation(client, token)
     question = uuid.uuid4()
 
@@ -536,7 +559,7 @@ async def test_repeat_send_in_a_read_window_runs_once(real_client, real_engine, 
 
     set_session_token("s" * 64)
     monkeypatch.setattr(service, "complete", _blocked)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     conv = await _conversation(client, token)
     question = uuid.uuid4()
     real_find = conversations.find_question

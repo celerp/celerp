@@ -12,10 +12,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from pydantic import BaseModel
+
 OutcomeStatus = Literal["created", "updated", "skipped", "rejected", "failed"]
 
 # The number of error messages a batch route returns, as every batch route always has.
 ROUTE_ERROR_LIMIT = 10
+
+
+class BatchImportResult(BaseModel):
+    """What a batch import route answers (ImportOutcome.route_counts): a refused row's
+    reason is text, or its keyed refusal (row_refusal)."""
+    created: int
+    skipped: int
+    updated: int = 0
+    errors: list[str | dict]
 
 
 @dataclass(frozen=True)
@@ -78,6 +89,59 @@ def failure_reason(exc: BaseException) -> str:
     if detail is not None:
         return str(detail)
     return str(exc)
+
+
+def row_refusal(entity_id: str | dict, why: BaseException | dict) -> str | dict:
+    """A refused record's reason naming it (``entity_id``, its id or a refusal such as
+    ``import.row_n``): a keyed refusal, given or raised by the write, stays keyed inside
+    ``import.record_refused``, so it reads in each reader's language; any other reason as text."""
+    from celerp.accounting_roles import catalog_refusal
+    from celerp.error_body import as_refusal, keyed
+
+    detail = why if isinstance(why, dict) else as_refusal(getattr(why, "detail", None))
+    if isinstance(detail, dict) and keyed(detail):
+        return catalog_refusal("import.record_refused", entity_id=entity_id, refusal=detail)
+    return f"{message_text(entity_id)}: {failure_reason(why)}"
+
+
+def keyed_reason(why: BaseException | str | dict) -> dict:
+    """A reason as a keyed refusal: the keyed refusal given or raised, else its text as written."""
+    from celerp.accounting_roles import catalog_refusal
+    from celerp.error_body import as_refusal, keyed
+
+    detail = as_refusal(getattr(why, "detail", None)) if isinstance(why, BaseException) else why
+    if isinstance(detail, dict) and keyed(detail):
+        return detail
+    text = failure_reason(why) if isinstance(why, BaseException) else message_text(why)
+    return catalog_refusal("error.refusal_as_written", text=text)
+
+
+def record_refused(entity_id: str | dict, key: str, /, **params) -> dict:
+    """A record refused for the reason ``import.record.<key>`` names, naming the record."""
+    from celerp.accounting_roles import catalog_refusal
+
+    return row_refusal(entity_id, catalog_refusal(f"import.record.{key}", **params))
+
+
+def row_n(index: int, code: str | None = None) -> dict:
+    """The name of a file's row that has no id of its own, counted from 1, with the code
+    it gives when it gives one."""
+    from celerp.accounting_roles import catalog_refusal
+
+    if code:
+        return catalog_refusal("import.row_n_code", n=index + 1, code=code)
+    return catalog_refusal("import.row_n", n=index + 1)
+
+
+def kept_refusal(message: str | dict, entity_id: str) -> dict:
+    """The reason a refused record kept (row_refusal), without the record's name: its keyed
+    refusal, rebuilt from its catalog key, else the text as written."""
+    from celerp.accounting_roles import catalog_refusal
+
+    inner = (message.get("params") or {}).get("refusal") if isinstance(message, dict) else None
+    if isinstance(inner, dict) and inner.get("message_key"):
+        return {**inner, **catalog_refusal(inner["message_key"], **(inner.get("params") or {}))}
+    return catalog_refusal("error.refusal_as_written", text=message_text(message).removeprefix(f"{entity_id}: "))
 
 
 def message_text(message: str | dict) -> str:

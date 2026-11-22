@@ -842,17 +842,18 @@ def test_cost_scope_index_is_recognized_as_schema_ddl():
 @pytest.mark.parametrize(("drop_indexes", "invalid_indexes", "expected"), [
     (("ix_ledger_je_cost_scope",), (), "r1s2t3u4v5w6"),
     ((), ("ix_ledger_je_cost_scope",), "r1s2t3u4v5w6"),
-    ((), (), "c4d1e7a2f9b3"),
+    ((), (), None),
 ])
 def test_an_upgraded_database_without_the_cost_scope_index_is_stamped_below_it(
         drop_indexes, invalid_indexes, expected):
     """A missing or invalid cost-scope lookup index (a build that failed and was dropped at an
     earlier start) leaves t3u4v5w6x7y8 to run again; with the index valid the revision is proven
-    and the stamp walks past the data revisions after it (u4v5w6x7y8z9, v5w6x7y8z9a0), which the replay
-    applies, and past the one-default-location revision (c4d1e7a2f9b3), proven by its index."""
+    and the stamp walks past the revisions after it to the head (``None``); the replay applies
+    their data steps."""
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(build_alembic_config())
+    expected = expected or script.get_current_head()
     with _pg_inspector_for_models(drop_indexes=drop_indexes, invalid_indexes=invalid_indexes) as inspector:
         stamp = find_safe_stamp(list(script.walk_revisions()), _real_sigs_by_rev(), inspector,
                                 expected_metadata=load_kernel_metadata())

@@ -193,7 +193,7 @@ async def test_void_blocked_from_partial_status(client):
 
     r = await client.post(f"/docs/{inv}/void", headers=_h(token), json={})
     assert r.status_code == 409
-    assert "payment" in r.json()["detail"].lower()
+    assert "payment" in refusal_text(r.json()["detail"]).lower()
 
 
 # ---------------------------------------------------------------------------

@@ -273,6 +273,8 @@ _ASCII_DUMPS = {
     ("celerp/services/peer_payments.py", "apply_source_payments"): _DIGEST,
     ("celerp/services/staged_downloads.py", "stage"): _FILE,
     ("celerp/services/update.py", "write_state"): _FILE,
+    ("default_modules/celerp-accounting/celerp_accounting/bank_statements.py", "suggestion_version"): _DIGEST,
+    ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_action_dom_id"): _DIGEST,
     ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_job_button"): _PAGE,
     ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_resend"): _PAGE,
     ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_showcase_view"): _PAGE,

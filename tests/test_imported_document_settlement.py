@@ -18,6 +18,7 @@ import pytest
 from test_cost_restatement import _state
 from test_credit_note_settlement_owned import _ar, _pay, _post
 from test_set_aside_older_paths import _net
+from test_helpers import message_texts
 
 pytestmark = pytest.mark.asyncio
 
@@ -228,7 +229,7 @@ async def test_credit_note_import_at_another_rate_is_refused(client, session, au
     assert "Leave the currency and rate as the invoice's" in r.text, r.text
     assert await _books(session, auth) == before
     b = await _batch(client, auth, second)
-    assert b.json()["created"] == 0 and "rate" in b.json()["errors"][0], b.text
+    assert b.json()["created"] == 0 and "rate" in message_texts(b.json()["errors"])[0], b.text
     assert await _books(session, auth) == before
 
 

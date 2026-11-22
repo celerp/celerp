@@ -332,7 +332,7 @@ if _wh_available:
 
 # Slots the harness reads from the modules' own manifests rather than listing below.
 _MANIFEST_SLOTS = ("nav", "periodic_operation", "on_company_restored", "on_company_module_enabled",
-                   "doc_status_guard", "doc_detail_badges", "doc_posting_dependents")
+                   "doc_status_guard", "doc_detail_badges", "doc_posting_dependents", "record_names")
 
 
 def _manifest_slot_contributions() -> list[dict]:
@@ -360,6 +360,38 @@ def _manifest_slot_contributions() -> list[dict]:
                 mark = {"_first_party": True} if slot in FIRST_PARTY_SLOTS else {}
                 out.append({"slot": slot, "contrib": {**item, "_module": name, **mark}})
     return out
+
+
+def _bundled_catalogs() -> dict:
+    """Every bundled module's UI catalogs, registered as the loader registers them, and the
+    i18n registry they make. The harness mounts the modules' routes itself, so without this
+    a module's refusal reads as its bare catalog key until some earlier test in the worker
+    happens to call load_all()."""
+    from celerp.modules.loader import _register_locales, read_manifest
+    from ui import i18n
+
+    i18n.clear_registry()
+    for pkg in sorted((Path(__file__).parent / "default_modules").iterdir()):
+        manifest = read_manifest(pkg)
+        if manifest.get("name"):
+            _register_locales(manifest["name"], pkg, manifest)
+    return {lang: dict(entry) for lang, entry in i18n._registry.items()}
+
+
+_CATALOGS = _bundled_catalogs()
+
+
+def _restore_catalogs() -> None:
+    """Put the bundled catalogs back when a test (a load_all() of fewer modules, or a test
+    registering its own) left the registry other than they make it."""
+    from ui import i18n
+
+    if i18n._registry.keys() == _CATALOGS.keys() and all(
+            i18n._registry[lang]["catalog"] is entry["catalog"] for lang, entry in _CATALOGS.items()):
+        return
+    i18n._registry.clear()
+    i18n._registry.update({lang: dict(entry) for lang, entry in _CATALOGS.items()})
+    i18n._invalidate_cache()
 
 
 _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
@@ -559,6 +591,46 @@ def _one_current_event_loop():
 
 
 _CENSUS = mutation_observer.Totals()
+
+
+@pytest.fixture
+def tools_open_when_called(monkeypatch):
+    """For tests whose subject is not area loading: a tool the scripted model calls is
+    opened just before the call, as if the model had listed and opened it, so a script
+    may call any compiled tool at once. Area loading itself is tested in
+    test_ai_agent_areas."""
+    import json as _json
+
+    from celerp.ai import service
+
+    parse = service._parse_call
+
+    def _opening(call, capabilities, opened):
+        function = call.get("function") or {}
+        names = {function.get("name")}
+        try:
+            names.add((_json.loads(function.get("arguments") or "{}") or {}).get("tool"))
+        except (TypeError, ValueError, AttributeError):
+            pass
+        opened |= names & set(capabilities)
+        return parse(call, capabilities, opened)
+
+    monkeypatch.setattr(service, "_parse_call", _opening)
+
+
+@pytest.fixture
+def model_answers_unscripted_runs(monkeypatch):
+    """For tests that confirm a card outside their scripted model: the request then
+    carries on as a job after the test's script is gone, and that run gets a plain
+    answer instead of reaching the AI service."""
+    from celerp.ai import service
+    from celerp.ai.llm import ModelResult
+
+    async def _answer(*_a, **_kw):
+        return ModelResult(message={"role": "assistant", "content": "Done."}, model_used="test-model",
+                           usage={"total_tokens": 1}, reservation_id=None, remaining=None)
+
+    monkeypatch.setattr(service, "complete", _answer)
 
 
 @pytest.fixture(autouse=True)
@@ -842,7 +914,11 @@ def _reset_loaded_modules(request):
 
     The permission each module's events are read with is kept until the next load, so
     it is dropped after each test: one worked out under doctored slots or admission
-    leaves nothing for later tests."""
+    leaves nothing for later tests. Each test starts with every bundled module's
+    catalogs registered (_restore_catalogs), whatever an earlier load_all() left.
+
+    The module pin (ENABLED_MODULES) is put back too: a pin a test leaves set makes every
+    later company in the worker use the pinned list instead of the configured one."""
     if request.node.get_closest_marker("browser"):
         yield
         return
@@ -851,8 +927,14 @@ def _reset_loaded_modules(request):
     from celerp.modules import slots as _slots_mod
     _loaded.clear()
     _module_routes.clear()
+    _restore_catalogs()
     _slot_snapshot = {k: list(v) for k, v in _slots_mod._slots.items()}
+    _pin = os.environ.get("ENABLED_MODULES")
     yield
+    if _pin is None:
+        os.environ.pop("ENABLED_MODULES", None)
+    else:
+        os.environ["ENABLED_MODULES"] = _pin
     _event_permissions.clear()
     _loaded.clear()
     _module_routes.clear()

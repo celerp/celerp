@@ -22,6 +22,7 @@ from migration_support import auth, code_config, maker, real_client, real_engine
 from test_company_reset_payments import (_OCTOBER_3, _Cloud, _harbor, _hold_before_the_company, _payment_journal,
                                          _payments_on, _references, _shared_invoice, _unmatched,
                                          _waiting_on_a_lock)
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -110,7 +111,7 @@ async def test_archiving_the_deposit_account_while_its_bank_is_active_is_refused
     await paying
 
     assert r.status_code == 422, r.text
-    assert "Archive the bank account" in r.json()["detail"]
+    assert "Archive the bank account" in refusal_text(r.json()["detail"])
     assert await _account(real_engine, a, code) == (True, "asset")
     assert await _references(real_engine, eid) == ["pi_paid"]
     assert await _posted_to(real_engine, eid) == [code]

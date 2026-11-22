@@ -35,13 +35,14 @@ from celerp_fixed_assets.projections import BUCKETS, _dec, money, said
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state, recorded
 from fastapi import HTTPException
 from sqlalchemy import func, select
+from ui.i18n import t
 
 MODULE = "celerp-fixed-assets"
 REGISTER_MODES = ("separate", "quantity", "expense", "maintenance")
 DESCRIPTIVE_FIELDS = ("name", "tag", "description", "serial", "make", "model", "notes")
 # The member who hears about problems a custodian reports on the asset.
 RESPONSIBLE = "responsible_user_id"
-_OP_KEY = re.compile(r"[A-Za-z0-9._-]{1,64}")
+_OP_KEY = re.compile(r"[A-Za-z0-9._:-]{1,64}")
 _NOT_INTENT = ("preview", "fingerprint", "op_key")
 
 
@@ -244,7 +245,7 @@ async def _claim(session, company_id, user_id, line: dict, *, allocation: str, o
         "line_index": line["line_index"], "account": line["account"], "kind": line["kind"], "date": line["date"],
         **extra}, key=f"{claim}:claim:{line['generation']}")
     if getattr(event, "was_deduped", False):
-        raise conflict(f"{line['description']} was already registered.")
+        raise setup.refused(409, "fixed_assets.err_description_was_already_registered", description=line['description'])
 
 
 # ── The operation contract ───────────────────────────────────────────────────
@@ -309,7 +310,9 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
         finally:
             await savepoint.rollback()
         return result
-    previewed = str(body.get("fingerprint") or "").split(".")
+    if not body.get("fingerprint"):
+        raise refuse("fixed_assets.err_review_first")
+    previewed = str(body.get("fingerprint")).split(".")
     if previewed[:2] != fingerprint.split("."):
         if previewed[0] != str(generation):
             raise refuse("fixed_assets.err_line_released")
@@ -422,13 +425,13 @@ def _effects(**kw) -> dict:
 async def _open_line(session, company_id, source) -> dict:
     line = await sources.line(session, company_id, str(source or ""))
     if line["before_cutover"]:
-        raise setup.unprocessable("This line is dated on or before the cutover, so it belongs to the opening "
-                                  "register. Add it as an opening asset instead.")
+        raise setup.refuse("fixed_assets.err_line_dated_before_cutover_so_belongs")
     claim = line["claim"]
     if claim:
         numbers = claim.get("numbers") or []
-        raise conflict(f"{line['description']} is already registered as {', '.join(numbers)}." if numbers
-                       else f"{line['description']} was already dealt with.")
+        if numbers:
+            raise refuse("fixed_assets.err_line_registered_as", description=line["description"], numbers=", ".join(numbers))
+        raise refuse("fixed_assets.err_line_dealt_with", description=line["description"])
     return line
 
 
@@ -461,25 +464,24 @@ async def register(session, company_id, user_id, body: dict) -> dict:
     async def plan(fa):
         line = await _open_line(session, company_id, body.get("source"))
         if line["kind"] == "reduction":
-            raise setup.unprocessable("This line reduces an asset account. Use Correct on the asset it belongs "
-                                      "to and link the line there.")
+            raise setup.refuse("fixed_assets.err_line_reduces_asset_account_use_correct")
         if line["kind"] != "acquisition":
-            raise setup.unprocessable("This line records depreciation. Link it to the assets it belongs to.")
+            raise setup.refuse("fixed_assets.err_line_records_depreciation_link_assets_belongs")
         mode = body.get("mode") or "separate"
         if mode not in REGISTER_MODES:
-            raise setup.unprocessable("Choose how to register the line.")
+            raise setup.refuse("fixed_assets.err_choose_how_register_line")
         currency = await setup.currency(session, company_id)
         amount = _dec(line["amount"])
         context = {"line": line, "mode": mode, "generation": line["generation"]}
         if mode in ("expense", "maintenance"):
             account = str(body.get("expense_account") or "")
             if not account:
-                raise setup.unprocessable("Choose the expense account.")
+                raise setup.refuse("fixed_assets.err_choose_expense_account")
             if mode == "maintenance":
                 asset_id = str(body.get("asset_id") or "")
                 asset = await _state(session, company_id, asset_id)
                 if asset is None or not asset_id.startswith("fa:asset:") or asset.get("status") != "active":
-                    raise setup.unprocessable("Choose the asset this maintenance was on.")
+                    raise setup.refuse("fixed_assets.err_choose_asset_maintenance_was")
                 context["asset"] = (asset_id, asset)
             journal = _reclass(line, account, amount)
             context["journal"] = journal
@@ -487,12 +489,12 @@ async def register(session, company_id, user_id, body: dict) -> dict:
         cls = await setup.get_class(session, company_id, body.get("class_id"))
         name = str(body.get("name") or line["description"]).strip()
         if not name:
-            raise setup.unprocessable("An asset needs a name.")
+            raise setup.refuse("fixed_assets.err_asset_needs_name")
         available = _date(body.get("available_date") or line["date"], "The available-for-use date")
         quantity = _dec(line["quantity"])
         if mode == "separate":
             if quantity != quantity.to_integral_value():
-                raise setup.unprocessable("Separate assets need a whole quantity. Register one record instead.")
+                raise setup.refuse("fixed_assets.err_separate_assets_need_whole_quantity_register")
             from celerp.services.money import allocate_pro_rata
 
             count = int(quantity)
@@ -562,12 +564,9 @@ async def register(session, company_id, user_id, body: dict) -> dict:
 # What a manual line is marked as when it is not registered: the reason it needs, and the
 # lines it applies to.
 _DISPOSITIONS = {
-    "not_acquisition": ("A reason is required to mark a line as not an acquisition.",
-                        "Only a manual journal line debiting an asset account can be marked as not an acquisition.",
+    "not_acquisition": ("fixed_assets.err_reason_not_acquisition", "fixed_assets.err_only_debit_not_acquisition",
                         ("acquisition",)),
-    "keep": ("A reason is required to keep a depreciation journal as booked.",
-             "Only a manual journal line crediting accumulated depreciation can be kept as booked.",
-             ("depreciation",)),
+    "keep": ("fixed_assets.err_reason_keep_booked", "fixed_assets.err_only_credit_keep_booked", ("depreciation",)),
 }
 
 
@@ -580,10 +579,10 @@ async def disposition(session, company_id, user_id, body: dict, allocation: str)
     async def plan(fa):
         reason = str(body.get("reason") or "").strip()
         if not reason:
-            raise setup.unprocessable(no_reason)
+            raise setup.refuse(no_reason)
         line = await _open_line(session, company_id, body.get("source"))
         if not line["journal_id"].startswith("je:manual:") or line["kind"] not in kinds:
-            raise setup.unprocessable(wrong_line)
+            raise setup.refuse(wrong_line)
         return ({"journals": [], "assets": [], "reason": reason},
                 {"line": line, "reason": reason, "generation": line["generation"]})
 
@@ -604,22 +603,22 @@ async def link_depreciation(session, company_id, user_id, body: dict) -> dict:
     async def plan(fa):
         line = await _open_line(session, company_id, body.get("source"))
         if line["kind"] != "depreciation":
-            raise setup.unprocessable("Only a line crediting accumulated depreciation can be linked to assets.")
+            raise setup.refuse("fixed_assets.err_only_line_crediting_accumulated_depreciation_can")
         allocations = body.get("allocations")
         if not isinstance(allocations, list) or not allocations:
-            raise setup.unprocessable("Choose the assets this depreciation belongs to.")
+            raise setup.refuse("fixed_assets.err_choose_assets_depreciation_belongs")
         currency = await setup.currency(session, company_id)
         shares = []
         for a in allocations:
             asset_id = str((a or {}).get("asset_id") or "")
             asset = await _state(session, company_id, asset_id)
             if asset is None or not asset_id.startswith("fa:asset:") or asset.get("status") != "active":
-                raise setup.unprocessable("Choose active assets to link the depreciation to.")
+                raise setup.refuse("fixed_assets.err_choose_active_assets_link_depreciation")
             await same_fund(session, company_id, line, asset)
             shares.append((asset_id, asset["number"], _money_in(a.get("amount"), "Each amount", currency, positive=True)))
         total = sum((s for _, _, s in shares), Decimal(0))
         if total != round_money(_dec(line["amount"]), currency):
-            raise setup.unprocessable(f"The amounts add up to {said(total, currency)}, not {said(line['amount'], currency)}.")
+            raise setup.refuse("fixed_assets.err_amounts_add_up_said_not_said2", said=said(total, currency), said2=said(line['amount'], currency))
         return ({"journals": [], "assets": [{"number": n, "accumulated_depreciation": money(s, currency)} for _, n, s in shares]},
                 {"line": line, "shares": shares, "generation": line["generation"]})
 
@@ -643,12 +642,12 @@ async def link_depreciation(session, company_id, user_id, body: dict) -> dict:
 # ── Assets added by hand ─────────────────────────────────────────────────────
 
 
-WRITTEN_OFF_OVER_COST = "Accumulated depreciation and impairment cannot be more than the cost."
+WRITTEN_OFF_OVER_COST = "fixed_assets.err_written_off_over_cost"
 
 
 def after_cutover(cut: str) -> str:
     """Why an opening asset cannot be dated after the cutover, and what to do instead."""
-    return f"Dated after the cutover {cut}. Enter the bill, or use Contributed or acquired without a bill."
+    return t("fixed_assets.err_opening_after_cutover", cut=cut)
 
 
 def _registers(cls: dict, available, policy: dict) -> dict:
@@ -672,17 +671,17 @@ async def _financials(session, company_id, fa: dict, body: dict) -> dict:
         dep = _money_in(body.get("accumulated_depreciation"), "Accumulated depreciation", currency)
         imp = _money_in(body.get("accumulated_impairment"), "Accumulated impairment", currency)
         if dep + imp > cost:
-            raise setup.unprocessable(WRITTEN_OFF_OVER_COST)
+            raise setup.refuse(WRITTEN_OFF_OVER_COST)
         out.update(dep=dep, imp=imp, posting=cut or available)
     elif kind == "contributed":
         credit = str(body.get("credit_account") or "")
         if not credit:
-            raise setup.unprocessable("Choose the account the asset was contributed from.")
+            raise setup.refuse("fixed_assets.err_choose_account_asset_was_contributed_from")
         lock = (await setup.company_settings(session, company_id)).get("lock_date")
         setup.require_open(date.fromisoformat(lock) if lock else None, available)
         out.update(credit=credit, posting=available)
     else:
-        raise setup.unprocessable("Choose how the asset came in: opening, contributed or a physical record.")
+        raise setup.refuse("fixed_assets.err_choose_how_asset_came_opening_contributed")
     return out
 
 
@@ -727,7 +726,7 @@ async def create_asset(session, company_id, user_id, body: dict) -> dict:
     async def plan(fa):
         name = str(body.get("name") or "").strip()
         if not name:
-            raise setup.unprocessable("An asset needs a name.")
+            raise setup.refuse("fixed_assets.err_asset_needs_name")
         (number,) = await _next_numbers(session, company_id, 1)
         if physical:
             return {"journals": [], "assets": [{"number": number, "name": name, "cost": None}]}, {
@@ -765,9 +764,9 @@ async def add_financial_details(session, company_id, user_id, asset_id: str, bod
     async def plan(fa):
         row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
         if row is None or row.entity_type != "fa_asset":
-            raise HTTPException(status_code=404, detail="No such asset.")
+            raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
         if row.state.get("status") != "physical":
-            raise conflict("This asset already has its financial details.")
+            raise setup.refused(409, "fixed_assets.err_asset_already_has_its_financial_details")
         details = await _financials(session, company_id, fa, body)
         _, shown = _financials_shown(details)
         return ({"journals": shown, "assets": [{"number": row.state["number"], "name": row.state["name"],
@@ -809,8 +808,8 @@ def tag_taken(assets: list[tuple[str, dict]], asset_id: str, tag: str) -> str | 
         return None
     number = held[1].get("number")
     if (held[1].get("tag") or "").casefold() == tag.strip().casefold():
-        return f"Tag {held[1]['tag']} is already on {number}."
-    return f"{number} is another asset's number, so it cannot be a tag here."
+        return t("fixed_assets.err_tag_on_asset", tag=held[1]["tag"], number=number)
+    return t("fixed_assets.err_tag_is_asset_number", number=number)
 
 
 async def _tag_free(session, company_id, asset_id: str, tag: str) -> None:
@@ -830,32 +829,31 @@ async def update_asset(session, company_id, user_id, asset_id: str, body: dict) 
 
     changes, previous = body.get("changes"), body.get("previous")
     if not isinstance(changes, dict) or not isinstance(previous, dict):
-        raise setup.unprocessable("Send the changes and the values they replace.")
+        raise setup.refuse("fixed_assets.err_send_changes_values_they_replace")
     account = "depreciation_account" in changes
     await locked_authority(session, company_id, user_id, ("manage_accounting",) if account else ("manage_fixed_assets",))
     row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
     if row is None or row.entity_type != "fa_asset":
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     if set(changes) & {*BUCKETS, "quantity"}:
-        raise setup.unprocessable(
-            "This cost comes from its source lines. Use Replace source to change it." if row.state.get("sources")
-            else "Use Correct to change the cost.")
+        raise setup.refuse("fixed_assets.err_cost_from_source_lines" if row.state.get("sources")
+                           else "fixed_assets.err_use_correct_for_cost")
     unknown = set(changes) - {*DESCRIPTIVE_FIELDS, RESPONSIBLE, "depreciation_account"}
     if unknown:
-        raise setup.unprocessable(f"{sorted(unknown)[0]} cannot be edited here.")
+        raise setup.refuse("fixed_assets.err_value_cannot_edited_here", value=sorted(unknown)[0])
     if any(row.state.get(k) != v for k, v in previous.items()):
         raise conflict(refusal(
             "fixed_assets.err_changed_by_someone", "Changed by someone else. Select Try again to see it."))
     changes = {k: (str(v).strip() or None) if v is not None else None for k, v in changes.items()}
     if "name" in changes and not changes["name"]:
-        raise setup.unprocessable("An asset needs a name.")
+        raise setup.refuse("fixed_assets.err_asset_needs_name")
     if changes.get("tag"):
         await _tag_free(session, company_id, asset_id, changes["tag"])
     if changes.get(RESPONSIBLE):
         from celerp_fixed_assets.moves import member_name
 
         if not await member_name(session, company_id, changes[RESPONSIBLE]):
-            raise setup.unprocessable("The responsible person is not a member of this company. Choose a member.")
+            raise setup.refuse("fixed_assets.err_responsible_person_not_member_company_choose")
     if account and changes["depreciation_account"]:
         await require_destinations(session, company_id, {changes["depreciation_account"]})
     changes = {k: v for k, v in changes.items() if row.state.get(k) != v}
@@ -952,14 +950,13 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
     async def plan(fa):
         ops = [await _state(session, company_id, f"fa:op:{key}") for key in target_keys]
         if not ops or any(op is None or op.get("type") in (None, "undo") for op in ops):
-            raise setup.unprocessable("There is nothing to undo here.")
+            raise setup.refuse("fixed_assets.err_there_nothing_undo_here")
         if any(op.get("undone_by") for op in ops):
-            raise conflict("This was already undone.")
+            raise setup.refused(409, "fixed_assets.err_was_already_undone")
         transfer = next((op for op in ops if op.get("type") == "transfer_in"), None)
         if transfer:
             source = transfer["result"]["source"]
-            raise conflict(f"This asset was transferred in from {source['company_name']}. Undo the transfer on "
-                           f"{source['number']} there instead.")
+            raise setup.refused(409, "fixed_assets.err_asset_was_transferred_from_company_name", company_name=source['company_name'], number=source['number'])
         effects = _effects(**{k: [x for op in ops for x in (op.get("effects") or {}).get(k) or []]
                               for k in ("assets", "movements", "claims", "journals", "maint", "statuses",
                                         "changes", "classes")})
@@ -985,12 +982,12 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         for entity_id, fields in (effects.get("unchanged") or {}).items():
             now = await _state(session, company_id, entity_id) or {}
             if any(int(now.get(k) or 0) > v for k, v in fields.items()):
-                raise conflict("This has changed since, so it can no longer be undone.")
+                raise setup.refused(409, "fixed_assets.err_has_changed_since_so_can_no")
         settings = await setup.company_settings(session, company_id)
         lock = settings.get("lock_date")
         locked = sorted(s["posting_date"] for s in movements.values() if s and lock and s["posting_date"] <= lock)
         if locked:
-            raise conflict(f"{locked[0]} is in a locked period, so this can no longer be undone. Use Correct instead.")
+            raise setup.refused(409, "fixed_assets.err_value_locked_period_so_can_no", value=locked[0])
         journals = {j: await _journal(session, company_id, j) for j in effects.get("journals", [])}
         shown = {"assets": [{"number": a["number"]} for _, a, _ in created],
                  "journals": [_reversed_lines(je, books_currency(settings)) for je in journals.values() if je and je.get("status") == "posted"]}
@@ -1046,7 +1043,7 @@ async def undo_asset(session, company_id, user_id, asset_id: str, body: dict) ->
     """Undo the operation that created an asset (and every asset it created with it)."""
     asset = await _state(session, company_id, asset_id)
     if asset is None or not asset_id.startswith("fa:asset:"):
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     if asset.get("import_batch"):
         from celerp_fixed_assets import imports
 
@@ -1058,5 +1055,5 @@ async def undo_source(session, company_id, user_id, body: dict) -> dict:
     """Undo whatever was done with a source line, releasing it back to intake."""
     claim = await _state(session, company_id, sources.claim_id(str(body.get("source") or "")))
     if claim is None or claim.get("status") != "claimed":
-        raise setup.unprocessable("This line is not registered.")
+        raise setup.refuse("fixed_assets.err_line_not_registered")
     return await _undo(session, company_id, user_id, [claim["op_key"]], body)

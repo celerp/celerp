@@ -77,7 +77,7 @@ async def _pass(factory, cid: str, day: str) -> None:
     """One dispatcher pass for the company on ``day``, each step committing on its own."""
     from celerp.events.engine import unattended
     from celerp_docs import periodic
-    await unattended(periodic.run_company(factory, uuid.UUID(cid), today=date.fromisoformat(day)))
+    await unattended(lambda: periodic.run_company(factory, uuid.UUID(cid), today=date.fromisoformat(day)))
 
 
 async def _docs(factory, eid: str) -> list[dict]:

@@ -33,6 +33,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from celerp import config_store
+from celerp.accounting_roles import refusal_detail
 from celerp.config import settings
 from celerp.importers.adapters import registry
 from celerp.importers.adapters.base import (
@@ -58,11 +59,11 @@ SEVERAL_TTL_SECONDS = 24 * 3600
 MAX_ARTIFACTS = 50                    # an export set: one trial balance per year, invoices in batches
 MAX_AGGREGATE_BYTES = 2 * 1024**3
 
-EXPIRED = "This scan has expired. Upload the file again."
-BUSY = "This scan is being updated. Try again in a moment."
+EXPIRED = "migration.err_scan_expired"
+BUSY = "migration.err_scan_busy"
 STORE_FAILED = "migration.err_store_failed"
 CHOOSE_FILE = "migration.choose_file"
-SOURCE_MISSING = "The uploaded file for this migration is missing. Discard it and upload the file again."
+SOURCE_MISSING = "migration.err_source_file_missing"
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 _STORED_RE = re.compile(r"artifact-\d+")
 _SOURCE_KEY_MAX = 200
@@ -189,11 +190,11 @@ def _token_lock(directory: Path) -> Iterator[None]:
     try:
         release = config_store.hold_lock(str(directory / ".lock"))
     except FileNotFoundError as exc:  # the scan was removed while this request waited
-        raise ScanStoreError(410, EXPIRED) from exc
+        raise ScanStoreError(410, t(EXPIRED)) from exc
     except OSError as exc:
         raise ScanStoreError(500, t(STORE_FAILED)) from exc
     if release is None:
-        raise ScanStoreError(409, BUSY)
+        raise ScanStoreError(409, t(BUSY))
     try:
         yield
     finally:
@@ -304,15 +305,19 @@ def _per_file_limit(adapter: SourceAdapter | None) -> int:
     return max((spec.max_bytes for a in adapters for spec in a.artifact_specs), default=0)
 
 
-async def _read_text(chunks: AsyncIterator[bytes], too_long: str | None = None,
-                     limit: int = _SOURCE_KEY_MAX) -> str:
-    """A short text field, refused with *too_long* (or as an unknown source) past *limit* bytes."""
+async def _read_text(chunks: AsyncIterator[bytes], too_long: str, limit: int = _SOURCE_KEY_MAX) -> str:
+    """A short text field, refused with *too_long* past *limit* bytes."""
     data = b""
     async for chunk in chunks:
         data += chunk
         if len(data) > limit:
-            raise ScanStoreError(422, too_long or t("migration.err_source_unavailable"))
+            raise ScanStoreError(422, too_long)
     return data.decode("utf-8", errors="replace").strip()
+
+
+async def _read_field(chunks: AsyncIterator[bytes]) -> str:
+    """A short form field (a source key, a draft token), refused as an unknown source past its limit."""
+    return await _read_text(chunks, t("migration.err_source_unavailable"))
 
 
 async def _stream_file(part: UploadPart, path: Path, *, per_file: int, remaining: int) -> Artifact:
@@ -347,17 +352,17 @@ async def _receive(files: AsyncIterable[UploadPart], directory: Path) -> _Upload
     total = 0
     async for part in files:
         if part.name == "source":
-            key = await _read_text(part.chunks)
+            key = await _read_field(part.chunks)
             if key:
                 upload.adapter = registry.get_adapter(key)
                 if upload.adapter is None:
                     raise ScanStoreError(422, t("migration.err_source_unavailable"))
         elif part.name == "draft":
-            upload.draft = await _read_text(part.chunks)
+            upload.draft = await _read_field(part.chunks)
         elif part.name == "remove":
-            upload.remove.add(await _read_text(part.chunks))
+            upload.remove.add(await _read_field(part.chunks))
         elif part.name == "check":
-            upload.check_only = await _read_text(part.chunks) == "1"
+            upload.check_only = await _read_field(part.chunks) == "1"
         elif part.name == "files" and part.filename:
             if len(artifacts) >= MAX_ARTIFACTS:
                 raise ScanStoreError(413, t("migration.err_too_many_files", count=MAX_ARTIFACTS))
@@ -381,7 +386,7 @@ def _add_draft(upload: _Upload, directory: Path, owner: ScanOwner) -> None:
     try:
         data = json.loads((old / "scan.json").read_text())
         if data["owner"] != _owner_json(owner) or not data.get("draft") or float(data["expires_at"]) <= _now():
-            raise ScanStoreError(410, EXPIRED)
+            raise ScanStoreError(410, t(EXPIRED))
         kept = [a for a in data["artifacts"] if a["stored_name"] not in upload.remove]
         if len(upload.artifacts) + len(kept) > MAX_ARTIFACTS:
             raise ScanStoreError(413, t("migration.err_too_many_files", count=MAX_ARTIFACTS))
@@ -395,7 +400,7 @@ def _add_draft(upload: _Upload, directory: Path, owner: ScanOwner) -> None:
             os.link(old / a["stored_name"], path)
             carried.append(Artifact(path, str(a["original_name"]), int(a["size_bytes"]), str(a["sha256"])))
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise ScanStoreError(410, EXPIRED) from exc
+        raise ScanStoreError(410, t(EXPIRED)) from exc
     upload.artifacts[:0] = carried
     upload.adapter = upload.adapter or registry.get_adapter(data["adapter_key"])
 
@@ -413,15 +418,13 @@ def _recognise(artifacts: ArtifactSet, chosen: SourceAdapter | None) -> SourceAd
     try:
         if chosen is not None:
             if not chosen.detect(artifacts).matched:
-                raise ScanStoreError(422, f"{names} is not a {chosen.display_name} file. "
-                                          f"Accepted: {_accepted([chosen])}.")
+                raise ScanStoreError(422, t("migration.err_names_not_display_name_file_accepted", names=names, display_name=chosen.display_name, accepted=_accepted([chosen])))
             return chosen
         adapter = registry.detect_adapter(artifacts)
     except SourceRevisionError as exc:
-        raise ScanStoreError(422, str(exc)) from exc
+        raise ScanStoreError(422, refusal_detail(exc)) from exc
     if adapter is None:
-        raise ScanStoreError(422, f"Celerp cannot read {names} yet. "
-                                  f"Accepted: {_accepted(registry.list_adapters())}.")
+        raise ScanStoreError(422, t("migration.err_celerp_cannot_read_names_yet_accepted", names=names, accepted=_accepted(registry.list_adapters())))
     return adapter
 
 
@@ -449,11 +452,11 @@ async def _inspect(adapter: SourceAdapter, artifacts: ArtifactSet, check_only: b
         try:
             return await asyncio.to_thread(adapter.inspect, artifacts)
         except (ScanError, SourceRevisionError) as exc:
-            raise ScanStoreError(422, str(exc)) from exc
+            raise ScanStoreError(422, refusal_detail(exc)) from exc
     try:
         checked = await asyncio.to_thread(check, artifacts)
     except SourceRevisionError as exc:
-        raise ScanStoreError(422, str(exc)) from exc
+        raise ScanStoreError(422, refusal_detail(exc)) from exc
     error = ""
     if checked.complete and not check_only:
         try:
@@ -545,7 +548,7 @@ async def create_several(files: AsyncIterable[UploadPart], *, owner: ScanOwner) 
         received: list[Artifact | tuple[str, ScanStoreError]] = []
         async for part in files:
             if part.name == "source":
-                source = await _read_text(part.chunks)
+                source = await _read_field(part.chunks)
                 if source and registry.get_adapter(source) is None:
                     raise ScanStoreError(422, t("migration.err_source_unavailable"))
             elif part.name == "prepared_by":
@@ -588,10 +591,10 @@ async def create_several(files: AsyncIterable[UploadPart], *, owner: ScanOwner) 
 
 def _directory(token: str) -> Path:
     if not isinstance(token, str) or not _TOKEN_RE.fullmatch(token):
-        raise ScanStoreError(410, EXPIRED)
+        raise ScanStoreError(410, t(EXPIRED))
     directory = _scans_root() / token
     if not directory.is_dir():
-        raise ScanStoreError(410, EXPIRED)
+        raise ScanStoreError(410, t(EXPIRED))
     return directory
 
 
@@ -599,16 +602,16 @@ def _read(token: str, directory: Path, owner: ScanOwner) -> ScanSession:
     try:
         data = json.loads((directory / "scan.json").read_text())
         if data.get("draft"):
-            raise ScanStoreError(410, EXPIRED)      # a draft is added to, never analysed
+            raise ScanStoreError(410, t(EXPIRED))      # a draft is added to, never analysed
         session = _session_from_json(token, directory, data)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         _discard(directory)
-        raise ScanStoreError(410, EXPIRED) from exc
+        raise ScanStoreError(410, t(EXPIRED)) from exc
     if data["owner"] != _owner_json(owner):
-        raise ScanStoreError(410, EXPIRED)
+        raise ScanStoreError(410, t(EXPIRED))
     if float(data["expires_at"]) <= _now():
         _discard(directory)
-        raise ScanStoreError(410, EXPIRED)
+        raise ScanStoreError(410, t(EXPIRED))
     return session
 
 
@@ -624,10 +627,10 @@ def draft_files(token: str, *, owner: ScanOwner) -> tuple[str, ArtifactSet]:
         data = json.loads((directory / "scan.json").read_text())
         if (not data.get("draft") or data["owner"] != _owner_json(owner)
                 or float(data["expires_at"]) <= _now()):
-            raise ScanStoreError(410, EXPIRED)
+            raise ScanStoreError(410, t(EXPIRED))
         return str(data["adapter_key"]), _artifacts_from_json(directory, data)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise ScanStoreError(410, EXPIRED) from exc
+        raise ScanStoreError(410, t(EXPIRED)) from exc
 
 
 def scan_owner(token: str) -> ScanOwner:
@@ -636,7 +639,7 @@ def scan_owner(token: str) -> ScanOwner:
         kind, ident = json.loads((_directory(token) / "scan.json").read_text())["owner"]
         return kind, uuid.UUID(ident) if ident else None
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise ScanStoreError(410, EXPIRED) from exc
+        raise ScanStoreError(410, t(EXPIRED)) from exc
 
 
 def _rescanned(session: ScanSession, decisions: MigrationDecisions) -> SourceScan | None:
@@ -649,7 +652,7 @@ def _rescanned(session: ScanSession, decisions: MigrationDecisions) -> SourceSca
     try:
         return registry.get_adapter(session.adapter_key).inspect(session.artifacts, chosen)
     except (ScanError, SourceRevisionError) as exc:
-        raise ScanStoreError(422, str(exc)) from exc
+        raise ScanStoreError(422, refusal_detail(exc)) from exc
 
 
 def save_decisions(token: str, *, owner: ScanOwner, decisions: MigrationDecisions) -> ScanSession:
@@ -710,7 +713,7 @@ def verify_unchanged(token: str, *, owner: ScanOwner) -> ScanSession:
                 raise ScanStoreError(500, t(STORE_FAILED)) from exc
             if changed:
                 _discard(directory)
-                raise ScanStoreError(409, "The uploaded file changed after it was scanned. Upload it again.")
+                raise ScanStoreError(409, t("migration.err_uploaded_file_changed_after_was_scanned"))
     return session
 
 
@@ -730,7 +733,7 @@ def claim_for_run(token: str | None, *, run_id: uuid.UUID, stored_names: list[st
         if (target / name).is_file():
             continue
         if directory is None or not (directory / name).is_file():
-            raise SourceMissingError(410, SOURCE_MISSING)
+            raise SourceMissingError(410, t(SOURCE_MISSING))
         moves.append(name)
     if moves:
         _private_dir(runs_root())

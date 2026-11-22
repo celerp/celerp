@@ -29,5 +29,15 @@
   "labels.selected": "ተመርጧል: {ids}{more}",
   "labels.template_deleted": "አብነቱ ተሰርዟል።",
   "labels.template_not_found": "አብነቱ አልተገኘም።",
-  "labels.width_example": "ለምሳሌ. 50"
+  "labels.width_example": "ለምሳሌ. 50",
+  "labels.err_labels_not_printed_source_records": "መለያዎች ለ{source} መዝገቦች አይታተሙም።",
+  "labels.err_your_role_cannot_see_these_records": "የእርስዎ ሚና እነዚህን መዝገቦች ማየት አይችልም፣ ስለዚህ መለያዎቻቸውን ማተም አይችልም።",
+  "labels.err_choose_records_print_labels": "መለያዎችን ለማተም መዝገቦችን ይምረጡ።",
+  "labels.err_print_at_most_max_source_ids": "ቢበዛ {max_source_ids} መለያዎችን በአንድ ጊዜ ያትሙ።",
+  "tool.create_template_api_labels_templates_post": "መጠኑንና መስኮቹን የሚገልጽ የመለያ አብነት ያክሉ።",
+  "tool.update_template_api_labels_templates__template_id__put": "የመለያ አብነት ይቀይሩ።",
+  "tool.delete_template_api_labels_templates__template_id__delete": "የመለያ አብነት ይሰርዙ።",
+  "tool.print_single_api_labels_print__entity_id__post": "ለአንድ እቃ የPDF መለያ ይፍጠሩ።",
+  "tool.bulk_print_api_labels_bulk_print_post": "ለብዙ እቃዎች የPDF መለያ ሉህ ይፍጠሩ።",
+  "tool.print_source_api_labels_print_source_post": "በተመረጠ አብነት መሠረት ለአንድ ዓይነት የተመረጡ መዝገቦች የPDF መለያ ሉህ ይፍጠሩ።"
 }

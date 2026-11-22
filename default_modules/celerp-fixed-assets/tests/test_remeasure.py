@@ -236,7 +236,7 @@ async def test_corrections_do_not_restate_across_a_remeasurement(fa):
     await _impair(fa, car, "2026-03-31", "8550")
     path = f"/assets/{car}/correct"
     error = await fa.post(path, {"changes": {"cost": "13000"}, "preview": True, "op_key": "c1"})
-    assert error.status_code == 422 and "remeasured on 2026-03-31" in refusal_text(error.json()["detail"])
+    assert error.status_code == 422 and "remeasured on 31 Mar 2026" in refusal_text(error.json()["detail"])
     early = await fa.post(path, {"changes": {"life_months": 48}, "classification": "estimate",
                                  "effective_date": "2026-03-01", "preview": True, "op_key": "c2"})
     assert early.status_code == 422, early.text

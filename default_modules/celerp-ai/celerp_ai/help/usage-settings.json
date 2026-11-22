@@ -6,6 +6,7 @@
   "routes": ["/ai/settings"],
   "permission": "use_ai_assistant",
   "order": 3,
+  "checked": "73910dda9a2b0b329c2f69af835310fbb80500f6fe222852ec86d0c00686b040",
   "steps": [
     {
       "text": "Open {settings} from the AI page's settings link, or from Settings directly. It shows how many questions are included, used and topped up this period.",
@@ -15,6 +16,12 @@
     },
     {
       "text": "Owners and admins who can manage users also see a table of how many questions each person asked this month, so usage can be reviewed without reading every conversation.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/ai/settings", "selector": "main", "actions": []}
+    },
+    {
+      "text": "The assistant works with the permissions of the person asking, so each role's settings decide what it can read and which changes it can propose for them.",
       "labels": {},
       "image": null,
       "capture": {"route": "/ai/settings", "selector": "main", "actions": []}

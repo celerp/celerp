@@ -26,8 +26,8 @@ from collections import defaultdict
 from collections.abc import Sequence
 from decimal import Decimal
 
-from celerp.accounting_roles import AccountRole
-from celerp.importers.results import RecordOutcome
+from celerp.accounting_roles import AccountRole, catalog_refusal
+from celerp.importers.results import RecordOutcome, row_refusal
 from celerp.importers.schema import (
     CIFDocument,
     CIFSettlement,
@@ -237,23 +237,23 @@ def _doc_record(
     accounts: dict[str, str],
     taxes: dict[str, tuple[str, float]],
     names: dict[str, str | None],
-) -> DocImportRecord | str:
+) -> DocImportRecord | dict:
     """The document import record for one source document, or why there is none.
 
     Lines take the normal Celerp shape: quantity, the source unit price, a percentage
     discount, the line's tax by code and rate, and the line total, which is exact."""
     if not isinstance(record, CIFDocument):
-        return f"Record type {type(record).__name__} is not a document."
-    label = f"Document {record.ref or record.source_external_id}"
+        return catalog_refusal("migration.record.wrong_group", record_type=type(record).__name__)
+    label = catalog_refusal("migration.label.document", ref=record.ref or record.source_external_id)
     statuses = _STATUS.get(record.doc_type)
     if statuses is None:
-        return f"{label}: {record.doc_type.value} documents cannot be imported as Celerp documents."
-    problem = _posting_problem(record, contacts, accounts)
+        return catalog_refusal("migration.record.kind_not_importable", label=label, kind=record.doc_type.value)
+    problem = _posting_problem(record, label, contacts, accounts)
     if problem is not None:
-        return f"{label}: {problem}"
+        return problem
     currency = _currency(record, base)
     if currency != base and record.exchange_rate is None:
-        return f"{label} is in {currency} and carries no exchange rate."
+        return catalog_refusal("migration.record.no_exchange_rate", label=label, currency=currency)
     contact_id = contacts.get(record.contact_external_id) if record.contact_external_id else None
     lines = []
     for line in record.line_items:
@@ -261,13 +261,14 @@ def _doc_record(
         if line.item_external_id:
             item_id = items.get(line.item_external_id)
             if item_id is None:
-                return f"{label}: item {line.item_external_id} was not imported."
+                return catalog_refusal("migration.record.item_not_imported", label=label, item=line.item_external_id)
         line_taxes = []
         for tax in line.taxes:
             if tax.tax_code_external_id is None:
                 continue
             if tax.tax_code_external_id not in taxes:
-                return f"{label}: tax code {tax.tax_code_external_id} was not imported."
+                return catalog_refusal("migration.record.tax_code_not_imported", label=label,
+                                       tax_code=tax.tax_code_external_id)
             code, rate = taxes[tax.tax_code_external_id]
             line_taxes.append({"code": code, "rate": rate, "amount": _money(tax.amount, currency)})
         lines.append({k: v for k, v in {
@@ -347,19 +348,21 @@ def _posts(record: CIFDocument) -> bool:
     return record.doc_type in _LINE_SIGN and record.status in ("awaiting_payment", "paid")
 
 
-def _posting_problem(record: CIFDocument, contacts: dict[str, str], accounts: dict[str, str]) -> str | None:
-    """Why the document's contact or posting accounts are missing, or None."""
+def _posting_problem(
+    record: CIFDocument, label: dict, contacts: dict[str, str], accounts: dict[str, str]
+) -> dict | None:
+    """Why the document (``label``) cannot have its contact or posting accounts, or None."""
     if record.contact_external_id and record.contact_external_id not in contacts:
-        return f"contact {record.contact_external_id} was not imported."
+        return catalog_refusal("migration.record.contact_not_imported", label=label, contact=record.contact_external_id)
     if not _posts(record):
         return None
     for line in record.line_items:
         for account, amount in _postings(record, line):
             if amount and account not in accounts:
-                return f"account {account} was not imported."
+                return catalog_refusal("migration.record.account_not_imported", label=label, account=account)
     for account in record.metadata.get("withheld") or {}:
         if account not in accounts:
-            return f"account {account} was not imported."
+            return catalog_refusal("migration.record.account_not_imported", label=label, account=account)
     return None
 
 
@@ -404,7 +407,7 @@ async def _post_document(
 
     if not _posts(record):
         return outcome
-    label = f"Document {record.ref or record.source_external_id}"
+    label = catalog_refusal("migration.label.document", ref=record.ref or record.source_external_id)
     try:
         async with context.session.begin_nested():
             delivered = _deliveries(context, record, items)
@@ -447,7 +450,7 @@ async def _post_document(
                     moves_cash=False,
                 )
     except Exception as exc:
-        return RecordOutcome("", "failed", f"{label}: {getattr(exc, 'detail', exc)}")
+        return RecordOutcome("", "failed", row_refusal(label, exc))
     return outcome
 
 
@@ -464,16 +467,17 @@ async def _import_debit_note(
     """Post a debit note as a journal fallback on its bill and apply it as a payment."""
     from celerp.services import auto_je
 
-    label = f"Debit note {record.ref or record.source_external_id}"
+    label = catalog_refusal("migration.label.debit_note", ref=record.ref or record.source_external_id)
     if _currency(record, base) != base and record.exchange_rate is None:
-        return RecordOutcome("", "rejected", f"{label} is in {record.currency} and carries no exchange rate.")
+        return RecordOutcome("", "rejected", catalog_refusal("migration.record.no_exchange_rate", label=label,
+                                                             currency=record.currency))
     applications = record.metadata.get("applications") or {}
     bill_id = imported.get(next(iter(applications), ""))
     if bill_id is None or len(applications) != 1:
-        return RecordOutcome("", "rejected", f"{label}: the bill it notes was not imported.")
-    problem = _posting_problem(record, contacts, accounts)
+        return RecordOutcome("", "rejected", catalog_refusal("migration.record.bill_not_imported", label=label))
+    problem = _posting_problem(record, label, contacts, accounts)
     if problem is not None:
-        return RecordOutcome("", "rejected", f"{label}: {problem}")
+        return RecordOutcome("", "rejected", problem)
     suffix = f"dn:{deterministic_id(context, record.source_type, record.source_external_id)}"
     try:
         async with context.session.begin_nested():
@@ -494,7 +498,7 @@ async def _import_debit_note(
                 moves_cash=False,
             )
     except Exception as exc:
-        return RecordOutcome("", "failed", f"{label}: {getattr(exc, 'detail', exc)}")
+        return RecordOutcome("", "failed", row_refusal(label, exc))
     status = "skipped" if getattr(entry, "was_deduped", False) else "created"
     return RecordOutcome(f"je:auto:{bill_id}:{suffix}", status, entity_type=JOURNAL)
 
@@ -574,7 +578,7 @@ async def _import_settlements(context: SinkContext, records: Sequence[CIFSourceR
     outcomes = []
     for record in records:
         if not isinstance(record, CIFSettlement):
-            outcomes.append(RecordOutcome("", "rejected", f"Record type {type(record).__name__} is not a settlement."))
+            outcomes.append(RecordOutcome("", "rejected", catalog_refusal("migration.record.wrong_group", record_type=type(record).__name__)))
             continue
         reason = await _settlement_problem(context, record, base, docs, banks)
         if reason is not None:
@@ -584,26 +588,34 @@ async def _import_settlements(context: SinkContext, records: Sequence[CIFSourceR
     return outcomes
 
 
+def _settlement_label(record: CIFSettlement) -> dict:
+    """A receipt or payment named by its source reference."""
+    return catalog_refusal(f"migration.label.{record.settlement_type.value}", ref=record.source_ref or record.source_external_id)
+
+
 async def _settlement_problem(
     context: SinkContext, record: CIFSettlement, base: str, docs: dict[str, str], banks: dict[str, str]
-) -> str | None:
+) -> dict | None:
     """Why a settlement cannot be imported as payments on its documents, or None."""
-    label = f"{record.settlement_type.value.capitalize()} {record.source_ref or record.source_external_id}"
+    label = _settlement_label(record)
     if _currency(record, base) != base and record.exchange_rate is None:
-        return f"{label} is in {record.currency} and carries no exchange rate."
+        return catalog_refusal("migration.record.no_exchange_rate", label=label, currency=record.currency)
     if record.bank_account_external_id not in banks:
-        return f"{label}: bank account {record.bank_account_external_id} was not imported."
+        return catalog_refusal("migration.record.bank_account_not_imported", label=label,
+                               account=record.bank_account_external_id)
     allocated = sum((a.amount for a in record.allocations), Decimal(0))
     if not record.allocations or allocated != record.amount:
-        return f"{label}: {record.amount - allocated} is not allocated to a document, which Celerp payments cannot hold."
+        return catalog_refusal("migration.record.unallocated", label=label, amount=str(record.amount - allocated))
     settles = _SETTLES[record.settlement_type]
     for allocation in record.allocations:
         doc_id = docs.get(allocation.document_external_id)
         if doc_id is None:
-            return f"{label}: document {allocation.document_external_id} was not imported."
+            return catalog_refusal("migration.record.document_not_imported", label=label,
+                                   document=allocation.document_external_id)
         row = await context.session.get(Projection, (context.company_id, doc_id))
         if row is None or (row.state or {}).get("doc_type") != settles.value:
-            return f"{label}: document {allocation.document_external_id} is not a {settles.value}."
+            return catalog_refusal("migration.record.document_not_kind", label=label,
+                                   document=allocation.document_external_id, kind=settles.value)
     return None
 
 
@@ -634,7 +646,7 @@ async def _settle(
                 if not getattr(entry, "was_deduped", False):
                     applied += 1
     except Exception as exc:
-        return RecordOutcome("", "failed", f"Settlement {record.source_external_id}: {getattr(exc, 'detail', exc)}")
+        return RecordOutcome("", "failed", row_refusal(_settlement_label(record), exc))
     return RecordOutcome(settlement_id, "created" if applied else "skipped")
 
 

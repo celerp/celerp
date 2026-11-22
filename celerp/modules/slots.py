@@ -128,6 +128,12 @@ import_target      {"kind", "handler", "href"}: a file of records a module impor
                    as_at, source, body) -> dict`, called with exactly those keyword
                    arguments: rows a list of dicts keyed by the module's column names,
                    body the module's own options (preview, exclusions, confirmation)
+record_names {"handler": "module.path:function"} naming
+                   `async def handler(*, session, company_id, settings, role, ids) -> dict`,
+                   called with exactly those keyword arguments when a proposed change is
+                   stored: ids a set of record ids the change carries. It returns {id: name}
+                   for the ids that are the module's own records and that this role may
+                   read; the confirm card shows the name in place of the id.
 turn_off_preflight {"handler": "module.path:function"} naming
                    `async def handler(*, session, company_id) -> dict`, called with exactly
                    those keyword arguments when the module is about to be turned off for a
@@ -162,7 +168,7 @@ app-local paths; and every
 callable an entry names is the module's own code, async exactly where core awaits it,
 and takes exactly the keyword arguments core passes where the slot names them
 (inventory_in_production, item_lineage_guard, doc_status_guard, demo_records, doc_asset_lines,
-doc_posting_dependents, label_source, import_target, turn_off_preflight). A nav entry with a "probe_href" is shown only when that page,
+doc_posting_dependents, label_source, import_target, record_names, turn_off_preflight). A nav entry with a "probe_href" is shown only when that page,
 loaded with the sidebar, answers with the link: for an entry whose audience
 depends on the records themselves (the assets in a member's care), not on a
 permission.
@@ -198,7 +204,7 @@ SLOT_NAMES = frozenset({
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
     "doc_status_guard", "demo_records", "background_loop", "doc_asset_lines", "doc_posting_dependents",
     "fixed_asset_rules", "label_source",
-    "import_target", "turn_off_preflight", "periodic_operation",
+    "import_target", "record_names", "turn_off_preflight", "periodic_operation",
 })
 
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any
@@ -240,7 +246,7 @@ def resolve_handler(dotted: str) -> Callable:
 # "module.path:function" handler would fail every such call, so it is refused here.
 _HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard", "doc_status_guard", "demo_records",
                             "doc_asset_lines", "doc_posting_dependents", "label_source", "import_target",
-                            "turn_off_preflight"})
+                            "record_names", "turn_off_preflight"})
 
 
 def check(slot: str, contribution: dict) -> None:

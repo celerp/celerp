@@ -29,5 +29,15 @@
   "labels.selected": "選択済み：{ids}{more}",
   "labels.template_deleted": "テンプレートを削除しました。",
   "labels.template_not_found": "テンプレートが見つかりません。",
-  "labels.width_example": "例：50"
+  "labels.width_example": "例：50",
+  "labels.err_labels_not_printed_source_records": "{source} レコードにはラベルは印刷されません。",
+  "labels.err_your_role_cannot_see_these_records": "あなたのロールではこれらのレコードを見ることができないため、ラベルを印刷することはできません。",
+  "labels.err_choose_records_print_labels": "ラベルを印刷するレコードを選択してください。",
+  "labels.err_print_at_most_max_source_ids": "一度に印刷できるラベルの最大枚数は{max_source_ids}枚です。",
+  "tool.create_template_api_labels_templates_post": "サイズと項目を指定してラベルテンプレートを追加します。",
+  "tool.update_template_api_labels_templates__template_id__put": "ラベルテンプレートを変更します。",
+  "tool.delete_template_api_labels_templates__template_id__delete": "ラベルテンプレートを削除します。",
+  "tool.print_single_api_labels_print__entity_id__post": "在庫商品1点のPDFラベルを作成します。",
+  "tool.bulk_print_api_labels_bulk_print_post": "複数の在庫商品のラベルを並べたPDFを作成します。",
+  "tool.print_source_api_labels_print_source_post": "選択したテンプレートを使用して、同じ種類の選択した記録のラベルシートPDFを作成します。"
 }

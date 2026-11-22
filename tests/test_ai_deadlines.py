@@ -197,7 +197,7 @@ def relay(monkeypatch):
 async def _call():
     from celerp.ai import jobs
     async with jobs.gate.slot("interactive"):
-        return await llm.complete([{"role": "user", "content": "hi"}])
+        return await jobs.send_step(lambda: llm.complete([{"role": "user", "content": "hi"}]), resend=False)
 
 
 async def test_stale_limits_declare_the_budget_the_app_holds(relay):

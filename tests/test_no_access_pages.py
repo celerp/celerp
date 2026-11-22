@@ -38,7 +38,7 @@ async def test_a_missing_document_opens_inside_the_app_with_a_way_back(client, s
 
 
 @pytest.mark.parametrize("path", ["/accounting/reconcile/start",
-                                  "/accounting/reconcile/00000000-0000-0000-0000-000000000001",
+                                  "/accounting/reconcile/bank/00000000-0000-0000-0000-000000000001",
                                   "/accounting/reconcile/history/00000000-0000-0000-0000-000000000001"])
 async def test_reconciliation_pages_name_the_permission_instead_of_offering_the_form(client, session, path):
     """A role that may not reconcile is told so on every reconciliation page, not shown a form it

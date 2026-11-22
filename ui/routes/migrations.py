@@ -40,7 +40,7 @@ from celerp.importers.adapters.base import COMPANY_QUESTION
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
-from ui.components.shell import auth_shell, client_scripts, flash, page_title, sign_in_fields, toast_header
+from ui.components.shell import auth_shell, client_scripts, flash, page_title, sign_in_fields, toast_header, error_flash
 from ui.components.activity import fmt_qty
 from ui.components.files import fmt_size
 from ui.components.table import EMPTY, display_enum, fmt_money, format_value, searchable_select
@@ -51,7 +51,7 @@ from ui.config import (
     get_token,
     session_cookie_secure,
 )
-from ui.i18n import doc_type_label, get_lang, role_label, t
+from ui.i18n import doc_type_label, get_lang, refusal_text, role_label, t
 from ui.routes.account import account_panel
 from ui.security import company_owner
 from ui.routes.auth import auth_header, finish_sign_in
@@ -206,6 +206,13 @@ def _badge(text: str, cls: str) -> FT:
     return Span(text, cls=f"badge {cls}")
 
 
+def field_errors(e: APIError) -> dict[str, str]:
+    """A form refused field by field (each entry of ``errors`` names its ``field``), as
+    the text of each field's refusal; empty for any other refusal."""
+    return {x["field"]: refusal_text(x) for x in (e.data or {}).get("errors", [])
+            if isinstance(x, dict) and "field" in x}
+
+
 def field_error(errors: dict, field: str) -> FT | str:
     message = errors.get(field)
     return P(str(message), cls="form-hint text-danger") if message else ""
@@ -293,7 +300,7 @@ async def _current_scan(request: Request, mode: WizardMode):
     except APIError as e:
         if e.status == 410:
             return None, _expired(request, mode, str(e.detail))
-        return None, wizard_page(request, auth_header(t("migration.title")), flash(str(e.detail)), back_link(mode.back),
+        return None, wizard_page(request, auth_header(t("migration.title")), error_flash(e), back_link(mode.back),
                            status_code=e.status if e.status >= 400 else 502)
     if "run_id" in entry:
         # The start went through but its response was lost: continue with that run.
@@ -1116,8 +1123,7 @@ async def _upload_several(request: Request, mode: WizardMode):
             get_token(request), [(f.filename, f.file) for f in uploads],
             str(form.get("source", "")).strip() or None, str(form.get("prepared_by", "")).strip())
     except APIError as e:
-        detail = e.detail.get("prepared_by") if isinstance(e.detail, dict) else e.detail
-        return html_response(await _several_panel(request, mode, error=str(detail)))
+        return html_response(await _several_panel(request, mode, error=e.detail))
     return html_response(await _several_panel(
         request, mode, rows=body["items"], notice=t("migration.several_added", count=len(uploads))))
 
@@ -1389,8 +1395,8 @@ async def _save_decisions(request: Request, mode: WizardMode):
     except APIError as e:
         if e.status == 410:
             return _expired(request, mode, str(e.detail))
-        if isinstance(e.detail, dict):
-            return render(request, mode, entry, errors=e.detail)
+        if errors := field_errors(e):
+            return render(request, mode, entry, errors=errors)
         return render(request, mode, entry, error=str(e.detail))
     if step == "coverage" and new_scan.get("questions"):
         return RedirectResponse(f"{mode.base}/mapping", status_code=303)
@@ -1535,8 +1541,8 @@ async def _start(request: Request, mode: WizardMode):
     except APIError as e:
         if e.status == 410:
             return _expired(request, mode, str(e.detail))
-        if isinstance(e.detail, dict):
-            return await review(errors=e.detail)
+        if errors := field_errors(e):
+            return await review(errors=errors)
         return await review(error=str(e.detail))
     dest = f"/migrations/{started['run_id']}"
     if api_token(request, mode) is None:

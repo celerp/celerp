@@ -148,7 +148,7 @@ async def test_schema_change_in_progress_refuses_export_and_restore(
         try:
             r = await real_client.get("/company-backups/download", headers=auth(tok))
             assert r.status_code == 409, r.text
-            assert "updating its database" in r.json()["detail"]
+            assert "updating its database" in refusal_text(r.json()["detail"])
             out = tmp_path / "direct.celerp-company"
             with pytest.raises(_bk_cb().BackupError) as err:
                 await _bk_cb().export_company_snapshot(cid, out)
@@ -160,7 +160,7 @@ async def test_schema_change_in_progress_refuses_export_and_restore(
             r = await real_client.post("/company-backups/restore", json=confirm(preview, "new_company"),
                                        headers=auth(tok))
             assert r.status_code == 409, r.text
-            assert "Nothing was restored" in r.json()["detail"]
+            assert "Nothing was restored" in refusal_text(r.json()["detail"])
             assert await _company_count(real_engine) == before
         finally:
             await holder.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": SCHEMA_KEY})
@@ -591,7 +591,7 @@ async def test_company_backup_during_system_recovery_is_refused_and_writes_nothi
         recovery.release.set()
         await asyncio.wait_for(recovery.task, 15)
     assert r.status_code == 409, r.status_code
-    assert r.json()["detail"].startswith("Celerp is updating its database. No copy was made.")
+    assert refusal_text(r.json()["detail"]).startswith("Celerp is updating its database. No copy was made.")
     assert direct is not None and direct.status_code == 409
     assert direct.detail.startswith("Celerp is updating its database. No copy was made.")
     assert sorted(p for p in tmp_path.rglob("*") if p.is_file()) == files_before

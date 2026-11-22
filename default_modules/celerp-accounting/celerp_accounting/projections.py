@@ -38,6 +38,8 @@ def apply_accounting_event(state: dict, event_type: str, data: dict) -> dict:
         current.update({"entity_type": "period", "period": data["period"], "status": "open"})
     elif event_type == "acc.reconciliation.reopened":
         current.update({"entity_type": "reconciliation", **data})
+    elif event_type == "acc.bank_statement.done":
+        current.update({"entity_type": "bank_operation", **data})
 
     elif event_type == "fund.created":
         current.update({"entity_type": "fund", **data, "archived": False})

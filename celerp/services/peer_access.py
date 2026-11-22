@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company_peer import CompanyPeerGrant
 from celerp.services.company_lock import locked_company, lock_company
+from ui.i18n import t
 
 # Each entity the Celerp connector sends, and the grant scope that authorizes it.
 ENTITY_SCOPE = {
@@ -44,7 +45,7 @@ PEER_ROUTES = {
 ENTITY_ROUTE = {entity: path for (_, path), entity in PEER_ROUTES.items()}
 # The header naming the sending company on every request signed with its key.
 SOURCE_HEADER = "X-Celerp-Source-Company"
-UNAVAILABLE = "Integration operation unavailable"
+UNAVAILABLE = "peer.err_operation_unavailable"
 MAX_ACTIVE = 5
 
 
@@ -203,11 +204,11 @@ async def issue(session: AsyncSession, *, company_id: uuid.UUID, source_company_
     if (not isinstance(label, str) or not 1 <= len(label.strip()) <= 128 or
             not isinstance(firm, str) or not 1 <= len(firm.strip()) <= 160 or
             not scopes or not scopes <= SCOPES):
-        raise HTTPException(422, "Invalid integration grant")
+        raise HTTPException(422, t("peer.err_invalid_integration_grant"))
     when = now or datetime.now(timezone.utc)
     company = await locked_company(session, company_id)
     if company is None or not company.is_active or company.is_migration_staged:
-        raise HTTPException(404, "Company unavailable")
+        raise HTTPException(404, t("peer.err_company_unavailable"))
     await _within_limit(session, company_id, when)
     grant_id = uuid.uuid4()
     raw = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
@@ -231,7 +232,7 @@ async def _within_limit(session: AsyncSession, company_id: uuid.UUID, when: date
         CompanyPeerGrant.revoked_at.is_(None),
     ))
     if count >= MAX_ACTIVE:
-        raise HTTPException(409, "Too many active integrations")
+        raise HTTPException(409, t("peer.err_too_many_active_integrations"))
 
 
 async def authenticate(session: AsyncSession, credential: object, *,
@@ -239,10 +240,10 @@ async def authenticate(session: AsyncSession, credential: object, *,
                        now: datetime | None = None) -> CompanyPeerGrant:
     """Authenticate inside the domain transaction before mutating a company."""
     if scope not in SCOPES:
-        raise HTTPException(403, UNAVAILABLE)
+        raise HTTPException(403, t(UNAVAILABLE))
     row = await held(session, credential, source_company_id=source_company_id, now=now)
     if scope not in row.scopes:  # a live key, just not given this; its holder learns nothing new
-        raise HTTPException(403, UNAVAILABLE)
+        raise HTTPException(403, t(UNAVAILABLE))
     return row
 
 
@@ -281,7 +282,7 @@ async def live_grant(session: AsyncSession, company_id: uuid.UUID, source_compan
         CompanyPeerGrant.expires_at > datetime.now(timezone.utc)))).all()
     row = next((r for r in rows if scope in r.scopes), None)
     if row is None:
-        raise HTTPException(409, "The connection that sent this record has ended.")
+        raise HTTPException(409, t("peer.err_connection_sent_record_has_ended"))
     return row
 
 
@@ -299,12 +300,12 @@ async def renew(session: AsyncSession, company_id: uuid.UUID, grant_id: uuid.UUI
     changes nothing further."""
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(404, "Company unavailable")
+        raise HTTPException(404, t("peer.err_company_unavailable"))
     row = await session.get(CompanyPeerGrant, grant_id)
     if row is None or row.company_id != company_id:
-        raise HTTPException(404, "Integration unavailable")
+        raise HTTPException(404, t("peer.err_integration_unavailable"))
     if row.revoked_at is not None:
-        raise HTTPException(409, "This key was revoked. Issue a new key instead.")
+        raise HTTPException(409, t("peer.err_key_was_revoked_issue_new_key"))
     when = now or datetime.now(timezone.utc)
     if _instant(row.expires_at) <= _instant(when):
         await _within_limit(session, company_id, when)
@@ -371,10 +372,10 @@ async def revoke(session: AsyncSession, company_id: uuid.UUID, grant_id: uuid.UU
                  *, now: datetime | None = None) -> None:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(404, "Company unavailable")
+        raise HTTPException(404, t("peer.err_company_unavailable"))
     row = await session.get(CompanyPeerGrant, grant_id)
     if row is None or row.company_id != company_id:
-        raise HTTPException(404, "Integration unavailable")
+        raise HTTPException(404, t("peer.err_integration_unavailable"))
     if row.revoked_at is None:
         row.revoked_at = now or datetime.now(timezone.utc)
         await session.flush()

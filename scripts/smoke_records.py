@@ -59,6 +59,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import unquote
 
+LEDGER_PAGE_LIMIT = 500  # celerp.routers.ledger MAX_PAGE; tests/test_smoke_records.py guards it
 EMAIL = "owner@example.com"
 PASSWORD = "Smoke-Upgrade-Password-1"
 CUSTOMER = "บริษัท ทดสอบ شركة الاختبار 测试公司"
@@ -156,11 +157,25 @@ def snapshot(api: str) -> None:
     print(json.dumps(records(api, login(api)), sort_keys=True))
 
 
+def ledger_events(api: str, token: str) -> list[dict]:
+    """Every ledger event, newest first, paged through the endpoint's own cursor at its own
+    page limit (LEDGER_PAGE_LIMIT)."""
+    events: list[dict] = []
+    before = None
+    while True:
+        url = api + f"/ledger?limit={LEDGER_PAGE_LIMIT}" + (f"&before={before}" if before is not None else "")
+        status, page = http("GET", url, token)
+        if status != 200:
+            fail(f"GET /ledger: {status} {page}")
+        events.extend(page.get("items", []))
+        if not page.get("has_older") or not page.get("items"):
+            return events
+        before = page["items"][-1]["id"]
+
+
 def records(api: str, token: str) -> dict:
     _, health = http("GET", api + "/health")
-    status, ledger = http("GET", api + "/ledger?limit=1000", token)
-    if status != 200:
-        fail(f"GET /ledger: {status} {ledger}")
+    ledger = ledger_events(api, token)
     served = {}
     for path, field in (("/companies/me/locations", "name"), ("/crm/contacts", "name"), ("/items", "sku")):
         try:
@@ -171,7 +186,7 @@ def records(api: str, token: str) -> dict:
         served[path] = sorted(r.get(field) for r in rows) if status == 200 else status
     return {
         "version": health.get("version"),
-        "ledger": [[e["id"], e["event_type"], e["entity_id"]] for e in ledger.get("items", [])],
+        "ledger": [[e["id"], e["event_type"], e["entity_id"]] for e in ledger],
         "served": served,
     }
 

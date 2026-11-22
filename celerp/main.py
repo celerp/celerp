@@ -13,13 +13,15 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy.exc import DBAPIError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
 from celerp.accounting_roles import KeyedRefusal, catalog_refusal
 from celerp.error_body import error_response
-from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentials
+from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentials, sqlstate
+from celerp.modules.boundary import LOCK_TIMEOUT, CompanyBusy
 from celerp.openapi_parameters import describe_parameters
 from celerp.services.account_roles import PostingRoleError
 from celerp.services.business_time import InvalidTimezoneError
@@ -368,14 +370,16 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
 _SHUTDOWN_GRACE_S = 10
 
 
-async def _stop_background_tasks(tasks: list[asyncio.Task | None]) -> None:
+async def _stop_background_tasks(tasks: list[asyncio.Task | None], finishing: list[asyncio.Task] = ()) -> None:
     """Cancel the background tasks boot started and wait for each to finish, so none
     is left with a connection open in a transaction (holding its table locks) after
-    shutdown. A task still running after _SHUTDOWN_GRACE_S ends the process there and
-    then: shutdown never returns with work of this process still able to write."""
+    shutdown. ``finishing`` tasks stop their own work and are waited for with the rest,
+    never cancelled. A task still running after _SHUTDOWN_GRACE_S ends the process there
+    and then: shutdown never returns with work of this process still able to write."""
     tasks = [t for t in tasks if t is not None]
     for task in tasks:
         task.cancel()
+    tasks += finishing
     if not tasks:
         return
     _done, pending = await asyncio.wait(tasks, timeout=_SHUTDOWN_GRACE_S)
@@ -421,6 +425,14 @@ async def lifespan(_app: FastAPI):
             yield
     finally:
         await asyncio.to_thread(held.release)
+
+
+def module_loops() -> list[asyncio.Task]:
+    """Start every module's own background loop (the background_loop slot). Their work is
+    nobody's by hand, so each runs unattended (its events read "Automatically")."""
+    from celerp.events.engine import unattended
+    from celerp.modules.slots import get as _get_slot, resolve_handler as _resolve
+    return [asyncio.create_task(unattended(_resolve(c["handler"]))) for c in _get_slot("background_loop")]
 
 
 @asynccontextmanager
@@ -657,10 +669,7 @@ async def _serve(_app: FastAPI, held):
             asyncio.create_task(reorder_alert_loop()),
         ]
         # Modules' own background loops (the background_loop slot), on the same rule.
-        # Their work is nobody's by hand, so each runs unattended (its events read "Automatically").
-        from celerp.events.engine import unattended
-        from celerp.modules.slots import get as _get_slot, resolve_handler as _resolve
-        background += [asyncio.create_task(unattended(_resolve(c["handler"])())) for c in _get_slot("background_loop")]
+        background += module_loops()
 
     # Company key expiry: an hourly check that keeps one notice standing while a key
     # this company issued to a client company expires within a week.
@@ -683,12 +692,15 @@ async def _serve(_app: FastAPI, held):
     from celerp.notifications.sse import shutdown_all as _sse_shutdown
     _sse_shutdown()
 
-    # Stop background tasks, the backup scheduler, migration runs and AI jobs included, and wait for them
+    # Stop background tasks, the backup scheduler and migration runs included, and wait for
+    # them. AI jobs stop by their own rule in the same wait: their tasks are cancelled, a
+    # lease renewal already sent is left to finish.
     from celerp.ai import jobs as _ai_jobs
     from celerp.services import backup_scheduler
     from celerp.services import migrations as _migration_runs
     background.append(backup_scheduler.stop())
-    await _stop_background_tasks(background + _migration_runs.running_tasks() + _ai_jobs.running_tasks())
+    await _stop_background_tasks(background + _migration_runs.running_tasks(),
+                                 finishing=[asyncio.create_task(_ai_jobs.shutdown(), name="ai-jobs-shutdown")])
 
     # Close the tunnel and its run task, whoever started it (boot gate, auto-activate,
     # or a runtime share-create) - the gateway package owns that lifecycle now.
@@ -809,6 +821,17 @@ async def not_found_handler(request: Request, exc):
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     return error_response(request, exc.status_code, exc.detail, headers=exc.headers)
+
+
+@app.exception_handler(DBAPIError)
+async def lock_timeout_handler(request: Request, exc: DBAPIError):
+    """A lock wait that gave up at the request lock timeout, in any route: other work for
+    the company held the rows longer, and the transaction rolled back, so it is refused as
+    busy, to try again. Any other database error stays a server error."""
+    if sqlstate(exc) == LOCK_TIMEOUT:
+        return await http_exception_handler(request, CompanyBusy())
+    log_unhandled_exception(request, exc)
+    return error_response(request, 500, catalog_refusal("error.server_error"))
 
 
 @app.exception_handler(Exception)

@@ -1,29 +1,34 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""The AR and AP aging pages: a user without the financial reports permission is told so
-instead of seeing an empty report, and a credit (a negative amount) links to the party's
+"""The AR and AP aging, sales and purchases pages: a user without the financial reports
+permission sees the no-access banner naming the missing permission instead of an empty
+report, and a credit (a negative amount) links to the party's
 statement, where the credit and what it settles are shown."""
 from __future__ import annotations
 
 from datetime import date
+from html import escape
 
 import pytest
 from fasthtml.common import to_xml
 
+from celerp.services.permissions import missing_permission_text
 from test_helpers import perm_setup, ui_get
 from ui.i18n import t
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["/reports/ar-aging", "/reports/ap-aging"])
-async def test_aging_page_without_permission_says_no_access(client, session, path):
+@pytest.mark.parametrize("path", ["/reports/ar-aging", "/reports/ap-aging", "/reports/sales", "/reports/purchases"])
+async def test_financial_report_page_without_permission_says_no_access(client, session, path):
     ctx = await perm_setup(client, session)
+    refusal = escape(missing_permission_text("view_financial_reports"), quote=False)
     staff = await ui_get(ctx["operator_h"], path)
     assert staff.status_code == 200
-    assert t("perm.page_no_access") in staff.text
+    assert refusal in staff.text
+    assert 'href="/dashboard"' in staff.text and escape(t("error.back_to_dashboard"), quote=False) in staff.text
     assert '<table class="data-table"' not in staff.text
     manager = await ui_get(ctx["manager_h"], path)
-    assert t("perm.page_no_access") not in manager.text
+    assert refusal not in manager.text
 
 
 def _line(party_key: str) -> dict:

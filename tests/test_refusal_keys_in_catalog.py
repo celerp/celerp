@@ -18,10 +18,15 @@ _COMPLETE_LOCALES there), so this file does not re-check locales itself."""
 from __future__ import annotations
 
 import ast
+import functools
 import json
 from pathlib import Path
 
+from celerp.services import migration_export_requests as export_requests
+from celerp.services import migration_move_requests as move_requests
 from celerp_fixed_assets.calc.rules import CORE
+from celerp_fixed_assets.operations import _DISPOSITIONS
+from celerp_labels.service import LABEL_NUMBERS
 from shipped_sources import SHIPPED_ROOTS
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -55,9 +60,34 @@ def _literal_or_prefix(node: ast.expr):
     return None, None
 
 
-def _branches(node: ast.expr) -> list[ast.expr]:
-    """The keys a key argument may be: each branch of a conditional, else the argument."""
-    return [*_branches(node.body), *_branches(node.orelse)] if isinstance(node, ast.IfExp) else [node]
+def _branches(node: ast.expr, constants: dict[str, list[ast.expr]] | None = None) -> list[ast.expr]:
+    """The keys a key argument may be: each branch of a conditional; a module constant's
+    string, or every value of a module dict it is looked up in; else the argument."""
+    constants = constants or {}
+    if isinstance(node, ast.IfExp):
+        return [*_branches(node.body, constants), *_branches(node.orelse, constants)]
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+        return constants.get(f"{node.value.id}[]", [node])
+    if isinstance(node, ast.Name):
+        return constants.get(node.id, [node])
+    return [node]
+
+
+def _constants(tree: ast.Module) -> dict[str, list[ast.expr]]:
+    """A module's string constants by name, and its dicts of strings as ``name[]``."""
+    found = {}
+    for stmt in tree.body:
+        target = stmt.targets[0] if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 else (
+            stmt.target if isinstance(stmt, ast.AnnAssign) else None)
+        value = getattr(stmt, "value", None)
+        if not isinstance(target, ast.Name) or value is None:
+            continue
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            found[target.id] = [value]
+        elif isinstance(value, ast.Dict) and value.values and all(
+                isinstance(v, ast.Constant) and isinstance(v.value, str) for v in value.values):
+            found[f"{target.id}[]"] = list(value.values)
+    return found
 
 
 def _module(path: Path) -> str:
@@ -67,6 +97,7 @@ def _module(path: Path) -> str:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
+@functools.cache
 def _trees() -> dict[str, tuple[Path, ast.Module]]:
     """Every production file (celerp/ and default_modules/, excluding tests) by module."""
     trees = {}
@@ -79,11 +110,24 @@ def _trees() -> dict[str, tuple[Path, ast.Module]]:
     return trees
 
 
+@functools.cache
+def _imports(tree: ast.Module) -> tuple[ast.ImportFrom, ...]:
+    """Every ``from ... import`` of a module, walked once (the maker search reads them on
+    every pass)."""
+    return tuple(n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom))
+
+
+@functools.cache
+def _calls(node: ast.AST) -> tuple[ast.Call, ...]:
+    """Every call inside ``node``, walked once."""
+    return tuple(n for n in ast.walk(node) if isinstance(n, ast.Call))
+
+
 def _visible(module: str, tree: ast.Module, makers: dict[str, dict[str, int]]) -> dict[str, int]:
     """The makers a module calls by name: its own, and those it imports from another."""
     seen = dict(makers.get(module, {}))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module in makers and not node.level:
+    for node in _imports(tree):
+        if node.module in makers and not node.level:
             seen.update({a.asname or a.name: makers[node.module][a.name]
                          for a in node.names if a.name in makers[node.module]})
     return seen
@@ -97,9 +141,9 @@ def _key_index(node: ast.FunctionDef, skip: int = 0) -> int | None:
 
 def _hands_on_key(node: ast.FunctionDef, seen: dict[str, int]) -> bool:
     """Whether ``node`` passes its ``key``, as it is, to a maker it sees."""
-    return any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id in seen
+    return any(isinstance(c.func, ast.Name) and c.func.id in seen
                and len(c.args) > seen[c.func.id] and isinstance(c.args[seen[c.func.id]], ast.Name)
-               and c.args[seen[c.func.id]].id == "key" for c in ast.walk(node))
+               and c.args[seen[c.func.id]].id == "key" for c in _calls(node))
 
 
 def _makers(trees) -> dict[str, dict[str, int]]:
@@ -135,7 +179,8 @@ def _makers(trees) -> dict[str, dict[str, int]]:
     return makers
 
 
-def _refusal_calls():
+@functools.cache
+def _refusal_calls() -> tuple:
     """Every refusal call site in production code, as (file:line, key_or_prefix, kind): a
     call naming the key of a maker (_makers) it sees, outside the makers themselves."""
     trees = _trees()
@@ -143,12 +188,13 @@ def _refusal_calls():
     calls = []
     for module, (path, tree) in trees.items():
         seen = _visible(module, tree, makers)
-        modules = {a.asname or a.name: f"{n.module}.{a.name}" for n in ast.walk(tree)
-                   if isinstance(n, ast.ImportFrom) and n.module and not n.level for a in n.names}
+        constants = _constants(tree)
+        modules = {a.asname or a.name: f"{n.module}.{a.name}" for n in _imports(tree)
+                   if n.module and not n.level for a in n.names}
         wrapped = {id(n) for f in tree.body if isinstance(f, (ast.FunctionDef, ast.ClassDef))
                    and f.name in makers[module] for n in ast.walk(f)}
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or id(node) in wrapped:
+        for node in _calls(tree):
+            if id(node) in wrapped:
                 continue
             fn = node.func
             if isinstance(fn, ast.Name):
@@ -160,8 +206,8 @@ def _refusal_calls():
             if position is None or len(node.args) <= position:
                 continue
             calls += [(f"{path.relative_to(_ROOT)}:{node.lineno}", *_literal_or_prefix(arg))
-                      for arg in _branches(node.args[position])]
-    return calls
+                      for arg in _branches(node.args[position], constants)]
+    return tuple(calls)
 
 
 def test_every_kind_of_maker_is_found():
@@ -235,6 +281,12 @@ def _peer_lines_keys() -> list[str]:
 
 
 _DYNAMIC_KEY_SITES = {
+    # statement_reader.py: _too_long names each over-long field by its label key from _LINE_LIMITS
+    # and _HEADER_LIMITS
+    "default_modules/celerp-accounting/celerp_accounting/statement_reader.py": [
+        "field.line_date", "label.reference", "field.fitid", "field.counterparty_account",
+        "field.period_start", "field.period_end",
+    ],
     # celerp/services/lot_origin.py: _refused(status, key, message) wraps refusal(key, ...)
     # for the older-stock move, undo and adjustment refusals
     "celerp/services/lot_origin.py": [
@@ -259,6 +311,12 @@ _DYNAMIC_KEY_SITES = {
     "celerp/error_body.py": [],
     # celerp/services/document_lines.py: key, text = _PROTECTED_MESSAGES[why]
     "celerp/services/document_lines.py": ["line.protected_held", "line.protected_received"],
+    # default_modules/celerp-accounting/celerp_accounting/statement_lines.py: scoped(state_key=...)
+    # refuses a line's status under the caller's state_key; every caller either leaves the
+    # default or passes this one literal
+    "default_modules/celerp-accounting/celerp_accounting/statement_lines.py": [
+        "acct.err_recon_line_state", "acct.err_recon_already_unmatched",
+    ],
     # default_modules/celerp-inventory/celerp_inventory/services.py: each CostRefused
     # subclass passes its literal key to Refused through super().__init__
     "default_modules/celerp-inventory/celerp_inventory/services.py": [
@@ -315,6 +373,26 @@ _DYNAMIC_KEY_SITES = {
     # celerp/services/peer_lines.py: _refused(status, key, **params) wraps catalog_refusal(key, ...)
     # for the fund choice, arrival and Change fund refusals
     "celerp/services/peer_lines.py": _peer_lines_keys(),
+    # celerp/services/company_handoff_sender.py: cloud_json(unconfirmed=, account_needed=) raises
+    # the keys each caller passes it
+    "celerp/services/company_handoff_sender.py": [
+        move_requests.UNCONFIRMED, move_requests.ACCOUNT_NEEDED, export_requests.UNCONFIRMED,
+        export_requests.ACCOUNT_NEEDED, "migration.xero_att_unconfirmed", "migration.xero_att_account_needed",
+        "handoff.copy_unconfirmed", "handoff.account_needed"],
+    # celerp/importers/results.py: a row refusal keeps the key of the refusal it already carries,
+    # checked where that refusal is raised
+    "celerp/importers/results.py": [],
+    # celerp_fixed_assets/runs.py: _month(value, refusal) and its callers' month and period keys
+    "default_modules/celerp-fixed-assets/celerp_fixed_assets/runs.py": [
+        "fixed_assets.err_month_yyyy_mm", "fixed_assets.err_period_yyyy_mm"],
+    # celerp_fixed_assets/upkeep.py: _whole(value, low, high, refusal) for each whole-number field
+    "default_modules/celerp-fixed-assets/celerp_fixed_assets/upkeep.py": [
+        "fixed_assets.err_repeat_every_months", "fixed_assets.err_lead_days_whole"],
+    # celerp_fixed_assets/operations.py: disposition() refuses with the keys of its _DISPOSITIONS row
+    "default_modules/celerp-fixed-assets/celerp_fixed_assets/operations.py": [
+        key for no_reason, wrong_line, _kinds in _DISPOSITIONS.values() for key in (no_reason, wrong_line)],
+    # celerp_labels/service.py: label_number() names the field by its LABEL_NUMBERS label key
+    "default_modules/celerp-labels/celerp_labels/service.py": [what for what, _lo, _hi in LABEL_NUMBERS.values()],
 }
 
 
@@ -394,83 +472,6 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
     "celerp/routers/auth.py": {
         "direct_connection_limit",
         "Invalid refresh token",
-        "System already bootstrapped. Contact your admin.",
-        "Registration failed",
-        "Password must be at least  characters.",
-    },
-    "celerp/routers/companies.py": {
-        "Unknown permission ''",
-        "Unknown role ''",
-        "Installation owner access required",
-        " is part of Celerp and is always on.",
-        "Unknown module source.",
-        "Could not create company: ",
-        "Password must be at least  characters.",
-        "Unit '' type must be one of: ",
-        " needs this module. Turn that off first.",
-        "Unknown business type: ",
-    },
-    "default_modules/celerp-docs/celerp_docs/routes.py": {
-        "Cannot send a closed memo; reopen it first.",
-        "Add at least one line item before sending this document.",
-        "Cannot void a document with payments; void the payments first",
-        "This payment has been refunded in full, so there is nothing left to void.",
-        "Credit note applications cannot be deleted. Void the payment instead.",
-        ": it is not on this . Add it to the  first.",
-        "Only an issued  can record goods moved before it came to Celerp",
-        "Line  does not hold item ",
-        "Line : at most  can be moved",
-        "Select at least one document to ship",
-        "offset must be zero or greater",
-        "limit must be greater than zero",
-        "Finalize the count before adjusting stock",
-        "Select at least one item to write off",
-        "Enter a quantity and a destination account for each item you want to write off",
-        "Unknown list type: ",
-        "Issue the transfer before moving its items",
-        "This credit note cannot be undone: goods it released from invoice  have left "
-        "stock since, so the invoice cannot hold them again. Bring the goods back into "
-        "stock first, or issue a new invoice for them.",
-        ": the receipt cost  differs from the  line (). Receive the goods at the  price, "
-        "then add a landed cost or correct the item's cost.",
-        "Item  does not exist",
-        "Issue every document before creating its shipping paperwork",
-        "Reopen a closed memo before creating its shipping paperwork",
-        "offset must be an integer",
-        "limit must be an integer",
-        "original_count must be zero or greater",
-        ":  cannot come back on this credit note: the invoice shipped , returned , so  "
-        "can come back",
-        " changed after the audit was finalized; recount it.",
-        "line_id or item_id is required",
-        ": choose a destination account",
-        "original_count cannot exceed the -line page limit",
-        ": nothing left to ship: invoiced , credited , shipped 0",
-        ": its inventory item no longer exists. Remove the line, then try again.",
-        ": its inventory item was merged into another item. Remove the line, then try again.",
-        "This import key was already used for a different record",
-    },
-    "default_modules/celerp-inventory/celerp_inventory/routes.py": {
-        "Field '' not available for suggestions",
-        "Nothing was deleted. Only a draft that never became stock can be deleted, and "
-        "these cannot: . Use Revert to Draft for stock made available by mistake, "
-        "Archive to retire a product, or Write Off Stock for goods that left the company.",
-        "Allow splitting is set to No for this item. Change Allow Splitting to Yes in the "
-        "item details to enable splitting.",
-        "This merge can no longer be undone: the merged item has changed since it was made.",
-        "This merge can no longer be undone: one of the merged items has changed since it "
-        "was made.",
-        "This merge was made before merges could be undone, so the items' earlier state "
-        "is not on record.",
-    },
-    "default_modules/celerp-inventory/celerp_inventory/services.py": {
-        "Item not found",
-    },
-    "default_modules/celerp-manufacturing/celerp_manufacturing/routes.py": {
-        "Item has no recipe to build from",
-        "Unknown bulk action: ",
-        "This is your only work center. Add another before deleting this one.",
-        "This is the default work center. Set another center as default before deleting it.",
     },
 }
 

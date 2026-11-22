@@ -6,7 +6,7 @@ agent gets the same context, its tools read the app as the user who asked, and a
 resumed question whose user may no longer use the assistant ends failed before it
 reads anything.
 
-The AI service is played over HTTP (tests/ai_fake_cloud.py); a restart is
+The AI service is played over HTTP (ai_fake_cloud.py at the repository root); a restart is
 ``jobs.shutdown()`` then ``jobs.recover_on_start()``.
 """
 from __future__ import annotations

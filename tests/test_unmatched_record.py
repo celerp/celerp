@@ -22,6 +22,12 @@ REFUSED = {
 }
 
 
+def _refused(reason: str) -> dict:
+    """The detail a refused unmatched payment answers with: the reason's keyed refusal."""
+    from celerp.accounting_roles import catalog_refusal
+    return {**catalog_refusal(f"pay.unmatched_refused_{reason}"), "reason": reason}
+
+
 async def _park(cid: str, reference: str = "pi_lost", amount_minor: int = 107000, currency: str = "usd",
                 *, refund: bool = False) -> None:
     """An online payment for an invoice that no longer exists, kept among the
@@ -163,7 +169,8 @@ async def test_an_invoice_that_cannot_take_it_is_refused_with_the_reason_and_the
     r = await _record(client, tok, eid)
 
     assert r.status_code == 409
-    assert r.json()["detail"] == {"message": REFUSED[reason], "reason": reason}
+    assert r.json()["detail"] == _refused(reason)
+    assert r.json()["detail"]["message"] == REFUSED[reason]
     assert await _listed(client, tok) == ["pi_lost"]
     assert (await _doc_state(client, tok, eid)).get("payments") == before.get("payments")
 
@@ -249,7 +256,7 @@ def test_the_refusal_is_shown_in_the_users_language():
     from ui.api_client import APIError
     from ui.i18n import set_lang
     from ui.routes.settings_payments import _refusal
-    error = APIError(409, REFUSED["too_small"], {"message": REFUSED["too_small"], "reason": "too_small"})
+    error = APIError(409, REFUSED["too_small"], _refused("too_small"))
     set_lang("de")
     try:
         assert _refusal(error) == "Auf dieser Rechnung ist weniger offen als die Zahlung."
@@ -319,7 +326,7 @@ async def test_choosing_an_invoice_records_it_and_removes_the_row(ui_client):
 async def test_a_refusal_keeps_the_list_open_with_the_reason_in_the_users_language(ui_client):
     from unittest.mock import AsyncMock, patch
     from ui.api_client import APIError
-    error = APIError(409, REFUSED["paid"], {"message": REFUSED["paid"], "reason": "paid"})
+    error = APIError(409, REFUSED["paid"], _refused("paid"))
     ui_client.cookies.update({**_ui_cookies(), "celerp_lang": "de"})
     with patch("ui.api_client.record_unmatched_payment", new=AsyncMock(side_effect=error)), \
          patch("ui.api_client.get_unmatched_invoices", new=AsyncMock(return_value=INVOICES)):

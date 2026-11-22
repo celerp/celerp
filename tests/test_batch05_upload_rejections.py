@@ -3,7 +3,7 @@ import pytest
 from test_entity_files import _headers, _SMALL_PDF, _ledger_by_type
 from celerp.services import attachments
 from celerp.config import settings
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('resource',['docs','lists'])
@@ -21,10 +21,8 @@ async def test_rejected_upload_has_a_specific_error_and_leaves_no_partial_record
     assert r.status_code==(404 if reason=='missing' else 413),r.text
     expected={'empty':t('auth.file_empty'),'type':t('error.file_type_unsupported',mime=mime),'size':t('error.file_too_large',mb=50)}
     if reason=='missing':assert "couldn't find" in r.text
-    elif reason=='size':
-        from ui.i18n import refusal_text
-        assert refusal_text(r.json()['detail']) in {expected[reason], t('error.upload_too_large')}
-    else:assert r.json()['detail']==expected[reason]
+    elif reason=='size':assert refusal_text(r.json()['detail']) in {expected[reason], t('error.upload_too_large')}
+    else:assert refusal_text(r.json()['detail'])==expected[reason]
     assert (await client.get(f'/{resource}/{eid}',headers=h)).json().get('files',[])==[]
     assert (await _ledger_by_type(client,h,eid)).keys()==before.keys()
     assert not [p for p in tmp_path.rglob('*') if p.is_file()]

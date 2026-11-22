@@ -12,16 +12,15 @@ from fa_fixtures import FA, admit_zz, start_demo
 
 
 @pytest.fixture(autouse=True)
-def _module_catalogs():
-    """The test app wires this module's routes without loading it, so its translation
-    catalogs and slot contributions are registered here, as the module loader does,
-    before each test (other tests clear both registries), and its slots removed after."""
+def _module_slots():
+    """The test app wires this module's routes without loading it, so its slot contributions
+    are registered here, as the module loader does, before each test (other tests clear the
+    registry), and removed after. Its catalogs are registered by the root conftest."""
     from celerp.modules import slots
-    from celerp.modules.loader import _register_locales, _runtime_keys, read_manifest
+    from celerp.modules.loader import _runtime_keys, read_manifest
 
     pkg = Path(__file__).resolve().parent.parent
     manifest = read_manifest(pkg)
-    _register_locales(pkg.name, pkg, manifest)
     slots.unregister_module(pkg.name)
     for slot, contribution in manifest["slots"].items():
         for item in contribution if isinstance(contribution, list) else [contribution]:

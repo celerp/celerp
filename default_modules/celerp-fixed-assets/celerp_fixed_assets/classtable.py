@@ -16,12 +16,13 @@ import uuid
 from fastapi import HTTPException
 
 from celerp_fixed_assets import setup
-from celerp_fixed_assets.operations import _effects, _run, conflict
+from celerp_fixed_assets.operations import _effects, _run
 from celerp_fixed_assets.store import _emit, _state
+from ui.i18n import t
 
 
 def _named(name: str, exc: HTTPException) -> HTTPException:
-    return setup.unprocessable(f"{name}: {exc.detail}")
+    return setup.refuse("fixed_assets.err_name_detail", name=name, detail=exc.detail)
 
 
 def _fields(state: dict) -> dict:
@@ -32,7 +33,7 @@ async def apply_table(session, company_id, user_id, body: dict) -> dict:
     """Preview or confirm the class table in ``body["classes"]``."""
     table = body.get("classes")
     if not isinstance(table, list) or not all(isinstance(e, dict) for e in table):
-        raise setup.unprocessable("A class table is a list of classes.")
+        raise setup.refuse("fixed_assets.err_class_table_list_classes")
 
     async def plan(fa):
         settings = await setup.company_settings(session, company_id)
@@ -42,7 +43,7 @@ async def apply_table(session, company_id, user_id, body: dict) -> dict:
         for entry in table:
             name = str(entry.get("name") or "").strip()
             if not name or name in seen:
-                raise setup.unprocessable("Every class in the table has its own name.")
+                raise setup.refuse("fixed_assets.err_every_class_table_has_its_own")
             seen.add(name)
             fields = {k: v for k, v in entry.items() if k != "name"}
             try:
@@ -86,9 +87,9 @@ async def undo_table(session, company_id, user_id, target_key: str, body: dict) 
     async def plan(fa):
         op = await _state(session, company_id, f"fa:op:{target_key}")
         if op is None or op.get("type") != "class_table":
-            raise HTTPException(status_code=404, detail="No class table was applied under this key.")
+            raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_class_table_was_applied_under"))
         if op.get("undone_by"):
-            raise conflict("This class table was already undone.")
+            raise setup.refused(409, "fixed_assets.err_class_table_was_already_undone")
         restore, archive, kept, basis = [], [], [], []
         for effect in (op.get("effects") or {}).get("table") or []:
             state = await _state(session, company_id, effect["id"]) or {}

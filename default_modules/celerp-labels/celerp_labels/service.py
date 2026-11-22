@@ -24,6 +24,7 @@ import math
 import re
 from typing import Any
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.services.units import (
     DEFAULT_UNITS,
     build_unit_map,
@@ -32,7 +33,7 @@ from celerp.services.units import (
     is_weight_unit,
 )
 from ui.components.encode import Admitted, library_markup, svg_bars, svg_cells
-from ui.i18n import t
+from ui.i18n import refusal_text
 
 # reportlab is optional — if absent, render_label_pdf returns a minimal stub PDF.
 try:
@@ -110,12 +111,16 @@ _FORMAT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)x([0-9]+(?:\.[0-9]+)?)mm")
 
 
 class LabelNumberError(ValueError):
-    """A template number that is not a number inside its range; ``text`` (a translated
-    Text) says which one."""
+    """A template number that is not a number inside its range; ``detail`` (a keyed
+    refusal) says which one, and ``text`` says it in the user's language."""
 
-    def __init__(self, text: str):
-        super().__init__(text)
-        self.text = text
+    def __init__(self, detail: dict):
+        super().__init__(detail["message"])
+        self.detail = detail
+
+    @property
+    def text(self) -> str:
+        return refusal_text(self.detail)
 
 
 def label_number(name: str, value: Any) -> int | float:
@@ -131,7 +136,7 @@ def label_number(name: str, value: Any) -> int | float:
     elif isinstance(value, str) and _NUMBER_RE.fullmatch(value.strip()):
         number = float(value.strip())
     if number is None or not math.isfinite(number) or not lo <= number <= hi:
-        raise LabelNumberError(t("labels.err_number", what=t(what_key), lo=f"{lo:g}", hi=f"{hi:g}"))
+        raise LabelNumberError(catalog_refusal("labels.err_number", what=catalog_refusal(what_key), lo=f"{lo:g}", hi=f"{hi:g}"))
     return int(number) if number.is_integer() else number
 
 
@@ -166,7 +171,7 @@ def label_fields(fields: Any) -> Any:
                 try:
                     field[name] = label_number(name, field[name])
                 except LabelNumberError as e:
-                    raise LabelNumberError(t("labels.err_field", n=i, field=field.get("key", ""), reason=e.text)) from None
+                    raise LabelNumberError(catalog_refusal("labels.err_field", n=i, field=field.get("key", ""), reason=e.detail)) from None
         out.append(field)
     return out
 

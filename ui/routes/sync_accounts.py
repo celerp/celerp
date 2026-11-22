@@ -151,7 +151,7 @@ def _holds(items: list[dict], chart: list[dict], lang: str, funds: list[dict] | 
             Thead(Tr(Th(t("th.date", lang)), Th(t("sync_accounts.record", lang)),
                      Th(t("sync_accounts.why", lang)), Th(t("th.actions", lang)))),
             Tbody(*[Tr(Td((item.get("at") or "")[:10] or EMPTY), Td(item.get("label") or EMPTY),
-                       Td(item.get("reason") or EMPTY),
+                       Td(refusal_text(item.get("reason")) or EMPTY),
                        Td(_fund_hold(item, chart, funds or [], lang, (kept or {}).get(item["id"]))
                           if waits_for_funds(item.get("fix")) else _hold_fix(item, chart, lang)), cls="data-row")
                     for item in items]),
@@ -175,7 +175,7 @@ def _added_actions(item: dict, lang: str) -> FT:
                         cls="btn btn--xs btn--outline", **_SWAP)
     open_account = A(t("sync_accounts.open_account", lang), href=ledger_path(item["code"]),
                      cls="btn btn--xs btn--ghost") if item.get("code") else ""
-    why = P(item["why"], cls="settings-hint") if item.get("why") else ""
+    why = P(refusal_text(item["why"]), cls="settings-hint") if item.get("why") else ""
     return Div(Div(open_account, keep, settle, cls="flex-row gap-sm"), why)
 
 
@@ -189,7 +189,7 @@ def _added(items: list[dict], lang: str) -> FT | str:
             Thead(Tr(Th(t("th.date", lang)), Th(t("sync_accounts.account", lang)),
                      Th(t("sync_accounts.why", lang)), Th(t("th.actions", lang)))),
             Tbody(*[Tr(Td((item.get("at") or "")[:10] or EMPTY), Td(item.get("label") or EMPTY),
-                       Td(item.get("reason") or EMPTY), Td(_added_actions(item, lang)), cls="data-row")
+                       Td(refusal_text(item.get("reason")) or EMPTY), Td(_added_actions(item, lang)), cls="data-row")
                     for item in items]),
             cls="data-table",
         ),

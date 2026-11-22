@@ -191,8 +191,8 @@ async def test_the_page_shows_what_each_inventory_account_holds_beyond_its_stock
     assert "1121 holds" not in r.text  # an account matching its stock is not worth a line
 
 
-REUSED = {"message": "This request key was already used for a different action. "
-                     "Send the action again without reusing the key.", "message_key": "mfg.key_reused", "params": {}}
+REUSED = {"message": "That action was already sent with different details. Check the list, then try again.",
+          "message_key": "mfg.key_reused", "params": {}}
 
 
 def _form_keys(html: str) -> list[str]:

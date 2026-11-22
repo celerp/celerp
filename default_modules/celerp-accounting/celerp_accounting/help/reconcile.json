@@ -1,18 +1,214 @@
 {
   "id": "accounting.reconcile",
   "title": "Reconcile a bank account",
-  "summary": "Match your bank statement against journal entries, line by line.",
-  "keywords": ["reconcile", "reconciliation", "bank statement", "match", "bank account"],
-  "routes": ["/accounting/reconcile/start", "/accounting/reconcile/{entity_id}", "/accounting/reconcile/history/{entity_id}"],
+  "summary": "Bring in each bank's statements, say what every line was, and complete each statement once it balances.",
+  "keywords": [
+    "reconcile",
+    "reconciliation",
+    "bank statement",
+    "bank lines",
+    "import statement",
+    "match",
+    "suspense",
+    "rule",
+    "complete statement",
+    "bank account"
+  ],
+  "routes": [
+    "/accounting/reconcile/start",
+    "/accounting/reconcile/bank/{bank_id}",
+    "/accounting/reconcile/history/{bank_id}"
+  ],
   "permission": "manage_accounting",
   "order": 3,
+  "checked": "93d88d722abc096d5e66e56a0d003eb03fc9fd26510c0541109260672e95aaf3",
   "steps": [
     {
-      "text": "Open {rec} from the sidebar, choose the bank account, the statement date and its closing balance, then click {start}.",
-      "labels": {"rec": "nav.reconcile", "start": "btn.start_reconciliation"},
+      "text": "Open {rec} from the sidebar. Each bank account is listed with its balance. Click a bank to open its page, where the lines of all its statements sit together.",
+      "labels": {
+        "rec": "nav.reconcile"
+      },
       "image": null,
-      "capture": {"route": "/accounting/reconcile/start", "selector": "main", "actions": []}
+      "capture": {
+        "route": "/accounting/reconcile/start",
+        "selector": ".bank-list",
+        "actions": []
+      }
+    },
+    {
+      "text": "On a bank with no statement yet, drop the statement file on its page. Celerp reads PDF, CSV, Excel, OFX and QFX files and photos of a statement, then shows every line before anything is imported. If it doesn't recognise a CSV's columns, it asks which column holds the date, the description and the amount.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/accounting/reconcile/start",
+        "selector": ".bank-list",
+        "actions": []
+      }
+    },
+    {
+      "text": "In the preview, check the opening balance, the closing balance and the period; click a figure to correct it. The preview says whether the statement ties. Lines already imported, or probably already in your books, are marked and left unticked. Click Import to add the statement to the bank. On a bank that already has lines, {another} opens the same drop.",
+      "labels": {
+        "another": "bank.drop_another"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/reconcile/start",
+        "selector": "main",
+        "actions": [
+          {
+            "click": "a.bank-list__name"
+          },
+          {
+            "wait": ".bank-views"
+          }
+        ]
+      }
+    },
+    {
+      "text": "Lines are grouped by who the money went to or came from, the largest group first, with its total and the suggestion its lines share. Switch between {open}, {suggested}, {questions}, {posted} and {all}, or search descriptions and references.",
+      "labels": {
+        "open": "bank.view_open",
+        "suggested": "bank.view_suggested",
+        "questions": "bank.view_questions",
+        "posted": "bank.view_posted",
+        "all": "bank.view_all"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/reconcile/start",
+        "selector": ".bank-views",
+        "actions": [
+          {
+            "click": "a.bank-list__name"
+          },
+          {
+            "wait": ".bank-views"
+          }
+        ]
+      }
+    },
+    {
+      "text": "Tick the groups whose suggestion is right and click Post ticked. The button shows how many lines and what total you are posting. Each posted line keeps an Undo until its statement is complete. {suggest} looks again for an answer to every open line.",
+      "labels": {
+        "suggest": "bank.suggest"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/reconcile/start",
+        "selector": "main",
+        "actions": [
+          {
+            "click": "a.bank-list__name"
+          },
+          {
+            "wait": ".bank-views"
+          }
+        ]
+      }
+    },
+    {
+      "text": "To answer one line, click {answer} beside it. Choose an account, a transfer to another bank, a cash withdrawal, no entry, or Suspense to decide later, and who it was paid to or from, then click {postbtn}. {split} divides a line across accounts; the parts must add up to the line's amount.",
+      "labels": {
+        "answer": "bank.answer_separately",
+        "postbtn": "btn.post",
+        "split": "bank.split"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/reconcile/start",
+        "selector": "main",
+        "actions": [
+          {
+            "click": "a.bank-list__name"
+          },
+          {
+            "wait": ".bank-views"
+          },
+          {
+            "click": "[data-open=answer]"
+          },
+          {
+            "wait": ".bank-panel"
+          }
+        ]
+      }
+    },
+    {
+      "text": "When you don't know what a line was, click {ask} and write your question. The client answers on their questions page, with a receipt if they have one, and their answer becomes the line's suggestion. Lines asked about show under Questions.",
+      "labels": {
+        "ask": "bank.ask_client"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/reconcile/start",
+        "selector": "main",
+        "actions": [
+          {
+            "click": "a.bank-list__name"
+          },
+          {
+            "wait": ".bank-views"
+          }
+        ]
+      }
+    },
+    {
+      "text": "When the statement's difference is zero, click {complete}. Celerp completes each open statement that balances, oldest first, and says where it stopped and why. Lines still in Suspense wait there until you say where they belong. A completed statement can be opened again from the statements strip.",
+      "labels": {
+        "complete": "bank.complete"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/reconcile/start",
+        "selector": "main",
+        "actions": [
+          {
+            "click": "a.bank-list__name"
+          },
+          {
+            "wait": ".bank-views"
+          }
+        ]
+      }
+    },
+    {
+      "text": "A rule posts every line that matches its pattern to the same account. Add rules on the {rules} tab of accounting settings, each for one bank or for every bank.",
+      "labels": {
+        "rules": "page.reconciliation_rules"
+      },
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=rules",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "{history} beside a bank on the list shows its completed statements.",
+      "labels": {
+        "history": "recon.history"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/reconcile/start",
+        "selector": ".bank-list",
+        "actions": []
+      }
+    },
+    {
+      "text": "The assistant can read a statement, suggest answers and settle lines for you. It shows what it proposes on one card, and nothing is posted until you confirm. The card links to the bank page, where you can change what is ticked.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/accounting/reconcile/start",
+        "selector": ".bank-list",
+        "actions": []
+      }
     }
   ],
-  "related": ["accounting.journal-entries", "accounting.settings"]
+  "related": [
+    "accounting.bank-questions",
+    "accounting.journal-entries",
+    "accounting.settings"
+  ]
 }

@@ -172,7 +172,7 @@ async def test_a_company_owners_scan_is_not_readable_without_a_session(real_clie
 
     for path in (f"{API}/scan/read", f"{API}/decisions"):
         r = await real_client.post(path, json={"scan_token": scan_token, "mode": "full_history"})
-        assert r.status_code == 410 and r.json()["detail"] == EXPIRED, (path, r.text)
+        assert r.status_code == 410 and refusal_text(r.json()["detail"]) == EXPIRED, (path, r.text)
 
 
 async def test_discarding_the_move_returns_the_login_to_start_company(real_client, real_engine, migration_env,

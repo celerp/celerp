@@ -242,7 +242,7 @@ async def _move_with(session, company_id, proj: Projection, sent: dict, user) ->
 def _build_router() -> APIRouter:
     router = APIRouter(dependencies=[Depends(get_current_user)])
 
-    @router.get("")
+    @router.get("", openapi_extra={"x-celerp-agent": True}, summary="List the subscription agreements with their next bill date.")
     async def list_subscription_templates(
         direction: str | None = None,
         status: str | None = None,
@@ -266,7 +266,7 @@ def _build_router() -> APIRouter:
         )
         return {"items": [list_row(i) for i in items], "total": total}
 
-    @router.get("/members")
+    @router.get("/members", openapi_extra={"x-celerp-agent": True}, summary="List every member with their membership standing today.")
     async def list_members(
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("view_subscriptions"),
@@ -275,7 +275,7 @@ def _build_router() -> APIRouter:
         """Every member and their standing today (members.member_rows)."""
         return {"items": await members.member_rows(session, company_id, await company_today(session, company_id))}
 
-    @router.get("/due")
+    @router.get("/due", openapi_extra={"x-celerp-agent": True}, summary="List the active agreements with a period due for billing today.")
     async def list_due(
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("view_subscriptions"),
@@ -284,7 +284,7 @@ def _build_router() -> APIRouter:
         """Every active agreement with a period due today: what Generate due would bill."""
         return await billing.due_preview(session, company_id, await company_today(session, company_id))
 
-    @router.get("/metrics")
+    @router.get("/metrics", openapi_extra={"x-celerp-agent": True}, summary="Show monthly recurring revenue, annual recurring revenue, churn and cohorts by month.")
     async def revenue_metrics(
         start: date | None = Query(None, alias="from"),
         end: date | None = Query(None, alias="to"),
@@ -302,7 +302,7 @@ def _build_router() -> APIRouter:
             raise billing.amend_refusal(422, key, parameter=parameter)
         return await metrics.revenue_metrics(session, company_id, start, end, currency)
 
-    @router.post("/generate-due")
+    @router.post("/generate-due", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "items[].request_key", "x-celerp-agent-result-permissions": "*"}, summary="Bill the oldest due period of each chosen agreement.")
     async def generate_all_due(
         body: BulkBody,
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -332,7 +332,7 @@ def _build_router() -> APIRouter:
         return {"results": results, "billed": len(answered) - already, "already_billed": already,
                 "refused": len(results) - len(answered)}
 
-    @router.get("/catch-up")
+    @router.get("/catch-up", openapi_extra={"x-celerp-agent": True}, summary="List the agreements further behind on billing than their catch-up window.")
     async def catch_up(
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("view_subscriptions"),
@@ -342,7 +342,7 @@ def _build_router() -> APIRouter:
         today = await company_today(session, company_id)
         return {"items": await billing.catch_up_preview(session, company_id, today)}
 
-    @router.post("/catch-up/run")
+    @router.post("/catch-up/run", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "items[].request_key", "x-celerp-agent-result-permissions": "*"}, summary="Bill the chosen overdue periods from the catch-up list, in order.")
     async def catch_up_run(
         body: CatchUpBody,
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -392,7 +392,7 @@ def _build_router() -> APIRouter:
         f"What unattended billing did: each bill and email of the last {summary.SUMMARY_WINDOW.days} days, and "
         "each billing failure, lapsed authorization and email waiting to go out while it lasts, each row with the "
         "``key`` Mark as read posts for it (none for a row shown while it lasts): every row but those this user "
-        "marked read (``all``: every row)."))
+        "marked read (``all``: every row)."), openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"}, summary="Show what happened to subscriptions since the user last looked, such as bills sent or failed.")
     async def get_summary(
         all: bool = False,
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -402,7 +402,7 @@ def _build_router() -> APIRouter:
     ) -> dict:
         return await summary.report(session, company_id, user.id, everything=all)
 
-    @router.post("/summary/ack")
+    @router.post("/summary/ack", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions/summary", "x-celerp-agent-result-permissions": "*"}, summary="Mark the subscriptions summary rows shown as read.")
     async def ack_summary(
         body: AckBody,
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -416,7 +416,7 @@ def _build_router() -> APIRouter:
         await session.commit()
         return {"ok": True, "read": len(read)}
 
-    @router.post("/{entity_id}/generate-due")
+    @router.post("/{entity_id}/generate-due", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": "*"}, summary="Bill the oldest due period of one agreement.")
     async def generate_due(
         entity_id: str,
         body: RequestBody,
@@ -432,7 +432,7 @@ def _build_router() -> APIRouter:
         await collect.ask_after_bill(session, company_id, [result["doc_id"]])
         return result
 
-    @router.post("/{entity_id}/amend")
+    @router.post("/{entity_id}/amend", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": "*"}, summary="Change the line quantities of an agreement from an effective date.")
     async def amend(
         entity_id: str,
         body: AmendBody,
@@ -451,7 +451,7 @@ def _build_router() -> APIRouter:
             await collect.ask_after_bill(session, company_id, [result["invoice_id"]])
         return result
 
-    @router.post("/{entity_id}/bill-early")
+    @router.post("/{entity_id}/bill-early", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": "*"}, summary="Bill the next period of an agreement before its bill date.")
     async def bill_early(
         entity_id: str,
         body: EarlyBody,
@@ -467,7 +467,7 @@ def _build_router() -> APIRouter:
         await collect.ask_after_bill(session, company_id, [result["doc_id"]])
         return result
 
-    @router.get("/{entity_id}/periods")
+    @router.get("/{entity_id}/periods", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"}, summary="List the billing periods of an agreement, newest first.")
     async def list_periods(
         entity_id: str,
         before: int | None = Query(None, description="Return periods before this period index."),
@@ -484,7 +484,7 @@ def _build_router() -> APIRouter:
                                             before=before),
                 "automation": await summary.modes_answer(session, company_id, entity_id)}
 
-    @router.post("/{entity_id}/periods/{k}/skip")
+    @router.post("/{entity_id}/periods/{k}/skip", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions", "x-celerp-agent-result-permissions": "*"}, summary="Skip billing one period of an agreement, with the reason.")
     async def skip_period(
         entity_id: str,
         k: int,
@@ -540,7 +540,7 @@ def _build_router() -> APIRouter:
         await session.commit()
         return _period_answer(proj.state, k)
 
-    @router.post("/{entity_id}/periods/{k}/unskip")
+    @router.post("/{entity_id}/periods/{k}/unskip", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions"}, summary="Undo skipping a period of an agreement so it is open for billing again.")
     async def unskip_period(
         entity_id: str,
         k: int,
@@ -552,7 +552,7 @@ def _build_router() -> APIRouter:
         """Undo a skip: the period is open again."""
         return await _hand_back(entity_id, k, company_id, user, session, after_void=False)
 
-    @router.post("/{entity_id}/periods/{k}/reopen")
+    @router.post("/{entity_id}/periods/{k}/reopen", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions"}, summary="Reopen a billed period of an agreement once its document no longer bills it.")
     async def reopen_period(
         entity_id: str,
         k: int,
@@ -566,7 +566,7 @@ def _build_router() -> APIRouter:
         while no newer bill bills the period (billing.guard_bill_status)."""
         return await _hand_back(entity_id, k, company_id, user, session, after_void=True)
 
-    @router.post("/{entity_id}/periods/{k}/send")
+    @router.post("/{entity_id}/periods/{k}/send", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions", "x-celerp-agent-outside": True, "x-celerp-agent-result-permissions": "*"}, summary="Send the document of one billed period of an agreement again.")
     async def send_period(
         entity_id: str,
         k: int,
@@ -583,7 +583,7 @@ def _build_router() -> APIRouter:
                               retry_by=user.id, attempt=body.attempt, again=body.again)
         return await summary.send_answer(session, company_id, entity_id, k)
 
-    @router.get("/{entity_id}/collection")
+    @router.get("/{entity_id}/collection", openapi_extra={"x-celerp-agent": True}, summary="Show whether an agreement's payer has a card on file for automatic collection.")
     async def collection_view(
         entity_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -593,7 +593,7 @@ def _build_router() -> APIRouter:
         """Whether Celerp Cloud offers automatic collection, and the payer's card on file."""
         return await collect.view(session, company_id, entity_id)
 
-    @router.post("/{entity_id}/collection/setup-link")
+    @router.post("/{entity_id}/collection/setup-link", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions"}, summary="Get the link where an agreement's payer puts a card on file for automatic collection.")
     async def collection_setup_link(
         entity_id: str,
         body: SetupLinkBody,
@@ -605,7 +605,7 @@ def _build_router() -> APIRouter:
         the card on file emailed to the payer again."""
         return await collect.setup_link(session, company_id, entity_id, body.delivery, body.resend_receipt)
 
-    @router.post("/{entity_id}/collection/revoke")
+    @router.post("/{entity_id}/collection/revoke", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions"}, summary="Remove the card on file of an agreement's payer so nothing more is charged to it.")
     async def collection_revoke(
         entity_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -616,7 +616,7 @@ def _build_router() -> APIRouter:
         """Withdraw the payer's card on file, so nothing more is charged to it."""
         return await collect.revoke(session, company_id, entity_id, user.id)
 
-    @router.patch("/{entity_id}/schedule")
+    @router.patch("/{entity_id}/schedule", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions", "x-celerp-agent-result-permissions": "*"}, summary="Change an agreement's billing schedule, such as its interval or bill day.")
     async def change_schedule(
         entity_id: str,
         body: ScheduleBody,
@@ -688,7 +688,7 @@ def _build_router() -> APIRouter:
         await _write(session, company_id, entity_id, changes, user)
         return {"ok": True, "next_bill_date": next_bill_date(merged), "sending_off": sending_off}
 
-    @router.post("/{entity_id}/history/{doc_id}/confirm")
+    @router.post("/{entity_id}/history/{doc_id}/confirm", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions", "x-celerp-agent-result-permissions": "*"}, summary="Place an earlier document of an agreement in one of its billing periods.")
     async def confirm_history(
         entity_id: str,
         doc_id: str,
@@ -723,7 +723,7 @@ def _build_router() -> APIRouter:
                      drop=() if review else ("history_review",))
         return {"ok": True}
 
-    @router.post("/{entity_id}/history/{doc_id}/set-aside")
+    @router.post("/{entity_id}/history/{doc_id}/set-aside", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions", "x-celerp-agent-result-permissions": "*"}, summary="Record that an earlier document of an agreement billed no period of its own.")
     async def set_aside_history(
         entity_id: str,
         doc_id: str,
@@ -752,7 +752,7 @@ def _build_router() -> APIRouter:
                      drop=() if review else ("history_review",))
         return {"ok": True}
 
-    @router.post("/{entity_id}/history/{doc_id}/withdraw")
+    @router.post("/{entity_id}/history/{doc_id}/withdraw", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions", "x-celerp-agent-result-permissions": "*"}, summary="Undo placing or setting aside an earlier document of an agreement.")
     async def withdraw_history(
         entity_id: str,
         doc_id: str,
@@ -795,7 +795,7 @@ def _build_router() -> APIRouter:
                      user, drop=("history_set_aside",) if set_aside is not None and not aside else ())
         return {"ok": True}
 
-    @router.post("/{entity_id}/pause")
+    @router.post("/{entity_id}/pause", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions", "x-celerp-agent-result-permissions": "*"}, summary="Pause billing of a subscription agreement.")
     async def pause_subscription(
         entity_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -809,7 +809,7 @@ def _build_router() -> APIRouter:
         await _write(session, company_id, entity_id, {"status": "paused"}, user)
         return {"ok": True}
 
-    @router.post("/{entity_id}/resume")
+    @router.post("/{entity_id}/resume", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions", "x-celerp-agent-result-permissions": "*"}, summary="Resume billing of a paused subscription agreement.")
     async def resume_subscription(
         entity_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -852,7 +852,7 @@ def _build_router() -> APIRouter:
         return {"ok": True, "next_bill_date": next_bill_date({**state, **changes}), "skipped": skipped,
                 **await summary.modes_answer(session, company_id, entity_id)}
 
-    @router.post("/{entity_id}/cancel")
+    @router.post("/{entity_id}/cancel", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions", "x-celerp-agent-result-permissions": "*"}, summary="Cancel a subscription agreement so it bills no more periods.")
     async def cancel_subscription(
         entity_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -866,7 +866,7 @@ def _build_router() -> APIRouter:
         await _write(session, company_id, entity_id, {"status": "cancelled"}, user)
         return {"ok": True}
 
-    @router.post("/{entity_id}/activate")
+    @router.post("/{entity_id}/activate", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions", "x-celerp-agent-result-permissions": "*"}, summary="Activate a draft subscription agreement so it starts billing.")
     async def activate_subscription(
         entity_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),

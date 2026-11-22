@@ -37,6 +37,8 @@ from celerp.ai.service import (
 
 from _fixtures import raw_tool_call, tool_call, tool_result
 
+pytestmark = pytest.mark.usefixtures("tools_open_when_called")
+
 
 # -- Fake capabilities (shape mirrors compile_agent_capabilities output) ----
 
@@ -48,20 +50,20 @@ CAPS = {
     "list_items": {
         "name": "list_items", "method": "GET", "path": "/api/inventory/items",
         "path_names": (), "query_names": ("q",), "expects_body": False,
-        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "key_field": None, "keyed": False, "result_permissions": (), "field_visibility": False,
         "tool": _tool("list_items"),
     },
     "get_item": {
         "name": "get_item", "method": "GET", "path": "/api/inventory/items/{item_id}",
         "path_names": ("item_id",), "query_names": (), "expects_body": False,
-        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "key_field": None, "keyed": False, "result_permissions": (), "field_visibility": False,
         "tool": _tool("get_item"),
     },
     "create_contact": {
         "name": "create_contact", "method": "POST", "path": "/api/crm/contacts",
         "path_names": (), "query_names": (), "expects_body": True,
-        "inject_idempotency": True, "requires_confirmation": True,
-        "tool": _tool("create_contact"),
+        "key_field": "idempotency_key", "keyed": True, "requires_confirmation": True,
+        "summary": "Create a contact", "tool": _tool("create_contact"),
     },
 }
 
@@ -90,13 +92,13 @@ async def _owner_authority(company_id, user_id):
     return "owner", {}
 
 
-def _install(monkeypatch, results, execute=None):
+def _install(monkeypatch, results, execute=None, caps=CAPS):
     """Wire the fake complete/compile/execute into the service module, and the asker's
     authority (role and company settings) that read replay contracts are made under."""
     fake = FakeComplete(results)
     monkeypatch.setattr(service, "complete", fake)
     monkeypatch.setattr(service, "_authority", _owner_authority)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: caps)
     if execute is not None:
         monkeypatch.setattr(service, "execute_agent_capability", execute)
     return fake
@@ -220,18 +222,26 @@ async def test_mixed_read_and_mutation_executes_reads_and_defers_mutation(monkey
 
 
 @pytest.mark.asyncio
-async def test_mutation_with_parse_error_sibling_still_pends(monkeypatch):
-    _install(
+async def test_mutation_with_parse_error_sibling_is_proposed_once_the_model_sees_the_error(monkeypatch):
+    """A change sharing its turn with a call that could not be read goes back to the model
+    with that call's error, so the refused call is never dropped without a word; the
+    change becomes a card when the model proposes it again."""
+    fake = _install(
         monkeypatch,
-        [tool_result(calls=[
-            raw_tool_call("create_contact", "{not json", "bad"),
-            tool_call("create_contact", {"body": {"name": "A"}}, "m1"),
-        ])],
+        [
+            tool_result(calls=[
+                raw_tool_call("create_contact", "{not json", "bad"),
+                tool_call("create_contact", {"body": {"name": "A"}}, "m1"),
+            ]),
+            tool_result(calls=[tool_call("create_contact", {"body": {"name": "A"}}, "m2")]),
+        ],
         execute=_execute_returning({"ok": True, "status": 200, "data": {}}),
     )
     result = await _run()
     assert result.error is None
-    assert [p.id for p in result.pending_actions] == ["m1"]
+    assert [p.id for p in result.pending_actions] == ["m2"]
+    tool_messages = [m for m in fake.calls[1]["messages"] if m.get("role") == "tool"]
+    assert {m["tool_call_id"] for m in tool_messages} == {"bad", "m1"}
 
 
 @pytest.mark.asyncio
@@ -413,11 +423,11 @@ async def test_tool_calls_per_run_cap_drops_overflow(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_mutation_overflow_noted_in_answer(monkeypatch):
-    over = [
-        tool_call("create_contact", {"body": {"name": str(i)}}, f"m{i}")
-        for i in range(MAX_TOOL_CALLS_PER_TURN + 2)
-    ]
-    _install(monkeypatch, [tool_result(content="Proposed:", calls=over)])
+    # Distinct change tools: the same tool twice in one turn is refused (propose_for_each).
+    names = [f"create_contact_{i}" for i in range(MAX_TOOL_CALLS_PER_TURN + 2)]
+    caps = {**CAPS, **{n: {**CAPS["create_contact"], "name": n, "tool": _tool(n)} for n in names}}
+    over = [tool_call(n, {"body": {"name": n}}, f"m{i}") for i, n in enumerate(names)]
+    _install(monkeypatch, [tool_result(content="Proposed:", calls=over)], caps=caps)
     result = await _run()
     assert len(result.pending_actions) == MAX_TOOL_CALLS_PER_TURN
     assert result.answer.startswith("Proposed:")
@@ -486,16 +496,19 @@ async def test_history_trimmed_oldest_first_to_fit_one_model_call(monkeypatch):
     assert sent[-1]["role"] == "user" and "a question" in sent[-1]["content"]
 
 
-def test_request_size_with_every_real_tool_fits_a_model_call():
-    """The real tool list, the system prompt and the largest tool result a turn may
-    carry fit inside the budget, so an ordinary question is never refused as too large."""
-    from celerp.ai.tools import AGENT_RESULT_MAX_BYTES, agent_tool_specs, compile_agent_capabilities
+def test_request_size_with_the_real_core_tools_fits_a_model_call():
+    """The tools a run starts with (the core set and the meta tools), the system prompt
+    naming every real area and the largest tool result a turn may carry fit inside the
+    budget, so an ordinary question is never refused as too large. The tools a run opens
+    later are measured as it opens them (test_ai_agent_areas)."""
+    from celerp.ai.tools import AGENT_RESULT_MAX_BYTES, compile_agent_capabilities
     from celerp.ai.service import agent_system_prompt
     from test_helpers import real_agent_app
-    tools = agent_tool_specs(compile_agent_capabilities(real_agent_app(), {}, "owner"))
-    assert len(tools) > 20
+    caps = compile_agent_capabilities(real_agent_app(), {}, "owner")
+    tools = service._open_specs(caps, set(service.CORE_TOOLS & set(caps)))
+    assert len(caps) > 20 and len(tools) > len(service.CORE_TOOLS)
     messages = [
-        {"role": "system", "content": agent_system_prompt("th")},
+        {"role": "system", "content": agent_system_prompt("th", caps, {})},
         {"role": "user", "content": "<user_query>\n" + "ก" * 2000 + "\n</user_query>"},
         {"role": "tool", "tool_call_id": "x", "content": "x" * AGENT_RESULT_MAX_BYTES},
     ]
@@ -622,7 +635,7 @@ async def test_relay_409_continuation_expired_maps_to_plain_error(monkeypatch):
         raise RelayError("continuation_expired", "continuation_expired", status=409)
 
     monkeypatch.setattr(service, "complete", _raise)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: CAPS)
     result = await _run()
     assert result.pending_actions == []
     assert result.error == t("ai.err_step_expired")
@@ -634,7 +647,7 @@ async def test_relay_busy_maps_to_retry_text(monkeypatch):
         raise RelayError("busy", "busy", status=429)
 
     monkeypatch.setattr(service, "complete", _raise)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: CAPS)
     result = await _run()
     assert result.error == "The AI service is temporarily busy. Please try again in a moment."
 
@@ -651,7 +664,7 @@ async def test_a_service_outage_reads_as_an_outage_never_as_the_service_wrote_it
         raise RelayError("service_unavailable", message, status=503)
 
     monkeypatch.setattr(service, "complete", _raise)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: CAPS)
     result = await _run()
     assert result.error == t("ai.err_unavailable")
 
@@ -685,3 +698,182 @@ async def test_missing_file_raises_404(monkeypatch):
         await _run(file_ids=["ai_up_missing"])
     assert ei.value.status_code == 404
     assert (ei.value.detail["code"], ei.value.detail["message_key"]) == ("file_gone", "error.file_gone")
+
+
+# -- Tool-call ids: every call of a run is told apart by its id -------------
+
+def _counting(result):
+    ran: list[str] = []
+
+    async def _exec(app, authz, capability, arguments, call_id, *, result_max_bytes=None):
+        ran.append(call_id)
+        return result
+    return _exec, ran
+
+
+_READ = {"ok": True, "status": 200, "data": {"items": []}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("call_id", ["", "   ", "x" * 129, None, 7])
+async def test_a_call_without_a_usable_id_is_refused_before_it_runs(monkeypatch, call_id):
+    call = tool_call("list_items", {"query": {"q": "a"}}, "placeholder")
+    call["id"] = call_id
+    execute, ran = _counting(_READ)
+    fake = _install(monkeypatch, [tool_result(calls=[call]), tool_result(content="done")], execute=execute)
+    journal = jobs.Journal(uuid.uuid4())
+    result = await _run(journal=journal, operation_id=journal.question_id)
+    assert (result.error_code, result.error, result.pending_actions) == ("bad_tool_calls", t("ai.err_bad_reply"), [])
+    assert ran == [] and len(fake.calls) == 1
+    assert not [k for k in journal._done if k.startswith("tool:")]
+
+
+@pytest.mark.asyncio
+async def test_an_id_of_the_longest_allowed_length_runs(monkeypatch):
+    execute, ran = _counting(_READ)
+    _install(monkeypatch, [tool_result(calls=[tool_call("list_items", {"query": {"q": "a"}}, "x" * 128)]),
+                           tool_result(content="done")], execute=execute)
+    result = await _run()
+    assert result.error_code is None and ran == ["x" * 128]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("other", ["get_item", "create_contact"])
+async def test_two_tools_sharing_one_id_in_a_reply_propose_and_run_nothing(monkeypatch, other):
+    caps = {**CAPS, "update_contact": {**CAPS["create_contact"], "name": "update_contact",
+                                       "method": "PATCH", "tool": _tool("update_contact")}}
+    first = "update_contact" if other == "create_contact" else "list_items"
+    execute, ran = _counting(_READ)
+    _install(monkeypatch, [tool_result(calls=[
+        tool_call(first, {"body": {"name": "A"}} if first == "update_contact" else {"query": {"q": "a"}}, "same"),
+        tool_call(other, {"body": {"name": "B"}} if other == "create_contact" else {"path": {"item_id": "1"}}, "same"),
+    ]), tool_result(content="done")], execute=execute, caps=caps)
+    result = await _run()
+    assert (result.error_code, result.pending_actions, ran) == ("bad_tool_calls", [], [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("again", ["get_item", "create_contact"])
+async def test_an_id_used_by_an_earlier_turn_of_the_run_is_refused(monkeypatch, again):
+    execute, ran = _counting(_READ)
+    fake = _install(monkeypatch, [
+        tool_result(calls=[tool_call("list_items", {"query": {"q": "a"}}, "r1")]),
+        tool_result(calls=[tool_call(again, {"body": {"name": "B"}} if again == "create_contact"
+                                     else {"path": {"item_id": "1"}}, "r1")]),
+        tool_result(content="done"),
+    ], execute=execute)
+    journal = jobs.Journal(uuid.uuid4())
+    result = await _run(journal=journal, operation_id=journal.question_id)
+    assert (result.error_code, result.pending_actions) == ("bad_tool_calls", [])
+    assert ran == ["r1"] and len(fake.calls) == 2
+    assert journal.stored("tool:r1")["result"] == _READ
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("twin", ["k ", " k", "k\t", " k"])
+async def test_ids_that_differ_only_by_surrounding_space_are_refused(monkeypatch, twin):
+    """Every reader of a card's id trims it, so "k" and "k " would be one card to the user."""
+    execute, ran = _counting(_READ)
+    _install(monkeypatch, [tool_result(calls=[tool_call("create_contact", {"body": {"name": "A"}}, "k"),
+                                              tool_call("create_contact", {"body": {"name": "B"}}, twin)]),
+                           tool_result(content="done")], execute=execute)
+    result = await _run()
+    assert (result.error_code, result.pending_actions, ran) == ("bad_tool_calls", [], [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("calls", [7, True, 1.5])
+async def test_tool_calls_that_are_not_a_list_are_a_bad_reply(monkeypatch, calls):
+    reply = tool_result(content="x")
+    reply.message["tool_calls"] = calls
+    execute, ran = _counting(_READ)
+    _install(monkeypatch, [reply, tool_result(content="done")], execute=execute)
+    result = await _run()
+    assert (result.error_code, result.error, result.pending_actions, ran) == (
+        "bad_tool_calls", t("ai.err_bad_reply"), [], [])
+
+
+def _reference_id_ok(i) -> bool:
+    """Independent statement of a usable id: text of 1-128 characters, no character of the
+    Unicode Other or Separator classes but the plain space, and no space at either end."""
+    import unicodedata
+    return (type(i) is str and 1 <= len(i) <= 128 and i[0] != " " and i[-1] != " "
+            and all(c == " " or unicodedata.category(c)[0] not in "CZ" for c in i))
+
+
+def _generated_ids(rng, pool: list) -> list:
+    """1-3 ids built from bases, surrounding characters, edge lengths and repeats of ids
+    already used in the question."""
+    bases = ["k", "K", "call_0", "a b", "x" * 127, "x" * 128, "x" * 129, "", None, 7]
+    edges = [" ", "\t", "\n", "\r", "\x00", "\x1f", "\x7f", " ", " ", "​", " ", "　"]
+
+    def edge():
+        return rng.choice(edges) if rng.random() < 0.15 else ""
+    ids = []
+    for _ in range(rng.randint(1, 3)):
+        if pool and rng.random() < 0.15:
+            ids.append(rng.choice(pool))
+            continue
+        base = rng.choice(bases) if rng.random() < 0.5 else f"call_{rng.randint(0, 99)}"
+        ids.append(edge() + base + edge() if isinstance(base, str) else base)
+    return ids
+
+
+@pytest.mark.asyncio
+async def test_generated_ids_run_only_when_each_is_usable_and_distinct_across_the_question(monkeypatch):
+    """Seeded oracle over tool-call ids: a reply of reads, then a reply of changes. A reply is
+    accepted iff every id passes the reference and no id repeats in the question; an accepted
+    question's ids stay distinct once trimmed, and a refused reply leaves no card, no
+    journaled result and no run."""
+    import random
+    rng = random.Random(4290)
+    caps = {**CAPS, **{f"change_{n}": {**CAPS["create_contact"], "name": f"change_{n}", "tool": _tool(f"change_{n}")}
+                       for n in range(3)}}
+    outcomes = set()
+    for _ in range(400):
+        reads = _generated_ids(rng, [])
+        changes = _generated_ids(rng, [i for i in reads if isinstance(i, str)])
+        def calls(ids, make):
+            out = []
+            for n, i in enumerate(ids):
+                call = make(n)
+                call["id"] = i
+                out.append(call)
+            return out
+        execute, ran = _counting(_READ)
+        fake = _install(monkeypatch, [
+            tool_result(calls=calls(reads, lambda n: tool_call("list_items", {"query": {"q": f"a{n}"}}, "x"))),
+            tool_result(calls=calls(changes, lambda n: tool_call(f"change_{n}", {"body": {"name": "A"}}, "x"))),
+            tool_result(content="done"),
+        ], execute=execute, caps=caps)
+        journal = jobs.Journal(uuid.uuid4())
+        result = await _run(journal=journal, operation_id=journal.question_id)
+        journaled = sorted(k for k in journal._done if k.startswith("tool:"))
+        reads_ok = all(map(_reference_id_ok, reads)) and len(set(reads)) == len(reads)
+        changes_ok = (all(map(_reference_id_ok, changes)) and len(set(changes)) == len(changes)
+                      and not set(changes) & set(reads))
+        label = (reads, changes)
+        if not reads_ok:
+            outcomes.add("first refused")
+            assert (result.error_code, result.pending_actions, ran, journaled, len(fake.calls)) == (
+                "bad_tool_calls", [], [], [], 1), label
+        elif not changes_ok:
+            outcomes.add("second refused")
+            assert (result.error_code, result.pending_actions, ran, len(fake.calls)) == (
+                "bad_tool_calls", [], reads, 2), label
+            assert journaled == sorted(f"tool:{i}" for i in reads), label
+        else:
+            outcomes.add("accepted")
+            assert result.error_code is None, label
+            assert [p.id for p in result.pending_actions] == changes and ran == reads, label
+            every = reads + changes
+            assert len({i.strip() for i in every}) == len(every), label
+    assert outcomes == {"first refused", "second refused", "accepted"}
+
+
+def test_two_action_records_under_one_id_are_never_updated():
+    from celerp.ai.conversations import _replace
+    items = [{"id": "x", "name": "a"}, {"id": "x", "name": "b"}]
+    with pytest.raises(ValueError):
+        _replace(items, "x", lambda item: {**item, "status": "executing"})
+    assert _replace([{"id": "y"}], "x", lambda item: item) == (None, None)

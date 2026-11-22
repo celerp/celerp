@@ -115,9 +115,11 @@ def test_every_revision_that_writes_a_company_row_runs_over_one_both_ways():
             lock_rank.ungated_takes(None, "celerp/migrations/") as found:
         _company_with_chart_and_work_centers(async_url, sync_url)
         # Down to each revision's parent and up again, newest first: a revision runs over the
-        # rows it acts on, as no table an older one reads is dropped on the way.
+        # rows it acts on, as no table an older one reads is dropped on the way. The way back up
+        # is one alembic upgrade: the boot's one-revision-at-a-time upgrade (which apply_migrations
+        # runs above) costs a fresh alembic run per revision, and the same revision functions run.
         for revision in newest_first:
             alembic_run(sync_url, "downgrade", _SCRIPT.get_revision(revision).down_revision)
-            apply_migrations(async_url)
+            alembic_run(sync_url, "upgrade", "head")
     assert sorted(found) == [], "\n".join(sorted(found))
     assert sorted(writers - seen) == [], "revision writers the walk never ran:\n" + "\n".join(sorted(writers - seen))
