@@ -196,6 +196,53 @@ async def seed_fixed_assets(client: httpx.AsyncClient, auth: dict, user_id: str,
          "accumulated_depreciation": "4000"}]})
 
 
+async def seed_subscriptions(client: httpx.AsyncClient, auth: dict, contacts: list[dict], today: date) -> None:
+    """The agreement pages in use: a SaaS plan with a subscriber, a seat subscription, a
+    retainer, a membership billed for its first year, an agreement that bills itself and has
+    billed today, and one so far behind that its periods wait on Catch-up."""
+    from celerp.db import LifecycleSessionLocal
+    from celerp.events.engine import unattended
+    from celerp_docs import periodic
+
+    customers = [c for c in contacts if c.get("contact_type") in ("customer", "both")]
+
+    async def agreement(contact: dict, start: date, lines: list[dict], **fields) -> str:
+        doc = await _ok(await client.post("/docs", headers=auth, json={
+            "doc_type": "subscription_invoice", "contact_id": contact["id"], "frequency": "monthly",
+            "start_date": start.isoformat(), "line_items": lines, **fields}))
+        await _ok(await client.post(f"/subscriptions/{doc['id']}/activate", headers=auth))
+        return doc["id"]
+
+    def line(name: str, price: float, quantity: int = 1, **extra) -> dict:
+        return {"description": name, "quantity": quantity, "unit_price": price, "line_total": quantity * price, **extra}
+
+    await _ok(await client.post("/accounting/accounts", headers=auth, json={
+        "code": "4190", "name": "Plan income", "account_type": "revenue", "parent_code": "4000"}))
+    plans = (await _ok(await client.post("/companies/me/categories", headers=auth, json={"name": "saas_plan"})))["key"]
+    await _ok(await client.put(f"/companies/me/categories/{plans}/income-account", headers=auth,
+                               json={"income_account": "4190"}))
+    team = (await _ok(await client.post("/items", headers=auth, json={
+        "name": "Team plan", "sku": "PLAN-TEAM", "sell_by": "piece", "inventory_type": "service", "quantity": 0,
+        "status": "available", "category": plans, "retail_price": 20.0})))["id"]
+    await agreement(customers[0], today, [line("Team plan", 20.0, 3, entity_id=team)])
+    await agreement(customers[1], today, [line("Seats", 20.0, 5)])
+    await agreement(customers[2], today, [line("Monthly advisory retainer", 2500.0)], kind="retainer")
+    member = await agreement(customers[3], today.replace(month=1, day=1), [line("Annual membership", 60.0)],
+                             kind="membership", frequency="annually", grace_days=30,
+                             beneficiary_contact_id=customers[4]["id"])
+    await _ok(await client.post(f"/subscriptions/{member}/generate-due", headers=auth,
+                                json={"request_key": uuid.uuid4().hex}))
+    unattended_ones = (await agreement(customers[0], today, [line("Support plan", 150.0)]),
+                       await agreement(customers[1], (today.replace(day=1) - timedelta(days=100)).replace(day=1),
+                                       [line("Hosting", 80.0)]))
+    for eid, behind in zip(unattended_ones, (None, 1)):
+        await _ok(await client.patch(f"/subscriptions/{eid}/schedule", headers=auth, json={
+            "generation_mode": "auto_invoice", **({"catchup_periods": behind} if behind else {})}))
+    # One pass of the app's own billing loop, as it runs unattended in the background.
+    company = await _ok(await client.get("/companies/me", headers=auth))
+    await unattended(lambda: periodic.run_company(LifecycleSessionLocal, uuid.UUID(company["id"]), today=today))
+
+
 @pytest.fixture(scope="module")
 def demo_token(api_server, api):
     """A company of its own, filled with the same demo data every run."""
@@ -250,13 +297,7 @@ def demo_token(api_server, api):
                 "entries": [{"account": "1111", "debit": 250.0, "credit": 0.0},
                             {"account": "4250", "debit": 0.0, "credit": 250.0, "contact": contacts[0]["id"]}]})
             assert r.status_code == 200, r.text
-            r = await client.post("/docs", headers=auth, json={
-                "doc_type": "subscription_invoice", "contact_id": contacts[1]["id"], "frequency": "monthly",
-                "start_date": today,
-                "line_items": [{"description": "Seats", "quantity": 5, "unit_price": 20.0, "line_total": 100.0}]})
-            assert r.status_code in (200, 201), r.text
-            r = await client.post(f"/subscriptions/{r.json()['id']}/activate", headers=auth)
-            assert r.status_code == 200, r.text
+            await seed_subscriptions(client, auth, contacts, date.fromisoformat(today))
             await seed_funds_and_deferred_revenue(client, auth, contacts, date.fromisoformat(today))
             await seed_bank_statement(client, auth, date.fromisoformat(today))
             # The default label templates are created through their write route, so no
