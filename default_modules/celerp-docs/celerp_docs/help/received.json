@@ -24,7 +24,7 @@
       "text": "Click a document in the list to open it and read its lines before you book it.",
       "labels": {},
       "image": "img/received-3.webp",
-      "capture": {"route": "/docs/received", "selector": "main", "actions": []}
+      "capture": {"route": "/docs/received", "selector": "main", "actions": [{"click": "main a[href^='/docs/received/rcv']"}, {"wait": "main h1"}]}
     },
     {
       "text": "You can also ask the assistant to list what was received, book a received document into your records or mark it reconciled. It shows each change as a card and makes it only when you confirm.",

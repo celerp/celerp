@@ -243,6 +243,42 @@ async def seed_subscriptions(client: httpx.AsyncClient, auth: dict, contacts: li
     await unattended(lambda: periodic.run_company(LifecycleSessionLocal, uuid.UUID(company["id"]), today=today))
 
 
+async def seed_documents(client: httpx.AsyncClient, auth: dict, contacts: list[dict]) -> None:
+    """The document pages in use: a quotation, a stock count, a draft memo with lines and one
+    issued, a production order, and an invoice another company sent, waiting in Received."""
+    customer = next(c for c in contacts if c.get("contact_type") in ("customer", "both"))
+    stock = {i["sku"]: i for i in (await _ok(await client.get(
+        "/items", headers=auth, params={"limit": 500})))["items"]}
+    lines = [{"sku": sku, "name": name, "entity_id": stock[sku]["id"], "quantity": 1, "unit_price": retail}
+             for sku, name, _category, _qty, _cost, retail, _wholesale in seed_demo._ITEMS[:2]]
+    # The lists page shows issued lists; drafts sit under their own view.
+    quotation = await _ok(await client.post("/lists", headers=auth, json={
+        "list_type": "quotation", "contact_id": customer["id"], "line_items": lines}))
+    await _ok(await client.post(f"/lists/{quotation['id']}/finalize", headers=auth))
+    locations = await _ok(await client.get("/companies/me/locations", headers=auth))
+    location = (locations.get("items") or locations.get("locations") or locations)[0]
+    audit = await _ok(await client.post("/lists/audit", headers=auth, json={"location_id": location["id"]}))
+    await _ok(await client.post(f"/lists/{audit['id']}/finalize", headers=auth))
+    for issue in (False, True):
+        memo = await _ok(await client.post("/docs", headers=auth, json={
+            "doc_type": "memo", "contact_id": customer["id"], "line_items": lines}))
+        if issue:  # issued, with its first item gone out to the customer
+            await _ok(await client.post(f"/docs/{memo['id']}/finalize", headers=auth))
+            await _ok(await client.post(f"/docs/{memo['id']}/fulfill-lines", headers=auth,
+                                        json={"line_entity_ids": [lines[0]["entity_id"]]}))
+    await _ok(await client.post("/docs", headers=auth, json={
+        "doc_type": "production_order", "line_items": lines[:1]}))
+    r = await client.post("/docs/import-bundle", headers=auth, follow_redirects=False, json={
+        "version": 1,
+        "source": {"installation": "example-supplier", "document": "doc:INV-0042", "revision": 1},
+        "doc": {"doc_type": "invoice", "ref_id": "INV-0042", "company_name": "Example Supplier Ltd",
+                "company_email": "billing@supplier.example.com", "contact_name": "Example Trading Co",
+                "currency": "USD", "issue_date": "2026-11-02", "due_date": "2026-12-02",
+                "line_items": [{"description": "Packing boxes", "sku": "BOX-L", "quantity": 40,
+                                "unit_price": 2.5}]}})
+    assert r.status_code == 302, r.text
+
+
 @pytest.fixture(scope="module")
 def demo_token(api_server, api):
     """A company of its own, filled with the same demo data every run."""
@@ -300,6 +336,7 @@ def demo_token(api_server, api):
             await seed_subscriptions(client, auth, contacts, date.fromisoformat(today))
             await seed_funds_and_deferred_revenue(client, auth, contacts, date.fromisoformat(today))
             await seed_bank_statement(client, auth, date.fromisoformat(today))
+            await seed_documents(client, auth, contacts)
             # The default label templates are created through their write route, so no
             # page's first read seeds them: which labels page reads first depends on test order.
             for preset in PRESET_TEMPLATES:
