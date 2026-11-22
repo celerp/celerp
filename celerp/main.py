@@ -574,7 +574,7 @@ async def _serve(_app: FastAPI, held):
         logging.getLogger(__name__).exception("Cleaning up after unfinished company restores failed (non-fatal)")
 
     # In the background, and again every few minutes: a System Recovery restore Celerp
-    # Cloud has not confirmed is reported, and a company reset that stopped after Cloud
+    # Connect has not confirmed is reported, and a company reset that stopped after Cloud
     # began closing the company's online payments is settled (a deleted company's
     # payments close for good, a kept one's reopen). Until then they stay closed.
     from celerp.services.payments import reconcile_payments_loop

@@ -3,7 +3,7 @@
 """A consultant's retainer billed by hand without card payments, from the first bill to the
 roll-forward, through the API the pages use.
 
-Initial conditions: a fresh company with the seeded chart and no Celerp Cloud connection, so
+Initial conditions: a fresh company with the seeded chart and no Celerp Connect connection, so
 automatic collection is not offered. The business day is frozen per step. The retainer bills
 3100.00 a month in advance and recognizes each bill over its month: January's 31 days and
 February's 28 days are each 3100.00. Changing to 2 seats from 15 February leaves 14 of

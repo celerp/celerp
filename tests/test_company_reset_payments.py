@@ -1,14 +1,14 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""A company connected to Celerp Cloud has its online invoice payments closed at Cloud
+"""A company connected to Celerp Connect has its online invoice payments closed at Cloud
 before it is reset. Once the reset has committed, Cloud closes them for good; when it
 does not commit, Cloud reopens them, so a company that stays keeps taking payments.
-When Celerp Cloud cannot confirm, nothing is deleted. A reset interrupted part way is
+When Celerp Connect cannot confirm, nothing is deleted. A reset interrupted part way is
 settled the same way on the next start or the next reconciliation. A System Recovery
 restore is reported to Cloud, which reopens the payments of the companies it brought
-back; until Cloud confirms it, no company can be reset. A payment Celerp Cloud delivers
+back; until Cloud confirms it, no company can be reset. A payment Celerp Connect delivers
 for a company or invoice that no longer exists is kept among the unmatched payments, and
-holds the company's closing until it is recorded. A restore has Celerp Cloud deliver again
+holds the company's closing until it is recorded. A restore has Celerp Connect deliver again
 the payments recorded since its backup started; no new payment opens until they are
 recorded, and none opens while Cloud has not confirmed the restore. Each payment is
 recorded only from Cloud's delivery, on the books its payment page opened with, so one
@@ -60,7 +60,7 @@ class _Crash(BaseException):
 
 
 class _Cloud:
-    """Celerp Cloud as the installation reaches it: each closing request moves from
+    """Celerp Connect as the installation reaches it: each closing request moves from
     prepared to retired or cancelled, as Cloud does, under the installation's payment
     generation, which each reported System Recovery restore advances. A restore has
     every payment the installation ever recorded delivered again, and is confirmed
@@ -99,7 +99,7 @@ class _Cloud:
 
     def pay(self, company_id, entity_id: str = "doc:gone", reference: str = "pi_late",
             amount_minor: int = 107000, paid_at: datetime | None = None, books=OPENED) -> None:
-        """A customer pays: Celerp Cloud delivers the payment, with when Stripe reported
+        """A customer pays: Celerp Connect delivers the payment, with when Stripe reported
         it paid and the books its page opened with, until the installation acknowledges
         it."""
         self.deliveries.append({"company_id": str(company_id), "entity_id": entity_id, "reference": reference,
@@ -589,7 +589,7 @@ SETTLING = ("A payment on one of this company's invoices is still being processe
                                         ("prepare", RECONNECT), ("recovery", RECONNECT)])
 async def test_a_reset_held_by_a_payment_says_whether_stripe_must_be_reconnected(
         real_engine, real_client, monkeypatch, step, says):
-    """A payment still settling only needs time; one Celerp Cloud can check only once
+    """A payment still settling only needs time; one Celerp Connect can check only once
     the withdrawn Stripe account is reconnected says so, and nothing else."""
     boss, a, b = await _harbor(real_engine)
     cloud = _Cloud(monkeypatch, real_engine)
@@ -1282,7 +1282,7 @@ async def test_a_late_payment_kept_among_the_unmatched_is_recorded_once_a_restor
     assert result.ok is True, result.error
     assert await _references(real_engine, invoice) == []
 
-    await cloud.deliver()  # Celerp Cloud delivers the payment again after the restore
+    await cloud.deliver()  # Celerp Connect delivers the payment again after the restore
 
     assert all(d["acked"] for d in cloud.deliveries)
     assert await _paid(real_engine, invoice) == [("pi_late", 1070.0)]
@@ -1353,7 +1353,7 @@ async def _restore_losing_a_payment(tmp_path, monkeypatch, engine, client, paid_
     """After the last backup, the company's settings change to *opened* (and *account*
     is added to its chart), a customer opens the invoice's payment page and pays. A
     System Recovery restore of the backup loses the payment; the settings then change
-    to *restored*, and Celerp Cloud delivers the payment again. Returns how it first
+    to *restored*, and Celerp Connect delivers the payment again. Returns how it first
     posted."""
     from celerp.services import backup_export, backup_import
     _system_recovery(tmp_path, monkeypatch)
@@ -1599,7 +1599,7 @@ async def test_a_payment_without_usable_books_from_its_page_is_kept_among_the_un
 @pytest.mark.parametrize("without", ["none", "absent"])
 async def test_a_payment_delivered_without_a_time_it_was_paid_is_kept_among_the_unmatched(
         real_engine, real_client, monkeypatch, without):
-    """Celerp Cloud found the payment by reading Stripe back and Stripe gave no time
+    """Celerp Connect found the payment by reading Stripe back and Stripe gave no time
     the funds moved: it is never dated today in its place."""
     boss, a, b = await _harbor(real_engine)
     cloud = _Cloud(monkeypatch, real_engine)

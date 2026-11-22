@@ -435,7 +435,7 @@ async def me(
     }
 
 
-@router.get("/commercial-state", openapi_extra={"x-celerp-agent": True}, summary="Show the company's Celerp Cloud plan state, such as active, trial or lapsed.")
+@router.get("/commercial-state", openapi_extra={"x-celerp-agent": True}, summary="Show the company's Celerp Connect plan state, such as active, trial or lapsed.")
 async def commercial_state(_: None = require_permission("manage_integrations")) -> dict:
     """Return the live commercial state the API process holds from the relay WS
     push, for the separate UI process to read over an authenticated seam.

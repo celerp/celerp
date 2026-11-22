@@ -171,7 +171,7 @@ def test_send_link_without_connect_asks_for_a_free_account(tmp_path, monkeypatch
 
 def test_relay_refusal_reason_reaches_the_sender(tmp_path, monkeypatch):
     """A limit the relay names (50 active copies, daily email limit) reaches the sender in
-    the relay's own words, quoted as what Celerp Cloud answered, instead of a generic retry
+    the relay's own words, quoted as what Celerp Connect answered, instead of a generic retry
     message."""
     _private_staging(monkeypatch, tmp_path)
     plain = tmp_path / "plain"
@@ -185,7 +185,7 @@ def test_relay_refusal_reason_reaches_the_sender(tmp_path, monkeypatch):
     monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", full)
     with pytest.raises(sender.HandoffSendError) as refused:
         _run(_send(plain, uuid.uuid4(), uuid.uuid4(), bytes(32)))
-    assert str(refused.value) == f"Celerp Cloud answered: {limit}"
+    assert str(refused.value) == f"Celerp Connect answered: {limit}"
 
 
 @pytest.mark.parametrize("status", [503, 409])
@@ -199,7 +199,7 @@ def test_a_reason_the_cloud_gives_is_kept_on_an_unavailable_service_too(monkeypa
     monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", refuse)
     with pytest.raises(sender.HandoffRefused) as refused:
         _run(sender.cloud_json("POST", "/xero-attachments", unconfirmed="handoff.copy_unconfirmed", account_needed="handoff.account_needed"))
-    assert str(refused.value) == f"Celerp Cloud answered: {reason}" and refused.value.status_code == status
+    assert str(refused.value) == f"Celerp Connect answered: {reason}" and refused.value.status_code == status
 
     async def bare(method, path, **kw):
         return httpx.Response(503, text="<html>Service Unavailable</html>")

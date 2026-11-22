@@ -1513,7 +1513,7 @@ def connector_modules_running(monkeypatch):
 
 @pytest.fixture
 def signed_in_to_cloud():
-    """The install signed in to Celerp Cloud, as a store or accounting connection needs."""
+    """The install signed in to Celerp Connect, as a store or accounting connection needs."""
     import celerp.gateway.state as gw_state
 
     gw_state.set_session_token("test-session-token")

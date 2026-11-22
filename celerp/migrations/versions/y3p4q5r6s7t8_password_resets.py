@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 """Record every password reset and who still has to be told about it, and drop the
-reset-link columns: a password is now reset by a code Celerp Cloud emails, from a
+reset-link columns: a password is now reset by a code Celerp Connect emails, from a
 terminal on this computer or by an owner, never by an emailed link.
 
 The two tables are created from the models at start too, so a start of this version

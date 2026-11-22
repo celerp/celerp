@@ -490,7 +490,7 @@ async def _with_member(token: str, sub: dict) -> dict:
 
 
 async def _with_collection(token: str, entity_id: str, sub: dict) -> dict:
-    """A sales agreement with what Celerp Cloud offers for automatic collection and its payer's
+    """A sales agreement with what Celerp Connect offers for automatic collection and its payer's
     card on file (``collection_view``); as it is when the read fails, so nothing is offered."""
     if doc_kind(sub) != "invoice":
         return sub
@@ -897,7 +897,7 @@ def _catch_up_card(items: list[dict], subs: dict[str, dict], results: list[dict]
     )
 
 
-# Send failures fixed on the Web Access page: no email service at all, or Celerp Cloud refusing it.
+# Send failures fixed on the Web Access page: no email service at all, or Celerp Connect refusing it.
 _FIXED_IN_WEB_ACCESS = ("email.err_no_transport", "email.err_relay_refused")
 
 

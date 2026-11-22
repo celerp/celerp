@@ -117,8 +117,8 @@ INFRASTRUCTURE: dict[str, str] = {
     "migration_templates": "a user's remembered migration answers: services/migration_templates.py",
     "migration_batch_files": "a user's migration files staged before any company exists: services/migration_batches.py",
     "supporter_badges": "a user's supporter badge: services/supporter_badge.py",
-    "payment_closures": "a request to Celerp Cloud to close a company's payments, kept past the company: services/payments.py",
-    "payment_recoveries": "a System Recovery restore of the install, for Celerp Cloud: services/payments.py",
+    "payment_closures": "a request to Celerp Connect to close a company's payments, kept past the company: services/payments.py",
+    "payment_recoveries": "a System Recovery restore of the install, for Celerp Connect: services/payments.py",
     "unmatched_payments": "payments received for no company the install holds: services/payments.py",
     "unmatched_refunds": "refunds received for no company the install holds: services/payments.py",
 }

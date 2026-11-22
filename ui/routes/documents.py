@@ -6478,7 +6478,7 @@ def _submitted_fund_allocation(form) -> dict:
 
 
 def _collection_status(collection: dict | None, tz: str | None) -> FT | str:
-    """How the invoice's automatic collection through Celerp Cloud stands; nothing for an
+    """How the invoice's automatic collection through Celerp Connect stands; nothing for an
     invoice that is not collected."""
     from celerp.services.business_time import business_date_of
     from celerp.services.collection import IN_FLIGHT, STOP_REASONS

@@ -2339,7 +2339,7 @@ async def amend_subscription(token: str, entity_id: str, body: dict) -> dict:
 
 
 async def get_subscription_collection(token: str, entity_id: str) -> dict:
-    """Whether Celerp Cloud offers automatic collection, and the agreement payer's card on file."""
+    """Whether Celerp Connect offers automatic collection, and the agreement payer's card on file."""
     async with _api_client(token) as c:
         return _raise(await c.get(f"/subscriptions/{entity_id}/collection")).json()
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 """Record when an unmatched online payment was paid, and stop recording when a
-restored backup started (Celerp Cloud now delivers every payment again).
+restored backup started (Celerp Connect now delivers every payment again).
 
 Revision ID: r5g6b7c8d9e0
 Revises: q4f5a6b7c8d9

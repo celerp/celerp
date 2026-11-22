@@ -1,13 +1,13 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""A refund of an online payment is made in Stripe and delivered by Celerp Cloud. Each
+"""A refund of an online payment is made in Stripe and delivered by Celerp Connect. Each
 refund gives its money back from the payment it refunds, found by the payment's
 reference, once, on the books the payment was recorded on; one Stripe reverses posts
 its exact mirror once. A refund that cannot be applied yet (its company, invoice or
 payment is not there, or it gives back more than is left of the payment) is kept,
 whole, with the unmatched payments, and applies, in the order Stripe reported, when its
 payment is recorded on its invoice. A refund Stripe undoes and later puts through again
-gives the money back again, each time once. A System Recovery restore has Celerp Cloud
+gives the money back again, each time once. A System Recovery restore has Celerp Connect
 deliver the payment, its refunds and its release again, which rebuilds the books
 exactly. A payment Stripe holds the money for is never refunded, voided or deleted
 here, until Stripe is disconnected: the payment is then no longer linked to Stripe,
@@ -47,7 +47,7 @@ def _at(hours: int) -> datetime:
 
 
 class _RefundCloud(_Cloud):
-    """Celerp Cloud delivering payments and the changes to their refunds as one stream,
+    """Celerp Connect delivering payments and the changes to their refunds as one stream,
     each until the installation acknowledges it."""
 
     def refund(self, company_id, entity_id: str, refund_id: str, amount_minor: int, occurred_at: datetime, *,
@@ -81,7 +81,7 @@ class _RefundCloud(_Cloud):
 
 
 async def _deliver_one(d: dict) -> bool:
-    """Deliver *d* through the gateway as Celerp Cloud does; whether it was acknowledged."""
+    """Deliver *d* through the gateway as Celerp Connect does; whether it was acknowledged."""
     from celerp.gateway.client import GatewayClient
     gateway = GatewayClient(gateway_token="t", instance_id="i", gateway_url="wss://relay.invalid/ws")
     gateway._ws = object()

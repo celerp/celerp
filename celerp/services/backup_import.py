@@ -869,7 +869,7 @@ def _keep_for_retry(prepared: PreparedRecovery) -> Path:
 async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], bool]:
     """Replace the database, file roots and enabled modules with *prepared*'s.
 
-    Clears the restored connectors, records the restore for Celerp Cloud
+    Clears the restored connectors, records the restore for Celerp Connect
     (``payments.record_recovery``) and ends every session. Returns the enabled
     modules and whether a restart was scheduled. The caller holds the recovery locks and the recovery marker.
     """
@@ -992,7 +992,7 @@ async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | Non
             _keep_recovery_failure(message, detail)
             return _failed(message, safety_archive=safety, session_ended=True)
         _mark_recovery_finished()
-        # Celerp Cloud learns of the restore now; until it has, no company can be reset,
+        # Celerp Connect learns of the restore now; until it has, no company can be reset,
         # and the reconciliation at start and every few minutes keeps trying.
         from celerp.services.payments import reconcile_payments
         await reconcile_payments()
