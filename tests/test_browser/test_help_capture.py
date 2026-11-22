@@ -55,7 +55,14 @@ _EMPTY_STATE_SELECTOR = ", ".join((
     ".cloud-hero", ".upgrade-banner", ".module-license-upsell", ".ai-showcase__headline",
 ))
 # Steps whose text is about that empty or sales screen itself: "<page id>#<step>": why.
-_SHOWS_EMPTY_STATE: dict[str, str] = {}
+_NO_TAX_REGIME = "no first-party module ships a tax regime, so the page shows where to get one"
+_SHOWS_EMPTY_STATE: dict[str, str] = {
+    "fixed-assets.tax-books#1": _NO_TAX_REGIME,
+    "fixed-assets.tax-books#2": _NO_TAX_REGIME,
+    "fixed-assets.year-end#1": _NO_TAX_REGIME,
+    "fixed-assets.year-end#2": _NO_TAX_REGIME,
+    "fixed-assets.year-end#3": _NO_TAX_REGIME,
+}
 
 
 async def _ok(response: httpx.Response) -> dict:

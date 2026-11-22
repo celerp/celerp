@@ -30,7 +30,7 @@
       "text": "Click an asset's number to open its page: its figures, its history and the actions for it. From there you can add a later cost or part, correct a figure, place an asset under construction in service, move it to another class, revalue or impair it, or transfer it to another company you keep books for. Each action opens its own page and shows the journal before it posts.",
       "labels": {},
       "image": "img/register-4.webp",
-      "capture": {"route": "/fixed-assets", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets", "selector": "main", "actions": [{"click": "#fa-register a[href^=\"/fixed-assets/assets/\"]"}, {"wait": "main h1"}]}
     },
     {
       "text": "You can also ask the assistant to add an asset, take one in from a bill line or update an asset's details. It shows each change as a card and makes it only when you confirm.",

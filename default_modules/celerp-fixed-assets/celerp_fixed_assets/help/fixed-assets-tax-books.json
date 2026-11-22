@@ -9,7 +9,7 @@
   "checked": "4a5f1bdec5bd2229a01e5695d960236081750aa3b9c1e9674c10a1dd3e8ad5de",
   "steps": [
     {
-      "text": "{title} shows the tax value of each asset under a tax regime, year by year. A category or election set here changes the open years only, and these figures never post to the ledger.",
+      "text": "{title} shows the tax value of each asset under a tax regime, year by year. A tax regime comes from a country module; until one is installed and chosen, the page says so and links to Modules. A category or election set here changes the open years only, and these figures never post to the ledger.",
       "labels": {"title": "fixed_assets.tax_books_title"},
       "image": "img/tax-books-1.webp",
       "capture": {"route": "/fixed-assets/tax-books", "selector": "main", "actions": []}

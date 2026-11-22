@@ -18,7 +18,7 @@
       "text": "Click a correction to see the asset, what changed, from when and why, and the journal it posted.",
       "labels": {},
       "image": "img/corrections-2.webp",
-      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": [{"click": "main a[href^=\"/fixed-assets/corrections/\"]"}, {"wait": "main h1"}]}
     },
     {
       "text": "You can also ask the assistant which corrections are waiting, or to apply one. It shows each change as a card and makes it only when you confirm.",
