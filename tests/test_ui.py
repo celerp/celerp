@@ -16448,6 +16448,28 @@ class TestInventoryUXFixes:
         assert int(captured_params.get("limit", 0)) <= 100
 
     @pytest.mark.asyncio
+    async def test_print_list_names_the_items_not_their_ids(self, ui_client):
+        """The print screen lists the items by name (SKU when unnamed), never by record id."""
+        items = {"item:1a2b": {"entity_id": "item:1a2b", "name": "Whiteboard 90x60", "sku": "WB-90"},
+                 "item:3c4d": {"entity_id": "item:3c4d", "name": "", "sku": "PEN-BLK"}}
+
+        async def fake_get(url, params=None, headers=None, **kw):
+            resp = MagicMock(status_code=200)
+            eid = url.rsplit("/", 1)[-1]
+            resp.json.return_value = (items[eid] if eid in items
+                                      else {"items": list(items.values())} if url.endswith("/items") else {"items": []})
+            return resp
+
+        ui_client.cookies.update(_authed())
+        with patch("celerp_labels.ui_routes.httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock(get=fake_get))
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            r = await ui_client.get("/labels/print-list", follow_redirects=False)
+        assert r.status_code == 200
+        assert "Whiteboard 90x60, PEN-BLK" in r.text
+        assert "item:1a2b" not in r.text.replace('value="item:1a2b"', "")
+
+    @pytest.mark.asyncio
     async def test_print_bulk_form_appears_when_labels_loaded(self, ui_client):
         """Print-bulk form appears in inventory toolbar when labels module is loaded."""
         from celerp.modules.slots import register as register_slot, clear as clear_slots

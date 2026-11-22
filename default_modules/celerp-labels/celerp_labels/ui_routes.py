@@ -935,6 +935,20 @@ def _label_settings_root(
     )
 
 
+async def _item_names(api_base: str, token: str | None, entity_ids: list[str]) -> list[str]:
+    """Each item's name (its SKU if it has none), in order; an item that cannot be read is left out."""
+    names: list[str] = []
+    async with httpx.AsyncClient(timeout=10) as c:
+        for eid in entity_ids:
+            try:
+                r = await c.get(f"{api_base}/items/{eid}", headers={"Authorization": f"Bearer {token}"})
+            except httpx.HTTPError:
+                continue
+            if r.status_code == 200 and (name := r.json().get("name") or r.json().get("sku")):
+                names.append(name)
+    return names
+
+
 async def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_base: str, token: str | None, request: object = None) -> object:
     """Show template picker + confirm Print button for bulk label printing."""
     ft = _ft()
@@ -946,12 +960,13 @@ async def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict],
 
     hidden_ids = [Input(type="hidden", name="selected", value=eid) for eid in entity_ids]
     template_opts = [Option(tpl["name"], value=tpl["id"]) for tpl in templates]
+    names = await _item_names(api_base, token, entity_ids[:5])
 
     return await base_shell(
         Div(
             H2(t("labels.print_labels_heading", n=len(entity_ids))),
-            P(t("labels.selected", ids=', '.join(entity_ids[:5]),
-              more=('...' if len(entity_ids) > 5 else ''))),
+            P(t("labels.selected", ids=', '.join(names), more=('...' if len(entity_ids) > 5 else '')))
+            if names else None,
             Form(
                 *hidden_ids,
                 Div(
