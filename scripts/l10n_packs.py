@@ -185,26 +185,33 @@ def _download(repo: str, tag: str, token: str) -> bytes:
 
 
 def _replace_packs(root: Path, fetched: dict[str, bytes]) -> None:
-    """Write the set into a new folder beside ``packs``, then swap it in; on any failure the old one stays."""
+    """Write the set into a new folder beside ``packs``, then swap it in; on any failure the old
+    one stays. The old set is kept in ``.packs-old`` until the new set is in place or the old one
+    is back: when neither move succeeds it stays there and the error names it."""
+    packs, old = root / "packs", root / ".packs-old"
     staging = Path(tempfile.mkdtemp(prefix=".packs-new-", dir=root))
-    old = root / ".packs-old"
-    moved = False
     try:
         for code, data in fetched.items():
             (staging / f"{code}.json").write_bytes(data)
-        shutil.rmtree(old, ignore_errors=True)
-        if (root / "packs").exists():
-            os.replace(root / "packs", old)
-            moved = True
-        os.replace(staging, root / "packs")
-        moved = False
-    except BaseException:
+        if old.exists():
+            if not packs.exists():
+                raise OSError(f"{old} holds the last pack set and {packs} is missing; move it back first")
+            shutil.rmtree(old)
+        moved = packs.exists()
         if moved:
-            os.replace(old, root / "packs")
-        raise
+            os.replace(packs, old)
+        try:
+            os.replace(staging, packs)
+        except BaseException:
+            if moved:
+                try:
+                    os.replace(old, packs)
+                except OSError as exc:
+                    raise OSError(f"the old pack set could not be moved back and is kept in {old}") from exc
+            raise
+        shutil.rmtree(old, ignore_errors=True)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-        shutil.rmtree(old, ignore_errors=True)
 
 
 def fetch(root: Path) -> list[str]:

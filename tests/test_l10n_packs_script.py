@@ -547,3 +547,72 @@ def test_check_l10n_packs_stdlib_fetch(tmp_path):
                    and any(name.startswith("celerp") for name in
                            ([a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""]))}
     assert app_imports == {"validate"}
+
+
+def _swap_root(tmp_path: Path) -> Path:
+    root = tmp_path / "swap"
+    (root / "packs").mkdir(parents=True)
+    (root / "packs" / "TH.json").write_bytes(b"old TH\n")
+    return root
+
+
+def _failing_replace(monkeypatch, *failing: str) -> None:
+    """os.replace raising for each move whose source folder name starts with one of *failing*."""
+    real_replace = os.replace
+
+    def _replace(src, dst):
+        if any(Path(src).name.startswith(name) for name in failing):
+            raise OSError(f"cannot move {Path(src).name}")
+        return real_replace(src, dst)
+    monkeypatch.setattr(os, "replace", _replace)
+
+
+def _files(folder: Path) -> dict[str, bytes]:
+    return {p.name: p.read_bytes() for p in folder.iterdir()}
+
+
+def test_replace_packs_swaps_the_new_set_in_and_leaves_nothing_behind(tmp_path):
+    root = _swap_root(tmp_path)
+    _script()._replace_packs(root, {"TH": b"new TH\n"})
+    assert _files(root / "packs") == {"TH.json": b"new TH\n"}
+    assert sorted(p.name for p in root.iterdir()) == ["packs"]
+
+
+def test_replace_packs_leaves_the_old_set_in_place_when_it_cannot_be_moved_aside(tmp_path, monkeypatch):
+    root = _swap_root(tmp_path)
+    _failing_replace(monkeypatch, "packs")
+    with pytest.raises(OSError):
+        _script()._replace_packs(root, {"TH": b"new TH\n"})
+    assert _files(root / "packs") == {"TH.json": b"old TH\n"}
+    assert sorted(p.name for p in root.iterdir()) == ["packs"]
+
+
+def test_replace_packs_moves_the_old_set_back_when_the_new_one_cannot_be_moved_in(tmp_path, monkeypatch):
+    root = _swap_root(tmp_path)
+    _failing_replace(monkeypatch, ".packs-new-")
+    with pytest.raises(OSError):
+        _script()._replace_packs(root, {"TH": b"new TH\n"})
+    assert _files(root / "packs") == {"TH.json": b"old TH\n"}
+    assert sorted(p.name for p in root.iterdir()) == ["packs"]
+
+
+def test_replace_packs_keeps_the_old_set_and_names_it_when_it_cannot_be_moved_back(tmp_path, monkeypatch):
+    root = _swap_root(tmp_path)
+    _failing_replace(monkeypatch, ".packs-new-", ".packs-old")
+    with pytest.raises(OSError) as raised:
+        _script()._replace_packs(root, {"TH": b"new TH\n"})
+    old = root / ".packs-old"
+    assert str(old) in str(raised.value)
+    assert _files(old) == {"TH.json": b"old TH\n"}
+    assert sorted(p.name for p in root.iterdir()) == [".packs-old"]
+
+
+def test_replace_packs_never_removes_a_kept_old_set_while_packs_is_missing(tmp_path):
+    root = tmp_path / "swap"
+    (root / ".packs-old").mkdir(parents=True)
+    (root / ".packs-old" / "TH.json").write_bytes(b"old TH\n")
+    with pytest.raises(OSError) as raised:
+        _script()._replace_packs(root, {"TH": b"new TH\n"})
+    assert str(root / ".packs-old") in str(raised.value)
+    assert _files(root / ".packs-old") == {"TH.json": b"old TH\n"}
+    assert sorted(p.name for p in root.iterdir()) == [".packs-old"]
