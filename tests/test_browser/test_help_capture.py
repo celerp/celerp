@@ -182,12 +182,6 @@ _SUBSCRIBED: dict[str, str] = {
 }
 
 
-# The sample books leave nothing to decide, so they go from coverage straight to review. The
-# step about the question a file can leave open is taken with the sample swapped for a Sage 50
-# export set, which asks the currency its books are kept in.
-_ASKS_A_QUESTION = {"core.imports#5"}
-
-
 @cache
 def _sage50_set() -> Path:
     from fixtures.sage50_export import build
@@ -197,12 +191,6 @@ def _sage50_set() -> Path:
         for name, data in build.files(build.simulate()).items():
             zf.writestr(name, data)
     return path
-
-
-# The step about a store's first sync pictures its preview, which reads the store: the store
-# is given a few products and orders through the seams tests/test_first_sync_preview_receipt.py
-# uses, for that step only.
-_READS_THE_STORE = {"connectors.connect-store#4"}
 
 
 @contextlib.contextmanager
@@ -264,25 +252,70 @@ def _subscription(kind: str | None):
         yield
 
 
-def _scripted_model():
-    """The model of an AI step, as tests/test_browser/test_ai_chat_journey.py scripts it: the
-    first request is answered with a proposal to add an item, so the step pictures its card."""
+def _scripted_model(*lamps: tuple[str, str]):
+    """The model of an AI step, as tests/test_browser/test_ai_chat_journey.py scripts it: each
+    request in turn is answered with a proposal to add one of ``lamps`` (SKU, name), so the
+    step pictures its card."""
     from celerp.ai.llm import ModelResult
     from celerp.ai.tools import compile_agent_capabilities
     from celerp.main import app
 
     create_item = next(name for name, cap in compile_agent_capabilities(app, {}).items()
                        if (cap["method"], cap["path"]) == ("POST", "/items"))
-    turns = [{"role": "assistant", "content": "I'll add the desk lamp once you confirm.", "tool_calls": [{
-        "id": "call-help-capture", "type": "function", "function": {"name": create_item, "arguments": json.dumps(
-            {"body": {"sku": "LAMP-001", "name": "Desk Lamp", "category": "Electronics", "retail_price": 45,
-                      "sell_by": "piece"}})}}]}]
+    turns = [{"role": "assistant", "content": f"I'll add the {name.lower()} once you confirm.", "tool_calls": [{
+        "id": f"call-help-capture-{sku}", "type": "function", "function": {"name": create_item, "arguments": json.dumps(
+            {"body": {"sku": sku, "name": name, "category": "Electronics", "retail_price": 45,
+                      "sell_by": "piece"}})}}]} for sku, name in lamps or (("LAMP-001", "Desk Lamp"),)]
 
     async def complete(messages, **_kw) -> ModelResult:
         message = turns.pop(0) if turns else {"role": "assistant", "content": "Desk Lamp is now in your stock."}
         return ModelResult(message=message, model_used="help-capture", usage={}, reservation_id=None,
                            remaining=None)
     return complete
+
+
+@contextlib.contextmanager
+def _answer_never_came():
+    """A confirmed change whose answer never came, as the executor reports a step past its
+    deadline: the card keeps the change open with the reason and Retry."""
+    from celerp.ai import tools as ai_tools
+
+    seconds = int(ai_tools.deadlines.TOOL_STEP_S)
+    timeout = ai_tools._agent_error("capability_timeout", "ai.err_capability_timeout",
+                                    f"The operation did not finish within {seconds} seconds.", seconds=seconds)
+    with patch.object(ai_tools, "execute_agent_capability", AsyncMock(return_value=timeout)):
+        yield
+
+
+_LAMPS = (("LAMP-001", "Desk Lamp"), ("LAMP-002", "Floor Lamp"), ("LAMP-003", "Reading Lamp"),
+          ("LAMP-004", "Wall Lamp"))
+
+
+@contextlib.contextmanager
+def _older_proposals():
+    """Four questions each left with an open proposal, in a conversation kept to two messages
+    as tests/test_protected_work.py caps it: reopened, it shows the newest message and the two
+    cards before it under Show older actions."""
+    from celerp.ai import conversations
+
+    with patch.object(conversations, "MAX_MESSAGES_PER_CONVERSATION", 2), \
+            patch.object(ai_service, "complete", _scripted_model(*_LAMPS)):
+        yield
+
+
+# A step whose state the capture company does not reach alone is taken inside its own seam:
+# - core.imports#5: the sample books leave nothing to decide, so they go from coverage straight
+#   to review; the question a file can leave open is taken with the sample swapped for a Sage 50
+#   export set, which asks the currency its books are kept in.
+# - connect-store#4: a store's first sync preview reads the store, which is given a few products
+#   and orders through the seams tests/test_first_sync_preview_receipt.py uses.
+# - review-proposals#3 and #4: a change that can be tried again, and proposals past the first page.
+_STEP_STATE = {
+    "core.imports#5": lambda: patch("celerp.importers.sample.SAMPLE_ARTIFACT", _sage50_set()),
+    "connectors.connect-store#4": _store_reads,
+    "ai.review-proposals#3": _answer_never_came,
+    "ai.review-proposals#4": _older_proposals,
+}
 
 
 async def _ok(response: httpx.Response) -> dict:
@@ -1042,9 +1075,7 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
         with _capture_clock(), _subscription(_SUBSCRIBED.get(step_id)), \
                 patch.dict(os.environ, {"MODULE_DIR": "default_modules"}), \
                 patch("ui.routes.documents._free_send_quota", return_value=_FREE_EMAIL_QUOTA), \
-                (patch("celerp.importers.sample.SAMPLE_ARTIFACT", _sage50_set())
-                 if step_id in _ASKS_A_QUESTION else contextlib.nullcontext()), \
-                (_store_reads() if step_id in _READS_THE_STORE else contextlib.nullcontext()):
+                _STEP_STATE.get(step_id, contextlib.nullcontext)():
             try:
                 if shown := _capture_step(page, help_page, step, step_id, suite_owner["names"]):
                     wrong.append(f"{step_id} {shown}")
