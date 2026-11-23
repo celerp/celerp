@@ -189,11 +189,14 @@ def test_no_pr_and_unmerged_branch_fails_the_job(scratch: Scratch) -> None:
     assert "gh pr create" not in gh and "gh workflow run" not in gh
 
 
-def test_a_push_to_the_branch_during_the_run_is_never_overwritten(scratch: Scratch) -> None:
-    """The push only adds to the head the step inspected."""
-    scratch.git("switch", "-qc", "refresh")
-    scratch.commit({"constraints.txt": "dep==1.1\n"}, REFRESH_SUBJECT)
-    scratch.push_branch()
+@pytest.mark.parametrize("action", ["update", "replace"])
+def test_a_push_to_the_branch_during_the_run_is_never_overwritten(scratch: Scratch, action: str) -> None:
+    """Both pushes are bound to the head the step inspected: the update push only adds to it and
+    the replace push is leased on it."""
+    if action == "update":
+        scratch.git("switch", "-qc", "refresh")
+        scratch.commit({"constraints.txt": "dep==1.1\n"}, REFRESH_SUBJECT)
+    scratch.push_branch()  # replace: the branch is main itself, nothing unmerged
     scratch.commit({"conftest.py": "fix\n"}, "A person's fix, pushed mid-run")
     interloper = scratch.git("rev-parse", "HEAD")
     hook = f"git -C {scratch.seed} push -q origin HEAD:refs/heads/{BRANCH}"
@@ -410,9 +413,11 @@ def test_decide_matches_the_table_for_every_input() -> None:
 # main, the branch left behind ("-human" adds a person's commit to constraints.txt's). "pins": one
 # commit with the job's subject touching only constraints.txt, unmerged (the job's or a person's:
 # git cannot tell). "pins-human": that plus a person's commit to another file. "pins-more": a
-# commit with the job's subject that also touches pyproject.toml. "unrelated": shares no history
-# with main.
-SHAPES = ("none", "behind-main", "squashed-own", "squashed-human", "pins", "pins-human", "pins-more", "unrelated")
+# commit with the job's subject that also touches pyproject.toml. "human": a person's single commit
+# to one file other than constraints.txt. "unrelated": shares no history with main.
+SHAPES = (
+    "none", "behind-main", "squashed-own", "squashed-human", "pins", "pins-human", "pins-more", "human", "unrelated"
+)
 OWN_COMMIT = {"constraints.txt": "dep==1.1\n"}
 HUMAN_COMMIT = {"conftest.py": "fix\n"}
 
@@ -466,6 +471,8 @@ def _build(s: Scratch, f: Facts) -> str | None:
         s.git("switch", "-qc", "refresh")
         if f.shape == "pins-more":
             s.commit({**OWN_COMMIT, "pyproject.toml": "deps\nextra\n"}, REFRESH_SUBJECT)
+        elif f.shape == "human":
+            s.commit(HUMAN_COMMIT, "A person's commit")
         else:
             s.commit(OWN_COMMIT, REFRESH_SUBJECT)
         if f.shape.endswith("-human"):
