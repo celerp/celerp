@@ -939,12 +939,18 @@ def _visible_label(key: str) -> str:
     return t(key, "en").split("{", 1)[0].strip()
 
 
+def _whole_label(key: str) -> re.Pattern:
+    """An element's whole text reading the English label, any text standing for each {param}."""
+    return re.compile(r"^\s*" + ".+".join(map(re.escape, re.split(r"\{[^}]*\}", t(key, "en").strip()))) + r"\s*$")
+
+
 def _evidence_locator(page, entry: str, labels: dict):
-    """What one evidence entry matches: a {name} alone is the English text of that label (or a
-    field showing it as placeholder), anything else a selector, with each {name} in it standing
-    for that text (``.step-label--active:text-is('{map}')``)."""
+    """What one evidence entry matches: a {name} alone is an element whose whole text is that
+    label in English (or a field showing it as placeholder), so a sentence naming the label is
+    not a match; anything else a selector, with each {name} in it standing for that text
+    (``.step-label--active:text-is('{map}')``)."""
     if name := PLACEHOLDER.fullmatch(entry):
-        label = _visible_label(labels[name.group(1)])
+        label = _whole_label(labels[name.group(1)])
         return page.get_by_text(label).or_(page.get_by_placeholder(label))
     return page.locator(PLACEHOLDER.sub(
         lambda m: _visible_label(labels[m.group(1)]).replace("\\", "\\\\").replace("'", "\\'"), entry))
@@ -952,8 +958,9 @@ def _evidence_locator(page, entry: str, labels: dict):
 
 def _evidence_missing(page, target, step: dict) -> list[str]:
     """The step's evidence entries with no visible match lying wholly inside the part of
-    ``target`` a picture keeps (its top _MAX_HEIGHT pixels): a match elsewhere on the page,
-    hidden, or cut by the picture's edge does not count."""
+    ``target`` a picture keeps (its top _MAX_HEIGHT pixels) and on top at its centre: a match
+    elsewhere on the page, hidden, cut by the picture's edge or covered by another element (an
+    open dropdown) does not count."""
     clip = target.evaluate("""(el, maxHeight) => {
         const r = el.getBoundingClientRect();
         return [r.left, r.top, r.right, r.top + Math.min(r.height, maxHeight)];
@@ -962,8 +969,16 @@ def _evidence_missing(page, target, step: dict) -> list[str]:
             if not _evidence_locator(page, entry, step["labels"]).evaluate_all("""(els, [l, t, r, b]) =>
                 els.some(e => {
                     const box = e.getBoundingClientRect();
-                    return e.checkVisibility() && box.width > 0 && box.height > 0 && box.left >= l - 1
-                        && box.top >= t - 1 && box.right <= r + 1 && box.bottom <= b + 1;
+                    if (!(e.checkVisibility() && box.width > 0 && box.height > 0 && box.left >= l - 1
+                          && box.top >= t - 1 && box.right <= r + 1 && box.bottom <= b + 1)) return false;
+                    // The element hit at the centre of its widest line box (a wrapped label's
+                    // whole box has gaps), brought into the viewport to be hit-tested.
+                    const [x, y] = [scrollX, scrollY];
+                    e.scrollIntoView({block: "nearest", inline: "nearest"});
+                    const now = [...e.getClientRects()].reduce((a, c) => c.width > a.width ? c : a);
+                    const hit = document.elementFromPoint((now.left + now.right) / 2, (now.top + now.bottom) / 2);
+                    scrollTo(x, y);
+                    return hit !== null && e.contains(hit);
                 })""", clip)]
 
 
@@ -1234,7 +1249,7 @@ def test_a_label_named_in_a_sentence_is_not_evidence_of_the_screen(page):
     # The same labels as the text of an element of their own are found, each of them.
     cells = "".join(f"<span style='margin-right:4px'>{_shown(k)}</span>" for k in labels.values())
     page.set_content(f"<main id='t' style='font-size:6px'>{cells}</main>")
-    assert _evidence_missing(page, page.locator("#t"), step) == []
+    assert [labels[e[1:-1]] for e in _evidence_missing(page, page.locator("#t"), step)] == []
 
 
 def test_a_control_another_element_covers_is_not_evidence_of_the_screen(page):
@@ -1245,4 +1260,4 @@ def test_a_control_another_element_covers_is_not_evidence_of_the_screen(page):
           <li>Bank account</li></ul></main>""")
     assert _evidence_missing(page, page.locator("#t"), step) == ["{post}", "#t button"]
     page.locator("ul").evaluate("e => e.remove()")
-    assert _evidence_missing(page, page.locator("#t"), step) == []
+    assert [labels[e[1:-1]] for e in _evidence_missing(page, page.locator("#t"), step)] == []
