@@ -32295,5 +32295,8 @@
     "tests/test_banned_terms.py::test_readme_carries_no_banned_term": 0.002805329975672066,
     "tests/test_location_default_notice_lock.py::test_a_concurrent_second_start_does_not_write_back_a_stale_sibling_key": 0.5958722190116532,
     "tests/test_location_default_notice_lock.py::test_two_starts_tell_once_and_the_second_waits": 1.9095094169606455,
-    "tests/test_tax_settings_cells_ui.py::test_taxes_tab_tax_type_column_shows_the_same_label_as_the_select": 0.0050222029676660895
+    "tests/test_tax_settings_cells_ui.py::test_taxes_tab_tax_type_column_shows_the_same_label_as_the_select": 0.0050222029676660895,
+    "tests/test_one_default_location_pg.py::test_import_marked_record_moves_the_default_from_an_existing_one": 0.4139652529847808,
+    "tests/test_one_default_location_pg.py::test_import_on_an_empty_company_with_none_marked_sets_the_first": 0.25915400206577033,
+    "tests/test_one_default_location_pg.py::test_import_two_marked_records_the_last_one_wins": 0.3629824810777791
 }
