@@ -113,10 +113,10 @@ async def _results(token: str, q: str, module: str, role: str, lang: str, ai_on:
                 for h in found["hits"]], cls="help-list")
 
 
-def _related(ids: list[str], lang: str) -> list[FT]:
+def _related(ids: list[str], lang: str) -> FT | str:
     pages = get_index().pages
     links = [Li(A(pages[i].title, href=f"/help/{i}")) for i in ids if i in pages]
-    return [H2(t("help.related", lang)), Ul(*links, cls="help-related")] if links else []
+    return Section(H2(t("help.related", lang)), Ul(*links, cls="help-related"), id="help-related") if links else ""
 
 
 def _steps(body: dict) -> FT:
@@ -217,7 +217,7 @@ def setup_routes(app):
                 *_flags(body, get_role(request), lang),
                 P(body["summary"], cls="help-page__summary"),
                 _steps(body),
-                *_related(body["related"], lang),
+                _related(body["related"], lang),
                 _back(lang),
                 cls="help-page",
             )

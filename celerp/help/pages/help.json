@@ -6,7 +6,7 @@
   "routes": ["/help", "/help/{page_id}"],
   "permission": null,
   "order": 5,
-  "checked": "96cac2498706c9ed4e4b9ff7530c72e100834cc6a400ef7b731b06304a1392e0",
+  "checked": "c06248144a530800c8f7783fe61351ec755abd1b0a27a29ccc725ff44373c1e4",
   "steps": [
     {
       "text": "On any screen, click {help} in the top bar. {here} lists the help pages written for that screen.",
@@ -30,7 +30,7 @@
       "text": "Each help page opens on its own screen, with {rel} at the foot linking to pages on nearby tasks.",
       "labels": {"rel": "help.related"},
       "image": "img/help-4.webp",
-      "capture": {"route": "/help/core.help", "selector": "main", "actions": [], "evidence": ["{rel}"]}
+      "capture": {"route": "/help/core.settings-import", "selector": "#help-related", "actions": [], "evidence": ["{rel}", "#help-related a[href^='/help/']"]}
     },
     {
       "text": "You can also ask the assistant a question in your own language: it searches these help pages, reads the one that fits and answers from it.",
