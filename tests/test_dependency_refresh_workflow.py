@@ -1,16 +1,21 @@
-"""The scheduled dependency refresh may replace its branch only when the branch is its own.
+"""The scheduled dependency refresh never loses work on its branch and publishes only on current main.
 
-Runs the real run block of the workflow's "Open dependency refresh PR and run CI" step
-(read from the YAML) against a scratch git origin with a stub ``gh``: named cases per state
-of the refresh branch, plus an oracle over every combination of the facts the step decides on.
-Merges are squash merges, as in this repository: the merged branch is left behind and its
-commits never become ancestors of main.
+The job replaces the branch only when git proves nothing is lost (every path the branch changed
+since its merge base with main is identical on main), updates an open PR's branch on top when its
+unmerged changes touch only constraints.txt, and keeps any other branch. Runs the real run block of
+the workflow's "Open dependency refresh PR and run CI" step (read from the YAML) against a scratch
+git origin with a stub ``gh`` whose PR listings name the branch head as merged for any query other
+than the open-PR lookup, so no API answer can stand in for git's proof. Named cases per state of
+the refresh branch, a table over every input of decide(), and an oracle over every combination of
+branch shapes. Merges are squash merges, as in this repository: the merged branch is left behind
+and its commits never become ancestors of main.
 """
 
 from __future__ import annotations
 
 import itertools
 import os
+import re
 import subprocess
 from dataclasses import astuple, dataclass
 from pathlib import Path
@@ -26,13 +31,12 @@ REFRESH_SUBJECT = "Refresh Python dependencies"
 GH_STUB = """#!/usr/bin/env bash
 echo "gh $*" >> "$GH_LOG"
 if [[ "$1 $2" == "pr list" && " $* " == *" --state open "* ]]; then cat "$GH_OPEN_PR"; fi
-if [[ "$1 $2" == "pr list" && " $* " == *" --state merged "* ]]; then cat "$GH_MERGED"; fi
+if [[ "$1 $2" == "pr list" && " $* " != *" --state open "* ]]; then cat "$GH_OTHER_PRS"; fi
 if [[ "$1 $2" == "run list" ]]; then
   cat "$GH_RUNS"
   if [[ -n "${GH_HOOK:-}" ]]; then bash -c "$GH_HOOK" >&2; fi
 fi
 """
-OTHER_SHA = "0" * 40
 
 
 def _run_block() -> str:
@@ -90,14 +94,13 @@ class Scratch:
         self,
         resolved: str,
         open_pr: str,
-        merged: str = "",
         runs: str = "",
         hook: str = "",
         after_checkout: Callable[[], None] | None = None,
     ) -> tuple[subprocess.CompletedProcess, str]:
         """A fresh checkout of main, the resolve step's output, then the step under test.
 
-        ``merged`` is what the API lists as head shas of merged PRs from the branch, ``runs``
+        Any PR listing other than the open-PR lookup answers with the branch head. ``runs``
         the CI runs it lists for the branch head, ``hook`` a command run while the step
         inspects the branch (after it has read the branch head), ``after_checkout`` a change to
         the origin made between the checkout and the step (while the resolve runs).
@@ -114,7 +117,7 @@ class Scratch:
         (bindir / "gh").write_text(GH_STUB)
         (bindir / "gh").chmod(0o755)
         (self.root / "open_pr").write_text(open_pr)
-        (self.root / "merged").write_text(merged)
+        (self.root / "other_prs").write_text(f"{self.remote_branch() or ''}\n")
         (self.root / "runs").write_text(runs)
         gh_log = self.root / "gh.log"
         gh_log.write_text("")
@@ -123,7 +126,7 @@ class Scratch:
             "BRANCH": BRANCH,
             "GH_LOG": str(gh_log),
             "GH_OPEN_PR": str(self.root / "open_pr"),
-            "GH_MERGED": str(self.root / "merged"),
+            "GH_OTHER_PRS": str(self.root / "other_prs"),
             "GH_RUNS": str(self.root / "runs"),
             "GH_HOOK": hook,
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
@@ -152,9 +155,9 @@ def test_no_pr_and_no_branch_opens_a_pr(scratch: Scratch) -> None:
     assert f"gh workflow run ci.yml --ref {BRANCH}" in gh
 
 
-def test_no_pr_and_merged_branch_is_replaced(scratch: Scratch) -> None:
-    """A refresh PR with a person's commit, squash-merged, its branch left behind; main moved on
-    since, so only the merged PR's head sha says the branch holds nothing unmerged."""
+def test_no_pr_and_squashed_branch_whose_files_main_changed_since_fails(scratch: Scratch) -> None:
+    """A refresh PR with a person's commit, squash-merged, its branch left behind; main changed
+    that file since, so git cannot prove the branch holds nothing unmerged: the job keeps it."""
     scratch.git("switch", "-qc", "old")
     scratch.commit({"constraints.txt": "dep==1.1\n"}, REFRESH_SUBJECT)
     scratch.commit({"conftest.py": "fix\n"}, "Make the suite pass on the new pins")
@@ -163,21 +166,22 @@ def test_no_pr_and_merged_branch_is_replaced(scratch: Scratch) -> None:
     scratch.commit({"conftest.py": "fix\nlater\n"}, "Later work on main")
     scratch.git("push", "-q", "origin", "main")
 
-    result, gh = scratch.run_job("dep==1.2\n", open_pr="", merged=f"{OTHER_SHA}\n{left_behind}\n")
+    result, gh = scratch.run_job("dep==1.2\n", open_pr="")
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert _tree(scratch, scratch.remote_branch()) == "dep==1.2"
-    assert "gh pr create" in gh and "gh workflow run" in gh
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "delete the branch" in result.stdout
+    assert scratch.remote_branch() == left_behind
+    assert "gh pr create" not in gh and "gh workflow run" not in gh
 
 
 def test_no_pr_and_unmerged_branch_fails_the_job(scratch: Scratch) -> None:
-    """A branch with no PR whose work is on no merged PR and not on main stops the job loudly."""
+    """A branch with no PR whose work is not on main stops the job loudly."""
     scratch.git("switch", "-qc", "old")
     scratch.commit({"constraints.txt": "dep==1.1\n"}, REFRESH_SUBJECT)
     scratch.commit({"conftest.py": "fix\n"}, "Unmerged work")
     before = scratch.push_branch()
 
-    result, gh = scratch.run_job("dep==1.2\n", open_pr="", merged=f"{OTHER_SHA}\n")
+    result, gh = scratch.run_job("dep==1.2\n", open_pr="")
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert BRANCH in result.stdout + result.stderr
@@ -186,7 +190,7 @@ def test_no_pr_and_unmerged_branch_fails_the_job(scratch: Scratch) -> None:
 
 
 def test_a_push_to_the_branch_during_the_run_is_never_overwritten(scratch: Scratch) -> None:
-    """The force push is leased on the head the step inspected."""
+    """The push only adds to the head the step inspected."""
     scratch.git("switch", "-qc", "refresh")
     scratch.commit({"constraints.txt": "dep==1.1\n"}, REFRESH_SUBJECT)
     scratch.push_branch()
@@ -202,7 +206,7 @@ def test_a_push_to_the_branch_during_the_run_is_never_overwritten(scratch: Scrat
 
 
 @pytest.mark.parametrize("main_moved", [False, True], ids=["new-release", "main-moved"])
-def test_own_stale_branch_is_rebuilt(scratch: Scratch, main_moved: bool) -> None:
+def test_stale_pins_only_branch_is_updated_on_top(scratch: Scratch, main_moved: bool) -> None:
     scratch.git("switch", "-qc", "refresh")
     scratch.commit({"constraints.txt": "dep==1.1\n"}, REFRESH_SUBJECT)
     before = scratch.push_branch()
@@ -218,6 +222,7 @@ def test_own_stale_branch_is_rebuilt(scratch: Scratch, main_moved: bool) -> None
     assert result.returncode == 0, result.stdout + result.stderr
     after = scratch.remote_branch()
     assert after != before
+    scratch.git("merge-base", "--is-ancestor", before, after, cwd=scratch.origin)
     assert _tree(scratch, after) == resolved.strip()
     assert scratch.git("merge-base", "main", after, cwd=scratch.origin) == scratch.git(
         "rev-parse", "main", cwd=scratch.origin
@@ -231,9 +236,8 @@ def test_own_stale_branch_is_rebuilt(scratch: Scratch, main_moved: bool) -> None
     [
         ({"pyproject.toml": "deps\nextra\n", "constraints.txt": "dep==1.1\nextra==0.4\n"}, "Add a dependency"),
         ({"ci.yml": "smoke\n"}, "Add a CI smoke"),
-        ({"constraints.txt": "dep==1.1\nextra==0.4\n"}, "Pin by hand"),
     ],
-    ids=["pyproject", "other-file", "constraints-by-hand"],
+    ids=["pyproject", "other-file"],
 )
 def test_branch_with_other_commits_is_never_replaced(scratch: Scratch, files: dict, subject: str) -> None:
     scratch.git("switch", "-qc", "refresh")
@@ -249,7 +253,7 @@ def test_branch_with_other_commits_is_never_replaced(scratch: Scratch, files: di
     assert "gh workflow run" not in gh and "gh pr create" not in gh
 
 
-def test_own_commit_touching_more_than_constraints_is_never_replaced(scratch: Scratch) -> None:
+def test_refresh_named_commit_touching_more_than_constraints_is_never_replaced(scratch: Scratch) -> None:
     scratch.git("switch", "-qc", "refresh")
     scratch.commit({"constraints.txt": "dep==1.1\n", "pyproject.toml": "deps\nextra\n"}, REFRESH_SUBJECT)
     before = scratch.push_branch()
@@ -334,15 +338,15 @@ def test_contributor_commit_with_the_jobs_subject_is_never_lost(scratch: Scratch
 
 
 def test_pr_merged_into_another_branch_is_never_replaced(scratch: Scratch) -> None:
-    """The API lists the branch head as a merged PR's head, but that PR went to another base:
-    the branch's work is not on main, so the job keeps it whatever the API says."""
+    """The API lists the branch head as a merged PR's head (the stub does for every run), but
+    that PR went to another base: the work is not on main, so the job keeps the branch."""
     scratch.git("switch", "-qc", "refresh")
     scratch.commit(OWN_COMMIT, REFRESH_SUBJECT)
     scratch.commit(HUMAN_COMMIT, "A person's commit")
     before = scratch.push_branch()
     scratch.git("switch", "-q", "main")
 
-    result, gh = scratch.run_job("dep==1.2\n", open_pr="", merged=f"{before}\n")
+    result, gh = scratch.run_job("dep==1.2\n", open_pr="")
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert scratch.remote_branch() == before
@@ -368,12 +372,47 @@ def test_main_moving_during_the_resolve_never_publishes(scratch: Scratch, has_br
     assert "gh workflow run" not in gh and "gh pr create" not in gh
 
 
-# The oracle: every combination of the observed facts, generated, against a reference predicate.
-# Branch shapes. "behind-main": the branch is an ancestor of main. "squashed-*": a refresh PR
-# squash-merged into main, the branch left behind ("-human" adds a person's commit). "own": the
-# job's refresh commit alone, unmerged. "own-human": that plus a person's commit. "own-more": a
-# commit with the job's subject that touches more than constraints.txt.
-SHAPES = ("none", "behind-main", "squashed-own", "squashed-human", "own", "own-human", "own-more")
+# The decision table: decide() itself, extracted from the step, over every combination of its inputs.
+DECIDE_INPUTS = ("open", "branch", "replaceable", "pins_only", "current", "ci")
+
+
+def _decide_table(open: bool, branch: bool, replaceable: bool, pins_only: bool, current: bool, ci: bool) -> str:
+    """The rule, written as the table it is: what each combination of facts must do."""
+    if open and not branch:
+        return "fail"  # an open PR whose branch is gone
+    if open and not (replaceable or pins_only):
+        return "leave-open-pr"  # unmerged work beyond constraints.txt stays for its PR
+    if open and current:
+        return "current-skip" if ci else "current-dispatch-ci"
+    if open:
+        return "replace" if replaceable else "update"
+    if branch and not replaceable:
+        return "fail"  # no PR and work git cannot prove is on main
+    if current:
+        return "current-skip"
+    return "replace" if branch else "create"
+
+
+def test_decide_matches_the_table_for_every_input() -> None:
+    decide = re.search(r"^decide\(\) \{\n.*?^\}$", _run_block(), re.MULTILINE | re.DOTALL)
+    assert decide, "decide() not found in the step"
+    combos = list(itertools.product([0, 1], repeat=len(DECIDE_INPUTS)))
+    calls = "\n".join(f"decide {' '.join(map(str, c))}" for c in combos)
+    out = subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\n{decide.group(0)}\n{calls}"], capture_output=True, text=True, check=True
+    ).stdout.split()
+    assert dict(zip(combos, out)) == {c: _decide_table(*map(bool, c)) for c in combos}
+
+
+# The oracle: every combination of branch shape and the other observed facts, built in git and run
+# through the step, against a reference predicate on the shape alone. Branch shapes.
+# "behind-main": the branch is an ancestor of main. "squashed-*": a refresh PR squash-merged into
+# main, the branch left behind ("-human" adds a person's commit to constraints.txt's). "pins": one
+# commit with the job's subject touching only constraints.txt, unmerged (the job's or a person's:
+# git cannot tell). "pins-human": that plus a person's commit to another file. "pins-more": a
+# commit with the job's subject that also touches pyproject.toml. "unrelated": shares no history
+# with main.
+SHAPES = ("none", "behind-main", "squashed-own", "squashed-human", "pins", "pins-human", "pins-more", "unrelated")
 OWN_COMMIT = {"constraints.txt": "dep==1.1\n"}
 HUMAN_COMMIT = {"conftest.py": "fix\n"}
 
@@ -382,33 +421,34 @@ HUMAN_COMMIT = {"conftest.py": "fix\n"}
 class Facts:
     open_pr: bool
     shape: str
-    merged: bool  # the branch head is the head sha of a merged PR
     resolved_current: bool  # the resolve equals the PR branch's pins (open PR) or main's (no PR)
-    main_moved: bool  # main gained a commit after the branch was built
+    main_moved: bool  # main gained an unrelated commit after the branch was built
     ci_started: bool  # the API lists a CI run for the branch head
 
 
 def _fact_space() -> list[Facts]:
-    combos = itertools.product([False, True], SHAPES, [False, True], [False, True], [False, True], [False, True])
-    return [f for f in map(lambda c: Facts(*c), combos) if f.shape != "none" or not (f.merged or f.ci_started)]
+    combos = itertools.product([False, True], SHAPES, [False, True], [False, True], [False, True])
+    return [f for f in map(lambda c: Facts(*c), combos) if f.shape != "none" or not f.ci_started]
 
 
 def _reference(f: Facts) -> str:
     """What the step must do, from the shape the test built (independent of the step's git checks)."""
-    if f.shape != "none":
-        loses_nothing = f.merged or f.shape in ("behind-main", "squashed-own", "squashed-human", "own")
-        if not loses_nothing:
-            return "leave-open-pr" if f.open_pr else "fail"
+    branch = f.shape != "none"
+    loses_nothing = f.shape in ("behind-main", "squashed-own", "squashed-human")
     if f.open_pr:
-        if f.shape == "none":
+        if not branch:
             return "fail"
-        on_current_main = f.shape in ("behind-main", "own", "own-human", "own-more") and not f.main_moved
+        if not loses_nothing and f.shape != "pins":
+            return "leave-open-pr"
+        on_current_main = f.shape in ("behind-main", "pins") and not f.main_moved
         if f.resolved_current and on_current_main:
             return "current-skip" if f.ci_started else "current-dispatch-ci"
-        return "replace"
+        return "replace" if loses_nothing else "update"
+    if branch and not loses_nothing:
+        return "fail"
     if f.resolved_current:
         return "current-skip"
-    return "create" if f.shape == "none" else "replace"
+    return "replace" if branch else "create"
 
 
 def _build(s: Scratch, f: Facts) -> str | None:
@@ -417,9 +457,14 @@ def _build(s: Scratch, f: Facts) -> str | None:
         pass
     elif f.shape == "behind-main":
         s.push_branch()
+    elif f.shape == "unrelated":
+        s.git("switch", "-q", "--orphan", "refresh")
+        s.commit(OWN_COMMIT, REFRESH_SUBJECT)
+        s.push_branch()
+        s.git("switch", "-q", "main")
     else:
         s.git("switch", "-qc", "refresh")
-        if f.shape == "own-more":
+        if f.shape == "pins-more":
             s.commit({**OWN_COMMIT, "pyproject.toml": "deps\nextra\n"}, REFRESH_SUBJECT)
         else:
             s.commit(OWN_COMMIT, REFRESH_SUBJECT)
@@ -441,14 +486,13 @@ def test_refresh_step_outcome_matches_the_reference(scratch: Scratch, facts: Fac
     pinned_ref = before if facts.open_pr and before else "main"
     pinned = scratch.git("show", f"{pinned_ref}:constraints.txt", cwd=scratch.origin) + "\n"
     resolved = pinned if facts.resolved_current else "dep==9.9\n"
-    merged = f"{OTHER_SHA}\n" + (f"{before}\n" if facts.merged else "")
     runs = "12345\n" if facts.ci_started else ""
 
-    result, gh = scratch.run_job(resolved, open_pr="430" if facts.open_pr else "", merged=merged, runs=runs)
+    result, gh = scratch.run_job(resolved, open_pr="430" if facts.open_pr else "", runs=runs)
 
     after = scratch.remote_branch()
     outcome = _reference(facts)
-    pushes = outcome in ("create", "replace")
+    pushes = outcome in ("create", "replace", "update")
     observed = (result.returncode, after != before, "gh pr create" in gh, "gh workflow run ci.yml" in gh)
     expected = (
         1 if outcome == "fail" else 0,
@@ -461,3 +505,5 @@ def test_refresh_step_outcome_matches_the_reference(scratch: Scratch, facts: Fac
         assert _tree(scratch, after) == resolved.strip()
         main = scratch.git("rev-parse", "main", cwd=scratch.origin)
         assert scratch.git("merge-base", "main", after, cwd=scratch.origin) == main
+    if outcome == "update":
+        scratch.git("merge-base", "--is-ancestor", before, after, cwd=scratch.origin)
