@@ -132,7 +132,7 @@ _INSTALLATION_PAGES = {"backup.local-backup"}
 _ACTIVE_RELAY = {"connected": True, "relay_status": "active", "public_url": "https://example.celerp.com",
                  "tier": "cloud", "subscription_status": "active", "cloud_disconnected": False,
                  "gateway_token_set": True, "entitlement_known": True, "entitled": True}
-_AI_ACCOUNT = {"allowed": True, "used": 0, "base_limit": 200, "topup_balance": 0, "remaining": 200,
+_AI_ACCOUNT = {"allowed": True, "used": 4, "base_limit": 200, "topup_balance": 0, "remaining": 196,
                "limit": 200, "topup_credits": 0, "resets_at": None, "tier": "ai"}
 _CONNECT, _AI, _COPIES = "connect", "ai", "copies"
 
