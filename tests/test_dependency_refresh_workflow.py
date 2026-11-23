@@ -454,14 +454,22 @@ def _main_moves(s: Scratch) -> None:
 
 
 @pytest.mark.parametrize(
-    "has_pr, hook_on",
-    [(False, None), (True, None), (False, "pr list"), (True, "run list")],
-    ids=["create-during-resolve", "update-during-resolve", "create-after-check", "update-after-check"],
+    "has_pr, hook_on, resolved",
+    [
+        (False, None, "dep==1.2\n"),
+        (True, None, "dep==1.2\n"),
+        (True, None, "dep==1.1\n"),
+        (False, "pr list", "dep==1.2\n"),
+        (True, "run list", "dep==1.2\n"),
+    ],
+    ids=["create-during-resolve", "update-during-resolve", "ci-dispatch-during-resolve", "create-after-check", "update-after-check"],
 )
-def test_main_moving_before_the_push_never_publishes(scratch: Scratch, has_pr: bool, hook_on: str | None) -> None:
+def test_main_moving_before_the_push_never_publishes(
+    scratch: Scratch, has_pr: bool, hook_on: str | None, resolved: str
+) -> None:
     """The resolve ran on the checked-out main. If main moves while it resolves, or after the
     first check and before the push (here while the step asks gh about PRs or CI runs), nothing
-    is published."""
+    is published and no CI is started, also for a current PR that has no CI run yet."""
     before = None
     if has_pr:
         SHAPES["pins"](scratch)
@@ -470,9 +478,9 @@ def test_main_moving_before_the_push_never_publishes(scratch: Scratch, has_pr: b
     if hook_on:
         hook = f"cd {shlex.quote(str(scratch.seed))} && git switch -q main && echo y >> app.py && " \
                "git add -A && git commit -qm 'main moves mid-run' && git push -q origin main"
-        result, gh = scratch.run_job("dep==1.2\n", open_prs=OPEN if has_pr else [], hook=hook, hook_on=hook_on)
+        result, gh = scratch.run_job(resolved, open_prs=OPEN if has_pr else [], hook=hook, hook_on=hook_on)
     else:
-        result, gh = scratch.run_job("dep==1.2\n", open_prs=OPEN if has_pr else [], after_checkout=moves)
+        result, gh = scratch.run_job(resolved, open_prs=OPEN if has_pr else [], after_checkout=moves)
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "main moved" in result.stdout
