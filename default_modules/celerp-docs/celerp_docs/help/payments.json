@@ -6,7 +6,7 @@
   "routes": ["/payments", "/docs/{entity_id}"],
   "permission": "view_payments",
   "order": 5,
-  "checked": "c54ab06d392ac8241bd762c2fa126e797173ec04f76ae53a623c810cbced289b",
+  "checked": "6947994af30f13be9bb72130000c9b843725bfb58efff1bfc2523806fa54b13b",
   "steps": [
     {
       "text": "Open {pay} from the sidebar to see every payment across your documents.",
