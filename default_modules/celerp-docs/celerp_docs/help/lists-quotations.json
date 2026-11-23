@@ -15,10 +15,10 @@
       "capture": {"route": "/lists", "selector": "main", "actions": [], "evidence": ["{lists}", "{new}"]}
     },
     {
-      "text": "Click a list or quotation to open it, add or change its lines and see its total.",
+      "text": "Click a list or quotation to open it. Its lines show each item with its quantity, price and line total; on a draft you add or change the lines here.",
       "labels": {},
       "image": "img/lists-quotations-2.webp",
-      "capture": {"route": "/lists", "selector": "main", "actions": [], "evidence": ["table.doc-lines"]}
+      "capture": {"route": "/lists", "selector": "[id^=list-line-section-]", "actions": [{"click": "table tbody tr a"}, {"wait": "table.doc-lines"}], "evidence": ["table.doc-lines tbody tr"]}
     },
     {
       "text": "On {title}, use {dl} for a blank spreadsheet in the expected format, fill it in and upload it to bring in many quotations at once.",
