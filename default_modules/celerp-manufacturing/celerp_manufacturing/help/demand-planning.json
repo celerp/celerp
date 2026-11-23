@@ -18,7 +18,7 @@
       "text": "The board breaks demand down by document type, including {po}; tick the lines you are ready to build and choose Make from the bulk actions above the table.",
       "labels": {"po": "manufacturing.dtype_production_orders"},
       "image": "img/demand-planning-2.webp",
-      "capture": {"route": "/manufacturing", "selector": "main", "actions": [], "evidence": ["{po}"]}
+      "capture": {"route": "/manufacturing", "selector": "main", "actions": [{"click": "#mfg-table tbody input.bulk-select"}], "evidence": ["{po}", "#mfg-table tbody input.bulk-select:checked", ".bulk-action-select"]}
     },
     {
       "text": "To track the demand as its own order instead of a run, open {so} from the sidebar.",
@@ -27,10 +27,10 @@
       "capture": {"route": "/docs?type=production_order", "selector": "main", "actions": [], "evidence": ["{so}"]}
     },
     {
-      "text": "With products ticked, print the component requirements: the raw materials and sub-assemblies their shortfall needs, worked out through the recipes.",
-      "labels": {},
+      "text": "With products ticked, choose {req} from the bulk actions. A page to print opens, listing under {raw}, and under sub-assemblies where a recipe has them, what their shortfall needs, worked out through the recipes.",
+      "labels": {"req": "manufacturing.action_print_requirements", "raw": "manufacturing.raw_materials"},
       "image": "img/demand-planning-4.webp",
-      "capture": {"route": "/manufacturing", "selector": "main", "actions": [], "evidence": ["main input[type=checkbox]:checked"]}
+      "capture": {"route": "/manufacturing", "selector": "main", "actions": [{"click": "#mfg-table tbody input.bulk-select"}, {"select": ".bulk-action-select", "value": "requirements"}, {"wait": "h2.section-title"}], "evidence": ["{raw}"]}
     },
     {
       "text": "You can also ask the assistant what needs making and to create the work orders for it. It shows each change as a card and makes it only when you confirm.",

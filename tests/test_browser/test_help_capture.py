@@ -164,9 +164,12 @@ _FREE_EMAIL_QUOTA = 50
 # Charts draw with an animation the screenshot's own "animations disabled" cannot stop (it is
 # script, not CSS), so a picture would catch a chart part-way through. Chart.js is switched to
 # draw at once the moment its script defines it, in the capture's browser only.
-_CHARTS_DRAWN_AT_ONCE = """Object.defineProperty(window, "Chart", {configurable: true,
+# A page an action opens in a new tab (a printable list) opens in the capture's own tab instead,
+# so the step pictures it.
+_CAPTURE_PAGE_SCRIPT = """Object.defineProperty(window, "Chart", {configurable: true,
   set(chart) { chart.defaults.animation = false;
-               Object.defineProperty(window, "Chart", {value: chart, writable: true, configurable: true}); }});"""
+               Object.defineProperty(window, "Chart", {value: chart, writable: true, configurable: true}); }});
+window.open = url => { location.assign(url); return null; };"""
 _SUBSCRIBED: dict[str, str] = {
     "core.company-handoff#2": _COPIES, "core.company-handoff#4": _COPIES,
     "core.web-access#2": _CONNECT,
@@ -875,6 +878,8 @@ def _run(page, action: dict) -> None:
         page.locator(action["click"]).first.click()
     elif "fill" in action:
         page.locator(action["fill"]).first.fill(action["value"])
+    elif "select" in action:
+        page.locator(action["select"]).first.select_option(action["value"])
     elif "upload" in action:
         page.locator(action["upload"]).first.set_input_files(
             {"name": "import.csv", "mimeType": "text/csv", "buffer": action["value"].encode()})
@@ -1027,7 +1032,7 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
                if page_id in _ADDS_RECORDS
                else suite_owner if page_id in _INSTALLATION_PAGES else demo_company)
     set_session_cookies(browser_context, company["token"])
-    page.add_init_script(_CHARTS_DRAWN_AT_ONCE)
+    page.add_init_script(_CAPTURE_PAGE_SCRIPT)
     records = _records(company["id"])
     wrong = []
     for n, step in enumerate(help_page.data["steps"], 1):
