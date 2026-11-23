@@ -419,8 +419,8 @@ async def seed_fixed_assets(client: httpx.AsyncClient, auth: dict, user_id: str,
 
 async def seed_subscriptions(client: httpx.AsyncClient, auth: dict, contacts: list[dict], today: date) -> None:
     """The agreement pages in use: a SaaS plan with a subscriber, a seat subscription, a
-    retainer, a membership billed for its first year, an agreement that bills itself and has
-    billed today, and one so far behind that its periods wait on Catch-up."""
+    retainer, memberships in each standing, an agreement that bills itself and has billed
+    today, and one so far behind that its periods wait on Catch-up."""
     from celerp.db import LifecycleSessionLocal
     from celerp.events.engine import unattended
     from celerp_docs import periodic
@@ -453,6 +453,28 @@ async def seed_subscriptions(client: httpx.AsyncClient, auth: dict, contacts: li
                              beneficiary_contact_id=customers[4]["id"])
     await _ok(await client.post(f"/subscriptions/{member}/generate-due", headers=auth,
                                 json={"request_key": uuid.uuid4().hex}))
+    # A member in each other standing the members guide explains: a first bill past due inside
+    # its grace days, one past them, a cancelled membership and a settled lifetime sale.
+    for contact, days_ago, grace in ((customers[5 % len(customers)], 35, 60), (customers[6 % len(customers)], 120, 10)):
+        owing = await agreement(customers[3], today - timedelta(days=days_ago), [line("Annual membership", 60.0)],
+                                kind="membership", frequency="annually", grace_days=grace,
+                                beneficiary_contact_id=contact["id"])
+        await _ok(await client.post(f"/subscriptions/{owing}/generate-due", headers=auth,
+                                    json={"request_key": uuid.uuid4().hex}))
+    ended = await agreement(customers[3], today.replace(month=1, day=1), [line("Annual membership", 60.0)],
+                            kind="membership", frequency="annually", beneficiary_contact_id=customers[7 % len(customers)]["id"])
+    await _ok(await client.post(f"/subscriptions/{ended}/cancel", headers=auth))
+    category = (await _ok(await client.post("/companies/me/categories", headers=auth, json={"name": "membership"})))["key"]
+    lifetime = (await _ok(await client.post("/items", headers=auth, json={
+        "name": "Lifetime membership", "sku": "MEMBER-LIFE", "sell_by": "piece", "inventory_type": "service",
+        "quantity": 0, "status": "available", "category": category, "retail_price": 500.0,
+        "attributes": {"membership_term": "Lifetime"}})))["id"]
+    sale = (await _ok(await client.post("/docs", headers=auth, json={
+        "doc_type": "invoice", "contact_id": customers[8 % len(customers)]["id"], "price_list": "Retail", "total": 500.0,
+        "line_items": [line("Lifetime membership", 500.0, item_id=lifetime)]})))["id"]
+    await _ok(await client.post(f"/docs/{sale}/finalize", headers=auth, json={}))
+    await _ok(await client.post(f"/docs/{sale}/payment", headers=auth, json={
+        "amount": 500.0, "payment_date": today.isoformat(), "bank_account": "1111", "idempotency_key": uuid.uuid4().hex}))
     unattended_ones = (await agreement(customers[0], today, [line("Support plan", 150.0)]),
                        await agreement(customers[1], (today.replace(day=1) - timedelta(days=100)).replace(day=1),
                                        [line("Hosting", 80.0)]))
