@@ -75,14 +75,23 @@ jobs:
           }
           require_unmoved_main
 
-          # The open refresh PR: a same-repository PR into main whose branch name starts with $BRANCH.
-          open_pr_line="$(gh pr list \
+          # The open refresh PR: a same-repository PR into main that this job opened, so authored
+          # by the workflow token, on $BRANCH itself or a run branch $BRANCH-<run id>-<attempt>.
+          # Two such PRs leave no way to tell which to update; the run stops and names them.
+          owned="$(gh pr list \
             --state open \
             --base main \
             --limit 1000 \
-            --json number,headRefName,isCrossRepository |
-            jq -r --arg prefix "$BRANCH" \
-              'map(select((.isCrossRepository | not) and (.headRefName | startswith($prefix)))) | first // empty | "\(.number) \(.headRefName)"')"
+            --json number,headRefName,isCrossRepository,author |
+            jq -r --arg branch "$BRANCH" \
+              '.[] | select((.isCrossRepository | not) and .author.login == "app/github-actions"
+                and (.headRefName == $branch or (.headRefName | ltrimstr($branch + "-") | test("^[0-9]+-[0-9]+$")))) |
+                "\(.number) \(.headRefName)"')"
+          if (($(grep -c . <<<"$owned") > 1)); then
+            echo "More than one open dependency refresh PR ($(cut -d' ' -f1 <<<"$owned" | sed 's/^/#/' | paste -sd' ')); close all but one and run the workflow again" >&2
+            exit 1
+          fi
+          open_pr_line="$owned"
 
           open=0 pins_only=0 current=0 ci=0 open_pr=""
           if [[ -n "$open_pr_line" ]]; then
@@ -112,7 +121,9 @@ jobs:
               current=1
             fi
           else
-            push_branch="$BRANCH-$GITHUB_RUN_ID"
+            # A rerun keeps the run id, so the attempt is in the name: a branch an earlier
+            # attempt pushed before it failed is never written again.
+            push_branch="$BRANCH-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
             # Current: main already holds this resolve.
             if git diff --quiet -- constraints.txt; then current=1; fi
           fi

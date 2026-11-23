@@ -29,7 +29,9 @@ import yaml
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "dependency-refresh.yml"
 BRANCH = "maintenance/python-dependency-refresh"
 RUN_ID = "777"
-NEW = f"{BRANCH}-{RUN_ID}"  # the branch a run with no open refresh PR creates
+RUN_ATTEMPT = "2"
+NEW = f"{BRANCH}-{RUN_ID}-{RUN_ATTEMPT}"  # the branch a run with no open refresh PR creates
+BOT = "app/github-actions"  # the author of every PR the job opens with the workflow token
 REFRESH_SUBJECT = "Refresh Python dependencies"
 
 GH_STUB = """#!/usr/bin/env bash
@@ -37,12 +39,13 @@ echo "gh $*" >> "$GH_LOG"
 if [[ -n "${GH_HOOK:-}" && "$1 $2" == "$GH_HOOK_ON" ]]; then bash -c "$GH_HOOK" >&2; fi
 if [[ "$1 $2" == "pr list" ]]; then cat "$GH_OPEN_PRS"; fi
 if [[ "$1 $2" == "run list" ]]; then cat "$GH_RUNS"; fi
+if [[ "$1 $2" == "${GH_FAIL_ON:-}" ]]; then exit 1; fi
 """
 
 
-def pr(head: str = BRANCH, number: int = 430, fork: bool = False) -> dict:
+def pr(head: str = BRANCH, number: int = 430, fork: bool = False, author: str = BOT) -> dict:
     """One entry of the open-PR listing the step asks gh for."""
-    return {"number": number, "headRefName": head, "isCrossRepository": fork}
+    return {"number": number, "headRefName": head, "isCrossRepository": fork, "author": {"login": author}}
 
 
 OPEN = [pr()]
@@ -117,38 +120,45 @@ class Scratch:
         hook: str = "",
         hook_on: str = "run list",
         after_checkout: Callable[[], None] | None = None,
+        attempt: str = RUN_ATTEMPT,
+        fail_on: str = "",
     ) -> tuple[subprocess.CompletedProcess, str]:
         """A fresh checkout of main, the resolve step's output, then the step under test.
 
         ``open_prs`` the open-PR listing gh answers with, ``runs`` the CI runs it lists for the
         branch head, ``hook`` a command run when the step calls ``gh <hook_on>``,
         ``after_checkout`` a change to the origin made between the checkout and the step (while
-        the resolve runs).
+        the resolve runs), ``attempt`` the run attempt (a rerun of the same run keeps its run id),
+        ``fail_on`` a gh command that fails.
         """
-        runner = self.root / "runner"
+        run = self.root / f"attempt-{attempt}"
+        run.mkdir()
+        runner = run / "runner"
         self.git("clone", "-q", "-b", "main", str(self.origin), str(runner), cwd=self.root)
         if after_checkout:
             after_checkout()
         (runner / "constraints.txt").write_text(resolved)
-        script = self.root / "step.sh"
+        script = run / "step.sh"
         script.write_text(_run_block())
-        bindir = self.root / "bin"
+        bindir = run / "bin"
         bindir.mkdir()
         (bindir / "gh").write_text(GH_STUB)
         (bindir / "gh").chmod(0o755)
-        (self.root / "open_prs").write_text(json.dumps(open_prs))
-        (self.root / "runs").write_text(runs)
-        gh_log = self.root / "gh.log"
+        (run / "open_prs").write_text(json.dumps(open_prs))
+        (run / "runs").write_text(runs)
+        gh_log = run / "gh.log"
         gh_log.write_text("")
         env = {
             **self.env,
             "BRANCH": BRANCH,
             "GITHUB_RUN_ID": RUN_ID,
+            "GITHUB_RUN_ATTEMPT": attempt,
             "GH_LOG": str(gh_log),
-            "GH_OPEN_PRS": str(self.root / "open_prs"),
-            "GH_RUNS": str(self.root / "runs"),
+            "GH_OPEN_PRS": str(run / "open_prs"),
+            "GH_RUNS": str(run / "runs"),
             "GH_HOOK": hook,
             "GH_HOOK_ON": hook_on,
+            "GH_FAIL_ON": fail_on,
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
         }
         result = subprocess.run(["bash", str(script)], cwd=runner, env=env, capture_output=True, text=True)
@@ -302,6 +312,9 @@ def test_leftover_branch_with_no_open_pr_is_never_touched(scratch: Scratch, buil
     [
         pytest.param([pr(fork=True)], id="fork-pr-same-head-name"),
         pytest.param([pr(head="feature/other")], id="other-branch-pr"),
+        pytest.param([pr(author="someone")], id="person-authored-refresh-name"),
+        pytest.param([pr(head=f"{BRANCH}-old")], id="refresh-prefix-not-run-name"),
+        pytest.param([pr(head=f"{BRANCH}x-1-1")], id="longer-name-same-prefix"),
     ],
 )
 def test_a_pr_that_is_not_the_refresh_pr_is_ignored(scratch: Scratch, listing: list[dict]) -> None:
@@ -319,7 +332,7 @@ def test_a_pr_that_is_not_the_refresh_pr_is_ignored(scratch: Scratch, listing: l
 
 def test_open_refresh_pr_on_a_run_branch_is_updated(scratch: Scratch) -> None:
     """The refresh PR an earlier run opened lives on a run-named branch; it is the one updated."""
-    earlier = f"{BRANCH}-123"
+    earlier = f"{BRANCH}-123-1"
     scratch.git("switch", "-qc", "refresh")
     scratch.commit(OWN_COMMIT, REFRESH_SUBJECT)
     before = scratch.push_branch(earlier)
@@ -333,6 +346,34 @@ def test_open_refresh_pr_on_a_run_branch_is_updated(scratch: Scratch) -> None:
     assert _tree(scratch, after) == "dep==1.2"
     assert scratch.remote_branch(NEW) is None and "gh pr create" not in gh
     assert _dispatched(gh) == earlier
+
+
+def test_two_open_refresh_prs_stop_the_run(scratch: Scratch) -> None:
+    """Two open PRs that both look like the job's own: the run cannot tell which to update, so
+    it publishes nothing and says so."""
+    SHAPES["pins"](scratch)
+    before = scratch.remote_branch()
+
+    result, gh = scratch.run_job("dep==1.2\n", open_prs=[pr(), pr(head=f"{BRANCH}-123-1", number=431)])
+
+    assert result.returncode != 0
+    assert "#430" in result.stdout + result.stderr and "#431" in result.stdout + result.stderr
+    _assert_nothing_published(scratch, gh, before)
+
+
+def test_a_rerun_after_a_failed_pr_create_opens_its_pr(scratch: Scratch) -> None:
+    """The first attempt pushed its branch and then failed to open the PR. Re-running the run
+    (same run id, next attempt) on a newer resolve opens the PR on the attempt's own branch."""
+    first, _ = scratch.run_job("dep==1.1\n", open_prs=[], attempt="1", fail_on="pr create")
+    assert first.returncode != 0
+    left = scratch.remote_branch(f"{BRANCH}-{RUN_ID}-1")
+    assert left
+
+    result, gh = scratch.run_job("dep==1.2\n", open_prs=[])
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    _assert_new_pr_from_main(scratch, gh, "dep==1.2\n")
+    assert scratch.remote_branch(f"{BRANCH}-{RUN_ID}-1") == left
 
 
 def test_a_push_to_the_branch_during_the_run_is_never_overwritten(scratch: Scratch) -> None:
