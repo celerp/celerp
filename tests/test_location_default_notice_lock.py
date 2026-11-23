@@ -47,8 +47,8 @@ async def _race(async_url):
 
 
 def test_two_starts_tell_once_and_the_second_waits():
-    """Review r4 probe P2, adopted as a repo test: the second session's select waits on the
-    row the first holds (an ungranted lock in pg_locks), then reads it as committed."""
+    """Two starts at once: the second session's select waits on the row the first holds (an
+    ungranted lock in pg_locks), then reads it as committed, so the notice is told once."""
     with throwaway_db("p2test") as (async_url, sync_url):
         upgrade_to(sync_url, "y8d9e0f1a2b3")
         engine = create_engine(sync_url)

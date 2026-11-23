@@ -30,7 +30,8 @@ Writes are judged only inside a request (``observed`` wraps the app) and only fo
 that hold company data: companies itself, a table with a company_id column, or one whose
 rows belong to company data through a foreign key or as a partition (for a table the tests
 make while running, as its CREATE TABLE says). A write to any other table is either in
-INFRASTRUCTURE or flagged as an unowned table."""
+INFRASTRUCTURE or flagged as an unowned table; a durable write that changed an INFRASTRUCTURE
+row is not judged, and the census credits the app line that made it, as for company data."""
 
 from __future__ import annotations
 
@@ -229,6 +230,7 @@ _WRITE, _LOCK, _FENCE, _ROW = "observed-write", "observed-lock", "observed-fence
 _READ = "observed-read-route-write"  # writes made for a read request, reported when they commit
 _CREATED = "observed-created"  # companies this transaction inserted: no other can see them before it commits
 _CALLS = "observed-write-calls"  # session.info: the app lines that added, deleted or merged in a request
+_INFRA = "observed-infrastructure-write"  # the app lines of a request write that changed an INFRASTRUCTURE row
 
 
 @dataclass
@@ -961,7 +963,13 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
         note(session, _READ, Finding("read-route-write", read_route, company, op.table, statement[:300], op.detail,
                                      where=_where(), test=CENSUS.test, fingerprint=op.fingerprint))
     if not _owned(op.table):
-        return None if op.table in INFRASTRUCTURE else found("unowned-table")
+        if op.table not in INFRASTRUCTURE:
+            return found("unowned-table")
+        if getattr(cursor, "rowcount", -1) != 0:
+            # Not company data, so not judged against the company lock; the census still
+            # credits the app line that changed the row once its transaction commits.
+            note(session, _INFRA, tuple(_app_frames(first_line=True)))
+        return None
     # The statement names the companies it writes (an insert's company_id, a WHERE on it),
     # or the write is taken as the request's company and says so: an update by primary
     # key or raw SQL names no company, and the company lock never proves which company
@@ -1039,7 +1047,11 @@ def _committed(session) -> None:
             CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
         if finding.kind != "protected":
             CENSUS.findings.append(finding)
-    if noted(session, _WRITE):
+    infrastructure = noted(session, _INFRA)
+    for frames in infrastructure:
+        for site in set(frames):
+            CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
+    if noted(session, _WRITE) or infrastructure:
         for site in session.info.pop(_CALLS, ()):
             CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
     CENSUS.findings.extend(noted(session, _READ))

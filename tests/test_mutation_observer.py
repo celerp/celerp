@@ -30,7 +30,7 @@ from celerp.connectors.execution import record_rerun
 from celerp.connectors.ownership import lock_connector_key
 from celerp.credentials import issue_token_pair
 from celerp.events.engine import emit_event
-from celerp.models.auth import SessionRegistry
+from celerp.models.auth import SessionRegistry, SystemRuntimeState
 from celerp.models.company import Company, Location, User
 from celerp.models.migration import MigrationCleanupTask, MigrationRun
 from celerp.models.projections import Projection
@@ -38,6 +38,7 @@ from celerp.services.company_lock import (
     hold_company, judge_without_company_lock, lock_company, lock_company_for_deletion)
 from celerp.services.migrations import request_cancel, run_cleanup_task
 from celerp.services.permissions import authorize_request
+from celerp.services.runtime_state import dismiss_star_prompt, lock_runtime_state
 from celerp.services.session_tracker import invalidate_sessions, lock_auth_state, register_token
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.observer_control]
@@ -745,6 +746,24 @@ async def test_a_read_requests_token_refresh_slides_or_registers_its_session(ses
     added = first + next(n for n, line in enumerate(lines) if "session.add(" in line)
     site = f"celerp/services/session_tracker.py:{added} register_token@{first}"
     assert (site in mutation_observer.CENSUS.sites) == (slot == "gone")
+
+
+@pytest.mark.parametrize("row", ["missing", "present"])
+async def test_a_request_write_that_changes_an_infrastructure_row_credits_its_site(session, row):
+    """A write to an INFRASTRUCTURE table is not judged against the company lock, and the
+    line that made it counts for site coverage only when it changed a row: creating the
+    runtime-state row does, an insert that meets the row already there does not."""
+    await session.execute(delete(SystemRuntimeState))
+    if row == "present":
+        session.add(SystemRuntimeState(id=1, value={}))
+    await session.commit()
+    with serving("POST", "/observed"):
+        await dismiss_star_prompt(session)
+    assert _kinds() == []
+    lines, first = inspect.getsourcelines(lock_runtime_state)
+    inserted = first + next(n for n, line in enumerate(lines) if "pg_insert(" in line)
+    site = f"celerp/services/runtime_state.py:{inserted} lock_runtime_state@{first}"
+    assert (site in mutation_observer.CENSUS.sites) == (row == "missing")
 
 
 async def test_a_token_refresh_does_not_show_the_route_it_rides_on_writes(session, auth, monkeypatch):
