@@ -117,7 +117,6 @@ _SHOWS_EMPTY_STATE: dict[str, str] = {
     "backup.local-backup#3": "the cloud recovery points beside the local section need Celerp Connect",
     "core.accounting-sync-accounts#1": "a new company's accounts have nothing to fix, the state the step describes",
     "core.accounting-sync-accounts#2": "a new company's accounts have nothing to fix, the state the step describes",
-    "connectors.connect-store#4": "the step is about a connection before its first sync, which has never synced",
     "fixed-assets.settings#1": _NO_TAX_REGIME,
     "fixed-assets.settings#3": _NO_TAX_REGIME,
 }
@@ -145,6 +144,12 @@ async def _backup_status(_token):
     return {"db": {"ok": True, "error": None, "size_bytes": 4_200_000,
                    "last_run": f"{_CAPTURE_DAY.isoformat()}T02:00:00+00:00"},
             "next_db_utc": due.isoformat()}
+async def _connectors_catalog(_token):
+    """The connectors the relay lists to an active subscription, the seeded Shopify store connected."""
+    from ui.routes.settings_connectors import _local_connector_entry
+
+    return [{**_local_connector_entry(p), "connected": p == "shopify"}
+            for p in ("shopify", "woocommerce", "quickbooks", "xero")], "", False
 # A company copy sent to an accountant, as the cloud lists it to the account that sent it.
 _SENT_COPY_ID, _SENT_LINK_ID = uuid.UUID(int=0x1C0), uuid.UUID(int=0x11C)
 _SENT_COPY = {"id": str(_SENT_COPY_ID), "link_id": str(_SENT_LINK_ID), "status": "sent", "stored": True,
@@ -191,6 +196,44 @@ def _sage50_set() -> Path:
     return path
 
 
+# The step about a store's first sync pictures its preview, which reads the store: the store
+# is given a few products and orders through the seams tests/test_first_sync_preview_receipt.py
+# uses, for that step only.
+_READS_THE_STORE = {"connectors.connect-store#4"}
+
+
+@contextlib.contextmanager
+def _store_reads():
+    from celerp import connectors
+    from celerp.connectors.base import ConnectorContext, RemoteOrder, RemoteProduct
+
+    products = [RemoteProduct(key=str(n), product_id=str(n), variation_id=None, sku=sku, name=name,
+                              description=None, price=price, modified=None, stock=stock)
+                for n, (sku, name, price, stock) in enumerate((
+                    ("MUG-001", "Stoneware Mug", 12.0, 40), ("TEE-001", "Cotton T-Shirt", 18.0, 25),
+                    ("CAP-001", "Canvas Cap", 15.0, 12)), 1)]
+    orders = [RemoteOrder(id=str(n), number=f"#10{n:02d}", status="paid",
+                          created=datetime(2026, 6, n + 8, 10, tzinfo=timezone.utc), total=total,
+                          currency="USD", posts=True)
+              for n, total in enumerate((36.0, 18.0, 45.0), 1)]
+
+    async def context(company_id, *_a, **_k):
+        return ConnectorContext(company_id=str(company_id), access_token="t",
+                                store_handle="https://example-store.myshopify.com")
+
+    async def read_products(_self, _ctx):
+        return list(products)
+
+    async def read_orders(_self, _ctx, _orders_from):
+        return list(orders)
+
+    store = type(connectors.get("shopify"))
+    with patch("celerp.connectors.relay_token.fetch_context", context), \
+            patch.object(store, "preview_products", read_products), \
+            patch.object(store, "preview_orders", read_orders):
+        yield
+
+
 @contextlib.contextmanager
 def _subscription(kind: str | None):
     from celerp.gateway.state import set_session_token
@@ -203,6 +246,7 @@ def _subscription(kind: str | None):
         if kind == _CONNECT:
             stack.enter_context(patch("ui.api_client.get_relay_status", AsyncMock(return_value=_ACTIVE_RELAY)))
             stack.enter_context(patch("ui.api_client.get_backup_status", _backup_status))
+            stack.enter_context(patch("ui.api_client.get_connectors_catalog", _connectors_catalog))
         elif kind == _COPIES:
             async def cloud(method, path, *, params=None, **_kw):
                 assert (method, path) == ("GET", "/handoffs"), (method, path)
@@ -994,7 +1038,8 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
                 patch.dict(os.environ, {"MODULE_DIR": "default_modules"}), \
                 patch("ui.routes.documents._free_send_quota", return_value=_FREE_EMAIL_QUOTA), \
                 (patch("celerp.importers.sample.SAMPLE_ARTIFACT", _sage50_set())
-                 if step_id in _ASKS_A_QUESTION else contextlib.nullcontext()):
+                 if step_id in _ASKS_A_QUESTION else contextlib.nullcontext()), \
+                (_store_reads() if step_id in _READS_THE_STORE else contextlib.nullcontext()):
             try:
                 if shown := _capture_step(page, help_page, step, step_id, suite_owner["names"]):
                     wrong.append(f"{step_id} {shown}")

@@ -6,31 +6,31 @@
   "routes": ["/settings/cloud", "/settings/connectors/{platform}", "/settings/connectors/{platform}/first-sync"],
   "permission": "manage_integrations",
   "order": 1,
-  "checked": "42145b9b2abb08405aea7159279029333419b83d6c2dc435bcb0aa29736dbe78",
+  "checked": "2fa810e0eb521de10c7c422246af879ed41b07e4df66331cfef2c1e819bd62ac",
   "steps": [
     {
       "text": "Open {access} from Settings. Celerp Connect adds {website} to bring in orders, products and customers from Shopify and WooCommerce on a schedule.",
       "labels": {"access": "settings_cloud.web_access", "website": "cloud.feature_website_title"},
       "image": "img/connect-store-1.webp",
-      "capture": {"route": "/settings/cloud", "selector": "main", "actions": [], "evidence": ["{access}", "{website}"]}
+      "capture": {"route": "/settings/cloud", "selector": "main .cloud-feature-card:has-text('Website Sync')", "actions": [], "evidence": ["{website}"]}
     },
     {
       "text": "The same subscription adds {accounting} to push invoices and contacts to QuickBooks or Xero and reconcile the bank feed, so nothing is entered twice.",
       "labels": {"accounting": "cloud.feature_accounting_title"},
       "image": "img/connect-store-2.webp",
-      "capture": {"route": "/settings/cloud", "selector": "main", "actions": [], "evidence": ["{accounting}"]}
+      "capture": {"route": "/settings/cloud", "selector": "main .cloud-feature-card:has-text('Accounting Sync')", "actions": [], "evidence": ["{accounting}"]}
     },
     {
       "text": "Once Celerp Connect is active, this page gains a Website tab and an Accounting tab, where you connect a store or books app and choose how often it syncs, and an Online Payments tab, where you connect Stripe so customers can pay your invoices online.",
       "labels": {},
       "image": "img/connect-store-3.webp",
-      "capture": {"route": "/settings/cloud", "selector": "main", "actions": [], "evidence": ["#cloud-relay-tab .badge--active"]}
+      "capture": {"route": "/settings/cloud?tab=website", "selector": "main", "actions": [], "evidence": ["main .settings-tabs a.tab--active[href='/settings/cloud?tab=website']", "main .settings-tabs a[href='/settings/cloud?tab=accounting']", "main .settings-tabs a[href='/settings/payments']"]}
     },
     {
       "text": "Each connected store or accounting system has its own page with its status, sync now and disconnect. Before the first sync, a preview reads both sides without changing either, so you can check what will happen, set the directions and the date orders are imported from, then start it.",
       "labels": {},
       "image": "img/connect-store-4.webp",
-      "capture": {"route": "/settings/connectors/shopify", "selector": "main", "actions": [], "evidence": ["[id^=connector-directions-]"]}
+      "capture": {"route": "/settings/connectors/shopify/first-sync", "selector": "main", "actions": [], "evidence": ["#first-sync-preview-shopify .settings-tabs", "#first-sync-orders-from"]}
     },
     {
       "text": "You can also ask the assistant to run a sync now, show what a sync would change, or set which way a connection syncs. It shows each change as a card and makes it only when you confirm.",

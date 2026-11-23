@@ -771,6 +771,7 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
 
     return Div(
         cloud_section,
+        id="cloud-backup-card",
         cls="settings-card",
     )
 
