@@ -814,12 +814,14 @@ def _visible_label(key: str) -> str:
 
 
 def _evidence_locator(page, entry: str, labels: dict):
-    """What one evidence entry matches: a {name} is the English text of that label (or a field
-    showing it as placeholder), anything else a selector."""
+    """What one evidence entry matches: a {name} alone is the English text of that label (or a
+    field showing it as placeholder), anything else a selector, with each {name} in it standing
+    for that text (``.step-label--active:text-is('{map}')``)."""
     if name := PLACEHOLDER.fullmatch(entry):
         label = _visible_label(labels[name.group(1)])
         return page.get_by_text(label).or_(page.get_by_placeholder(label))
-    return page.locator(entry)
+    return page.locator(PLACEHOLDER.sub(
+        lambda m: _visible_label(labels[m.group(1)]).replace("\\", "\\\\").replace("'", "\\'"), entry))
 
 
 def _evidence_missing(page, target, step: dict) -> list[str]:

@@ -92,7 +92,7 @@ def _capture_errors(where: str, capture, labels) -> list[str]:
     evidence = capture["evidence"]
     if not (_str_list(evidence) and evidence and all(e.strip() for e in evidence)):
         return [*errors, f"{where}capture evidence must be a non-empty list of selectors or {{label}} names"]
-    names = {m.group(1) for e in evidence if (m := PLACEHOLDER.fullmatch(e))}
+    names = {m.group(1) for e in evidence for m in PLACEHOLDER.finditer(e)}
     if isinstance(labels, dict):
         errors += [f"{where}capture evidence {{{k}}} is not one of the step's labels" for k in sorted(names - set(labels))]
     return errors

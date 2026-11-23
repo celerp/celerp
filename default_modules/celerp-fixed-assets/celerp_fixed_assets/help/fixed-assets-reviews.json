@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant which impairment reviews are due.",
       "labels": {},
       "image": "img/reviews-2.webp",
-      "capture": {"route": "/fixed-assets/reviews", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/fixed-assets/reviews", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["fixed-assets.register"]

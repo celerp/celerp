@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant for an asset's tax value or the tax depreciation for a year.",
       "labels": {},
       "image": "img/tax-books-2.webp",
-      "capture": {"route": "/fixed-assets/tax-books", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/fixed-assets/tax-books", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["fixed-assets.register"]

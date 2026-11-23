@@ -43,7 +43,8 @@ No other keys are allowed, and a page file is at most 64 KB.
 `capture` has `route` (the screen to open), `selector` (the element the step is about and the
 picture shows, its top 800 pixels when taller), `evidence` and `actions`, a list run in order before
 the check. `evidence` is a non-empty list of what shows the step's state: each entry is a selector,
-or `{name}` for the English text of one of the step's labels. After the actions, every entry must
+or `{name}` for the English text of one of the step's labels; a `{name}` inside a selector stands
+for that text, so `.step-label--active:text-is('{map}')` asks for the active step to read the label. After the actions, every entry must
 match a visible element lying wholly inside the pictured part of `selector`; a match elsewhere on
 the page does not count.
 

@@ -30,7 +30,7 @@
       "text": "You can also ask the assistant to add, change or remove a work center, or set the default one. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/settings-4.webp",
-      "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["manufacturing.production"]

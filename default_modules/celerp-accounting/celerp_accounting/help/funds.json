@@ -125,8 +125,7 @@
           }
         ],
         "evidence": [
-          "{opening}",
-          "{date}"
+          "{opening}"
         ]
       }
     },
@@ -221,7 +220,7 @@
         "selector": "main",
         "actions": [],
         "evidence": [
-          "main"
+          "#fund-waiting-banner"
         ]
       }
     },
@@ -234,7 +233,7 @@
         "selector": "main",
         "actions": [],
         "evidence": [
-          "main"
+          ".fund-change-row"
         ]
       }
     },
@@ -266,7 +265,7 @@
         "selector": "main",
         "actions": [],
         "evidence": [
-          "main"
+          "h1.page-title"
         ]
       }
     }

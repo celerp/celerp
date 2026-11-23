@@ -24,7 +24,7 @@
       "text": "Click an account on a statement to open its ledger: every entry on that account in the period, with a running balance.",
       "labels": {},
       "image": "img/financial-reports-3.webp",
-      "capture": {"route": "/reports/trial-balance", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/reports/trial-balance", "selector": "main", "actions": [], "evidence": ["table.data-table a"]}
     },
     {
       "text": "{soa} shows a customer's, supplier's or account's movements and balance. Search for them in the picker, or click {ar} to show every customer who owes you.",
@@ -48,7 +48,7 @@
       "text": "You can also ask the assistant to read these reports for you, such as the profit for last quarter, the cash position at month end or the balance of one account.",
       "labels": {},
       "image": "img/financial-reports-7.webp",
-      "capture": {"route": "/reports", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/reports", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["accounting.journal-entries", "reports.operational-reports"]

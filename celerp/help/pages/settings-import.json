@@ -12,25 +12,25 @@
       "text": "{title} adds locations from a spreadsheet. {hint}",
       "labels": {"title": "settings_import.hdr_locations", "hint": "settings_import.hint_locations"},
       "image": "img/settings-import-1.webp",
-      "capture": {"route": "/settings/import/locations", "selector": "main div.import-panel", "actions": [], "evidence": ["{title}", "{hint}"]}
+      "capture": {"route": "/settings/import/locations", "selector": "main div.import-panel", "actions": [], "evidence": ["{hint}"]}
     },
     {
       "text": "{title} does the same for tax rates. {hint}",
       "labels": {"title": "settings_import.hdr_taxes", "hint": "settings_import.hint_taxes"},
       "image": "img/settings-import-2.webp",
-      "capture": {"route": "/settings/import/taxes", "selector": "main div.import-panel", "actions": [], "evidence": ["{title}", "{hint}"]}
+      "capture": {"route": "/settings/import/taxes", "selector": "main div.import-panel", "actions": [], "evidence": ["{hint}"]}
     },
     {
       "text": "{title} does the same for payment terms. {hint}",
       "labels": {"title": "settings_import.hdr_payment_terms", "hint": "settings_import.hint_terms"},
       "image": "img/settings-import-3.webp",
-      "capture": {"route": "/settings/import/payment-terms", "selector": "main div.import-panel", "actions": [], "evidence": ["{title}", "{hint}"]}
+      "capture": {"route": "/settings/import/payment-terms", "selector": "main div.import-panel", "actions": [], "evidence": ["{hint}"]}
     },
     {
       "text": "You can also give the assistant a spreadsheet of locations, taxes or payment terms: it shows the import as a card that runs only when you confirm.",
       "labels": {},
       "image": "img/settings-import-4.webp",
-      "capture": {"route": "/settings/import/locations", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/settings/import/locations", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["inventory.settings", "docs.settings", "contacts.settings"]

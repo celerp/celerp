@@ -12,13 +12,13 @@
       "text": "Open {ai} from the sidebar. Without a Celerp account it shows example conversations and a {create} button; eligible free accounts with a verified email address receive AI questions at no cost.",
       "labels": {"ai": "nav.ai_assistant", "create": "ai.free_create_account"},
       "image": "img/ask-questions-1.webp",
-      "capture": {"route": "/ai", "selector": "main div.ai-showcase__cta-card", "actions": [], "evidence": ["{ai}", "{create}"]}
+      "capture": {"route": "/ai", "selector": "main div.ai-showcase__cta-card", "actions": [], "evidence": ["{create}"]}
     },
     {
       "text": "With an account, type a question in your own language in the box at the bottom and send it; you can also drop a receipt, PDF, spreadsheet or bank statement file (OFX or QFX) onto the box for the assistant to read. When an answer offers a file, it ends with a link to download it.",
       "labels": {},
       "image": "img/ask-questions-2.webp",
-      "capture": {"route": "/ai", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/ai", "selector": "main", "actions": [], "evidence": ["#ai-chat-form"]}
     },
     {
       "text": "The {plan} card on this page lists what a paid plan adds over the free questions: more monthly questions, batch invoice processing, and letting the assistant create records for you.",
@@ -30,7 +30,7 @@
       "text": "The assistant works in every part of Celerp your role can open: ask it to find records, explain a figure or prepare changes, and it opens the tools that area needs. One request can cover several changes, such as repricing many items at once, and each comes back as a card for you to confirm.",
       "labels": {},
       "image": "img/ask-questions-4.webp",
-      "capture": {"route": "/ai", "selector": "main", "actions": [{"fill": "#ai-query-input", "value": "Add a desk lamp to my stock, sold by the piece"}, {"click": ".ai-input__send"}, {"wait": ".ai-action__card"}], "evidence": ["main"]}
+      "capture": {"route": "/ai", "selector": "main", "actions": [{"fill": "#ai-query-input", "value": "Add a desk lamp to my stock, sold by the piece"}, {"click": ".ai-input__send"}, {"wait": ".ai-action__card"}], "evidence": ["#ai-messages .ai-action"]}
     }
   ],
   "related": ["ai.review-proposals", "ai.usage-settings"]

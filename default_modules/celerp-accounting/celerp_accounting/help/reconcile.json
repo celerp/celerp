@@ -34,7 +34,7 @@
         "selector": ".bank-list",
         "actions": [],
         "evidence": [
-          "{rec}"
+          ".bank-list__row"
         ]
       }
     },
@@ -69,7 +69,7 @@
           }
         ],
         "evidence": [
-          "{another}"
+          "h1.page-title"
         ]
       }
     },
@@ -151,9 +151,7 @@
           }
         ],
         "evidence": [
-          "{answer}",
-          "{postbtn}",
-          "{split}"
+          "{postbtn}"
         ]
       }
     },

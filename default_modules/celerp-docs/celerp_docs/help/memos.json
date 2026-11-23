@@ -24,31 +24,31 @@
       "text": "When the goods leave, tick their lines on the memo and choose Set as shipped from the line actions. Only shipped lines can be invoiced.",
       "labels": {},
       "image": "img/memos-3.webp",
-      "capture": {"route": "/docs?type=memo", "selector": "main div:has(> #li-bulk-toolbar)", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main input.li-select"}, {"click": "main input.li-select"}], "evidence": ["main div:has(> #li-bulk-toolbar)"]}
+      "capture": {"route": "/docs?type=memo", "selector": "main div:has(> #li-bulk-toolbar)", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main input.li-select"}, {"click": "main input.li-select"}], "evidence": ["#li-bulk-toolbar"]}
     },
     {
       "text": "When the customer keeps some items, tick those lines and choose Invoice selected. Check the preview, then confirm to put them on a new draft invoice or one you already have. Invoice all puts everything still out on one draft invoice.",
       "labels": {},
       "image": "img/memos-4.webp",
-      "capture": {"route": "/docs?type=memo", "selector": "main div:has(> #li-bulk-toolbar)", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main input.li-select"}, {"click": "main input.li-select"}], "evidence": ["main div:has(> #li-bulk-toolbar)"]}
+      "capture": {"route": "/docs?type=memo", "selector": "main div:has(> #li-bulk-toolbar)", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main input.li-select"}, {"click": "main input.li-select"}], "evidence": ["#li-bulk-toolbar"]}
     },
     {
       "text": "When items come back, tick their lines and choose Set as available. They return to your stock as available to sell.",
       "labels": {},
       "image": "img/memos-5.webp",
-      "capture": {"route": "/docs?type=memo", "selector": "main div:has(> #li-bulk-toolbar)", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main input.li-select"}, {"click": "main input.li-select"}], "evidence": ["main div:has(> #li-bulk-toolbar)"]}
+      "capture": {"route": "/docs?type=memo", "selector": "main div:has(> #li-bulk-toolbar)", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main input.li-select"}, {"click": "main input.li-select"}], "evidence": ["#li-bulk-toolbar"]}
     },
     {
       "text": "The totals on the memo show what each invoice took and what is still on memo. Once nothing is out, click Close. A closed memo can be reopened.",
       "labels": {},
       "image": "img/memos-6.webp",
-      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main div.doc-actions"}], "evidence": ["main"]}
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main div.doc-actions"}], "evidence": ["#doc-outstanding"]}
     },
     {
       "text": "You can also ask the assistant to create a memo, mark lines shipped or available, invoice lines or close the memo. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/memos-7.webp",
-      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["docs.sales-documents", "docs.payments"]

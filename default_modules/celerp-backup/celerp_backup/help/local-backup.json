@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant for a backup file of your company to download; restoring one stays with you on this page.",
       "labels": {},
       "image": "img/local-backup-3.webp",
-      "capture": {"route": "/settings/system-recovery", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/settings/system-recovery", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["backup.cloud-backup"]

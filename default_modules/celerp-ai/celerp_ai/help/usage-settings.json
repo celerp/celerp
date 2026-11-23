@@ -18,13 +18,13 @@
       "text": "Owners and admins who can manage users also see a table of how many questions each person asked this month, so usage can be reviewed without reading every conversation.",
       "labels": {},
       "image": "img/usage-settings-2.webp",
-      "capture": {"route": "/ai/settings", "selector": "main", "actions": [{"wait": "#ai-settings-content .ai-settings"}], "evidence": ["main"]}
+      "capture": {"route": "/ai/settings", "selector": "main", "actions": [{"wait": "#ai-settings-content .ai-settings"}], "evidence": [".ai-settings__usage-table tbody td"]}
     },
     {
       "text": "The assistant works with the permissions of the person asking, so each role's settings decide what it can read and which changes it can propose for them.",
       "labels": {},
       "image": "img/usage-settings-3.webp",
-      "capture": {"route": "/ai/settings", "selector": "main", "actions": [{"wait": "#ai-settings-content .ai-settings"}], "evidence": ["main"]}
+      "capture": {"route": "/ai/settings", "selector": "main", "actions": [{"wait": "#ai-settings-content .ai-settings"}], "evidence": ["h2.ai-settings__title"]}
     }
   ],
   "related": ["ai.ask-questions"]

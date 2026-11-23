@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant which asset reminders are due.",
       "labels": {},
       "image": "img/reminders-2.webp",
-      "capture": {"route": "/fixed-assets/reminders", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/fixed-assets/reminders", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["fixed-assets.register"]

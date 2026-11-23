@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant which modules are on, or to turn one on or off. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/modules-3.webp",
-      "capture": {"route": "/modules", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/modules", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["core.settings"]

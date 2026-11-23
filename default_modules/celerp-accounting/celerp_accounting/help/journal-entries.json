@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant to find entries, record a manual journal entry or void one. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/journal-entries-3.webp",
-      "capture": {"route": "/accounting", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/accounting", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["accounting.financial-reports", "accounting.reconcile", "accounting.settings"]

@@ -30,13 +30,13 @@
       "text": "With products ticked, print the component requirements: the raw materials and sub-assemblies their shortfall needs, worked out through the recipes.",
       "labels": {},
       "image": "img/demand-planning-4.webp",
-      "capture": {"route": "/manufacturing", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/manufacturing", "selector": "main", "actions": [], "evidence": ["main input[type=checkbox]:checked"]}
     },
     {
       "text": "You can also ask the assistant what needs making and to create the work orders for it. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/demand-planning-5.webp",
-      "capture": {"route": "/manufacturing", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/manufacturing", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["manufacturing.production", "manufacturing.settings"]

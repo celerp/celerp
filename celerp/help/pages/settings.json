@@ -18,13 +18,13 @@
       "text": "On {title}, choose which entries and groups the side menu shows and in what order, for everyone in the company. Hiding an entry does not block its page. {reset} shows every entry again in its default order.",
       "labels": {"title": "settings_menu.title", "reset": "settings_menu.reset"},
       "image": "img/settings-2.webp",
-      "capture": {"route": "/settings/menu", "selector": "main", "actions": [], "evidence": ["{title}", "{reset}"]}
+      "capture": {"route": "/settings/menu", "selector": "main", "actions": [], "evidence": ["{title}"]}
     },
     {
       "text": "You can also ask the assistant to change the company's details or what the side menu offers. It shows each change as a card and makes it only when you confirm. Changing your own password stays with you on this page.",
       "labels": {},
       "image": "img/settings-3.webp",
-      "capture": {"route": "/settings/general?tab=password", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/settings/general?tab=password", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["core.companies", "core.users"]

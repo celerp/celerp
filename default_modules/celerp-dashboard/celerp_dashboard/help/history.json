@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant who changed a record, or what happened on a day.",
       "labels": {},
       "image": "img/history-2.webp",
-      "capture": {"route": "/history", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/history", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["dashboard.overview"]

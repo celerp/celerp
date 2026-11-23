@@ -36,7 +36,7 @@
       "text": "You can also ask the assistant to run depreciation, or to move, sell or dispose of assets. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/depreciation-and-disposals-5.webp",
-      "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["fixed-assets.register", "fixed-assets.settings"]

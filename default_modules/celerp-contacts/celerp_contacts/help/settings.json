@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant to change the payment terms, price lists, tags or contact defaults. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/settings-2.webp",
-      "capture": {"route": "/settings/contacts", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/settings/contacts", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["contacts.add-customer", "contacts.add-vendor"]

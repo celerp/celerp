@@ -18,19 +18,19 @@
       "text": "Click a list or quotation to open it, add or change its lines and see its total.",
       "labels": {},
       "image": "img/lists-quotations-2.webp",
-      "capture": {"route": "/lists", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/lists", "selector": "main", "actions": [], "evidence": ["table.doc-lines"]}
     },
     {
       "text": "On {title}, use {dl} for a blank spreadsheet in the expected format, fill it in and upload it to bring in many quotations at once.",
       "labels": {"title": "lists_import.import_lists", "dl": "btn.download_template"},
       "image": "img/lists-quotations-3.webp",
-      "capture": {"route": "/lists/import", "selector": "#import-dropzone", "actions": [], "evidence": ["{title}", "{dl}"]}
+      "capture": {"route": "/lists/import", "selector": "#import-dropzone", "actions": [], "evidence": ["{dl}"]}
     },
     {
       "text": "You can also ask the assistant to create a list or quotation, reprice it, finalize it or convert it into a document. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/lists-quotations-4.webp",
-      "capture": {"route": "/lists", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/lists", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["docs.sales-documents"]

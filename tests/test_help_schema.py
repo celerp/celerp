@@ -162,6 +162,8 @@ def test_capture_names_the_evidence_of_its_state(tmp_path):
     for bad in ([], ["  "], "main h1", [3]):
         assert any("evidence must be" in e for e in errors_for(bad)), bad
     assert any("{save} is not one of the step's labels" in e for e in errors_for(["{save}"]))
+    assert errors_for([".step-label--active:text-is('{new}')"]) == []
+    assert any("{save} is not one of the step's labels" in e for e in errors_for(["a:text-is('{save}')"]))
     capture = {"route": "/inventory", "selector": "main", "actions": []}
     assert any("missing key 'evidence'" in e for e in validate(_page(steps=[_step(capture=capture)]), tmp_path,
                                                                   "inventory")[1])

@@ -24,13 +24,13 @@
       "text": "Once you continue, Celerp turns on the modules for your business type and opens the dashboard when they are ready.",
       "labels": {},
       "image": "img/business-type-3.webp",
-      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": [".auth-container"]}
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": ["form.auth-form"]}
     },
     {
       "text": "You can also ask the assistant to set your business type. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/business-type-4.webp",
-      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": [".auth-container"]}
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": ["h1.auth-title"]}
     }
   ],
   "related": ["verticals.category-library"]

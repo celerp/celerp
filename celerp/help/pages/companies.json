@@ -30,7 +30,7 @@
       "text": "You can also ask the assistant which companies you can open, or for the companies your firm looks after and how each one stands.",
       "labels": {},
       "image": "img/companies-4.webp",
-      "capture": {"route": "/settings/general?tab=company", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/settings/general?tab=company", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["core.users", "core.settings"]

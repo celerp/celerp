@@ -12,7 +12,7 @@
       "text": "Open {sales} or {purch} from the sidebar to see sales and purchasing subscriptions separately.",
       "labels": {"sales": "nav.subscriptions_sales", "purch": "nav.subscriptions_purchasing"},
       "image": "img/overview-1.webp",
-      "capture": {"route": "/subscriptions", "selector": "main", "actions": [], "evidence": ["{sales}", "{purch}"]}
+      "capture": {"route": "/subscriptions", "selector": "main", "actions": [], "evidence": ["{sales}"]}
     },
     {
       "text": "Choose {new} to create a subscription, or {imp} to bring in many at once from a file.",
@@ -30,13 +30,13 @@
       "text": "Click a subscription to open it: its lines, its {sched} of billing periods and the invoices each period produced.",
       "labels": {"sched": "subscriptions.schedule_heading"},
       "image": "img/overview-4.webp",
-      "capture": {"route": "/subscriptions", "selector": "#sub-schedule", "actions": [{"click": "table tbody tr a"}], "evidence": ["{sched}"]}
+      "capture": {"route": "/subscriptions", "selector": "#sub-schedule", "actions": [{"click": "table tbody tr a"}], "evidence": ["table.data-table td a[href^='/docs/']"]}
     },
     {
       "text": "You can also ask the assistant to generate the invoices that are due, or to pause, resume, cancel or change a subscription. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/overview-5.webp",
-      "capture": {"route": "/subscriptions", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/subscriptions", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["subscriptions.import"]

@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant which records are waiting for an account.",
       "labels": {},
       "image": "img/accounting-sync-accounts-2.webp",
-      "capture": {"route": "/accounting/sync-accounts", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/accounting/sync-accounts", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["connectors.accountant-access"]

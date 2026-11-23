@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant which periods are waiting, or to bill or skip them. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/catch-up-2.webp",
-      "capture": {"route": "/subscriptions/catch-up", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/subscriptions/catch-up", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["subscriptions.overview", "subscriptions.summary"]

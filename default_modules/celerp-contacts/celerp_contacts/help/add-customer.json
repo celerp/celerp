@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant to add or update customers, add a note, a person or an address, tag or merge contacts. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/add-customer-3.webp",
-      "capture": {"route": "/contacts/customers", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/contacts/customers", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["contacts.add-vendor", "contacts.settings"]

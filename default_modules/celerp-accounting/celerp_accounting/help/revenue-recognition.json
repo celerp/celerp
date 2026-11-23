@@ -51,7 +51,7 @@
         "selector": "main",
         "actions": [],
         "evidence": [
-          "main"
+          "main table.data-table"
         ]
       }
     },
@@ -113,7 +113,7 @@
         "selector": "main",
         "actions": [],
         "evidence": [
-          "main"
+          "main table.data-table"
         ]
       }
     },
@@ -126,7 +126,7 @@
         "selector": "main",
         "actions": [],
         "evidence": [
-          "main"
+          "main table.data-table"
         ]
       }
     },
@@ -141,7 +141,7 @@
         "selector": "main",
         "actions": [],
         "evidence": [
-          "{void}"
+          "h1.page-title"
         ]
       }
     },
@@ -154,7 +154,7 @@
         "selector": "main",
         "actions": [],
         "evidence": [
-          "main"
+          "h1.page-title"
         ]
       }
     }

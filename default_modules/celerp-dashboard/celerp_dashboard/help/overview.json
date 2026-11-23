@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant about these figures or recent activity, such as what was sold this week or who changed a record.",
       "labels": {},
       "image": "img/overview-3.webp",
-      "capture": {"route": "/dashboard", "selector": "main", "actions": [], "evidence": ["main"]}
+      "capture": {"route": "/dashboard", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
     }
   ],
   "related": ["dashboard.getting-started"]

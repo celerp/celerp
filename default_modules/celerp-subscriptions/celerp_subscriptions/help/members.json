@@ -109,7 +109,7 @@
         "selector": "main",
         "actions": [],
         "evidence": [
-          "main"
+          "h1.page-title"
         ]
       }
     }
