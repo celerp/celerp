@@ -45,61 +45,116 @@ jobs:
         run: |
           set -euo pipefail
 
+          # The one decision of this step, from the facts observed below. It prints one of:
+          # create, replace, leave-open-pr, current-skip, current-dispatch-ci, fail.
+          # The job may replace the branch only when that loses nothing: everything the branch
+          # changed is already on main, the branch head is a merged PR's head, or the branch is
+          # the job's own refresh commit alone.
+          decide() {
+            local open=$1 branch=$2 on_main=$3 merged=$4 own=$5 current=$6 ci=$7
+            if ((branch)) && ! ((on_main || merged || own)); then
+              if ((open)); then echo leave-open-pr; else echo fail; fi
+            elif ((open)); then
+              if ! ((branch)); then echo fail
+              elif ((current)); then
+                if ((ci)); then echo current-skip; else echo current-dispatch-ci; fi
+              else echo replace
+              fi
+            elif ((current)); then echo current-skip
+            elif ((branch)); then echo replace
+            else echo create
+            fi
+          }
+
           open_pr="$(gh pr list \
             --state open \
             --head "$BRANCH" \
             --json number \
             --jq '.[0].number // empty')"
 
-          # The job replaces the branch only when it is its own: nothing beyond main, or
-          # one "Refresh Python dependencies" commit that touches constraints.txt alone.
           git fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"
-          lease=""
+          lease="" branch=0 on_main=0 merged=0 own=0 ci=0
           if [[ -n "$(git ls-remote --heads origin "refs/heads/$BRANCH")" ]]; then
             git fetch --quiet origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
             lease="$(git rev-parse "origin/$BRANCH")"
-            if [[ -n "$(git rev-list "origin/main..$lease")" ]] && {
-              [[ "$(git log --format=%s "origin/main..$lease")" != "Refresh Python dependencies" ]] ||
-              [[ "$(git diff --name-only "origin/main...$lease")" != constraints.txt ]]; }; then
-              echo "$BRANCH carries commits other than the job's own refresh commit; leaving it unchanged"
-              exit 0
+            branch=1
+            mapfile -d '' changed < <(git diff -z --no-renames --name-only "origin/main...$lease")
+            if ((${#changed[@]} == 0)) ||
+              git --literal-pathspecs diff --quiet "origin/main" "$lease" -- "${changed[@]}"; then
+              on_main=1
             fi
+            merged_heads="$(gh pr list \
+              --state merged \
+              --head "$BRANCH" \
+              --limit 1000 \
+              --json headRefOid \
+              --jq '.[].headRefOid')"
+            if grep -qxF -- "$lease" <<<"$merged_heads"; then merged=1; fi
+            if [[ "$(git log --format=%s "origin/main..$lease")" == "Refresh Python dependencies" &&
+              "$(git diff --name-only "origin/main...$lease")" == constraints.txt ]]; then
+              own=1
+            fi
+            ci_runs="$(gh run list --workflow ci.yml --commit "$lease" --json databaseId --jq '.[].databaseId')"
+            if [[ -n "$ci_runs" ]]; then ci=1; fi
           fi
-
-          if [[ -n "$open_pr" ]]; then
+          current=0
+          if [[ -n "$open_pr" && -n "$lease" ]]; then
+            # Current: the open PR's branch holds this resolve and sits on current main.
             if git diff --quiet "$lease" -- constraints.txt &&
               [[ "$(git merge-base origin/main "$lease")" == "$(git rev-parse origin/main)" ]]; then
-              echo "Dependency refresh PR #$open_pr is already current"
-              exit 0
+              current=1
             fi
-            echo "Dependency refresh PR #$open_pr is open but stale; rebuilding it from current main"
           elif git diff --quiet -- constraints.txt; then
-            echo "constraints.txt is already current"
-            exit 0
+            # Current: main already holds this resolve.
+            current=1
           fi
+          open=0
+          if [[ -n "$open_pr" ]]; then open=1; fi
 
-          git config user.name "Noah Severs"
-          git config user.email "118095044+ngsevers@users.noreply.github.com"
-          git switch -c "$BRANCH"
-          git add constraints.txt
-          if ! git diff --cached --quiet; then
-            git commit -m "Refresh Python dependencies"
-          fi
-
-          if [[ -n "$lease" ]]; then
-            git push \
-              --force-with-lease="refs/heads/$BRANCH:$lease" \
-              origin "HEAD:refs/heads/$BRANCH"
-          else
-            git push origin "HEAD:refs/heads/$BRANCH"
-          fi
-
-          if [[ -z "$open_pr" ]]; then
-            gh pr create \
-              --base main \
-              --head "$BRANCH" \
-              --title "Refresh Python dependencies" \
-              --body "Refreshes the resolved production dependency graph from pyproject.toml. constraints.txt remains resolver-generated; normal CI validates the complete set before merge."
-          fi
+          action="$(decide "$open" "$branch" "$on_main" "$merged" "$own" "$current" "$ci")"
+          case "$action" in
+            fail)
+              if ((open)); then
+                echo "PR #$open_pr is open but $BRANCH does not exist"
+              else
+                echo "$BRANCH has no open PR and holds work that is not on main, not a merged PR's head and not the job's own refresh commit; refusing to replace it. Open a PR for it or delete the branch."
+              fi
+              exit 1
+              ;;
+            leave-open-pr)
+              echo "$BRANCH carries commits other than the job's own refresh commit; leaving it unchanged for PR #$open_pr"
+              exit 0
+              ;;
+            current-skip)
+              echo "constraints.txt is already current${open_pr:+ on PR #$open_pr}"
+              exit 0
+              ;;
+            current-dispatch-ci)
+              echo "Dependency refresh PR #$open_pr is already current but has no CI run; starting CI"
+              ;;
+            create | replace)
+              git config user.name "Noah Severs"
+              git config user.email "118095044+ngsevers@users.noreply.github.com"
+              git switch -c "$BRANCH"
+              git add constraints.txt
+              if ! git diff --cached --quiet; then
+                git commit -m "Refresh Python dependencies"
+              fi
+              if [[ "$action" == replace ]]; then
+                git push \
+                  --force-with-lease="refs/heads/$BRANCH:$lease" \
+                  origin "HEAD:refs/heads/$BRANCH"
+              else
+                git push origin "HEAD:refs/heads/$BRANCH"
+              fi
+              if ! ((open)); then
+                gh pr create \
+                  --base main \
+                  --head "$BRANCH" \
+                  --title "Refresh Python dependencies" \
+                  --body "Refreshes the resolved production dependency graph from pyproject.toml. constraints.txt remains resolver-generated; normal CI validates the complete set before merge."
+              fi
+              ;;
+          esac
 
           gh workflow run ci.yml --ref "$BRANCH" -f dependency_refresh=true
