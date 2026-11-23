@@ -110,6 +110,9 @@ dev = [
 ]
 prod = [
     "gunicorn>=22.0",
+    # uvicorn 0.54 dropped its bundled UvicornWorker; this is the upstream-recommended
+    # replacement worker class for serving the ASGI app under gunicorn.
+    "uvicorn-worker>=0.4",
 ]
 
 [tool.pytest.ini_options]

@@ -2,7 +2,7 @@ name: Refresh Python dependencies
 
 on:
   schedule:
-    - cron: "17 3 * * 1"
+    - cron: "17 3 1 * *"
   workflow_dispatch:
 
 permissions:
@@ -45,9 +45,53 @@ jobs:
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- constraints.txt; then
-            echo "constraints.txt is already current"
-            exit 0
+          # The one decision of this step, from the facts observed below. It prints one of:
+          # create, replace, update, leave-open-pr, current-skip, current-dispatch-ci, fail.
+          # Ownership of the branch is never inferred. The job may replace the branch only when
+          # git proves that loses nothing: every path the branch changed since its merge base
+          # with main is identical on main. A branch with an open PR whose unmerged changes touch
+          # only constraints.txt is updated on top (main merged in, the new resolve committed),
+          # so its history is kept. Any other branch is left for its open PR, or fails the job.
+          decide() {
+            local open=$1 branch=$2 replaceable=$3 pins_only=$4 current=$5 ci=$6
+            if ((open)); then
+              if ! ((branch)); then echo fail
+              elif ! ((replaceable || pins_only)); then echo leave-open-pr
+              elif ((current)); then
+                if ((ci)); then echo current-skip; else echo current-dispatch-ci; fi
+              elif ((replaceable)); then echo replace
+              else echo update
+              fi
+            elif ((branch)) && ! ((replaceable)); then echo fail
+            elif ((current)); then echo current-skip
+            elif ((branch)); then echo replace
+            else echo create
+            fi
+          }
+
+          # Prints, NUL-separated, every path the branch changed since its merge base with main
+          # that still differs from main: what replacing the branch would lose. Fails on any git
+          # error, including a branch that shares no history with main.
+          unmerged_paths() {
+            local base changed_list
+            local -a changed
+            if ! base="$(git merge-base origin/main "$lease")"; then
+              echo "$BRANCH shares no history with main; git cannot tell what replacing it would lose" >&2
+              return 1
+            fi
+            changed_list="$(mktemp)"
+            git diff -z --no-renames --name-only "$base" "$lease" >"$changed_list" || return 1
+            mapfile -d '' changed <"$changed_list"
+            if ((${#changed[@]})); then
+              git --literal-pathspecs diff -z --no-renames --name-only origin/main "$lease" -- "${changed[@]}"
+            fi
+          }
+
+          # The resolve ran on the checked-out commit; publish it only while that is still main.
+          git fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"
+          if [[ "$(git rev-parse origin/main)" != "$(git rev-parse HEAD)" ]]; then
+            echo "main moved to $(git rev-parse --short origin/main) after this run resolved on $(git rev-parse --short HEAD); not publishing a resolve built on an older main. Run the workflow again to resolve on the new main."
+            exit 1
           fi
 
           open_pr="$(gh pr list \
@@ -55,30 +99,97 @@ jobs:
             --head "$BRANCH" \
             --json number \
             --jq '.[0].number // empty')"
-          if [[ -n "$open_pr" ]]; then
-            echo "Dependency refresh PR #$open_pr is already open"
-            exit 0
+
+          lease="" branch=0 replaceable=0 pins_only=0 ci=0
+          if [[ -n "$(git ls-remote --heads origin "refs/heads/$BRANCH")" ]]; then
+            git fetch --quiet origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+            lease="$(git rev-parse "origin/$BRANCH")"
+            branch=1
+            unmerged_list="$(mktemp)"
+            if unmerged_paths >"$unmerged_list"; then
+              mapfile -d '' unmerged <"$unmerged_list"
+              if ((${#unmerged[@]} == 0)); then
+                replaceable=1
+              elif ((${#unmerged[@]} == 1)) && [[ "${unmerged[0]}" == constraints.txt ]]; then
+                pins_only=1
+              fi
+            fi
+            ci_runs="$(gh run list --workflow ci.yml --commit "$lease" --json databaseId --jq '.[].databaseId')"
+            if [[ -n "$ci_runs" ]]; then ci=1; fi
           fi
-
-          git config user.name "Noah Severs"
-          git config user.email "118095044+ngsevers@users.noreply.github.com"
-          git switch -c "$BRANCH"
-          git add constraints.txt
-          git commit -m "Refresh Python dependencies"
-
-          remote_sha="$(git ls-remote --heads origin "refs/heads/$BRANCH" | cut -f1)"
-          if [[ -n "$remote_sha" ]]; then
-            git push \
-              --force-with-lease="refs/heads/$BRANCH:$remote_sha" \
-              origin "HEAD:refs/heads/$BRANCH"
-          else
-            git push origin "HEAD:refs/heads/$BRANCH"
+          current=0
+          if [[ -n "$open_pr" && -n "$lease" ]]; then
+            # Current: the open PR's branch holds this resolve and sits on current main.
+            if git diff --quiet "$lease" -- constraints.txt &&
+              [[ "$(git merge-base origin/main "$lease")" == "$(git rev-parse origin/main)" ]]; then
+              current=1
+            fi
+          elif git diff --quiet -- constraints.txt; then
+            # Current: main already holds this resolve.
+            current=1
           fi
+          open=0
+          if [[ -n "$open_pr" ]]; then open=1; fi
 
-          gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "Refresh Python dependencies" \
-            --body "Refreshes the resolved production dependency graph from pyproject.toml. constraints.txt remains resolver-generated; normal CI validates the complete set before merge."
+          action="$(decide "$open" "$branch" "$replaceable" "$pins_only" "$current" "$ci")"
+          case "$action" in
+            fail)
+              if ((open)); then
+                echo "PR #$open_pr is open but $BRANCH does not exist"
+              else
+                echo "$BRANCH has no open PR and holds work that git cannot prove is on main; refusing to replace it. Open a PR for it or delete the branch."
+              fi
+              exit 1
+              ;;
+            leave-open-pr)
+              echo "$BRANCH holds work that is not on main beyond constraints.txt; leaving it unchanged for PR #$open_pr"
+              exit 0
+              ;;
+            current-skip)
+              echo "constraints.txt is already current${open_pr:+ on PR #$open_pr}"
+              exit 0
+              ;;
+            current-dispatch-ci)
+              echo "Dependency refresh PR #$open_pr is already current but has no CI run; starting CI"
+              ;;
+            create | replace | update)
+              git config user.name "Noah Severs"
+              git config user.email "118095044+ngsevers@users.noreply.github.com"
+              if [[ "$action" == update ]]; then
+                # Build on the branch itself. Its unmerged changes touch only constraints.txt, so
+                # that is the only file the merge can conflict on, and the new resolve replaces
+                # it anyway; -X theirs takes main's side there. A branch with unrelated history
+                # makes git refuse the merge, which stops the job.
+                resolved="$(mktemp)"
+                cp constraints.txt "$resolved"
+                git checkout -- constraints.txt
+                git switch -c "$BRANCH" "$lease"
+                git merge --no-edit -X theirs origin/main
+                cp "$resolved" constraints.txt
+              else
+                git switch -c "$BRANCH"
+              fi
+              git add constraints.txt
+              if ! git diff --cached --quiet; then
+                git commit -m "Refresh Python dependencies"
+              fi
+              if [[ "$action" == replace ]]; then
+                git push \
+                  --force-with-lease="refs/heads/$BRANCH:$lease" \
+                  origin "HEAD:refs/heads/$BRANCH"
+              else
+                # No force: the remote takes this push only if it adds to the head inspected
+                # above (update) or creates the branch (create).
+                git push origin "HEAD:refs/heads/$BRANCH"
+              fi
+              if ! ((open)); then
+                gh pr create \
+                  --base main \
+                  --head "$BRANCH" \
+                  --title "Refresh Python dependencies" \
+                  --body "Refreshes the resolved production dependency graph from pyproject.toml. constraints.txt remains resolver-generated; normal CI validates the complete set before merge."
+              fi
+              ;;
+          esac
 
           gh workflow run ci.yml --ref "$BRANCH" -f dependency_refresh=true

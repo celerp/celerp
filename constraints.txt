@@ -6,13 +6,16 @@ aiosmtplib==5.1.3
     # via celerp (pyproject.toml)
 alembic==1.20.1
     # via celerp (pyproject.toml)
-annotated-doc==0.0.5
+annotated-doc==0.0.6 ; python_full_version < '3.11'
+    # via fastapi
+annotated-doc==0.0.7 ; python_full_version >= '3.11'
     # via fastapi
 annotated-types==0.8.0
     # via pydantic
 anyio==4.16.0
     # via
     #   celerp (pyproject.toml)
+    #   fastapi
     #   httpx
     #   httpx2
     #   starlette
@@ -27,7 +30,7 @@ beautifulsoup4==4.15.0
     # via python-fasthtml
 celerp-postgres==17.10.0 ; (platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'
     # via celerp (pyproject.toml)
-certifi==2026.10.23
+certifi==2026.11.20
     # via
     #   httpcore
     #   httpx
@@ -57,16 +60,20 @@ ecdsa==0.19.2
     # via python-jose
 et-xmlfile==2.0.0
     # via openpyxl
-exceptiongroup==1.3.1 ; python_full_version < '3.11'
+exceptiongroup==1.3.2 ; python_full_version < '3.11'
     # via anyio
-fastapi==0.162.2
+fastapi==0.162.5 ; python_full_version < '3.11'
     # via celerp (pyproject.toml)
-fastcore==2.2.40
+fastapi==0.165.0 ; python_full_version >= '3.11'
+    # via celerp (pyproject.toml)
+fastcore==2.2.45
     # via python-fasthtml
 greenlet==3.5.6
     # via sqlalchemy
-gunicorn==26.2.0
-    # via celerp (pyproject.toml)
+gunicorn==27.0.1
+    # via
+    #   celerp (pyproject.toml)
+    #   uvicorn-worker
 h11==0.16.0
     # via
     #   httpcore
@@ -76,7 +83,7 @@ httpcore==1.0.9
     # via httpx
 httpcore2==2.14.0 ; python_full_version < '3.11' and sys_platform != 'emscripten'
     # via httpx2
-httpcore2==2.16.0 ; python_full_version >= '3.11' and sys_platform != 'emscripten'
+httpcore2==2.16.2 ; python_full_version >= '3.11' and sys_platform != 'emscripten'
     # via httpx2
 httptools==0.9.0
     # via uvicorn
@@ -84,7 +91,7 @@ httpx==0.28.1
     # via celerp (pyproject.toml)
 httpx2==2.14.0 ; python_full_version < '3.11'
     # via python-fasthtml
-httpx2==2.16.0 ; python_full_version >= '3.11'
+httpx2==2.16.2 ; python_full_version >= '3.11'
     # via python-fasthtml
 httpx2-jsfetch==1.0 ; python_full_version >= '3.12' and sys_platform == 'emscripten'
     # via httpx2
@@ -105,7 +112,7 @@ numpy==2.2.6 ; python_full_version < '3.11'
     # via celerp (pyproject.toml)
 numpy==2.4.6 ; python_full_version == '3.11.*'
     # via celerp (pyproject.toml)
-numpy==2.5.4 ; python_full_version >= '3.12'
+numpy==2.5.5 ; python_full_version >= '3.12'
     # via celerp (pyproject.toml)
 oauthlib==4.0.1
     # via python-fasthtml
@@ -139,18 +146,18 @@ pycparser==3.11 ; python_full_version < '3.11' and implementation_name != 'PyPy'
     # via cffi
 pycparser==3.12 ; python_full_version >= '3.11' and implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
-pydantic==2.14.3
+pydantic==2.14.4
     # via
     #   celerp (pyproject.toml)
     #   fastapi
     #   pydantic-settings
-pydantic-core==2.50.4
+pydantic-core==2.50.5
     # via pydantic
 pydantic-settings==2.15.0 ; python_full_version < '3.11'
     # via celerp (pyproject.toml)
-pydantic-settings==2.16.2 ; python_full_version >= '3.11'
+pydantic-settings==2.16.3 ; python_full_version >= '3.11'
     # via celerp (pyproject.toml)
-pypdf==7.0.0
+pypdf==7.1.1
     # via celerp (pyproject.toml)
 python-barcode==0.16.1
     # via celerp (pyproject.toml)
@@ -162,7 +169,7 @@ python-dotenv==1.2.4
     # via
     #   pydantic-settings
     #   uvicorn
-python-fasthtml==0.14.21
+python-fasthtml==0.14.29
     # via celerp (pyproject.toml)
 python-jose==3.5.0
     # via celerp (pyproject.toml)
@@ -170,11 +177,11 @@ python-multipart==0.0.32 ; python_full_version < '3.11'
     # via
     #   celerp (pyproject.toml)
     #   python-fasthtml
-python-multipart==0.0.33 ; python_full_version >= '3.11'
+python-multipart==0.0.34 ; python_full_version >= '3.11'
     # via
     #   celerp (pyproject.toml)
     #   python-fasthtml
-pyyaml==6.0.3
+pyyaml==6.0.4
     # via uvicorn
 qrcode==8.2
     # via celerp (pyproject.toml)
@@ -190,13 +197,13 @@ slowapi==0.1.10
     # via celerp (pyproject.toml)
 soupsieve==2.10 ; python_full_version < '3.11.5'
     # via beautifulsoup4
-soupsieve==4.0.1 ; python_full_version >= '3.11.5'
+soupsieve==4.1.3 ; python_full_version >= '3.11.5'
     # via beautifulsoup4
-sqlalchemy==2.0.57 ; python_full_version < '3.11'
+sqlalchemy==2.0.58 ; python_full_version < '3.11'
     # via
     #   celerp (pyproject.toml)
     #   alembic
-sqlalchemy==2.1.8 ; python_full_version >= '3.11'
+sqlalchemy==2.1.9 ; python_full_version >= '3.11'
     # via
     #   celerp (pyproject.toml)
     #   alembic
@@ -248,6 +255,9 @@ uvicorn==0.54.0
     # via
     #   celerp (pyproject.toml)
     #   python-fasthtml
+    #   uvicorn-worker
+uvicorn-worker==0.4.0
+    # via celerp (pyproject.toml)
 uvloop==0.23.0 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
     # via uvicorn
 watchfiles==1.3.0
@@ -255,10 +265,12 @@ watchfiles==1.3.0
 websockets==16.1.1 ; python_full_version < '3.11'
     # via
     #   celerp (pyproject.toml)
+    #   python-fasthtml
     #   uvicorn
 websockets==17.4 ; python_full_version >= '3.11'
     # via
     #   celerp (pyproject.toml)
+    #   python-fasthtml
     #   uvicorn
 wrapt==2.5.2
     # via deprecated
