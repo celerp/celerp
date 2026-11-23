@@ -12,7 +12,7 @@
       "text": "The sidebar also lists {sold}, {arch} and {disp}: the same inventory screen filtered to that status.",
       "labels": {"sold": "nav.sold_inventory", "arch": "nav.archived_inventory", "disp": "nav.disposed_inventory"},
       "image": "img/stock-views-1.webp",
-      "capture": {"route": "/inventory", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/inventory", "selector": ".sidebar-group--active", "actions": [], "evidence": ["{sold}", "{arch}", "{disp}"]}
     },
     {
       "text": "Open {audits} to count stock on hand and compare it against the system quantities.",

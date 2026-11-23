@@ -54,9 +54,17 @@
       "capture": {
         "route": "/retainers",
         "selector": "main",
-        "actions": [],
+        "actions": [
+          {
+            "click": "main button:has-text('Generate')"
+          },
+          {
+            "wait": "#sub-due-panel .settings-card, #sub-due-panel table"
+          }
+        ],
         "evidence": [
-          "{gen}"
+          "{gen}",
+          "#sub-due-panel .settings-card, #sub-due-panel table"
         ]
       }
     },

@@ -12,7 +12,7 @@
       "text": "Each report has a row of preset periods such as {month}, or a custom range typed into the two date fields beside them.",
       "labels": {"month": "filter.this_month"},
       "image": "img/filtering-and-export-1.webp",
-      "capture": {"route": "/reports/ar-aging", "selector": "main", "actions": [], "evidence": ["{month}"]}
+      "capture": {"route": "/reports/ar-aging", "selector": "main .date-filter-bar", "actions": [], "evidence": ["{month}"]}
     },
     {
       "text": "You can also ask the assistant for a report over any period, such as what customers owed at the end of last month.",

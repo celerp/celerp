@@ -48,10 +48,10 @@
       "image": "img/revenue-recognition-2.webp",
       "capture": {
         "route": "/accounting/recognition",
-        "selector": "main",
+        "selector": "#recognition-body > table.data-table",
         "actions": [],
         "evidence": [
-          "main table.data-table"
+          "#recognition-body > table.data-table td.cell--number"
         ]
       }
     },
@@ -97,7 +97,7 @@
       "image": "img/revenue-recognition-5.webp",
       "capture": {
         "route": "/accounting/recognition",
-        "selector": "main",
+        "selector": "#recognition-body .report-section:has(> h3.report-section-title)",
         "actions": [],
         "evidence": [
           "{roll}"
@@ -110,23 +110,23 @@
       "image": "img/revenue-recognition-6.webp",
       "capture": {
         "route": "/accounting/recognition",
-        "selector": "main",
+        "selector": "#recognition-body > table.data-table",
         "actions": [],
         "evidence": [
-          "main table.data-table"
+          "#recognition-body > table.data-table td.cell--number"
         ]
       }
     },
     {
       "text": "A schedule recognizes on the fund of its invoice line and follows that line when its fund changes, for example when you change the fund of an invoice from outside. Runs already posted are posted again on the new fund.",
-      "labels": {},
+      "labels": {"all": "recognition.all_funds"},
       "image": "img/revenue-recognition-7.webp",
       "capture": {
         "route": "/accounting/recognition",
-        "selector": "main",
+        "selector": "#recognition-body .report-section > table.data-table",
         "actions": [],
         "evidence": [
-          "main table.data-table"
+          "{all}"
         ]
       }
     },
@@ -138,10 +138,10 @@
       "image": "img/revenue-recognition-8.webp",
       "capture": {
         "route": "/accounting/recognition",
-        "selector": "main",
+        "selector": "#recognition-body .report-section > div:has(> h3.report-section-title)",
         "actions": [],
         "evidence": [
-          "h1.page-title"
+          "{void}"
         ]
       }
     },

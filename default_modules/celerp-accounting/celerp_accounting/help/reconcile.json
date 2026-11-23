@@ -281,7 +281,7 @@
       "image": "img/reconcile-10.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": ".bank-list",
+        "selector": ".bank-list__row",
         "actions": [],
         "evidence": [
           "{history}"
