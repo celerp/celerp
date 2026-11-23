@@ -14,6 +14,7 @@ import os
 import subprocess
 from dataclasses import astuple, dataclass
 from pathlib import Path
+from typing import Callable
 
 import pytest
 import yaml
@@ -86,16 +87,25 @@ class Scratch:
         self.git("push", "-q", "origin", "main")
 
     def run_job(
-        self, resolved: str, open_pr: str, merged: str = "", runs: str = "", hook: str = ""
+        self,
+        resolved: str,
+        open_pr: str,
+        merged: str = "",
+        runs: str = "",
+        hook: str = "",
+        after_checkout: Callable[[], None] | None = None,
     ) -> tuple[subprocess.CompletedProcess, str]:
         """A fresh checkout of main, the resolve step's output, then the step under test.
 
         ``merged`` is what the API lists as head shas of merged PRs from the branch, ``runs``
         the CI runs it lists for the branch head, ``hook`` a command run while the step
-        inspects the branch (after it has read the branch head).
+        inspects the branch (after it has read the branch head), ``after_checkout`` a change to
+        the origin made between the checkout and the step (while the resolve runs).
         """
         runner = self.root / "runner"
         self.git("clone", "-q", "-b", "main", str(self.origin), str(runner), cwd=self.root)
+        if after_checkout:
+            after_checkout()
         (runner / "constraints.txt").write_text(resolved)
         script = self.root / "step.sh"
         script.write_text(_run_block())
@@ -276,6 +286,86 @@ def test_current_pr_whose_ci_never_started_gets_it_started(scratch: Scratch) -> 
     assert scratch.remote_branch() == before
     assert f"gh workflow run ci.yml --ref {BRANCH}" in gh
     assert "gh pr create" not in gh
+
+
+def _main_moves(s: Scratch) -> None:
+    s.git("switch", "-q", "main")
+    s.commit({"app.py": "x\n"}, "Unrelated work on main")
+    s.git("push", "-q", "origin", "main")
+
+
+@pytest.mark.parametrize("open_pr", ["", "430"], ids=["no-pr", "open-pr"])
+def test_branch_with_no_history_shared_with_main_is_never_replaced(scratch: Scratch, open_pr: str) -> None:
+    """No merge base: git cannot say what the branch would lose, so the job keeps it."""
+    scratch.git("switch", "-q", "--orphan", "refresh")
+    scratch.commit(OWN_COMMIT, REFRESH_SUBJECT)
+    before = scratch.push_branch()
+    scratch.git("switch", "-q", "main")
+
+    result, gh = scratch.run_job("dep==1.2\n", open_pr=open_pr)
+
+    assert result.returncode == (0 if open_pr else 1), result.stdout + result.stderr
+    assert scratch.remote_branch() == before
+    assert "gh workflow run" not in gh and "gh pr create" not in gh
+
+
+@pytest.mark.parametrize("open_pr", ["", "430"], ids=["no-pr", "open-pr"])
+def test_contributor_commit_with_the_jobs_subject_is_never_lost(scratch: Scratch, open_pr: str) -> None:
+    """A person's single commit named like the job's, touching only constraints.txt: with an open
+    PR it is updated on top (its commit stays in the history); with no PR it is left and the job fails."""
+    scratch.git("switch", "-qc", "refresh")
+    scratch.commit({"constraints.txt": "dep==1.1\nhand==2.0\n"}, REFRESH_SUBJECT)
+    before = scratch.push_branch()
+    scratch.git("switch", "-q", "main")
+
+    result, gh = scratch.run_job("dep==1.2\n", open_pr=open_pr)
+
+    after = scratch.remote_branch()
+    if open_pr:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert after != before
+        scratch.git("merge-base", "--is-ancestor", before, after, cwd=scratch.origin)
+        assert _tree(scratch, after) == "dep==1.2"
+        assert "gh workflow run ci.yml" in gh
+    else:
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert after == before
+        assert "gh workflow run" not in gh and "gh pr create" not in gh
+
+
+def test_pr_merged_into_another_branch_is_never_replaced(scratch: Scratch) -> None:
+    """The API lists the branch head as a merged PR's head, but that PR went to another base:
+    the branch's work is not on main, so the job keeps it whatever the API says."""
+    scratch.git("switch", "-qc", "refresh")
+    scratch.commit(OWN_COMMIT, REFRESH_SUBJECT)
+    scratch.commit(HUMAN_COMMIT, "A person's commit")
+    before = scratch.push_branch()
+    scratch.git("switch", "-q", "main")
+
+    result, gh = scratch.run_job("dep==1.2\n", open_pr="", merged=f"{before}\n")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert scratch.remote_branch() == before
+    assert "gh workflow run" not in gh and "gh pr create" not in gh
+
+
+@pytest.mark.parametrize("has_branch", [False, True], ids=["no-branch", "open-pr-branch"])
+def test_main_moving_during_the_resolve_never_publishes(scratch: Scratch, has_branch: bool) -> None:
+    """The resolve ran on the checked-out main; if main moved since, nothing is published."""
+    before = None
+    if has_branch:
+        scratch.git("switch", "-qc", "refresh")
+        scratch.commit(OWN_COMMIT, REFRESH_SUBJECT)
+        before = scratch.push_branch()
+
+    result, gh = scratch.run_job(
+        "dep==1.2\n", open_pr="430" if has_branch else "", after_checkout=lambda: _main_moves(scratch)
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "main" in result.stdout
+    assert scratch.remote_branch() == before
+    assert "gh workflow run" not in gh and "gh pr create" not in gh
 
 
 # The oracle: every combination of the observed facts, generated, against a reference predicate.
