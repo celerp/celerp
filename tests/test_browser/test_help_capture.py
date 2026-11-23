@@ -23,9 +23,12 @@ import os
 import random
 import re
 import sys
+import tempfile
 import threading
 import uuid
+import zipfile
 from datetime import date, datetime, timedelta, timezone
+from functools import cache
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -169,6 +172,23 @@ _SUBSCRIBED: dict[str, str] = {
     **{f"ai.usage-settings#{n}": _AI for n in range(1, 4)},
     **{f"ai.review-proposals#{n}": _AI for n in range(1, 5)},
 }
+
+
+# The sample books leave nothing to decide, so they go from coverage straight to review. The
+# step about the question a file can leave open is taken with the sample swapped for a Sage 50
+# export set, which asks the currency its books are kept in.
+_ASKS_A_QUESTION = {"core.imports#5"}
+
+
+@cache
+def _sage50_set() -> Path:
+    from fixtures.sage50_export import build
+
+    path = Path(tempfile.mkdtemp()) / "sage50.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data in build.files(build.simulate()).items():
+            zf.writestr(name, data)
+    return path
 
 
 @contextlib.contextmanager
@@ -960,7 +980,9 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
         # process runs with none, which the modules page would picture as none installed).
         with _capture_clock(), _subscription(_SUBSCRIBED.get(step_id)), \
                 patch.dict(os.environ, {"MODULE_DIR": "default_modules"}), \
-                patch("ui.routes.documents._free_send_quota", return_value=_FREE_EMAIL_QUOTA):
+                patch("ui.routes.documents._free_send_quota", return_value=_FREE_EMAIL_QUOTA), \
+                (patch("celerp.importers.sample.SAMPLE_ARTIFACT", _sage50_set())
+                 if step_id in _ASKS_A_QUESTION else contextlib.nullcontext()):
             try:
                 if shown := _capture_step(page, help_page, step, step_id, suite_owner["names"]):
                     wrong.append(f"{step_id} {shown}")

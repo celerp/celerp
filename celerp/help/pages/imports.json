@@ -33,10 +33,10 @@
       "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}], "evidence": ["{cov}"]}
     },
     {
-      "text": "Under {map}, choose where each account and setting from your file goes in Celerp. Celerp proposes a match for each one; check them before you go on.",
-      "labels": {"map": "migration.step_mapping"},
+      "text": "Some files leave a question open under {map}, such as which currency a Sage 50 company keeps its books in. Celerp suggests an answer from the file; check it before you go on. A file that leaves nothing open, like the sample, goes straight to {rev}.",
+      "labels": {"map": "migration.step_mapping", "rev": "migration.step_review"},
       "image": "img/imports-5.webp",
-      "capture": {"route": "/setup/new-company/migrate", "selector": ".wizard-steps", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}], "evidence": [".step-label--active:text-is('{map}')"]}
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}, {"click": "form[action$='/decisions'] button[type=submit]"}, {"wait": ".wizard-step:nth-child(3) .step-num--active"}], "evidence": [".step-label--active:text-is('{map}')", ".migration-wizard form .form-group"]}
     },
     {
       "text": "Under {rev}, read the summary of what will be created, then start the import. The new company is created and the records move over.",
@@ -48,19 +48,19 @@
       "text": "Under {ver}, Celerp compares its totals with the totals in your file. Review each difference before you finish; you can also fix the file and upload it again.",
       "labels": {"ver": "migration.step_verify"},
       "image": "img/imports-7.webp",
-      "capture": {"route": "/setup/new-company/migrate", "selector": ".wizard-steps", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}, {"click": "form[action$='/decisions'] button[type=submit]"}, {"wait": ".wizard-step:nth-child(4) .step-num--active"}], "evidence": [".step-label--active:text-is('{ver}')"]}
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}, {"click": "form[action$='/decisions'] button[type=submit]"}, {"wait": ".wizard-step:nth-child(4) .step-num--active"}, {"click": "form[action$='/start'] button[type=submit]"}, {"wait": "#migration-progress a[href$='/verify']"}, {"click": "#migration-progress a[href$='/verify']"}, {"wait": ".wizard-step:nth-child(6) .step-num--active"}], "evidence": [".step-label--active:text-is('{ver}')", ".migration-wizard table thead"]}
     },
     {
       "text": "Once the import starts, a progress page shows each step with what was created, skipped or failed. You can leave the page: the move keeps running.",
       "labels": {},
       "image": "img/imports-8.webp",
-      "capture": {"route": "/setup/new-company/migrate", "selector": ".wizard-steps", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}, {"click": "form[action$='/decisions'] button[type=submit]"}, {"wait": ".wizard-step:nth-child(4) .step-num--active"}], "evidence": ["#migration-progress"]}
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}, {"click": "form[action$='/decisions'] button[type=submit]"}, {"wait": ".wizard-step:nth-child(4) .step-num--active"}, {"click": "form[action$='/start'] button[type=submit]"}, {"wait": "#migration-progress a[href$='/verify']"}], "evidence": ["#migration-progress table"]}
     },
     {
-      "text": "When it finishes, the results page compares Celerp's totals with your file's, and the company opens from there. A move you no longer want can be discarded from its progress page, which removes the new company and everything imported into it.",
-      "labels": {},
+      "text": "Before you choose {fin}, pick the account Celerp asks for under each posting role; it suggests one from your chart. Finishing completes the move and the company opens from there. A move you no longer want can be discarded from its progress page, which removes the new company and everything imported into it.",
+      "labels": {"fin": "migration.finish"},
       "image": "img/imports-9.webp",
-      "capture": {"route": "/setup/new-company/migrate", "selector": ".wizard-steps", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}, {"click": "form[action$='/decisions'] button[type=submit]"}, {"wait": ".wizard-step:nth-child(4) .step-num--active"}], "evidence": ["#migration-progress a[href$='/verify']"]}
+      "capture": {"route": "/setup/new-company/migrate", "selector": "form[action$='/finalize']", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}, {"click": "form[action$='/decisions'] button[type=submit]"}, {"wait": ".wizard-step:nth-child(4) .step-num--active"}, {"click": "form[action$='/start'] button[type=submit]"}, {"wait": "#migration-progress a[href$='/verify']"}, {"click": "#migration-progress a[href$='/verify']"}, {"wait": ".wizard-step:nth-child(6) .step-num--active"}], "evidence": ["#posting-accounts h3"]}
     },
     {
       "text": "You can also ask the assistant to move your books for you: it can read the export files you give it, start the move and take you through the review. It shows each change as a card and makes it only when you confirm.",
