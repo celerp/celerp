@@ -8,7 +8,8 @@ screen must not show the app's own empty-list, Connect sales or nothing-selected
 the step is listed in _SHOWS_EMPTY_STATE, nor a record's internal id in place of its name.
 With HELP_CAPTURE_WRITE=1 each step
 is written as a webp of the selector's element (its top 800 pixels when taller) carrying the
-capture marker, the only way a help image is made; the images are put in place when the run ends.
+capture marker, the only way a help image is made; the images are put in place when the run ends,
+except where the committed picture already shows the same screen (see _RENDER_NOISE).
 """
 from __future__ import annotations
 
@@ -842,6 +843,24 @@ def _put_pictures_in_place():
         path.write_bytes(data)
 
 
+# Chromium anti-aliases some thin lines (a dotted underline at a fractional pixel offset) a
+# little differently from one page load to the next, the same page and data giving one of a few
+# pictures that differ by a few shades. A pixel counts as changed past this many shades of 255
+# (the noise measured stays under 30; any changed text, line or colour is far past it).
+_RENDER_NOISE = 40
+
+
+def _same_picture(committed: bytes, taken: bytes) -> bool:
+    """True when ``taken`` shows what ``committed`` shows, apart from anti-aliasing noise."""
+    from PIL import Image, ImageChops
+
+    with Image.open(io.BytesIO(committed)) as old, Image.open(io.BytesIO(taken)) as new:
+        if old.size != new.size:
+            return False
+        diff = ImageChops.difference(old.convert("RGB"), new.convert("RGB"))
+    return max(high for _, high in diff.getextrema()) <= _RENDER_NOISE
+
+
 def _write_image(target, path: Path) -> None:
     from PIL import Image
 
@@ -857,7 +876,8 @@ def _write_image(target, path: Path) -> None:
         image.save(buf, "WEBP", quality=quality, method=6, exif=exif)
         if buf.tell() <= MAX_IMAGE_BYTES:
             break
-    _TAKEN[path] = buf.getvalue()
+    if not (path.is_file() and _same_picture(path.read_bytes(), buf.getvalue())):
+        _TAKEN[path] = buf.getvalue()
 
 
 def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[str]) -> list[str]:
@@ -923,3 +943,23 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
     assert not wrong, "steps picturing a screen other than the one their text describes:\n" + "\n".join(wrong)
     assert page_id in _ADDS_RECORDS or _records(company["id"]) == records, (
         f"{page_id} added records to the capture company: list it in _ADDS_RECORDS")
+
+
+def test_a_retaken_picture_differing_only_by_anti_aliasing_keeps_the_committed_one():
+    from PIL import Image, ImageDraw
+
+    def webp(draw, height: int = 60) -> bytes:
+        image = Image.new("RGB", (200, height), "white")
+        draw(ImageDraw.Draw(image))
+        buf = io.BytesIO()
+        image.save(buf, "WEBP", quality=80)
+        return buf.getvalue()
+
+    committed = webp(lambda d: (d.text((10, 10), "INV-2606-0011", fill="black"), d.line((10, 30, 120, 30), fill=(40, 40, 40))))
+    # The same line anti-aliased across two pixel rows, as Chromium draws it on some loads.
+    noise = webp(lambda d: (d.text((10, 10), "INV-2606-0011", fill="black"), d.line((10, 30, 120, 30), fill=(40, 40, 40)),
+                            d.line((10, 29, 120, 29), fill=(232, 232, 232)), d.line((10, 31, 120, 31), fill=(232, 232, 232))))
+    changed = webp(lambda d: (d.text((10, 10), "INV-2606-0012", fill="black"), d.line((10, 30, 120, 30), fill=(40, 40, 40))))
+    assert _same_picture(committed, noise)
+    assert not _same_picture(committed, changed)
+    assert not _same_picture(committed, webp(lambda d: None, height=61))
