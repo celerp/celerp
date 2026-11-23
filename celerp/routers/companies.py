@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -255,6 +255,38 @@ class TaxRatesPatch(BaseModel):
     taxes: list[TaxRate]
 
     _names_unique = field_validator("taxes")(_unique_tax_names)
+
+
+def _import_taxes(held: list[dict], payload: SettingsBatchImportRequest, res: BatchImportResult) -> list[dict]:
+    """The tax list *held* with each new row of an import added as a TaxRate, the model every
+    tax list writer takes: a name already held or earlier in the batch, as tax_name_key compares
+    them, is skipped, and a row TaxRate refuses (a rate that is not a finite number, an unknown
+    side) is refused on its own."""
+    taxes = list(held)
+    names = {tax_name_key(tax.get("name")) for tax in taxes}
+    for i, r in enumerate(rec.data for rec in (payload.records or [])):
+        name = str(r.get("name", "") or "").strip()
+        if not tax_name_key(name):
+            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
+            continue
+        if tax_name_key(name) in names:
+            res.skipped += 1
+            continue
+        tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
+        try:
+            tax = TaxRate(name=name, rate=r.get("rate"), tax_type=tax_type,
+                          is_default=row_flag(r.get("is_default", False)),
+                          description=str(r.get("description", "") or "").strip())
+        except ValidationError as exc:
+            if any(err["loc"][:1] == ("rate",) for err in exc.errors()):
+                res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
+            else:
+                res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
+            continue
+        taxes.append(tax.model_dump())
+        names.add(tax_name_key(name))
+        res.created += 1
+    return taxes
 
 
 def _named(name: str) -> str:
@@ -1706,54 +1738,14 @@ async def import_taxes_batch(
 ) -> BatchImportResult:
     """Batch import tax rates into company.settings.taxes.
 
-    Deterministic behavior:
-    - Key: name
-    - If name exists (case-insensitive): skipped
-    - Else: created
+    Each row is taken as _import_taxes takes it: a name already held is skipped, else created.
     """
     await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
 
     settings = dict(company.settings)
-    taxes = list(sales_taxes(settings))
-    existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
-
-    records = [rec.data for rec in (payload.records or [])]
-    for i, r in enumerate(records):
-        name = str(r.get("name", "") or "").strip()
-        rate_raw = r.get("rate", None)
-        tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
-        description = str(r.get("description", "") or "").strip()
-
-        if not name:
-            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
-            continue
-
-        key = name.lower()
-        if key in existing_names:
-            res.skipped += 1
-            continue
-
-        try:
-            rate = float(rate_raw)
-        except Exception:
-            res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
-            continue
-
-        if tax_type not in TAX_TYPES:
-            res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
-            continue
-
-        taxes.append({
-            "name": name,
-            "rate": rate,
-            "tax_type": tax_type,
-            "is_default": row_flag(r.get("is_default", False)),
-            "description": description,
-        })
-        existing_names.add(key)
-        res.created += 1
+    taxes = _import_taxes(sales_taxes(settings), payload, res)
 
     settings = with_taxes(settings, taxes)
     company.settings = settings
@@ -1991,30 +1983,7 @@ async def import_purchasing_taxes_batch(
     await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-    taxes = list(purchasing_taxes(company.settings))
-    existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
-    for i, r in enumerate(rec.data for rec in (payload.records or [])):
-        name = str(r.get("name", "") or "").strip()
-        if not name:
-            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
-            continue
-        if name.lower() in existing_names:
-            res.skipped += 1
-            continue
-        try:
-            rate = float(r.get("rate", None))
-        except Exception:
-            res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
-            continue
-        tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
-        if tax_type not in TAX_TYPES:
-            res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
-            continue
-        taxes.append({"name": name, "rate": rate, "tax_type": tax_type,
-                      "is_default": row_flag(r.get("is_default", False)),
-                      "description": str(r.get("description", "") or "").strip()})
-        existing_names.add(name.lower())
-        res.created += 1
+    taxes = _import_taxes(purchasing_taxes(company.settings), payload, res)
     settings = dict(company.settings)
     settings["purchasing_taxes"] = taxes
     company.settings = settings
