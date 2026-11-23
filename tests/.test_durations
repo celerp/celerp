@@ -32293,10 +32293,17 @@
     "tests/test_banned_terms.py::test_the_guard_finds_a_banned_term[Celerp Cloud]": 0.003092180995736271,
     "tests/test_banned_terms.py::test_app_level_openapi_text_carries_no_banned_term": 0.026492743054404855,
     "tests/test_banned_terms.py::test_readme_carries_no_banned_term": 0.002805329975672066,
-    "tests/test_location_default_notice_lock.py::test_a_concurrent_second_start_does_not_write_back_a_stale_sibling_key": 0.5958722190116532,
-    "tests/test_location_default_notice_lock.py::test_two_starts_tell_once_and_the_second_waits": 1.9095094169606455,
+    "tests/test_location_default_notice_lock.py::test_two_starts_tell_once_and_the_second_waits": 2.3,
     "tests/test_tax_settings_cells_ui.py::test_taxes_tab_tax_type_column_shows_the_same_label_as_the_select": 0.0050222029676660895,
     "tests/test_one_default_location_pg.py::test_import_marked_record_moves_the_default_from_an_existing_one": 0.4139652529847808,
     "tests/test_one_default_location_pg.py::test_import_on_an_empty_company_with_none_marked_sets_the_first": 0.25915400206577033,
-    "tests/test_one_default_location_pg.py::test_import_two_marked_records_the_last_one_wins": 0.3629824810777791
+    "tests/test_one_default_location_pg.py::test_import_two_marked_records_the_last_one_wins": 0.3629824810777791,
+    "tests/test_location_default_notice_lock.py::test_a_state_writer_holding_the_row_does_not_bring_back_a_processed_notice": 1.28,
+    "tests/test_location_default_notice_lock.py::test_the_notice_processor_holding_the_row_does_not_lose_a_state_write": 1.27,
+    "tests/test_location_default_notice_lock.py::test_a_writer_refreshes_a_copy_its_session_read_earlier": 1.25,
+    "tests/test_runtime_state_writers_census.py::test_only_the_helper_module_touches_the_runtime_state_model": 2.4,
+    "tests/test_runtime_state_writers_census.py::test_every_value_write_is_on_the_row_the_helper_returned": 2.27,
+    "tests/test_runtime_state_writers_census.py::test_no_app_sql_writes_the_runtime_state_table": 0.43,
+    "tests/test_runtime_state_writers_census.py::test_the_writing_revision_locks_the_table_before_it_reads": 0.005,
+    "tests/test_browser/test_doc_discount.py::test_a_save_answered_after_a_line_is_added_keeps_the_new_line_in_the_totals[chromium]": 2.5
 }
