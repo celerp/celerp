@@ -119,14 +119,14 @@
     },
     {
       "text": "A schedule recognizes on the fund of its invoice line and follows that line when its fund changes, for example when you change the fund of an invoice from outside. Runs already posted are posted again on the new fund.",
-      "labels": {"all": "recognition.all_funds"},
+      "labels": {},
       "image": "img/revenue-recognition-7.webp",
       "capture": {
         "route": "/accounting/recognition",
         "selector": "#recognition-body .report-section > table.data-table",
         "actions": [],
         "evidence": [
-          "{all}"
+          "#recognition-body .report-section > table.data-table tbody tr:nth-child(2)"
         ]
       }
     },
