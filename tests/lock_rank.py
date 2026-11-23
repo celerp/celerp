@@ -384,12 +384,19 @@ class Recorder:
             for state in states:
                 state.pop(key, None)
 
-    def _task_connections(self) -> set:
-        try:
-            task = asyncio.current_task()
-        except RuntimeError:
-            return set()
-        return set(self.task_conns.get(task, ())) if task else set()
+    def _task_connections(self, task=None) -> set:
+        """The connections ``task`` (the running task when None) touches now: those whose
+        latest take was its own. A connection it used and returned is another task's once that
+        task takes on it, and a closed connection's id may be a new connection's."""
+        if task is None:
+            try:
+                task = asyncio.current_task()
+            except RuntimeError:
+                return set()
+            if task is None:
+                return set()
+        return {conn for conn in self.task_conns.get(task, ())
+                if (ref := self.conn_task.get(conn)) is not None and ref() is task}
 
     def _holders_wait(self, keys) -> None:
         """R6: a transaction (or another of its task's connections) waits, or may yet wait,
@@ -857,11 +864,7 @@ class Recorder:
             task = None
         if task is None:
             return
-        conns = self.task_conns.setdefault(task, set())
-        for other in sorted(conns - {conn_key}, key=str) if waits else ():
-            ref = self.conn_task.get(other)
-            if ref is None or ref() is not task:
-                continue
+        for other in sorted(self._task_connections(task) - {conn_key}, key=str) if waits else ():
             holding = [h for h in self.session_held.get(other, []) + self.held.get(other, [])
                        if not _own_connection(h) and h.cls not in _NEVER_WAITED]
             if any(h.cls == lock.cls and h.key == lock.key and _conflict(h, lock) for h in holding):
@@ -876,7 +879,7 @@ class Recorder:
                      "holding": sorted({h.cls for h in holding}), "insert": _strength(lock) == "insert"}
                 self.cross.setdefault(f"{violation_key(v)} {v['gate']} {v['holding']}", v)
                 break
-        conns.add(conn_key)
+        self.task_conns.setdefault(task, set()).add(conn_key)
         self.conn_task[conn_key] = weakref.ref(task)
 
     def release_session(self, conn_key: int, cls: str) -> None:
