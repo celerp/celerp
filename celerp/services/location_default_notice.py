@@ -17,10 +17,9 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.models.auth import SystemRuntimeState
 from celerp.models.company import Location
 from celerp.notifications import service as notification_service
-from celerp.services.runtime_state import _SINGLETON_ID, _drain_cache_bust
+from celerp.services.runtime_state import _drain_cache_bust, lock_runtime_state
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -32,13 +31,10 @@ _LOCATIONS = "/settings/inventory?tab=locations"
 
 async def run_location_default_notice(session: AsyncSession) -> None:
     """Tell every recorded company once and remove its record. Caller commits."""
-    row = await session.get(SystemRuntimeState, _SINGLETON_ID)
-    if row is None or not (row.value or {}).get(RECORD):
+    row = await lock_runtime_state(session, create=False)
+    pending = dict(((row.value if row else None) or {}).get(RECORD) or {})
+    if not pending:
         return
-    row = (await session.execute(
-        select(SystemRuntimeState).where(SystemRuntimeState.id == _SINGLETON_ID).with_for_update()
-        .execution_options(populate_existing=True))).scalar_one()
-    pending = dict((row.value or {}).get(RECORD) or {})
     left = {}
     for company_id, entry in pending.items():
         try:

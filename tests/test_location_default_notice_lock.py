@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""The default-location notice locks the runtime-state row with a statement that names it
-(review r4 probe P2), and a second concurrent start does not write back a stale copy of a
-sibling key on that row (M2)."""
+"""Every writer of the runtime-state row reads it locked: the default-location notice locks it with
+a statement that names it, two writers in two sessions keep each other's change in either commit
+order, and a writer does not write back a stale copy its session read earlier."""
 from __future__ import annotations
 
 import asyncio
@@ -73,70 +73,107 @@ def test_two_starts_tell_once_and_the_second_waits():
             engine.dispose()
 
 
-async def _sibling_key_race(async_url, cid, entry):
-    from sqlalchemy import select
+async def _writers(async_url, first, second, seed=None, preload=False):
+    """Run two writers of the runtime-state row in two sessions: *first* does its work and
+    holds its transaction open while *second* starts and gets a second to run; then *first*
+    commits, *second* finishes and commits, and the row's final value is returned.
+
+    With *preload*, *first*'s session loads the row unlocked before a third session commits a
+    change to ``draining``, the way an earlier read in the same request leaves a stale copy in
+    the session for the writer's locked read to refresh."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from sqlalchemy.pool import NullPool
     from celerp.db import create_tables
     from celerp.json_text import dump_json
     from celerp.models.auth import SystemRuntimeState
-    from celerp.services.location_default_notice import RECORD, run_location_default_notice
-    from celerp.services.runtime_state import _SINGLETON_ID
 
     engine = create_async_engine(async_url, poolclass=NullPool, json_serializer=dump_json)
     try:
         await create_tables(engine)
         mk = async_sessionmaker(engine, expire_on_commit=False)
-        async with mk() as seed:
-            row = await seed.get(SystemRuntimeState, _SINGLETON_ID)
-            if row is None:
-                seed.add(SystemRuntimeState(id=_SINGLETON_ID, value={"draining": False, RECORD: {str(cid): entry}}))
-            else:
-                row.value = {**row.value, "draining": False, RECORD: {str(cid): entry}}
-            await seed.commit()
+        async with mk() as s:
+            await s.execute(text("DELETE FROM system_runtime_state"))
+            s.add(SystemRuntimeState(id=1, value=seed or {"draining": False}))
+            await s.commit()
+        async with mk() as a, mk() as b:
+            held = await a.get(SystemRuntimeState, 1) if preload else None  # the map holds it weakly
+            if preload:
+                async with mk() as c:
+                    await c.execute(text(
+                        "UPDATE system_runtime_state SET value = CAST(:v AS json) WHERE id = 1"),
+                        {"v": dump_json({**(seed or {}), "draining": True})})
+                    await c.commit()
+            real_commit = a.commit
+            later = None
 
-        async with mk() as t, mk() as sibling:
-            real_get = t.get
+            async def _second_runs_before_first_commits():
+                nonlocal later
+                later = asyncio.create_task(_run_and_commit(second, b))
+                await asyncio.sleep(1.0)
+                await real_commit()
 
-            async def _get_then_sibling_flips_draining(*args, **kwargs):
-                """Right after the notice's own first (unlocked) read, a second start's own
-                process-wide flag flip lands on the same row and commits, before the notice
-                takes the row's lock."""
-                result = await real_get(*args, **kwargs)
-                row = await sibling.get(SystemRuntimeState, _SINGLETON_ID)
-                row.value = {**row.value, "draining": True}
-                await sibling.commit()
-                return result
-
-            t.get = _get_then_sibling_flips_draining
-            await run_location_default_notice(t)
-            await t.commit()
-            final = (await t.execute(
-                select(SystemRuntimeState).where(SystemRuntimeState.id == _SINGLETON_ID))).scalar_one()
-            return final.value
+            a.commit = _second_runs_before_first_commits   # a writer that commits itself
+            await first(a)
+            if later is None:                             # a writer whose caller commits
+                await a.commit()
+            a.commit = real_commit
+            await asyncio.wait_for(later, 20)
+            del held
+        async with mk() as s:
+            return (await s.execute(text("SELECT value FROM system_runtime_state WHERE id = 1"))).scalar()
     finally:
         await engine.dispose()
 
 
-def test_a_concurrent_second_start_does_not_write_back_a_stale_sibling_key():
-    """M2: the lock statement's populate_existing refreshes the session's cached row before the
-    notice rewrites it, so a sibling key (``draining``) another start committed while this one
-    was between its first read and taking the lock survives, instead of being overwritten with
-    the value the first read saw."""
-    with throwaway_db("p2m2test") as (async_url, sync_url):
-        upgrade_to(sync_url, "y8d9e0f1a2b3")
-        engine = create_engine(sync_url)
-        try:
-            with engine.begin() as conn:
-                cid = uuid.uuid4()
-                conn.execute(text("INSERT INTO companies (id, name, slug, settings, created_at) "
-                                  "VALUES (:i, 'race2', :s, '{}', now())"), {"i": cid, "s": f"p2m2-{cid.hex[:6]}"})
-                main = uuid.uuid4()
-                conn.execute(text("INSERT INTO locations (id, company_id, name, type, is_default, created_at) "
-                                  "VALUES (:i, :c, 'Main', 'warehouse', true, now())"), {"i": main, "c": cid})
-            upgrade_to(sync_url, "head")
-            entry = {"kept": str(main), "cleared": []}
-            value = asyncio.run(_sibling_key_race(async_url, cid, entry))
-        finally:
-            engine.dispose()
-        assert value["draining"] is True, value
+async def _run_and_commit(writer, session):
+    await writer(session)
+    await session.commit()
+
+
+_RECORD = "location_default_cleared"
+_PENDING = {_RECORD: {str(uuid.uuid4()): {"kept": str(uuid.uuid4()), "cleared": [str(uuid.uuid4())]}}}
+
+
+def _two_writers(first, second, **kw):
+    with throwaway_db("rtstate") as (async_url, _sync_url):
+        return asyncio.run(_writers(async_url, first, second, **kw))
+
+
+async def _notice(session):
+    from celerp.services.location_default_notice import run_location_default_notice
+    await run_location_default_notice(session)
+
+
+async def _nothing(session):
+    pass
+
+
+async def _drain(session):
+    from celerp.services.runtime_state import set_draining
+    await set_draining(session, True)
+
+
+async def _star(session):
+    from celerp.services.runtime_state import dismiss_star_prompt
+    await dismiss_star_prompt(session)
+
+
+def test_a_state_writer_holding_the_row_does_not_bring_back_a_processed_notice():
+    """The drain switch reads the row, the notice processor clears the record it holds, and
+    the drain switch commits: the record stays cleared and the drain flag is set."""
+    value = _two_writers(_drain, _notice, seed={"draining": False, **_PENDING})
+    assert value["draining"] is True and _RECORD not in value, value
+
+
+def test_the_notice_processor_holding_the_row_does_not_lose_a_state_write():
+    """The notice processor holds the row while the star dismissal runs: the dismissal waits,
+    then writes over the cleared record, not over the copy it would have read before."""
+    value = _two_writers(_notice, _star, seed={"draining": False, **_PENDING})
+    assert value.get("star_prompt_dismissed") is True and _RECORD not in value, value
+
+
+def test_a_writer_refreshes_a_copy_its_session_read_earlier():
+    """A writer whose session read the row before another session changed it writes over the
+    changed row (the locked read refreshes the session's copy), keeping that change."""
+    value = _two_writers(_star, _nothing, seed={"draining": False}, preload=True)
+    assert value["draining"] is True and value.get("star_prompt_dismissed") is True, value
