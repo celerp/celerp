@@ -1211,3 +1211,38 @@ def test_steps_share_a_picture_only_where_one_visual_explains_each():
         f"_SAME_VISUAL with why one visual explains each: {sorted(map(sorted, groups - _SAME_VISUAL.keys()))}")
     assert not _SAME_VISUAL.keys() - groups, (
         f"_SAME_VISUAL lists groups that no longer share a picture: {sorted(map(sorted, _SAME_VISUAL.keys() - groups))}")
+
+
+def _bare_label_evidence() -> tuple[dict, list[str]]:
+    """Every evidence entry in the shipped guides that is a {name} alone, as one step's labels
+    and evidence."""
+    keys = sorted({step["labels"][m.group(1)] for p in _PAGES for step in p.data["steps"]
+                   for entry in step["capture"]["evidence"] if (m := PLACEHOLDER.fullmatch(entry))})
+    return {f"e{i}": key for i, key in enumerate(keys)}, [f"{{e{i}}}" for i in range(len(keys))]
+
+
+def _shown(key: str) -> str:
+    return re.sub(r"\{[^}]*\}", "7", t(key, "en"))
+
+
+def test_a_label_named_in_a_sentence_is_not_evidence_of_the_screen(page):
+    labels, evidence = _bare_label_evidence()
+    step = {"labels": labels, "capture": {"evidence": evidence}}
+    prose = " ".join(f"A record reads {_shown(k)} here." for k in labels.values())
+    page.set_content(f"<main id='t' style='font-size:6px'><p>{prose}</p></main>")
+    assert _evidence_missing(page, page.locator("#t"), step) == evidence
+    # The same labels as the text of an element of their own are found, each of them.
+    cells = "".join(f"<span style='margin-right:4px'>{_shown(k)}</span>" for k in labels.values())
+    page.set_content(f"<main id='t' style='font-size:6px'>{cells}</main>")
+    assert _evidence_missing(page, page.locator("#t"), step) == []
+
+
+def test_a_control_another_element_covers_is_not_evidence_of_the_screen(page):
+    step = {"labels": {"post": "btn.post"}, "capture": {"evidence": ["{post}", "#t button"]}}
+    page.set_content(f"""<main id='t' style='position:relative;height:200px'>
+        <button style='position:absolute;top:50px;left:10px'>{_shown('btn.post')}</button>
+        <ul style='position:absolute;top:0;left:0;width:300px;height:150px;margin:0;background:#fff'>
+          <li>Bank account</li></ul></main>""")
+    assert _evidence_missing(page, page.locator("#t"), step) == ["{post}", "#t button"]
+    page.locator("ul").evaluate("e => e.remove()")
+    assert _evidence_missing(page, page.locator("#t"), step) == []
