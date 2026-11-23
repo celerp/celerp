@@ -32332,5 +32332,17 @@
     "tests/test_dependency_refresh_workflow.py::test_the_forced_write_check_catches_each_spelling[git push origin -d x]": 0.0027258789632469416,
     "tests/test_dependency_refresh_workflow.py::test_the_forced_write_check_catches_each_spelling[git push origin :refs/heads/x]": 0.0023746940423734486,
     "tests/test_dependency_refresh_workflow.py::test_the_workflow_never_force_writes_a_ref": 0.005450678989291191,
-    "tests/test_ui.py::TestInventoryUXFixes::test_print_list_names_the_items_not_their_ids": 0.046405665983911604
+    "tests/test_ui.py::TestInventoryUXFixes::test_print_list_names_the_items_not_their_ids": 0.046405665983911604,
+    "default_modules/celerp-accounting/tests/test_journal_gl_soa.py::test_entries_of_one_day_list_in_posting_order": 1.1124465510365553,
+    "default_modules/celerp-fixed-assets/tests/test_corrections.py::test_corrections_made_in_the_same_instant_list_in_one_order": 0.0038161359261721373,
+    "default_modules/celerp-reports/tests/test_aging_names.py::test_sales_and_purchases_name_the_contact_and_never_show_its_id[/reports/purchases-purchase_order-supplier]": 0.17706959694623947,
+    "default_modules/celerp-reports/tests/test_aging_names.py::test_sales_and_purchases_name_the_contact_and_never_show_its_id[/reports/sales-invoice-customer]": 0.11879815201973543,
+    "tests/test_dependency_refresh_workflow.py::test_a_pr_that_is_not_the_refresh_pr_is_ignored[longer-name-same-prefix]": 0.09704826003871858,
+    "tests/test_dependency_refresh_workflow.py::test_a_pr_that_is_not_the_refresh_pr_is_ignored[person-authored-refresh-name]": 0.09626031306106597,
+    "tests/test_dependency_refresh_workflow.py::test_a_pr_that_is_not_the_refresh_pr_is_ignored[refresh-prefix-not-run-name]": 0.09543067298363894,
+    "tests/test_dependency_refresh_workflow.py::test_a_rerun_after_a_failed_pr_create_opens_its_pr": 0.12087161402450874,
+    "tests/test_dependency_refresh_workflow.py::test_two_open_refresh_prs_stop_the_run": 0.06476044602459297,
+    "tests/test_help_schema.py::test_capture_names_the_evidence_of_its_state": 0.0034507159725762904,
+    "tests/test_browser/test_help_capture.py::test_a_retaken_picture_differing_only_by_anti_aliasing_keeps_the_committed_one": 0.042230964987538755,
+    "tests/test_browser/test_help_capture.py::test_steps_share_a_picture_only_where_one_visual_explains_each": 1.452627010003198
 }
