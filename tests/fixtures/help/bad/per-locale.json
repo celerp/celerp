@@ -16,15 +16,17 @@
       "labels": {
         "inv": "nav.inventory"
       },
-      "image": "img/ok.webp",
+      "image": "img/per-locale-1.webp",
       "capture": {
         "route": "/inventory",
         "selector": "main",
         "actions": [],
-        "evidence": ["main"]
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],
   "related": [],
-  "title_th": "เพิ่มสินค้า"
+  "title_th": "\u0e40\u0e1e\u0e34\u0e48\u0e21\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32"
 }

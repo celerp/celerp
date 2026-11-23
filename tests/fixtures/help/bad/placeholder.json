@@ -14,12 +14,14 @@
     {
       "text": "Open {inv} from the sidebar.",
       "labels": {},
-      "image": "img/ok.webp",
+      "image": "img/placeholder-1.webp",
       "capture": {
         "route": "/inventory",
         "selector": "main",
         "actions": [],
-        "evidence": ["main"]
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],

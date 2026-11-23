@@ -16,12 +16,14 @@
       "labels": {
         "inv": "acct.post_again_back"
       },
-      "image": "img/ok.webp",
+      "image": "img/label-with-blank-1.webp",
       "capture": {
         "route": "/inventory",
         "selector": "main",
         "actions": [],
-        "evidence": ["main"]
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],

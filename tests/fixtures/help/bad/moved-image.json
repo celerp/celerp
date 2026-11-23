@@ -1,0 +1,46 @@
+{
+  "id": "inventory.moved-image",
+  "title": "Add an item",
+  "summary": "Create a stock item.",
+  "keywords": [
+    "item"
+  ],
+  "routes": [
+    "/inventory"
+  ],
+  "permission": "view_inventory",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open {inv} from the sidebar.",
+      "labels": {
+        "inv": "nav.inventory"
+      },
+      "image": "img/moved-image-1.webp",
+      "capture": {
+        "route": "/inventory",
+        "selector": "main",
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
+      }
+    },
+    {
+      "text": "Open {inv} from the sidebar.",
+      "labels": {
+        "inv": "nav.inventory"
+      },
+      "image": "img/moved-image-2.webp",
+      "capture": {
+        "route": "/inventory",
+        "selector": "main",
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
+      }
+    }
+  ],
+  "related": []
+}

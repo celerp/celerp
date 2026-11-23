@@ -35,7 +35,7 @@ from playwright.sync_api import expect
 
 import celerp.ai.service as ai_service
 from celerp.help.bundle import MAX_IMAGE_BYTES
-from celerp.help.checks import CAPTURE_MARKER, shipped_pages
+from celerp.help.checks import capture_marker, image_marker, shipped_pages
 from celerp.help.schema import PLACEHOLDER
 from celerp.services.business_time import business_today
 from celerp_ai.ui_routes import QUESTION_POLL_S
@@ -890,7 +890,7 @@ def _same_picture(committed: bytes, taken: bytes) -> bool:
     return max(high for _, high in diff.getextrema()) <= _RENDER_NOISE
 
 
-def _write_image(target, path: Path) -> None:
+def _write_image(target, path: Path, marker: str) -> None:
     from PIL import Image
 
     with Image.open(io.BytesIO(target.screenshot(animations="disabled"))) as shot:
@@ -899,13 +899,14 @@ def _write_image(target, path: Path) -> None:
     if image.width > _MAX_WIDTH:
         image = image.resize((_MAX_WIDTH, round(image.height * _MAX_WIDTH / image.width)))
     exif = Image.Exif()
-    exif[_EXIF_DESCRIPTION] = CAPTURE_MARKER
+    exif[_EXIF_DESCRIPTION] = marker
     for quality in (80, 65, 50, 35, 20):
         buf = io.BytesIO()
         image.save(buf, "WEBP", quality=quality, method=6, exif=exif)
         if buf.tell() <= MAX_IMAGE_BYTES:
             break
-    if not (path.is_file() and _same_picture(path.read_bytes(), buf.getvalue())):
+    # A retake that looks the same keeps the committed file only while it carries this marker.
+    if not (path.is_file() and _same_picture(path.read_bytes(), buf.getvalue()) and image_marker(path) == marker):
         _TAKEN[path] = buf.getvalue()
 
 
@@ -935,7 +936,8 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[s
     if missing := _evidence_missing(demo_page, target, step):
         return [f"no visible match wholly inside the picture for evidence {missing}"]
     if _WRITE:
-        _write_image(target, help_page.help_dir / step["image"])
+        page_id, n = step_id.rsplit("#", 1)
+        _write_image(target, help_page.help_dir / step["image"], capture_marker(page_id, int(n), step["capture"]))
     return []
 
 

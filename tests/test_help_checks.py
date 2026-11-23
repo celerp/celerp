@@ -28,7 +28,8 @@ EXPECTED = {
     "check_label_keys": {"unknown-label.json", "label-with-blank.json"},
     "check_routes": {"unknown-route.json"},
     "check_permissions": {"unknown-permission.json"},
-    "check_images": {"missing-image.json", "null-image.json", "unmarked-image.json"},
+    "check_images": {"missing-image.json", "null-image.json", "unmarked-image.json", "moved-image.json",
+                     "stale-recipe.json"},
 }
 
 
