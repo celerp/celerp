@@ -991,13 +991,18 @@ _RENDER_NOISE = 40
 
 def _same_picture(committed: bytes, taken: bytes) -> bool:
     """True when ``taken`` shows what ``committed`` shows, apart from anti-aliasing noise."""
-    from PIL import Image, ImageChops
+    from PIL import Image
 
     with Image.open(io.BytesIO(committed)) as old, Image.open(io.BytesIO(taken)) as new:
-        if old.size != new.size:
-            return False
-        diff = ImageChops.difference(old.convert("RGB"), new.convert("RGB"))
-    return max(high for _, high in diff.getextrema()) <= _RENDER_NOISE
+        return _same_pixels(old.convert("RGB"), new.convert("RGB"))
+
+
+def _same_pixels(old, new) -> bool:
+    from PIL import ImageChops
+
+    if old.size != new.size:
+        return False
+    return max(high for _, high in ImageChops.difference(old, new).getextrema()) <= _RENDER_NOISE
 
 
 def _write_image(target, path: Path, marker: str) -> None:
@@ -1102,3 +1107,85 @@ def test_a_retaken_picture_differing_only_by_anti_aliasing_keeps_the_committed_o
     assert _same_picture(committed, noise)
     assert not _same_picture(committed, changed)
     assert not _same_picture(committed, webp(lambda d: None, height=61))
+
+
+# Steps whose pictures are one visual (``_same_pixels``), each
+# with why that one screen explains every step in the group: it holds each step's evidence.
+_LIST_INTRO = "the list page holds both the sidebar entry and its New button"
+_SAME_VISUAL = {
+    frozenset({"core.companies#1", "core.companies#2"}): "the company card holds the list, New and the client list link",
+    frozenset({"core.help#2", "core.help#3"}): "the help index holds the search box and the guide list",
+    frozenset({"core.modules#1", "core.modules#2"}): "the modules page holds the installed list and its toggles",
+    frozenset({"ai.usage-settings#3", "core.users#2"}): "the role matrix holds the assistant permission row",
+    frozenset({"accounting.bank-questions#1", "accounting.bank-questions#3", "accounting.bank-questions#4"}):
+        "the questions page holds the cards, the Open, Answered and All tabs and its title",
+    frozenset({"accounting.donors#1", "accounting.donors#4"}): "the donors page holds the list and the send panel",
+    frozenset({"accounting.financial-reports#1", "reports.operational-reports#1"}): "the one reports index lists both kinds",
+    frozenset({"accounting.funds#2", "accounting.funds#3"}): "the funds tab holds the list and its New fund form",
+    frozenset({"accounting.journal-entries#1", "accounting.journal-entries#2"}): _LIST_INTRO,
+    frozenset({"accounting.revenue-recognition#2", "accounting.revenue-recognition#6"}):
+        "an amendment has no screen of its own (it comes through the API); its runs show in the runs table",
+    frozenset({"ai.ask-questions#4", "ai.review-proposals#1"}): "the assistant page holds the question box and the proposals",
+    frozenset({"connectors.accountant-access#1", "connectors.accountant-access#2"}): "the access card holds the invite and its roles",
+    frozenset({"contacts.add-customer#1", "contacts.add-customer#2"}): _LIST_INTRO,
+    frozenset({"contacts.add-vendor#1", "contacts.add-vendor#2"}): _LIST_INTRO,
+    frozenset({"contacts.finance-company-details#1", "contacts.finance-company-details#2"}):
+        "the company details card holds every field both steps name",
+    frozenset({"docs.lists-quotations#3", "inventory.import-export#2", "subscriptions.import#1"}):
+        "the same import drop zone starts every import",
+    frozenset({"docs.memos#3", "docs.memos#4", "docs.memos#5"}): "one line actions bar holds Set as shipped, Invoice selected and Set as available",
+    frozenset({"docs.received#1", "docs.received#2"}): _LIST_INTRO,
+    frozenset({"fixed-assets.year-end#1", "fixed-assets.year-end#2"}): "the year-end page holds the checklist and its run button",
+    frozenset({"fixed-assets.register#1", "fixed-assets.register#2"}): _LIST_INTRO,
+    frozenset({"inventory.add-item#1", "inventory.add-item#2", "inventory.import-export#1", "manufacturing.make-from-recipe#6"}):
+        "the inventory list holds Add item, Export and Import",
+    frozenset({"labels.print-labels#1", "labels.print-labels#2"}): "the print page holds the item picker and the template choice",
+    frozenset({"labels.settings#1", "labels.settings#2"}): "the label settings hold the template list and its New button",
+    frozenset({f"subscriptions.members#{n}" for n in range(1, 6)}): "the members list shows every standing and New in one table",
+    frozenset({"subscriptions.overview#1", "subscriptions.overview#2"}): "the agreements list holds the tabs, New and Import",
+    frozenset({"subscriptions.plans#1", "subscriptions.plans#2"}): _LIST_INTRO,
+    frozenset({"subscriptions.retainers#1", "subscriptions.retainers#2"}): _LIST_INTRO,
+    frozenset({f"subscriptions.revenue#{n}" for n in range(1, 5)}):
+        "the revenue page fits on one screen: the period, currency, cohorts and definitions",
+    frozenset({"verticals.business-type#1", "verticals.business-type#2", "verticals.business-type#3"}):
+        "the business type page holds the choices, their presets and Apply",
+}
+
+
+def _picture_groups() -> list[frozenset[str]]:
+    """Steps grouped by one visual (``_same_pixels``). A box-averaged thumbnail never differs by
+    more than the largest pixel difference, so pictures whose thumbnails differ past the noise
+    are told apart without the full comparison."""
+    from PIL import Image
+
+    pixels = {}
+    for p in _PAGES:
+        for n, s in enumerate(p.data["steps"], 1):
+            with Image.open(p.help_dir / s["image"]) as image:
+                pixels[f"{p.data['id']}#{n}"] = image.convert("RGB")
+    thumbs = {k: v.reduce(16) for k, v in pixels.items()}
+    root = {k: k for k in pixels}
+
+    def find(k):
+        while root[k] != k:
+            k = root[k]
+        return k
+
+    keys = list(pixels)
+    for i, a in enumerate(keys):
+        for b in keys[i + 1:]:
+            if pixels[a].size == pixels[b].size and _same_pixels(thumbs[a], thumbs[b]) and _same_pixels(pixels[a], pixels[b]):
+                root[find(a)] = find(b)
+    groups: dict[str, set[str]] = {}
+    for k in keys:
+        groups.setdefault(find(k), set()).add(k)
+    return [frozenset(g) for g in groups.values() if len(g) > 1]
+
+
+def test_steps_share_a_picture_only_where_one_visual_explains_each():
+    groups = set(_picture_groups())
+    assert not groups - _SAME_VISUAL.keys(), (
+        "steps share one picture: picture each step's own state or part, or list the group in "
+        f"_SAME_VISUAL with why one visual explains each: {sorted(map(sorted, groups - _SAME_VISUAL.keys()))}")
+    assert not _SAME_VISUAL.keys() - groups, (
+        f"_SAME_VISUAL lists groups that no longer share a picture: {sorted(map(sorted, _SAME_VISUAL.keys() - groups))}")
