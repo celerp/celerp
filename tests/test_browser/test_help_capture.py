@@ -246,7 +246,8 @@ async def _ok(response: httpx.Response) -> dict:
 async def seed_funds_and_deferred_revenue(client: httpx.AsyncClient, auth: dict, contacts: list[dict],
                                           today: date) -> None:
     """Funds and revenue recognition show their controls only once they are in use: funds
-    on, a restricted fund, an archived fund and a transfer; an invoice deferring revenue over
+    on, a restricted fund, an archived fund, a transfer and two imported invoices, one waiting
+    for a fund choice and one posted on a fund; an invoice deferring revenue over
     the last three ended months with the oldest month posted, and a voided one."""
     def key() -> str:
         return uuid.uuid4().hex
@@ -279,6 +280,17 @@ async def seed_funds_and_deferred_revenue(client: httpx.AsyncClient, auth: dict,
         docs.append(doc["id"])
     await _ok(await client.post(f"/accounting/recognition/{start:%Y-%m}/post", headers=auth, json={}))
     await _ok(await client.post(f"/docs/{docs[1]}/void", headers=auth, json={"reason": "Sent twice"}))
+    # Two invoices from a file import: one waits for a fund choice, one posted on the reserve.
+    for ref in ("IMP-0001", "IMP-0002"):
+        await _ok(await client.post("/docs/import", headers=auth, json={
+            "entity_id": f"doc:{ref}", "event_type": "doc.created", "source": "csv", "idempotency_key": key(),
+            "data": {"doc_type": "invoice", "status": "draft", "ref_id": ref, "contact_id": contacts[3]["id"],
+                     "issue_date": today.isoformat(), "total": 300.0, "line_items": [
+                         {"item_id": None, "name": "Workshop", "quantity": 1, "unit_price": 300.0, "line_total": 300.0}]}}))
+    version = (await _ok(await client.get("/docs/doc:IMP-0002", headers=auth)))["version"]
+    await _ok(await client.post("/docs/doc:IMP-0002/fund-choices", headers=auth, json={
+        "expected_version": version, "document": reserve["id"]}))
+    await _ok(await client.post("/docs/doc:IMP-0002/finalize", headers=auth, json={}))
 
 
 async def _fa(client: httpx.AsyncClient, auth: dict, path: str, body: dict) -> dict:
