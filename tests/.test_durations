@@ -32344,5 +32344,6 @@
     "tests/test_dependency_refresh_workflow.py::test_two_open_refresh_prs_stop_the_run": 0.06476044602459297,
     "tests/test_help_schema.py::test_capture_names_the_evidence_of_its_state": 0.0034507159725762904,
     "tests/test_browser/test_help_capture.py::test_a_retaken_picture_differing_only_by_anti_aliasing_keeps_the_committed_one": 0.042230964987538755,
-    "tests/test_browser/test_help_capture.py::test_steps_share_a_picture_only_where_one_visual_explains_each": 1.452627010003198
+    "tests/test_browser/test_help_capture.py::test_steps_share_a_picture_only_where_one_visual_explains_each": 1.452627010003198,
+    "tests/test_browser/test_create_flows.py::test_create_memo_via_new_memo_button[chromium]": 7.098796407924965
 }
