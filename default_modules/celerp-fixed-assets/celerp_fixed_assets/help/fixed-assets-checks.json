@@ -12,19 +12,19 @@
       "text": "Scan or type an asset's {tag} and choose {rec} to record that it was seen today.",
       "labels": {"tag": "fixed_assets.scan_tag", "rec": "fixed_assets.record_check"},
       "image": "img/checks-1.webp",
-      "capture": {"route": "/fixed-assets/checks", "selector": "main form.flex-row", "actions": []}
+      "capture": {"route": "/fixed-assets/checks", "selector": "main form.flex-row", "actions": [], "evidence": ["{tag}", "{rec}"]}
     },
     {
       "text": "Under {title}, pick a date for the assets {since} it, ready to print and look for.",
       "labels": {"title": "fixed_assets.not_seen_title", "since": "fixed_assets.not_seen_since"},
       "image": "img/checks-2.webp",
-      "capture": {"route": "/fixed-assets/checks", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/checks", "selector": "main", "actions": [], "evidence": ["{title}", "{since}"]}
     },
     {
       "text": "You can also ask the assistant to record that an asset was seen, or which assets have not been seen since a date. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/checks-3.webp",
-      "capture": {"route": "/fixed-assets/checks", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/checks", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["fixed-assets.register"]

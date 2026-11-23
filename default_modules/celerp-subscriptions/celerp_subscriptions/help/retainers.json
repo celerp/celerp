@@ -24,7 +24,10 @@
       "capture": {
         "route": "/retainers",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{nav}"
+        ]
       }
     },
     {
@@ -36,7 +39,10 @@
       "capture": {
         "route": "/retainers",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{new}"
+        ]
       }
     },
     {
@@ -48,7 +54,10 @@
       "capture": {
         "route": "/retainers",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{gen}"
+        ]
       }
     },
     {
@@ -58,7 +67,10 @@
       "capture": {
         "route": "/retainers",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],

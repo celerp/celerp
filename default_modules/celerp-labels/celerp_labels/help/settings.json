@@ -12,25 +12,25 @@
       "text": "Open {lbl} from Inventory Settings to see the {tmpl} list.",
       "labels": {"lbl": "nav.labels", "tmpl": "page.templates"},
       "image": "img/settings-1.webp",
-      "capture": {"route": "/settings/labels", "selector": "main div.label-settings-layout", "actions": []}
+      "capture": {"route": "/settings/labels", "selector": "main div.label-settings-layout", "actions": [], "evidence": ["{lbl}", "{tmpl}"]}
     },
     {
       "text": "Choose {add} to create a new template, then lay out its fields in the editor.",
       "labels": {"add": "btn._add"},
       "image": "img/settings-2.webp",
-      "capture": {"route": "/settings/labels", "selector": "main div.label-settings-layout", "actions": []}
+      "capture": {"route": "/settings/labels", "selector": "main div.label-settings-layout", "actions": [], "evidence": ["{add}"]}
     },
     {
       "text": "Click a template to edit it: its name, its size in millimetres and where each field sits on the label.",
       "labels": {},
       "image": "img/settings-3.webp",
-      "capture": {"route": "/settings/labels", "selector": "main", "actions": []}
+      "capture": {"route": "/settings/labels", "selector": "main", "actions": [], "evidence": ["main"]}
     },
     {
       "text": "You can also ask the assistant to list, add, change or delete label templates. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/settings-4.webp",
-      "capture": {"route": "/settings/labels", "selector": "main", "actions": []}
+      "capture": {"route": "/settings/labels", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["labels.print-labels"]

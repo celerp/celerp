@@ -37,7 +37,10 @@
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main table.data-table",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{unres}"
+        ]
       }
     },
     {
@@ -51,7 +54,12 @@
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{settings}",
+          "{funds}",
+          "{off}"
+        ]
       }
     },
     {
@@ -67,7 +75,14 @@
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{add}",
+          "{restricted}",
+          "{purpose}",
+          "{archive}",
+          "{unarchive}"
+        ]
       }
     },
     {
@@ -87,6 +102,10 @@
           {
             "wait": "th:has-text('Fund')"
           }
+        ],
+        "evidence": [
+          "{fund}",
+          "{unres}"
         ]
       }
     },
@@ -104,6 +123,10 @@
           {
             "click": "summary:has-text('Opening balances by fund')"
           }
+        ],
+        "evidence": [
+          "{opening}",
+          "{date}"
         ]
       }
     },
@@ -120,6 +143,9 @@
           {
             "click": "summary:has-text('Transfer between funds')"
           }
+        ],
+        "evidence": [
+          "{transfer}"
         ]
       }
     },
@@ -136,6 +162,9 @@
           {
             "click": "summary:has-text('Release from restriction')"
           }
+        ],
+        "evidence": [
+          "{release}"
         ]
       }
     },
@@ -153,6 +182,10 @@
           {
             "click": "summary:has-text('Reallocate restricted funds')"
           }
+        ],
+        "evidence": [
+          "{realloc}",
+          "{auth}"
         ]
       }
     },
@@ -169,7 +202,14 @@
       "capture": {
         "route": "/reports/funds/activity",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{reason}",
+          "{activity}",
+          "{reports}",
+          "{movements}",
+          "{reverse}"
+        ]
       }
     },
     {
@@ -179,7 +219,10 @@
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     },
     {
@@ -189,7 +232,10 @@
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     },
     {
@@ -203,7 +249,12 @@
       "capture": {
         "route": "/reports/funds/balance-sheet",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{bs}",
+          "{act}",
+          "{rec}"
+        ]
       }
     },
     {
@@ -213,7 +264,10 @@
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],

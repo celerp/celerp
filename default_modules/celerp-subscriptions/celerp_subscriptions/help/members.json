@@ -26,7 +26,10 @@
       "capture": {
         "route": "/members",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{nav}"
+        ]
       }
     },
     {
@@ -41,7 +44,13 @@
       "capture": {
         "route": "/members",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{cur}",
+          "{grace}",
+          "{days}",
+          "{lapsed}"
+        ]
       }
     },
     {
@@ -54,7 +63,11 @@
       "capture": {
         "route": "/members",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{ended}",
+          "{status}"
+        ]
       }
     },
     {
@@ -66,7 +79,10 @@
       "capture": {
         "route": "/members",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{life}"
+        ]
       }
     },
     {
@@ -78,7 +94,10 @@
       "capture": {
         "route": "/members",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{new}"
+        ]
       }
     },
     {
@@ -88,7 +107,10 @@
       "capture": {
         "route": "/members",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],

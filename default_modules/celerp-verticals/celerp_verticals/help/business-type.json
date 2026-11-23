@@ -12,25 +12,25 @@
       "text": "Choose {label} on the setup screen; search if your trade is not in the short list.",
       "labels": {"label": "label.business_type"},
       "image": "img/business-type-1.webp",
-      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": ["{label}"]}
     },
     {
       "text": "{hint}",
       "labels": {"hint": "setup.business_type_hint"},
       "image": "img/business-type-2.webp",
-      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": ["{hint}"]}
     },
     {
       "text": "Once you continue, Celerp turns on the modules for your business type and opens the dashboard when they are ready.",
       "labels": {},
       "image": "img/business-type-3.webp",
-      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": [".auth-container"]}
     },
     {
       "text": "You can also ask the assistant to set your business type. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/business-type-4.webp",
-      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": [".auth-container"]}
     }
   ],
   "related": ["verticals.category-library"]

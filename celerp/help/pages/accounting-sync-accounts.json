@@ -12,13 +12,13 @@
       "text": "{title} lists the records a connected company sent that wait for an account, the accounts sync added here, and a new client's accounts to review. Choose an account for each, or {none} when all is in order.",
       "labels": {"title": "sync_accounts.title", "none": "sync_accounts.nothing"},
       "image": "img/accounting-sync-accounts-1.webp",
-      "capture": {"route": "/accounting/sync-accounts", "selector": "main", "actions": []}
+      "capture": {"route": "/accounting/sync-accounts", "selector": "main", "actions": [], "evidence": ["{title}", "{none}"]}
     },
     {
       "text": "You can also ask the assistant which records are waiting for an account.",
       "labels": {},
       "image": "img/accounting-sync-accounts-2.webp",
-      "capture": {"route": "/accounting/sync-accounts", "selector": "main", "actions": []}
+      "capture": {"route": "/accounting/sync-accounts", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["connectors.accountant-access"]

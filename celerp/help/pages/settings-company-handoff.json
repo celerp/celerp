@@ -12,25 +12,25 @@
       "text": "On {title}, enter the {firm} and the {to} and send. Celerp encrypts the copy on your computer before it leaves.",
       "labels": {"title": "company_backup.send_title", "firm": "company_backup.firm_label", "to": "company_backup.recipient_label"},
       "image": "img/company-handoff-1.webp",
-      "capture": {"route": "/settings/company-handoff", "selector": ".migration-wizard", "actions": []}
+      "capture": {"route": "/settings/company-handoff", "selector": ".migration-wizard", "actions": [], "evidence": ["{title}", "{firm}", "{to}"]}
     },
     {
       "text": "{title} lists every copy you sent, with who it went to and how it stands. Revoke a copy's link, or send a new one.",
       "labels": {"title": "company_backup.handoffs_title"},
       "image": "img/company-handoff-2.webp",
-      "capture": {"route": "/settings/company-handoffs", "selector": ".migration-wizard", "actions": []}
+      "capture": {"route": "/settings/company-handoffs", "selector": ".migration-wizard", "actions": [], "evidence": ["{title}"]}
     },
     {
       "text": "Each time a copy replaces this company, {title} keeps the version it replaced until you delete it, so you can download it or put it back.",
       "labels": {"title": "company_backup.saved_title"},
       "image": "img/company-handoff-3.webp",
-      "capture": {"route": "/settings/saved-copies", "selector": ".migration-wizard", "actions": []}
+      "capture": {"route": "/settings/saved-copies", "selector": ".migration-wizard", "actions": [], "evidence": ["{title}"]}
     },
     {
       "text": "You can also ask the assistant which copies you sent, or to revoke a copy's link. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/company-handoff-4.webp",
-      "capture": {"route": "/settings/company-handoffs", "selector": ".migration-wizard", "actions": []}
+      "capture": {"route": "/settings/company-handoffs", "selector": ".migration-wizard", "actions": [], "evidence": [".migration-wizard"]}
     }
   ],
   "related": ["backup.local-backup", "backup.cloud-backup"]

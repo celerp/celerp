@@ -25,7 +25,10 @@
       "capture": {
         "route": "/donors",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{nav}"
+        ]
       }
     },
     {
@@ -37,7 +40,10 @@
       "capture": {
         "route": "/donors",
         "selector": "#donor-wording",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{wording}"
+        ]
       }
     },
     {
@@ -49,7 +55,10 @@
       "capture": {
         "route": "/donors",
         "selector": "main table.data-table",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{pdf}"
+        ]
       }
     },
     {
@@ -63,7 +72,12 @@
       "capture": {
         "route": "/donors",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{send}",
+          "{confirm}",
+          "{btn}"
+        ]
       }
     },
     {
@@ -73,7 +87,10 @@
       "capture": {
         "route": "/donors",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],

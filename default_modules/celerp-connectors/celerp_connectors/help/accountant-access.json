@@ -12,19 +12,19 @@
       "text": "Open {title} from Settings. {hint}",
       "labels": {"title": "accountant_access.title", "hint": "accountant_access.direction_warning"},
       "image": "img/accountant-access-1.webp",
-      "capture": {"route": "/settings/accountant-access", "selector": "main", "actions": []}
+      "capture": {"route": "/settings/accountant-access", "selector": "main", "actions": [], "evidence": ["{title}", "{hint}"]}
     },
     {
       "text": "Create a pairing link for the firm, then hand it to them; every link you have issued is listed under {grants}.",
       "labels": {"grants": "accountant_access.active_grants"},
       "image": "img/accountant-access-2.webp",
-      "capture": {"route": "/settings/accountant-access", "selector": "main", "actions": []}
+      "capture": {"route": "/settings/accountant-access", "selector": "main", "actions": [], "evidence": ["{grants}"]}
     },
     {
       "text": "You can also ask the assistant which firms can send entries, or to create, renew or revoke a pairing link. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/accountant-access-3.webp",
-      "capture": {"route": "/settings/accountant-access", "selector": "main", "actions": []}
+      "capture": {"route": "/settings/accountant-access", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["connectors.connect-store"]

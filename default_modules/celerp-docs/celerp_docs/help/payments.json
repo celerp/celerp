@@ -12,13 +12,13 @@
       "text": "Open {pay} from the sidebar to see every payment across your documents.",
       "labels": {"pay": "nav.payments"},
       "image": "img/payments-1.webp",
-      "capture": {"route": "/payments", "selector": "main", "actions": []}
+      "capture": {"route": "/payments", "selector": "main", "actions": [], "evidence": ["{pay}"]}
     },
     {
       "text": "You can also ask the assistant to record a payment against a document, refund or void one, or match an online payment that found no invoice. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/payments-2.webp",
-      "capture": {"route": "/payments", "selector": "main", "actions": []}
+      "capture": {"route": "/payments", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["docs.sales-documents", "docs.purchasing-documents"]

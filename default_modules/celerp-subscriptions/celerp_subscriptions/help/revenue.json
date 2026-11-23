@@ -26,7 +26,10 @@
       "capture": {
         "route": "/revenue",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{nav}"
+        ]
       }
     },
     {
@@ -40,7 +43,12 @@
       "capture": {
         "route": "/revenue",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{from}",
+          "{to}",
+          "{cur}"
+        ]
       }
     },
     {
@@ -52,7 +60,10 @@
       "capture": {
         "route": "/revenue",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{coh}"
+        ]
       }
     },
     {
@@ -64,7 +75,10 @@
       "capture": {
         "route": "/revenue",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{defs}"
+        ]
       }
     },
     {
@@ -74,7 +88,10 @@
       "capture": {
         "route": "/revenue",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],

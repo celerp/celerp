@@ -1,9 +1,9 @@
 """Every shipped help page's steps match the running UI.
 
 One case per page: each step's capture recipe opens its route on a company filled
-with demo data, runs its actions, and the step's selector and the English text of
-every label it names must be visible (as text or as a field's placeholder; a hidden
-copy elsewhere on the page, such as in a closed menu, does not count). The pictured part of the
+with demo data, runs its actions, and the step's selector must be visible with every entry of its
+evidence matching a visible element wholly inside the pictured part of it (a match elsewhere on the
+page, hidden, or cut by the picture's edge does not count). The pictured part of the
 screen must not show the app's own empty-list, Connect sales or nothing-selected components unless
 the step is listed in _SHOWS_EMPTY_STATE, nor a record's internal id in place of its name.
 With HELP_CAPTURE_WRITE=1 each step
@@ -36,6 +36,7 @@ from playwright.sync_api import expect
 import celerp.ai.service as ai_service
 from celerp.help.bundle import MAX_IMAGE_BYTES
 from celerp.help.checks import CAPTURE_MARKER, shipped_pages
+from celerp.help.schema import PLACEHOLDER
 from celerp.services.business_time import business_today
 from celerp_ai.ui_routes import QUESTION_POLL_S
 from celerp_subscriptions import billing as subscription_billing
@@ -812,6 +813,32 @@ def _visible_label(key: str) -> str:
     return t(key, "en").split("{", 1)[0].strip()
 
 
+def _evidence_locator(page, entry: str, labels: dict):
+    """What one evidence entry matches: a {name} is the English text of that label (or a field
+    showing it as placeholder), anything else a selector."""
+    if name := PLACEHOLDER.fullmatch(entry):
+        label = _visible_label(labels[name.group(1)])
+        return page.get_by_text(label).or_(page.get_by_placeholder(label))
+    return page.locator(entry)
+
+
+def _evidence_missing(page, target, step: dict) -> list[str]:
+    """The step's evidence entries with no visible match lying wholly inside the part of
+    ``target`` a picture keeps (its top _MAX_HEIGHT pixels): a match elsewhere on the page,
+    hidden, or cut by the picture's edge does not count."""
+    clip = target.evaluate("""(el, maxHeight) => {
+        const r = el.getBoundingClientRect();
+        return [r.left, r.top, r.right, r.top + Math.min(r.height, maxHeight)];
+    }""", _MAX_HEIGHT)
+    return [entry for entry in step["capture"]["evidence"]
+            if not _evidence_locator(page, entry, step["labels"]).evaluate_all("""(els, [l, t, r, b]) =>
+                els.some(e => {
+                    const box = e.getBoundingClientRect();
+                    return e.checkVisibility() && box.width > 0 && box.height > 0 && box.left >= l - 1
+                        && box.top >= t - 1 && box.right <= r + 1 && box.bottom <= b + 1;
+                })""", clip)]
+
+
 def _empty_state_shown(target) -> list[str]:
     """The empty-state components visible in the part of ``target`` a picture keeps."""
     return target.evaluate("""(el, [sel, maxHeight, emptyMessages]) => {
@@ -903,11 +930,8 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[s
         return [f"a record id in place of its name: {ids}"]
     if _SIDELOADED in text:
         return ["a bundled module shown as sideloaded: its files differ from the module lock"]
-    for key in step["labels"].values():
-        label = _visible_label(key)
-        if label:
-            shown_label = demo_page.get_by_text(label).or_(demo_page.get_by_placeholder(label))
-            expect(shown_label.filter(visible=True).first).to_be_visible()
+    if missing := _evidence_missing(demo_page, target, step):
+        return [f"no visible match wholly inside the picture for evidence {missing}"]
     if _WRITE:
         _write_image(target, help_page.help_dir / step["image"])
     return []

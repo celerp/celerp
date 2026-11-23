@@ -36,6 +36,9 @@
           {
             "wait": "text=Recognize over the service period"
           }
+        ],
+        "evidence": [
+          "{flag}"
         ]
       }
     },
@@ -46,7 +49,10 @@
       "capture": {
         "route": "/accounting/recognition",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     },
     {
@@ -60,7 +66,12 @@
       "capture": {
         "route": "/accounting/recognition",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{page}",
+          "{post}",
+          "{reverse}"
+        ]
       }
     },
     {
@@ -72,7 +83,10 @@
       "capture": {
         "route": "/accounting/recognition",
         "selector": "#recognition-setting",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{auto}"
+        ]
       }
     },
     {
@@ -84,7 +98,10 @@
       "capture": {
         "route": "/accounting/recognition",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{roll}"
+        ]
       }
     },
     {
@@ -94,7 +111,10 @@
       "capture": {
         "route": "/accounting/recognition",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     },
     {
@@ -104,7 +124,10 @@
       "capture": {
         "route": "/accounting/recognition",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     },
     {
@@ -116,7 +139,10 @@
       "capture": {
         "route": "/accounting/recognition",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{void}"
+        ]
       }
     },
     {
@@ -126,7 +152,10 @@
       "capture": {
         "route": "/inventory?inventory_type=service",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],

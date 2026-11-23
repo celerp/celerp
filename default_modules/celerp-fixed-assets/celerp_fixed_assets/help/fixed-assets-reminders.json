@@ -12,13 +12,13 @@
       "text": "{title} lists the reminders set on your assets that fall due soon, with {over} ones first. Click an asset to open it.",
       "labels": {"title": "fixed_assets.due_soon_title", "over": "fixed_assets.overdue"},
       "image": "img/reminders-1.webp",
-      "capture": {"route": "/fixed-assets/reminders", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/reminders", "selector": "main", "actions": [], "evidence": ["{title}", "{over}"]}
     },
     {
       "text": "You can also ask the assistant which asset reminders are due.",
       "labels": {},
       "image": "img/reminders-2.webp",
-      "capture": {"route": "/fixed-assets/reminders", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/reminders", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["fixed-assets.register"]

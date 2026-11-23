@@ -12,13 +12,13 @@
       "text": "{title} lists every change made in the company, newest first. Type in {search} to find the events about a record, a person or a word.",
       "labels": {"title": "dashboard.activity_history", "search": "dashboard.search_events"},
       "image": "img/history-1.webp",
-      "capture": {"route": "/history", "selector": "main", "actions": []}
+      "capture": {"route": "/history", "selector": "main", "actions": [], "evidence": ["{title}", "{search}"]}
     },
     {
       "text": "You can also ask the assistant who changed a record, or what happened on a day.",
       "labels": {},
       "image": "img/history-2.webp",
-      "capture": {"route": "/history", "selector": "main", "actions": []}
+      "capture": {"route": "/history", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["dashboard.overview"]

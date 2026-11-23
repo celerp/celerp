@@ -12,13 +12,13 @@
       "text": "{title} compares the register with the ledger on each asset account at the date in {at}. Each difference shows its cause and what clears it.",
       "labels": {"title": "fixed_assets.recon_title", "at": "fixed_assets.recon_at"},
       "image": "img/reconciliation-1.webp",
-      "capture": {"route": "/fixed-assets/reconciliation", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/reconciliation", "selector": "main", "actions": [], "evidence": ["{title}", "{at}"]}
     },
     {
       "text": "You can also ask the assistant whether the register agrees with the ledger, and what any difference comes from.",
       "labels": {},
       "image": "img/reconciliation-2.webp",
-      "capture": {"route": "/fixed-assets/reconciliation", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/reconciliation", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["fixed-assets.register"]

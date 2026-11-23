@@ -25,7 +25,10 @@
       "capture": {
         "route": "/subscribers",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{nav}"
+        ]
       }
     },
     {
@@ -40,7 +43,13 @@
       "capture": {
         "route": "/subscribers",
         "selector": "#new-subscriber",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{new}",
+          "{plan}",
+          "{seats}",
+          "{trial}"
+        ]
       }
     },
     {
@@ -60,6 +69,10 @@
           {
             "wait": "main h3"
           }
+        ],
+        "evidence": [
+          "{chg}",
+          "{qty}"
         ]
       }
     },
@@ -70,7 +83,10 @@
       "capture": {
         "route": "/subscribers",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],

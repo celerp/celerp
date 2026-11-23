@@ -20,7 +20,7 @@ PAGE_KEYS = frozenset({"id", "title", "summary", "keywords", "routes", "permissi
 # Optional page key: the content hash of the screens the page was last checked against.
 OPTIONAL_PAGE_KEYS = frozenset({"checked"})
 STEP_KEYS = frozenset({"text", "labels", "image", "capture"})
-CAPTURE_KEYS = frozenset({"route", "selector", "actions"})
+CAPTURE_KEYS = frozenset({"route", "selector", "actions", "evidence"})
 # One verb per action; "fill" also carries the text to type, "upload" the text of the file.
 ACTION_VERBS = frozenset({"click", "fill", "upload", "press", "wait"})
 _VALUED_VERBS = frozenset({"fill", "upload"})
@@ -67,7 +67,7 @@ def _keys(where: str, data: dict, allowed: frozenset[str], optional: frozenset[s
     return errors
 
 
-def _capture_errors(where: str, capture) -> list[str]:
+def _capture_errors(where: str, capture, labels) -> list[str]:
     if not isinstance(capture, dict):
         return [f"{where}capture must be an object"]
     errors = _keys(f"{where}capture ", capture, CAPTURE_KEYS)
@@ -89,6 +89,12 @@ def _capture_errors(where: str, capture) -> list[str]:
                           '{"click": selector}, {"fill": selector, "value": text}, '
                           '{"upload": file input selector, "value": file text}, '
                           '{"press": key} or {"wait": selector}')
+    evidence = capture["evidence"]
+    if not (_str_list(evidence) and evidence and all(e.strip() for e in evidence)):
+        return [*errors, f"{where}capture evidence must be a non-empty list of selectors or {{label}} names"]
+    names = {m.group(1) for e in evidence if (m := PLACEHOLDER.fullmatch(e))}
+    if isinstance(labels, dict):
+        errors += [f"{where}capture evidence {{{k}}} is not one of the step's labels" for k in sorted(names - set(labels))]
     return errors
 
 
@@ -111,7 +117,7 @@ def _step_errors(n: int, step) -> list[str]:
             errors.append(f"{where}text has a brace that is not a {{name}} placeholder")
     if image is not None and not (isinstance(image, str) and _IMAGE.match(image)):
         errors.append(f"{where}image must be null or img/<file>.webp inside the help folder")
-    return [*errors, *_capture_errors(where, step["capture"])]
+    return [*errors, *_capture_errors(where, step["capture"], labels)]
 
 
 def validate(data, help_dir: Path, prefix: str) -> tuple[HelpPage | None, list[str]]:

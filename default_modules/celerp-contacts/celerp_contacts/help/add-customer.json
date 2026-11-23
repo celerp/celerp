@@ -12,19 +12,19 @@
       "text": "Open {cust} from the sidebar to see the customer list.",
       "labels": {"cust": "nav.customers"},
       "image": "img/add-customer-1.webp",
-      "capture": {"route": "/contacts/customers", "selector": "main", "actions": []}
+      "capture": {"route": "/contacts/customers", "selector": "main", "actions": [], "evidence": ["{cust}"]}
     },
     {
       "text": "Click {new} to create a blank customer. Its detail page opens so you can fill in addresses, people and other fields.",
       "labels": {"new": "contacts.new_customer"},
       "image": "img/add-customer-2.webp",
-      "capture": {"route": "/contacts/customers", "selector": "main", "actions": []}
+      "capture": {"route": "/contacts/customers", "selector": "main", "actions": [], "evidence": ["{new}"]}
     },
     {
       "text": "You can also ask the assistant to add or update customers, add a note, a person or an address, tag or merge contacts. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/add-customer-3.webp",
-      "capture": {"route": "/contacts/customers", "selector": "main", "actions": []}
+      "capture": {"route": "/contacts/customers", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["contacts.add-vendor", "contacts.settings"]

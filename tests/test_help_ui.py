@@ -35,7 +35,7 @@ def _page(page_id: str, title: str, *, steps: list | None = None, routes: list |
         id=page_id, title=title, summary="A page.", keywords=[], routes=routes or ["/contacts"],
         permission=None, order=1,
         steps=steps or [{"text": "Open the list.", "labels": {}, "image": None,
-                         "capture": {"route": "/contacts", "selector": "main", "actions": []}}],
+                         "capture": {"route": "/contacts", "selector": "main", "actions": [], "evidence": ["main"]}}],
         related=[], help_dir=_GOOD, source="first_party", module=module, module_display="Contacts",
     )
 
@@ -46,7 +46,7 @@ def pages(monkeypatch):
         _page("contacts.add-supplier", "Add a supplier", routes=["/contacts", "/contacts/{id}"],
               steps=[{"text": "Open {nav}, then add the supplier.", "labels": {"nav": "nav.contacts"},
                       "image": "img/add-item-1.webp",
-                      "capture": {"route": "/contacts", "selector": "main", "actions": []}}]),
+                      "capture": {"route": "/contacts", "selector": "main", "actions": [], "evidence": ["main"]}}]),
         _page("inventory.add-item", "Add an item", module="celerp-inventory", routes=["/inventory"]),
     ]
     monkeypatch.setattr(registry, "_index", registry.Index(pages={p.id: p for p in found}))
@@ -138,7 +138,7 @@ async def test_help_page_step_with_unreadable_image_keeps_its_text(client, monke
     the other steps keep theirs."""
     def _step(text, image):
         return {"text": text, "labels": {}, "image": image,
-                "capture": {"route": "/contacts", "selector": "main", "actions": []}}
+                "capture": {"route": "/contacts", "selector": "main", "actions": [], "evidence": ["main"]}}
 
     page = _page("contacts.add-supplier", "Add a supplier", steps=[
         _step("Open the list.", "img/add-item-1.webp"),

@@ -32,7 +32,10 @@
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": ".bank-list",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{rec}"
+        ]
       }
     },
     {
@@ -42,7 +45,10 @@
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": ".bank-list",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          ".bank-list"
+        ]
       }
     },
     {
@@ -61,6 +67,9 @@
           {
             "wait": ".bank-views"
           }
+        ],
+        "evidence": [
+          "{another}"
         ]
       }
     },
@@ -84,6 +93,13 @@
           {
             "wait": ".bank-views"
           }
+        ],
+        "evidence": [
+          "{open}",
+          "{suggested}",
+          "{questions}",
+          "{posted}",
+          "{all}"
         ]
       }
     },
@@ -103,6 +119,9 @@
           {
             "wait": ".bank-views"
           }
+        ],
+        "evidence": [
+          "{suggest}"
         ]
       }
     },
@@ -130,6 +149,11 @@
           {
             "wait": ".bank-panel"
           }
+        ],
+        "evidence": [
+          "{answer}",
+          "{postbtn}",
+          "{split}"
         ]
       }
     },
@@ -149,6 +173,9 @@
           {
             "wait": ".bank-views"
           }
+        ],
+        "evidence": [
+          "{ask}"
         ]
       }
     },
@@ -168,6 +195,9 @@
           {
             "wait": ".bank-views"
           }
+        ],
+        "evidence": [
+          "{complete}"
         ]
       }
     },
@@ -180,7 +210,10 @@
       "capture": {
         "route": "/settings/accounting?tab=rules",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{rules}"
+        ]
       }
     },
     {
@@ -192,7 +225,10 @@
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": ".bank-list",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{history}"
+        ]
       }
     },
     {
@@ -202,7 +238,10 @@
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": ".bank-list",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          ".bank-list"
+        ]
       }
     }
   ],

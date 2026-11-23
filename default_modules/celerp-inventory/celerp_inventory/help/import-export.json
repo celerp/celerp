@@ -12,25 +12,25 @@
       "text": "On {inv}, use {exp} to download the current list, or {imp} to start an import.",
       "labels": {"inv": "nav.inventory", "exp": "btn.export_csv", "imp": "btn.import"},
       "image": "img/import-export-1.webp",
-      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+      "capture": {"route": "/inventory", "selector": "main", "actions": [], "evidence": ["{inv}", "{exp}", "{imp}"]}
     },
     {
       "text": "On {title}, use {dl} to get a blank spreadsheet in the expected format, then upload your file and map its columns.",
       "labels": {"title": "page.import_inventory", "dl": "btn.download_template"},
       "image": "img/import-export-2.webp",
-      "capture": {"route": "/inventory/import", "selector": "#import-dropzone", "actions": []}
+      "capture": {"route": "/inventory/import", "selector": "#import-dropzone", "actions": [], "evidence": ["{title}", "{dl}"]}
     },
     {
       "text": "After the upload, a review page shows each row as it will be imported, so you can fix a row or upload a corrected file before anything is created.",
       "labels": {},
       "image": "img/import-export-3.webp",
-      "capture": {"route": "/inventory/import", "selector": "main", "actions": [{"upload": "#csv_file", "value": "sku,name,category,quantity,retail_price,sell_by\nDESK-101,Standing Desk,Furniture,4,420,piece\nCHAIR-102,Task Chair,Furniture,12,180,piece\nLAMP-103,LED Desk Lamp,Electronics,30,35,\n"}, {"click": "#csv-preview-btn"}, {"click": "#import-preview button.btn--primary"}, {"wait": "main .import-preview-table"}]}
+      "capture": {"route": "/inventory/import", "selector": "main", "actions": [{"upload": "#csv_file", "value": "sku,name,category,quantity,retail_price,sell_by\nDESK-101,Standing Desk,Furniture,4,420,piece\nCHAIR-102,Task Chair,Furniture,12,180,piece\nLAMP-103,LED Desk Lamp,Electronics,30,35,\n"}, {"click": "#csv-preview-btn"}, {"click": "#import-preview button.btn--primary"}, {"wait": "main .import-preview-table"}], "evidence": ["main"]}
     },
     {
       "text": "You can also give the assistant a spreadsheet to import: it previews the rows and shows the import as a card that runs only when you confirm. It can also export your items for you.",
       "labels": {},
       "image": "img/import-export-4.webp",
-      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+      "capture": {"route": "/inventory", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["inventory.add-item"]

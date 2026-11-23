@@ -20,7 +20,8 @@
       "capture": {
         "route": "/inventory",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": ["main"]
       }
     }
   ],

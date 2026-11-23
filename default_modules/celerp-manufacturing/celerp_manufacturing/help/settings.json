@@ -12,25 +12,25 @@
       "text": "Open {settings} from the gear link on the Manufacturing group to set company-wide rules.",
       "labels": {"settings": "settings_manufacturing.page_header"},
       "image": "img/settings-1.webp",
-      "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": []}
+      "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": [], "evidence": ["{settings}"]}
     },
     {
       "text": "Turn on {require} to block completing a run until its components are issued.",
       "labels": {"require": "settings_manufacturing.require_issued_label"},
       "image": "img/settings-2.webp",
-      "capture": {"route": "/settings/manufacturing", "selector": "main form.settings-card", "actions": []}
+      "capture": {"route": "/settings/manufacturing", "selector": "main form.settings-card", "actions": [], "evidence": ["{require}"]}
     },
     {
       "text": "Choose {wc} to add a work center, so runs can be assigned to a working area and its working-day length.",
       "labels": {"wc": "settings_manufacturing.add_work_center"},
       "image": "img/settings-3.webp",
-      "capture": {"route": "/settings/manufacturing", "selector": "#work-centers", "actions": []}
+      "capture": {"route": "/settings/manufacturing", "selector": "#work-centers", "actions": [], "evidence": ["{wc}"]}
     },
     {
       "text": "You can also ask the assistant to add, change or remove a work center, or set the default one. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/settings-4.webp",
-      "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": []}
+      "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["manufacturing.production"]

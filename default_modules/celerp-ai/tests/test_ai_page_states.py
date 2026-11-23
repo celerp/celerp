@@ -45,7 +45,7 @@ def one_help_page(monkeypatch):
         id="contacts.add-supplier", title="Add a supplier", summary="Add a vendor.", keywords=[],
         routes=["/contacts"], permission=None, order=1,
         steps=[{"text": "Open the list.", "labels": {}, "image": None,
-                "capture": {"route": "/contacts", "selector": "main", "actions": []}}],
+                "capture": {"route": "/contacts", "selector": "main", "actions": [], "evidence": ["main"]}}],
         related=[], help_dir=_GOOD, source="first_party", module="celerp-contacts",
         module_display="Contacts",
     )

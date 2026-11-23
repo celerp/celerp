@@ -12,13 +12,13 @@
       "text": "{title} shows what the ledger and the register hold on each asset account at the cutover. Record the opening journal, or use {add} for an opening asset that is missing, until the differences are zero.",
       "labels": {"title": "fixed_assets.opening_title", "add": "fixed_assets.add_asset"},
       "image": "img/opening-1.webp",
-      "capture": {"route": "/fixed-assets/opening", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/opening", "selector": "main", "actions": [], "evidence": ["{title}", "{add}"]}
     },
     {
       "text": "You can also ask the assistant how the opening balances stand, or to finish them. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/opening-2.webp",
-      "capture": {"route": "/fixed-assets/opening", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/opening", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["fixed-assets.register"]

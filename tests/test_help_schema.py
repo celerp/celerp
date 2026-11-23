@@ -17,7 +17,7 @@ def _page(**over) -> dict:
             "text": "Click {new} at the top of the list.",
             "labels": {"new": "nav.inventory"},
             "image": None,
-            "capture": {"route": "/inventory", "selector": "main", "actions": []},
+            "capture": {"route": "/inventory", "selector": "main", "actions": [], "evidence": ["main"]},
         }],
         "related": [],
     }
@@ -151,3 +151,17 @@ def test_read_image_refuses_what_is_not_a_bounded_webp_file(tmp_path):
     if hasattr(os, "mkfifo"):  # a pipe would block a reader that waited for data
         os.mkfifo(shot)
         assert read_image(page, 1) is None
+
+
+def test_capture_names_the_evidence_of_its_state(tmp_path):
+    def errors_for(evidence):
+        capture = {"route": "/inventory", "selector": "main", "actions": [], "evidence": evidence}
+        return validate(_page(steps=[_step(capture=capture)]), tmp_path, "inventory")[1]
+
+    assert errors_for(["main h1", "{new}"]) == []
+    for bad in ([], ["  "], "main h1", [3]):
+        assert any("evidence must be" in e for e in errors_for(bad)), bad
+    assert any("{save} is not one of the step's labels" in e for e in errors_for(["{save}"]))
+    capture = {"route": "/inventory", "selector": "main", "actions": []}
+    assert any("missing key 'evidence'" in e for e in validate(_page(steps=[_step(capture=capture)]), tmp_path,
+                                                                  "inventory")[1])

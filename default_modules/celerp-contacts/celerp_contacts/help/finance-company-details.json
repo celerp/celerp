@@ -12,19 +12,19 @@
       "text": "{title} holds your own company's contact record. {hint}",
       "labels": {"title": "settings.company_details", "hint": "contacts.identity_on_documents"},
       "image": "img/finance-company-details-1.webp",
-      "capture": {"route": "/finance/company-details", "selector": "main", "actions": []}
+      "capture": {"route": "/finance/company-details", "selector": "main", "actions": [], "evidence": ["{title}", "{hint}"]}
     },
     {
       "text": "Fill in the name, {bill} and {ship}, email and phone; each change is saved as you go, and {files} keeps documents such as registration papers.",
       "labels": {"bill": "contacts.field_billing_address", "ship": "contacts.field_shipping_address", "files": "label.files"},
       "image": "img/finance-company-details-2.webp",
-      "capture": {"route": "/finance/company-details", "selector": "main", "actions": []}
+      "capture": {"route": "/finance/company-details", "selector": "main", "actions": [], "evidence": ["{bill}", "{ship}", "{files}"]}
     },
     {
       "text": "You can also ask the assistant to change the company's details. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/finance-company-details-3.webp",
-      "capture": {"route": "/finance/company-details", "selector": "main", "actions": []}
+      "capture": {"route": "/finance/company-details", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["core.settings"]

@@ -27,7 +27,10 @@
       "capture": {
         "route": "/accounting/questions",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{nav}"
+        ]
       }
     },
     {
@@ -41,7 +44,12 @@
       "capture": {
         "route": "/accounting/questions",
         "selector": "main form.screen-only",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{what}",
+          "{receipt}",
+          "{save}"
+        ]
       }
     },
     {
@@ -55,7 +63,12 @@
       "capture": {
         "route": "/accounting/questions",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{open}",
+          "{answered}",
+          "{all}"
+        ]
       }
     },
     {
@@ -65,7 +78,10 @@
       "capture": {
         "route": "/accounting/questions",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],

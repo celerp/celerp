@@ -12,19 +12,19 @@
       "text": "Open {dashboard} from the sidebar. The cards at the top show the numbers your company's business type cares about most, such as stock value and receivables.",
       "labels": {"dashboard": "nav.dashboard"},
       "image": "img/overview-1.webp",
-      "capture": {"route": "/dashboard", "selector": "main", "actions": []}
+      "capture": {"route": "/dashboard", "selector": "main", "actions": [], "evidence": ["{dashboard}"]}
     },
     {
       "text": "{quick} underneath the charts jump straight to the lists and reports those numbers come from.",
       "labels": {"quick": "page.quick_links"},
       "image": "img/overview-2.webp",
-      "capture": {"route": "/dashboard", "selector": "main div.quick-links-section", "actions": []}
+      "capture": {"route": "/dashboard", "selector": "main div.quick-links-section", "actions": [], "evidence": ["{quick}"]}
     },
     {
       "text": "You can also ask the assistant about these figures or recent activity, such as what was sold this week or who changed a record.",
       "labels": {},
       "image": "img/overview-3.webp",
-      "capture": {"route": "/dashboard", "selector": "main", "actions": []}
+      "capture": {"route": "/dashboard", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["dashboard.getting-started"]

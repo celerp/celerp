@@ -12,19 +12,19 @@
       "text": "{title} lists the changes made with Correct on an asset's page, newest first. A correction someone requested waits here until a person who can post applies it.",
       "labels": {"title": "fixed_assets.corrections_title"},
       "image": "img/corrections-1.webp",
-      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": [], "evidence": ["{title}"]}
     },
     {
       "text": "Click a correction to see the asset, what changed, from when and why, and the journal it posted.",
       "labels": {},
       "image": "img/corrections-2.webp",
-      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": [{"click": "main a[href^=\"/fixed-assets/corrections/\"]"}, {"wait": "main h1"}]}
+      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": [{"click": "main a[href^=\"/fixed-assets/corrections/\"]"}, {"wait": "main h1"}], "evidence": ["main"]}
     },
     {
       "text": "You can also ask the assistant which corrections are waiting, or to apply one. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/corrections-3.webp",
-      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["fixed-assets.register"]

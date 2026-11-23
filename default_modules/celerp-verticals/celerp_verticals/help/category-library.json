@@ -12,19 +12,19 @@
       "text": "Open {settings} and go to the Categories tab; your applied categories are listed under {yours}.",
       "labels": {"settings": "settings_inventory.page_header", "yours": "settings.your_categories"},
       "image": "img/category-library-1.webp",
-      "capture": {"route": "/settings/inventory?tab=categories", "selector": "#your-cats-section", "actions": []}
+      "capture": {"route": "/settings/inventory?tab=categories", "selector": "#your-cats-section", "actions": [], "evidence": ["{settings}", "{yours}"]}
     },
     {
       "text": "Expand {browse} to add categories one at a time, or apply a whole industry preset in a single step.",
       "labels": {"browse": "settings.browse_library"},
       "image": "img/category-library-2.webp",
-      "capture": {"route": "/settings/inventory?tab=categories", "selector": "main div.settings-card", "actions": []}
+      "capture": {"route": "/settings/inventory?tab=categories", "selector": "main div.settings-card", "actions": [], "evidence": ["{browse}"]}
     },
     {
       "text": "You can also ask the assistant to add categories from an industry preset, one at a time or a whole preset. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/category-library-3.webp",
-      "capture": {"route": "/settings/inventory?tab=categories", "selector": "main", "actions": []}
+      "capture": {"route": "/settings/inventory?tab=categories", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["verticals.business-type"]

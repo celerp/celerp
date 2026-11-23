@@ -12,13 +12,13 @@
       "text": "The sidebar groups purchasing documents into {po}, {bill}, {scn} and {ci}. Each opens the same document list filtered to that type.",
       "labels": {"po": "nav.purchase_orders", "bill": "nav.vendor_bills", "scn": "nav.supplier_credit_notes", "ci": "nav.consignment_in"},
       "image": "img/purchasing-documents-1.webp",
-      "capture": {"route": "/docs?type=purchase_order", "selector": "main", "actions": []}
+      "capture": {"route": "/docs?type=purchase_order", "selector": "main", "actions": [], "evidence": ["{po}", "{bill}", "{scn}", "{ci}"]}
     },
     {
       "text": "You can also ask the assistant to create a purchase order or bill, receive a purchase order, record a payment or convert one document into another. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/purchasing-documents-2.webp",
-      "capture": {"route": "/docs?type=purchase_order", "selector": "main", "actions": []}
+      "capture": {"route": "/docs?type=purchase_order", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["docs.sales-documents", "docs.received", "docs.settings"]

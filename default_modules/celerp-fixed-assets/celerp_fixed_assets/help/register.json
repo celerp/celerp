@@ -12,31 +12,31 @@
       "text": "Open {fa} from the sidebar to see every registered asset.",
       "labels": {"fa": "nav.fixed_assets"},
       "image": "img/register-1.webp",
-      "capture": {"route": "/fixed-assets", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets", "selector": "main", "actions": [], "evidence": ["{fa}"]}
     },
     {
       "text": "Click {intake} to register an asset from a paid bill's lines, or {add} to add one by hand.",
       "labels": {"intake": "fixed_assets.register_from_bills", "add": "fixed_assets.add_asset"},
       "image": "img/register-2.webp",
-      "capture": {"route": "/fixed-assets", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets", "selector": "main", "actions": [], "evidence": ["{intake}", "{add}"]}
     },
     {
       "text": "On {intake}, choose a line to register it as a new asset, or to add it to one you already hold.",
       "labels": {"intake": "fixed_assets.intake_title"},
       "image": "img/register-3.webp",
-      "capture": {"route": "/fixed-assets/intake", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/intake", "selector": "main", "actions": [], "evidence": ["{intake}"]}
     },
     {
       "text": "Click an asset's number to open its page: its figures, its history and the actions for it. From there you can add a later cost or part, correct a figure, place an asset under construction in service, move it to another class, revalue or impair it, or transfer it to another company you keep books for. Each action opens its own page and shows the journal before it posts.",
       "labels": {},
       "image": "img/register-4.webp",
-      "capture": {"route": "/fixed-assets", "selector": "main", "actions": [{"click": "#fa-register a[href^=\"/fixed-assets/assets/\"]"}, {"wait": "main h1"}]}
+      "capture": {"route": "/fixed-assets", "selector": "main", "actions": [{"click": "#fa-register a[href^=\"/fixed-assets/assets/\"]"}, {"wait": "main h1"}], "evidence": ["main"]}
     },
     {
       "text": "You can also ask the assistant to add an asset, take one in from a bill line or update an asset's details. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/register-5.webp",
-      "capture": {"route": "/fixed-assets", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["fixed-assets.depreciation-and-disposals", "fixed-assets.settings"]

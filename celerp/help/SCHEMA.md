@@ -40,8 +40,12 @@ No other keys are allowed, and a page file is at most 64 KB.
 | `image` | string or null | `img/<file>.webp` inside the help folder; required on every step of a first-party page |
 | `capture` | object | how the screenshot is taken and how the step is checked |
 
-`capture` has `route` (the screen to open), `selector` (the element the step is about) and
-`actions`, a list run in order before the check:
+`capture` has `route` (the screen to open), `selector` (the element the step is about and the
+picture shows, its top 800 pixels when taller), `evidence` and `actions`, a list run in order before
+the check. `evidence` is a non-empty list of what shows the step's state: each entry is a selector,
+or `{name}` for the English text of one of the step's labels. After the actions, every entry must
+match a visible element lying wholly inside the pictured part of `selector`; a match elsewhere on
+the page does not count.
 
 ```json
 {"click": "<selector>"}
@@ -67,7 +71,8 @@ No other keys are allowed, and a page file is at most 64 KB.
       "text": "Open {inv} from the sidebar.",
       "labels": {"inv": "nav.inventory"},
       "image": "img/add-item-1.webp",
-      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+      "capture": {"route": "/inventory", "selector": "main", "actions": [],
+                  "evidence": ["main h1"]}
     }
   ],
   "related": []

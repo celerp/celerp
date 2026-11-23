@@ -12,25 +12,25 @@
       "text": "Open {lists} from the sidebar, then click {new} to start a draft.",
       "labels": {"lists": "nav.lists_quotations", "new": "page.new_list"},
       "image": "img/lists-quotations-1.webp",
-      "capture": {"route": "/lists", "selector": "main", "actions": []}
+      "capture": {"route": "/lists", "selector": "main", "actions": [], "evidence": ["{lists}", "{new}"]}
     },
     {
       "text": "Click a list or quotation to open it, add or change its lines and see its total.",
       "labels": {},
       "image": "img/lists-quotations-2.webp",
-      "capture": {"route": "/lists", "selector": "main", "actions": []}
+      "capture": {"route": "/lists", "selector": "main", "actions": [], "evidence": ["main"]}
     },
     {
       "text": "On {title}, use {dl} for a blank spreadsheet in the expected format, fill it in and upload it to bring in many quotations at once.",
       "labels": {"title": "lists_import.import_lists", "dl": "btn.download_template"},
       "image": "img/lists-quotations-3.webp",
-      "capture": {"route": "/lists/import", "selector": "#import-dropzone", "actions": []}
+      "capture": {"route": "/lists/import", "selector": "#import-dropzone", "actions": [], "evidence": ["{title}", "{dl}"]}
     },
     {
       "text": "You can also ask the assistant to create a list or quotation, reprice it, finalize it or convert it into a document. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/lists-quotations-4.webp",
-      "capture": {"route": "/lists", "selector": "main", "actions": []}
+      "capture": {"route": "/lists", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["docs.sales-documents"]

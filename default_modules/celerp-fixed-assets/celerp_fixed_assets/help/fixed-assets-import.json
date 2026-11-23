@@ -12,19 +12,19 @@
       "text": "On {title}, upload your asset register and match its columns. Each row is checked before anything is created; fix a row or upload a corrected file.",
       "labels": {"title": "fixed_assets.import_title"},
       "image": "img/import-1.webp",
-      "capture": {"route": "/fixed-assets/import", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/import", "selector": "main", "actions": [], "evidence": ["{title}"]}
     },
     {
       "text": "Each finished import is listed with its file, its date and how its rows came out. Open one to see its rows, or undo it to remove every asset it added.",
       "labels": {},
       "image": "img/import-2.webp",
-      "capture": {"route": "/fixed-assets/import", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/import", "selector": "main", "actions": [], "evidence": ["main"]}
     },
     {
       "text": "You can also give the assistant an asset register to import: it previews the rows and shows the import as a card that runs only when you confirm.",
       "labels": {},
       "image": "img/import-3.webp",
-      "capture": {"route": "/fixed-assets/import", "selector": "main", "actions": []}
+      "capture": {"route": "/fixed-assets/import", "selector": "main", "actions": [], "evidence": ["main"]}
     }
   ],
   "related": ["fixed-assets.register"]
