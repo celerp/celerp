@@ -14,9 +14,8 @@ from celerp.help import checks
 from celerp.help.translations import catalog, catalog_languages
 from test_helpers import real_agent_app
 
-# The authoritative list is rule 5 of the website build check (celerp-cloud
-# website/ci_check.py): the website publishes the app's OpenAPI text, so a term banned there
-# is banned here. Keep this list in step with that rule.
+# The published site re-publishes the app's OpenAPI text, and its own build check bans the
+# same term there. Keep this list in step with that check.
 BANNED_TERMS = ("Celerp Cloud",)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

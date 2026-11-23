@@ -15,10 +15,29 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from celerp.models.company import Location
+from celerp.models.accounting import UserCompany
+from celerp.models.company import Company, Location, User
 from race_support import _app_client, _http, _ok, _race, _seed
+from test_helpers import make_authed_token
 
 pytestmark = pytest.mark.asyncio
+
+
+async def _seed_no_locations(factory) -> tuple[uuid.UUID, dict]:
+    """A company with an owner and no locations at all, unlike ``_seed``'s "Main"."""
+    company_id, user_id = uuid.uuid4(), uuid.uuid4()
+    async with factory() as s:
+        s.add(User(id=user_id, email=f"owner-{user_id.hex[:8]}@example.test", name="Owner",
+                   auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(Company(id=company_id, name="Bare", slug=f"bare-{company_id.hex[:8]}", settings={}))
+        await s.flush()
+        s.add(UserCompany(user_id=user_id, company_id=company_id, role="owner", is_active=True))
+        await s.commit()
+    async with factory() as s:
+        header = {"Authorization": f"Bearer {await make_authed_token(s, user_id, company_id, 'owner')}"}
+        await s.commit()
+    return company_id, header
 
 
 def _factory(engine):
@@ -68,6 +87,42 @@ async def test_import_keeps_the_existing_default_or_sets_the_first(committed_eng
                               json={"records": [{"name": "East"}, {"name": "West"}]})
         assert r.json()["created"] == 2, r.text
         assert await _defaults(factory, c["company_id"]) == ["East"]
+
+
+async def test_import_marked_record_moves_the_default_from_an_existing_one(committed_engine):
+    factory = _factory(committed_engine)
+    c = await _seed(factory)
+    h = c["h"]["owner"]
+    async with _app_client(factory) as (client, _):
+        r = await client.post("/companies/me/locations/import/batch", headers=h,
+                              json={"records": [{"name": "North"}, {"name": "South", "is_default": True}]})
+        assert r.json()["created"] == 2, r.text
+        assert await _defaults(factory, c["company_id"]) == ["South"]
+
+
+async def test_import_two_marked_records_the_last_one_wins(committed_engine):
+    factory = _factory(committed_engine)
+    c = await _seed(factory)
+    h = c["h"]["owner"]
+    async with _app_client(factory) as (client, _):
+        r = await client.post("/companies/me/locations/import/batch", headers=h,
+                              json={"records": [
+                                  {"name": "North", "is_default": True},
+                                  {"name": "South"},
+                                  {"name": "East", "is_default": True},
+                              ]})
+        assert r.json()["created"] == 3, r.text
+        assert await _defaults(factory, c["company_id"]) == ["East"]
+
+
+async def test_import_on_an_empty_company_with_none_marked_sets_the_first(committed_engine):
+    factory = _factory(committed_engine)
+    company_id, h = await _seed_no_locations(factory)
+    async with _app_client(factory) as (client, _):
+        r = await client.post("/companies/me/locations/import/batch", headers=h,
+                              json={"records": [{"name": "North"}, {"name": "South"}]})
+        assert r.json()["created"] == 2, r.text
+        assert await _defaults(factory, company_id) == ["North"]
 
 
 async def test_migration_import_keeps_the_existing_default_or_sets_the_first(committed_engine):

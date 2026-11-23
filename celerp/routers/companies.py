@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
-from celerp.importers.results import BatchImportResult, record_refused, row_n, row_refusal
+from celerp.importers.results import BatchImportResult, record_refused, row_flag, row_n, row_refusal
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.agent_markers import agent_excluded, agent_gate
@@ -858,8 +858,11 @@ async def import_locations_batch(
     await lock_company(session, company_id)
     rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
     existing = {r.name for r in rows}
-    # The first imported location becomes the default only when the company has none yet.
+    # The first imported location becomes the default only when the company has none yet and
+    # no row marks one; a row marked ``is_default`` wins over that, the last one marked over
+    # an earlier one (both through make_default_location, so at most one default ever holds).
     first: Location | None = None
+    marked: Location | None = None
     created = skipped = 0
     errors: list[dict] = []
     for i, rec in enumerate(payload.records):
@@ -874,9 +877,13 @@ async def import_locations_batch(
         loc = Location(id=uuid.uuid4(), company_id=company_id, name=name, type=loc_type, is_default=False)
         session.add(loc)
         first = first or loc
+        if row_flag(rec.get("is_default", False)):
+            marked = loc
         existing.add(name)
         created += 1
-    if first is not None and not any(r.is_default for r in rows):
+    if marked is not None:
+        await make_default_location(session, company_id, marked)
+    elif first is not None and not any(r.is_default for r in rows):
         await make_default_location(session, company_id, first)
     await session.commit()
     return {"created": created, "skipped": skipped, "failed": len(errors), "errors": errors}
@@ -1717,7 +1724,6 @@ async def import_taxes_batch(
         name = str(r.get("name", "") or "").strip()
         rate_raw = r.get("rate", None)
         tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
-        is_default_raw = r.get("is_default", False)
         description = str(r.get("description", "") or "").strip()
 
         if not name:
@@ -1739,15 +1745,11 @@ async def import_taxes_batch(
             res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
             continue
 
-        is_default = bool(is_default_raw)
-        if not isinstance(is_default_raw, bool):
-            is_default = str(is_default_raw).strip().lower() in {"true", "1", "yes"}
-
         taxes.append({
             "name": name,
             "rate": rate,
             "tax_type": tax_type,
-            "is_default": is_default,
+            "is_default": row_flag(r.get("is_default", False)),
             "description": description,
         })
         existing_names.add(key)
@@ -2008,9 +2010,9 @@ async def import_purchasing_taxes_batch(
         if tax_type not in TAX_TYPES:
             res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
             continue
-        is_default_raw = r.get("is_default", False)
-        is_default = bool(is_default_raw) if isinstance(is_default_raw, bool) else str(is_default_raw).strip().lower() in {"true", "1", "yes"}
-        taxes.append({"name": name, "rate": rate, "tax_type": tax_type, "is_default": is_default, "description": str(r.get("description", "") or "").strip()})
+        taxes.append({"name": name, "rate": rate, "tax_type": tax_type,
+                      "is_default": row_flag(r.get("is_default", False)),
+                      "description": str(r.get("description", "") or "").strip()})
         existing_names.add(name.lower())
         res.created += 1
     settings = dict(company.settings)
