@@ -27,10 +27,10 @@
       "capture": {"route": "/subscriptions", "selector": "main", "actions": [], "evidence": ["{all}"]}
     },
     {
-      "text": "Click a subscription to open it: its lines, its {sched} of billing periods and the invoices each period produced.",
-      "labels": {"sched": "subscriptions.schedule_heading"},
+      "text": "Click a subscription to open it. Under {periods} you see each billing period, when it bills, and the invoice it produced, which you can open.",
+      "labels": {"periods": "subscriptions.periods_heading"},
       "image": "img/overview-4.webp",
-      "capture": {"route": "/subscriptions", "selector": "#sub-schedule", "actions": [{"click": "table tbody tr a"}], "evidence": ["table.data-table td a[href^='/docs/']"]}
+      "capture": {"route": "/subscriptions", "selector": "#sub-periods", "actions": [{"click": "table tbody tr:has-text('Annually') a"}], "evidence": ["{periods}", "table.data-table td a[href^='/docs/']"]}
     },
     {
       "text": "You can also ask the assistant to generate the invoices that are due, or to pause, resume, cancel or change a subscription. It shows each change as a card and makes it only when you confirm.",
