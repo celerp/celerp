@@ -80,7 +80,8 @@ def test_pinned_set_equals_the_constraint_lines_it_covers() -> None:
 def test_resolved_extra_is_pinned_and_dev_extra_left_alone() -> None:
     project = _pinned()
     assert project["optional-dependencies"]["prod"] == [
-        r for r in project["optional-dependencies"]["prod"] if r.startswith("gunicorn==")
+        r for r in project["optional-dependencies"]["prod"]
+        if r.startswith("gunicorn==") or r.startswith("uvicorn-worker==")
     ]
     declared = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert project["optional-dependencies"]["dev"] == declared["optional-dependencies"]["dev"]

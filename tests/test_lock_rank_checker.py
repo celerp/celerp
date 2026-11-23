@@ -778,6 +778,37 @@ def test_a_waitable_lock_on_the_declared_renewals_own_connection_still_spoils_it
     assert recorder.classes["row:ai_batch_jobs"].get("company_ungated") == 1
 
 
+def test_a_connection_the_waiting_task_no_longer_holds_is_not_its_own():
+    """A task that used connection 1 and ended its transaction no longer touches it: once the
+    heartbeat's renewal runs on that key (the pool handed it on, or a closed connection's id came
+    back for a new one, as every test's NullPool does), the task's later waitable take on
+    connection 2 is a take outside the renewal's task and spares its leaf."""
+    recorder = Recorder()
+
+    async def body():
+        recorder.acquire(1, _lock("adv:external-product", "xact exclusive wait", key="p"), 0.0)
+        recorder.end(1)
+
+        async def renewal():
+            recorder.acquire(1, _heartbeat_write(), 0.0)
+        await asyncio.create_task(renewal())
+        recorder.acquire(2, _lock("adv:external-product", "xact exclusive wait", key="q"), 0.0)
+
+    asyncio.run(body())
+    assert recorder.classes["row:ai_batch_jobs"].get("company_ungated") is None
+
+
+def test_a_waitable_take_by_the_renewals_own_task_on_another_connection_still_spoils_its_leaf():
+    recorder = Recorder()
+
+    async def body():
+        recorder.acquire(1, _heartbeat_write(), 0.0)
+        recorder.acquire(2, _lock("adv:external-product", "xact exclusive wait", key="p"), 0.0)
+
+    asyncio.run(body())
+    assert recorder.classes["row:ai_batch_jobs"].get("company_ungated") == 1
+
+
 def test_an_undeclared_pending_leaf_is_still_spoiled_by_a_waitable_take_on_another_connection(recorder):
     """Only the one statement LEASE_RENEWALS declares is spared: every other table's leaf is
     still spoiled by any lock that can wait anywhere, exactly as it always was - a leaf is the
