@@ -216,7 +216,7 @@
       "labels": {},
       "image": "img/funds-10.webp",
       "capture": {
-        "route": "/settings/accounting?tab=funds",
+        "route": "/",
         "selector": "main",
         "actions": [],
         "evidence": [
@@ -229,11 +229,18 @@
       "labels": {},
       "image": "img/funds-11.webp",
       "capture": {
-        "route": "/settings/accounting?tab=funds",
+        "route": "/docs/doc:IMP-0002",
         "selector": "main",
-        "actions": [],
+        "actions": [
+          {
+            "click": "#doc-fund"
+          },
+          {
+            "wait": "form[hx-post$='/funds/change'] input[name='reason']"
+          }
+        ],
         "evidence": [
-          ".fund-change-row"
+          "form[hx-post$='/funds/change']"
         ]
       }
     },
