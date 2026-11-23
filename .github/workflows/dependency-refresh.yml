@@ -46,103 +46,81 @@ jobs:
           set -euo pipefail
 
           # The one decision of this step, from the facts observed below. It prints one of:
-          # create, replace, update, leave-open-pr, current-skip, current-dispatch-ci, fail.
-          # Ownership of the branch is never inferred. The job may replace the branch only when
-          # git proves that loses nothing: every path the branch changed since its merge base
-          # with main is identical on main. A branch with an open PR whose unmerged changes touch
-          # only constraints.txt is updated on top (main merged in, the new resolve committed),
-          # so its history is kept. Any other branch is left for its open PR, or fails the job.
+          # create, update, leave-open-pr, current-skip, current-dispatch-ci.
+          # The job never force-pushes and never reads or writes a branch that has no open refresh
+          # PR. With none open it opens a new PR on a new branch from current main. An open refresh
+          # PR whose branch, merged with main, would change only constraints.txt is updated on top
+          # (main merged in, the new resolve committed, a fast-forward push), so its history is
+          # kept. Any other open refresh PR is left unchanged.
           decide() {
-            local open=$1 branch=$2 replaceable=$3 pins_only=$4 current=$5 ci=$6
-            if ((open)); then
-              if ! ((branch)); then echo fail
-              elif ! ((replaceable || pins_only)); then echo leave-open-pr
-              elif ((current)); then
-                if ((ci)); then echo current-skip; else echo current-dispatch-ci; fi
-              elif ((replaceable)); then echo replace
-              else echo update
-              fi
-            elif ((branch)) && ! ((replaceable)); then echo fail
-            elif ((current)); then echo current-skip
-            elif ((branch)); then echo replace
-            else echo create
-            fi
-          }
-
-          # Prints, NUL-separated, every path the branch changed since its merge base with main
-          # that still differs from main: what replacing the branch would lose. Fails on any git
-          # error, including a branch that shares no history with main.
-          unmerged_paths() {
-            local base changed_list
-            local -a changed
-            if ! base="$(git merge-base origin/main "$lease")"; then
-              echo "$BRANCH shares no history with main; git cannot tell what replacing it would lose" >&2
-              return 1
-            fi
-            changed_list="$(mktemp)"
-            git diff -z --no-renames --name-only "$base" "$lease" >"$changed_list" || return 1
-            mapfile -d '' changed <"$changed_list"
-            if ((${#changed[@]})); then
-              git --literal-pathspecs diff -z --no-renames --name-only origin/main "$lease" -- "${changed[@]}"
+            local open=$1 pins_only=$2 current=$3 ci=$4
+            if ! ((open)); then
+              if ((current)); then echo current-skip; else echo create; fi
+            elif ! ((pins_only)); then echo leave-open-pr
+            elif ((current)); then
+              if ((ci)); then echo current-skip; else echo current-dispatch-ci; fi
+            else echo update
             fi
           }
 
           # The resolve ran on the checked-out commit; publish it only while that is still main.
-          git fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"
-          if [[ "$(git rev-parse origin/main)" != "$(git rev-parse HEAD)" ]]; then
-            echo "main moved to $(git rev-parse --short origin/main) after this run resolved on $(git rev-parse --short HEAD); not publishing a resolve built on an older main. Run the workflow again to resolve on the new main."
-            exit 1
-          fi
+          # Checked here and again directly before any push.
+          resolved_on="$(git rev-parse HEAD)"
+          require_unmoved_main() {
+            git fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"
+            if [[ "$(git rev-parse origin/main)" != "$resolved_on" ]]; then
+              echo "main moved to $(git rev-parse --short origin/main) after this run resolved on $(git rev-parse --short "$resolved_on"); not publishing a resolve built on an older main. Run the workflow again to resolve on the new main."
+              exit 1
+            fi
+          }
+          require_unmoved_main
 
-          open_pr="$(gh pr list \
+          # The open refresh PR: a same-repository PR into main whose branch name starts with $BRANCH.
+          open_pr_line="$(gh pr list \
             --state open \
-            --head "$BRANCH" \
-            --json number \
-            --jq '.[0].number // empty')"
+            --base main \
+            --limit 1000 \
+            --json number,headRefName,isCrossRepository |
+            jq -r --arg prefix "$BRANCH" \
+              'map(select((.isCrossRepository | not) and (.headRefName | startswith($prefix)))) | first // empty | "\(.number) \(.headRefName)"')"
 
-          lease="" branch=0 replaceable=0 pins_only=0 ci=0
-          if [[ -n "$(git ls-remote --heads origin "refs/heads/$BRANCH")" ]]; then
-            git fetch --quiet origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
-            lease="$(git rev-parse "origin/$BRANCH")"
-            branch=1
-            unmerged_list="$(mktemp)"
-            if unmerged_paths >"$unmerged_list"; then
-              mapfile -d '' unmerged <"$unmerged_list"
-              if ((${#unmerged[@]} == 0)); then
-                replaceable=1
-              elif ((${#unmerged[@]} == 1)) && [[ "${unmerged[0]}" == constraints.txt ]]; then
-                pins_only=1
-              fi
+          open=0 pins_only=0 current=0 ci=0 open_pr=""
+          if [[ -n "$open_pr_line" ]]; then
+            open=1
+            open_pr="${open_pr_line%% *}"
+            push_branch="${open_pr_line#* }"
+            git fetch --quiet origin "+refs/heads/$push_branch:refs/remotes/origin/$push_branch"
+            lease="$(git rev-parse "origin/$push_branch")"
+            # Pins-only: git's own merge of the branch into main (over every merge base) would
+            # change or conflict on nothing but constraints.txt. merge-tree prints the merged tree,
+            # then the conflicted paths; exit 1 is a conflicted merge. Any other failure, such as
+            # no shared history, leaves pins_only at 0.
+            merge_status=0
+            merged="$(git merge-tree --write-tree --name-only --no-messages origin/main "$lease")" || merge_status=$?
+            if ((merge_status <= 1)); then
+              touched="$({
+                tail -n +2 <<<"$merged"
+                git diff --no-renames --name-only origin/main "${merged%%$'\n'*}"
+              } | sort -u)"
+              if [[ -z "$touched" || "$touched" == constraints.txt ]]; then pins_only=1; fi
             fi
             ci_runs="$(gh run list --workflow ci.yml --commit "$lease" --json databaseId --jq '.[].databaseId')"
             if [[ -n "$ci_runs" ]]; then ci=1; fi
-          fi
-          current=0
-          if [[ -n "$open_pr" && -n "$lease" ]]; then
-            # Current: the open PR's branch holds this resolve and sits on current main.
+            # Current: the PR's branch holds this resolve and sits on current main.
             if git diff --quiet "$lease" -- constraints.txt &&
               [[ "$(git merge-base origin/main "$lease")" == "$(git rev-parse origin/main)" ]]; then
               current=1
             fi
-          elif git diff --quiet -- constraints.txt; then
+          else
+            push_branch="$BRANCH-$GITHUB_RUN_ID"
             # Current: main already holds this resolve.
-            current=1
+            if git diff --quiet -- constraints.txt; then current=1; fi
           fi
-          open=0
-          if [[ -n "$open_pr" ]]; then open=1; fi
 
-          action="$(decide "$open" "$branch" "$replaceable" "$pins_only" "$current" "$ci")"
+          action="$(decide "$open" "$pins_only" "$current" "$ci")"
           case "$action" in
-            fail)
-              if ((open)); then
-                echo "PR #$open_pr is open but $BRANCH does not exist"
-              else
-                echo "$BRANCH has no open PR and holds work that git cannot prove is on main; refusing to replace it. Open a PR for it or delete the branch."
-              fi
-              exit 1
-              ;;
             leave-open-pr)
-              echo "$BRANCH holds work that is not on main beyond constraints.txt; leaving it unchanged for PR #$open_pr"
+              echo "$push_branch, merged with main, would change more than constraints.txt or git cannot merge it; leaving it unchanged for PR #$open_pr"
               exit 0
               ;;
             current-skip)
@@ -152,44 +130,38 @@ jobs:
             current-dispatch-ci)
               echo "Dependency refresh PR #$open_pr is already current but has no CI run; starting CI"
               ;;
-            create | replace | update)
+            create | update)
               git config user.name "Noah Severs"
               git config user.email "118095044+ngsevers@users.noreply.github.com"
               if [[ "$action" == update ]]; then
-                # Build on the branch itself. Its unmerged changes touch only constraints.txt, so
+                # Build on the branch itself. Its merge with main changes only constraints.txt, so
                 # that is the only file the merge can conflict on, and the new resolve replaces
-                # it anyway; -X theirs takes main's side there. A branch with unrelated history
-                # makes git refuse the merge, which stops the job.
+                # it anyway; -X theirs takes main's side there.
                 resolved="$(mktemp)"
                 cp constraints.txt "$resolved"
                 git checkout -- constraints.txt
-                git switch -c "$BRANCH" "$lease"
+                git switch -c "$push_branch" "$lease"
                 git merge --no-edit -X theirs origin/main
                 cp "$resolved" constraints.txt
               else
-                git switch -c "$BRANCH"
+                git switch -c "$push_branch"
               fi
               git add constraints.txt
               if ! git diff --cached --quiet; then
                 git commit -m "Refresh Python dependencies"
               fi
-              if [[ "$action" == replace ]]; then
-                git push \
-                  --force-with-lease="refs/heads/$BRANCH:$lease" \
-                  origin "HEAD:refs/heads/$BRANCH"
-              else
-                # No force: the remote takes this push only if it adds to the head inspected
-                # above (update) or creates the branch (create).
-                git push origin "HEAD:refs/heads/$BRANCH"
-              fi
+              require_unmoved_main
+              # No force: the remote takes this push only as a fast-forward of the head inspected
+              # above (update) or as a new branch (create).
+              git push origin "HEAD:refs/heads/$push_branch"
               if ! ((open)); then
                 gh pr create \
                   --base main \
-                  --head "$BRANCH" \
+                  --head "$push_branch" \
                   --title "Refresh Python dependencies" \
                   --body "Refreshes the resolved production dependency graph from pyproject.toml. constraints.txt remains resolver-generated; normal CI validates the complete set before merge."
               fi
               ;;
           esac
 
-          gh workflow run ci.yml --ref "$BRANCH" -f dependency_refresh=true
+          gh workflow run ci.yml --ref "$push_branch" -f dependency_refresh=true
