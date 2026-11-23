@@ -44,10 +44,23 @@
       "image": "img/reconcile-2.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": ".bank-list",
-        "actions": [],
+        "selector": ".bank-drop",
+        "actions": [
+          {
+            "click": "a.bank-list__name"
+          },
+          {
+            "wait": ".bank-views"
+          },
+          {
+            "click": "details.screen-only > summary"
+          },
+          {
+            "wait": ".bank-drop"
+          }
+        ],
         "evidence": [
-          ".bank-list"
+          ".bank-drop__form"
         ]
       }
     },
@@ -59,17 +72,52 @@
       "image": "img/reconcile-3.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": "main",
+        "selector": "[data-testid=statement-preview]",
         "actions": [
           {
             "click": "a.bank-list__name"
           },
           {
             "wait": ".bank-views"
+          },
+          {
+            "click": "details.screen-only > summary"
+          },
+          {
+            "wait": ".bank-drop"
+          },
+          {
+            "upload": ".bank-drop input[data-drop]",
+            "value": "Date,Description,Amount,Balance\n2026-06-02,Card sales,850.00,4850.00\n2026-06-09,Office rent,-1200.00,3650.00\n2026-06-16,Customer payment,420.00,4070.00\n"
+          },
+          {
+            "wait": "[data-testid=statement-preview] [data-field=opening_balance] input"
+          },
+          {
+            "fill": "[data-testid=statement-preview] [data-field=opening_balance] input",
+            "value": "4000.00"
+          },
+          {
+            "press": "Enter"
+          },
+          {
+            "wait": "[data-testid=statement-preview] [data-field=opening_balance] input[value^='4000']"
+          },
+          {
+            "fill": "[data-testid=statement-preview] [data-field=closing_balance] input",
+            "value": "4070.00"
+          },
+          {
+            "press": "Enter"
+          },
+          {
+            "wait": "[data-testid=statement-preview] .flash--success"
           }
         ],
         "evidence": [
-          "h1.page-title"
+          ".bank-preview__header",
+          ".bank-row--preview",
+          ".flash--success"
         ]
       }
     },
@@ -245,11 +293,16 @@
       "labels": {},
       "image": "img/reconcile-11.webp",
       "capture": {
-        "route": "/accounting/reconcile/start",
-        "selector": ".bank-list",
-        "actions": [],
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Suggest answers for the open lines on my bank statement"
+          }
+        ],
         "evidence": [
-          ".bank-list"
+          "#ai-query-input"
         ]
       }
     }

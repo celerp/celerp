@@ -118,9 +118,9 @@ _SHOWS_EMPTY_STATE: dict[str, str] = {
     "fixed-assets.settings#1": _NO_TAX_REGIME,
     "fixed-assets.settings#3": _NO_TAX_REGIME,
 }
-# Pages whose steps add records (a sample import, an AI conversation and the item it adds):
-# each is taken on a company of its own.
-_ADDS_RECORDS = {"core.imports", "ai.ask-questions", "ai.review-proposals"}
+# Pages whose steps add records (a sample import, a dropped bank statement, an AI conversation and
+# the item it adds): each is taken on a company of its own.
+_ADDS_RECORDS = {"core.imports", "accounting.reconcile", "ai.ask-questions", "ai.review-proposals"}
 # Pages open to the installation owner only, which show no company or person: taken as the
 # suite's user, who owns the installation; the capture refuses a picture that names it.
 _INSTALLATION_PAGES = {"backup.local-backup"}
@@ -171,7 +171,7 @@ window.open = url => { location.assign(url); return null; };"""
 # A step on the assistant's screen is taken with the AI subscription; the two that picture what a
 # company without it sees are listed as None.
 _SUBSCRIBED: dict[str, str | None] = {
-    "core.company-handoff#2": _COPIES, "core.company-handoff#4": _COPIES,
+    "core.company-handoff#2": _COPIES,
     "core.web-access#2": _CONNECT, "backup.cloud-backup#2": _CONNECT,
     "connectors.connect-store#3": _CONNECT, "connectors.connect-store#4": _CONNECT,
     "ai.ask-questions#1": None, "ai.ask-questions#3": None,

@@ -30,7 +30,7 @@
       "text": "You can also ask the assistant to list, add, change or delete label templates. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/settings-4.webp",
-      "capture": {"route": "/settings/labels", "selector": "main", "actions": [], "evidence": ["#template-list-panel"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Add a label template for shelf tags"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["labels.print-labels"]

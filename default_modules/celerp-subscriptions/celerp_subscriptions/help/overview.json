@@ -24,7 +24,7 @@
       "text": "The status cards above the list, including {all}, let you filter by stage with one click.",
       "labels": {"all": "status.all_issued"},
       "image": "img/overview-3.webp",
-      "capture": {"route": "/subscriptions", "selector": "main", "actions": [], "evidence": ["{all}"]}
+      "capture": {"route": "/subscriptions", "selector": "#sub-status-cards", "actions": [], "evidence": ["{all}"]}
     },
     {
       "text": "Click a subscription to open it. Under {periods} you see each billing period, when it bills, and the invoice it produced, which you can open.",

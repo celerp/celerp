@@ -217,7 +217,7 @@
       "image": "img/funds-10.webp",
       "capture": {
         "route": "/",
-        "selector": "main",
+        "selector": "#fund-waiting-banner",
         "actions": [],
         "evidence": [
           "#fund-waiting-banner"

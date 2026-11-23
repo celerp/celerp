@@ -30,7 +30,7 @@
       "text": "You can also ask the assistant to print labels for items you name, using one of your templates. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/print-labels-4.webp",
-      "capture": {"route": "/labels/print-list", "selector": "main", "actions": [], "evidence": ["main h2"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Print shelf labels for the mugs"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["labels.settings"]

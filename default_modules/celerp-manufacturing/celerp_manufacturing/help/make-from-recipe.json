@@ -24,19 +24,19 @@
       "text": "On {dp}, tick the line and choose Make selected from the Action list. This creates the work order for that item and quantity.",
       "labels": {"dp": "manufacturing.demand_planning"},
       "image": "img/make-from-recipe-3.webp",
-      "capture": {"route": "/manufacturing", "selector": "main", "actions": [], "evidence": ["{dp}"]}
+      "capture": {"route": "/manufacturing", "selector": "main", "actions": [{"click": "#mfg-table tbody input.bulk-select"}], "evidence": ["{dp}", "#mfg-table tbody input.bulk-select:checked", ".bulk-action-select"]}
     },
     {
       "text": "Open {wip}, tick the work order and choose {issue}. The components leave stock and are held as work in progress, and a work order that was still planned starts.",
       "labels": {"wip": "manufacturing.work_in_progress", "issue": "manufacturing.action_issue"},
       "image": "img/make-from-recipe-4.webp",
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": [], "evidence": ["{wip}", "{issue}"]}
+      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": [{"click": "#mfg-table tbody tr:has-text('Planned') input.bulk-select"}], "evidence": ["{wip}", "#mfg-table tbody tr:has-text('Planned') input.bulk-select:checked", ".bulk-action-select"]}
     },
     {
       "text": "When the product is made, tick the work order and choose {complete}. The finished item is received into stock and the components held for it are used up.",
       "labels": {"complete": "manufacturing.action_complete"},
       "image": "img/make-from-recipe-5.webp",
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": [], "evidence": ["{complete}"]}
+      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": [{"click": "#mfg-table tbody tr:has-text('In progress') input.bulk-select"}], "evidence": ["#mfg-table tbody tr:has-text('In progress') input.bulk-select:checked", ".bulk-action-select"]}
     },
     {
       "text": "A work order makes one product. A second product from the same batch, such as oil cake from pressing rapeseed, is not part of the run: add it to stock as its own item with {add}.",

@@ -30,7 +30,7 @@
       "text": "You can also ask the assistant which copies you sent, or to revoke a copy's link. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/company-handoff-4.webp",
-      "capture": {"route": "/settings/company-handoffs", "selector": ".migration-wizard", "actions": [], "evidence": ["#copies-list"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Which copies of my company did I send?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["backup.local-backup", "backup.cloud-backup"]

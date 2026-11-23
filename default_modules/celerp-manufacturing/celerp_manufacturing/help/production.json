@@ -18,13 +18,13 @@
       "text": "Status cards split the queue by stage, from {planned} to {hold} to {done}; tick runs and choose an action from the bulk actions above the table to move them along.",
       "labels": {"planned": "enum.mfg_run_status.planned", "hold": "enum.mfg_run_status.on_hold", "done": "enum.mfg_run_status.completed"},
       "image": "img/production-2.webp",
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": [], "evidence": ["{planned}", "{hold}", "{done}"]}
+      "capture": {"route": "/manufacturing/production", "selector": "main div.status-cards", "actions": [], "evidence": ["{planned}", "{hold}", "{done}"]}
     },
     {
       "text": "Each row shows the run's priority and due date, which you change by double-clicking them, and links to its run sheet: a page to print listing the materials and quantities the run needs. A run from an older release whose materials' value its history cannot prove asks to be reconciled before it moves on.",
       "labels": {},
       "image": "img/production-3.webp",
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": [], "evidence": ["main table.data-table"]}
+      "capture": {"route": "/manufacturing/production", "selector": "#mfg-table", "actions": [], "evidence": ["#mfg-table tbody tr"]}
     },
     {
       "text": "You can also ask the assistant how a work order stands, or to start, hold, issue materials to, receive or complete it. It shows each change as a card and makes it only when you confirm.",
