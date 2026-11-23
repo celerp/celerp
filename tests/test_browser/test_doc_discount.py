@@ -96,7 +96,14 @@ def test_a_save_answered_after_a_line_is_added_keeps_the_new_line_in_the_totals(
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.wait_for_selector("#doc-total", timeout=8000)
     held = []
-    page.route("**/lines", lambda route: held.append(route) if route.request.method == "POST" else route.continue_())
+
+    def _hold_first_save(route):
+        if route.request.method == "POST" and not held:
+            held.append(route)
+        else:
+            route.continue_()
+
+    page.route("**/lines", _hold_first_save)
     _apply_disc(page, 10, "percentage")
     for _ in range(80):
         if held:
@@ -106,7 +113,6 @@ def test_a_save_answered_after_a_line_is_added_keeps_the_new_line_in_the_totals(
     page.evaluate("celerpAddLine()")
     last_price = page.locator("table.doc-lines tbody tr").last.locator('[data-name="unit_price"]')
     last_price.fill("100")
-    page.unroute("**/lines")
     with page.expect_response(lambda r: r.url.endswith("/lines") and r.request.method == "POST"):
         held[0].continue_()
     page.wait_for_function("() => document.getElementById('save-status').textContent === '\u2713'", timeout=5000)
