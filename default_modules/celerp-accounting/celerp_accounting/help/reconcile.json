@@ -85,7 +85,7 @@
       "image": "img/reconcile-4.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": ".bank-views",
+        "selector": "main",
         "actions": [
           {
             "click": "a.bank-list__name"
@@ -99,7 +99,8 @@
           "{suggested}",
           "{questions}",
           "{posted}",
-          "{all}"
+          "{all}",
+          ".bank-row--group .bank-group__name"
         ]
       }
     },
@@ -156,9 +157,11 @@
       }
     },
     {
-      "text": "When you don't know what a line was, click {ask} and write your question. The client answers on their questions page, with a receipt if they have one, and their answer becomes the line's suggestion. Lines asked about show under Questions.",
+      "text": "When you don't know what a line was, click {ask} beside it, write {note} and click {send}. The client answers on their questions page, with a receipt if they have one, and their answer becomes the line's suggestion. Lines asked about show under Questions.",
       "labels": {
-        "ask": "bank.ask_client"
+        "ask": "bank.ask_client",
+        "note": "bank.ask_note_label",
+        "send": "bank.ask_send"
       },
       "image": "img/reconcile-7.webp",
       "capture": {
@@ -170,10 +173,18 @@
           },
           {
             "wait": ".bank-views"
+          },
+          {
+            "click": "[data-open=ask]"
+          },
+          {
+            "wait": "[data-panel=ask]"
           }
         ],
         "evidence": [
-          "{ask}"
+          "{note}",
+          "[data-panel=ask] textarea",
+          "[data-panel=ask] .btn--primary"
         ]
       }
     },
