@@ -237,6 +237,7 @@ _ASCII_DUMPS = {
     ("celerp/gateway/client.py", "_send"): _WIRE,
     ("celerp/gateway/state.py", "_persist_commercial_context"): _FILE,
     ("celerp/help/checks.py", "<module>"): _WIRE,
+    ("celerp/help/checks.py", "capture_marker"): _DIGEST,
     ("celerp/middleware.py", "log_unhandled_exception"): _WIRE,
     ("celerp/migrations/compatibility.py", "to_json"): _WIRE,
     ("celerp/migrations/versions/k5e6f7a8b9c0_connector_entity_directions.py", "upgrade"):

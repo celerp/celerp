@@ -567,15 +567,30 @@ async def seed_ai_usage(company_id: str, user_id: str) -> None:
         await session.commit()
 
 
-async def seed_store_connection(company_id: str) -> None:
+@contextlib.contextmanager
+def _store_connected(company_id: str):
     """A Shopify store connected to the company, as connecting it records, so a connection's
-    own page shows its status, sync and disconnect."""
-    from celerp.connectors.ownership import claim_connector_ownership
+    own page shows its status, sync and disconnect. It is disconnected again when the page's
+    pictures are taken: the live database is the one the recovery tests restore, and they
+    refuse a restore while a store stays connected."""
+    from celerp.connectors.ownership import claim_connector_ownership, release_connector_ownership
     from celerp.db import LifecycleSessionLocal
 
-    async with LifecycleSessionLocal() as session:
-        await claim_connector_ownership(session, company_id, "shopify", default_sync_frequency="realtime")
-        await session.commit()
+    async def connect():
+        async with LifecycleSessionLocal() as session:
+            await claim_connector_ownership(session, company_id, "shopify", default_sync_frequency="realtime")
+            await session.commit()
+
+    async def disconnect():
+        async with LifecycleSessionLocal() as session:
+            await release_connector_ownership(session, company_id, "shopify")
+            await session.commit()
+
+    _run_off_loop(connect())
+    try:
+        yield
+    finally:
+        _run_off_loop(disconnect())
 
 
 async def seed_company_copies(company_id: str) -> None:
@@ -618,11 +633,30 @@ def _sign_in(api_server: str, email: str) -> str:
         clear_session_registry()
 
 
-def capture_company(api_server: str, api, email: str, *, connect_store: bool = False) -> dict:
+def _run_off_loop(coro) -> None:
+    """Runs ``coro`` to completion on a fresh thread. Playwright's sync API keeps its own event
+    loop running on this thread for the whole session (greenlet-trampolined), so asyncio.run()
+    here would always raise "cannot be called from a running event loop"; api_server/ui_server
+    run their own event loop off the main thread the same way."""
+    error: list[BaseException] = []
+
+    def _run():
+        try:
+            asyncio.run(coro)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the calling thread below
+            error.append(exc)
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+
+
+def capture_company(api_server: str, api, email: str) -> dict:
     """The capture company, filled with the same demo data every run, and an access token of
     its owner: a member named _CAPTURE_NAME who belongs to no other company, so a picture shows
-    the same company, person and company list wherever it is taken. A store connects to one
-    company of an installation, so only the shared capture company is given one."""
+    the same company, person and company list wherever it is taken."""
     r = api.post("/companies/me/users", json={"email": email, "name": _CAPTURE_NAME, "role": "viewer",
                                               "password": _CAPTURE_PASSWORD})
     assert r.status_code == 200, r.text
@@ -689,8 +723,6 @@ def capture_company(api_server: str, api, email: str, *, connect_store: bool = F
             await seed_company_details(client, auth, date.fromisoformat(today))
             company_id = (await _ok(await client.get("/companies/me", headers=auth)))["id"]
             await seed_ai_usage(company_id, user_id)
-            if connect_store:
-                await seed_store_connection(company_id)
             await seed_company_copies(company_id)
             # The default label templates are created through their write route, so no
             # page's first read seeds them: which labels page reads first depends on test order.
@@ -700,24 +732,8 @@ def capture_company(api_server: str, api, email: str, *, connect_store: bool = F
                 assert r.status_code == 201, r.text
 
     random.seed(20261022)
-    # Playwright's sync API keeps its own event loop running on this thread for the whole
-    # session (greenlet-trampolined), so asyncio.run() here would always raise "cannot be
-    # called from a running event loop". Run the seed coroutine on a fresh thread, same as
-    # api_server/ui_server above run their own event loop off the main thread.
-    error: list[BaseException] = []
-
-    def _run():
-        try:
-            asyncio.run(seed())
-        except BaseException as exc:  # noqa: BLE001 - re-raised on the calling thread below
-            error.append(exc)
-
-    thread = threading.Thread(target=_run)
     with _capture_clock():
-        thread.start()
-        thread.join()
-    if error:
-        raise error[0]
+        _run_off_loop(seed())
     r = httpx.get(f"{api_server}/companies/me", headers={"Authorization": f"Bearer {token}"}, timeout=10)
     assert r.status_code == 200, r.text
     _date_records(r.json()["id"], started)
@@ -801,7 +817,7 @@ def _mock_get_modules_default():
 
 @pytest.fixture(scope="session")
 def demo_company(api_server, api):
-    return capture_company(api_server, api, _CAPTURE_EMAIL, connect_store=True)
+    return capture_company(api_server, api, _CAPTURE_EMAIL)
 
 
 @pytest.fixture(scope="session")
@@ -1068,6 +1084,14 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
     set_session_cookies(browser_context, company["token"])
     page.add_init_script(_CAPTURE_PAGE_SCRIPT)
     records = _records(company["id"])
+    with _store_connected(company["id"]) if company is demo_company else contextlib.nullcontext():
+        wrong = _capture_steps(page, help_page, page_id, suite_owner)
+    assert not wrong, "steps picturing a screen other than the one their text describes:\n" + "\n".join(wrong)
+    assert page_id in _ADDS_RECORDS or _records(company["id"]) == records, (
+        f"{page_id} added records to the capture company: list it in _ADDS_RECORDS")
+
+
+def _capture_steps(page, help_page, page_id: str, suite_owner: dict) -> list[str]:
     wrong = []
     for n, step in enumerate(help_page.data["steps"], 1):
         step_id = f"{page_id}#{n}"
@@ -1084,9 +1108,7 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
                 # Leave the page while the step's subscription still holds, so a request it
                 # has in flight never lands on the next step's state.
                 page.goto("about:blank")
-    assert not wrong, "steps picturing a screen other than the one their text describes:\n" + "\n".join(wrong)
-    assert page_id in _ADDS_RECORDS or _records(company["id"]) == records, (
-        f"{page_id} added records to the capture company: list it in _ADDS_RECORDS")
+    return wrong
 
 
 def test_a_retaken_picture_differing_only_by_anti_aliasing_keeps_the_committed_one():
