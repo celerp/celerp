@@ -30,7 +30,7 @@
       "text": "You can also ask the assistant to find items, add an item or change items' prices, status or location, many at once if you like. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/add-item-4.webp",
-      "capture": {"route": "/inventory", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Move all mugs to the warehouse"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["inventory.import-export", "inventory.stock-views"]

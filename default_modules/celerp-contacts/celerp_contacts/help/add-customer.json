@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant to add or update customers, add a note, a person or an address, tag or merge contacts. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/add-customer-3.webp",
-      "capture": {"route": "/contacts/customers", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Add a customer called Lumen Cafe"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["contacts.add-vendor", "contacts.settings"]

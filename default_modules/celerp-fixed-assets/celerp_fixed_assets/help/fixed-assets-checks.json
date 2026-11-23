@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant to record that an asset was seen, or which assets have not been seen since a date. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/checks-3.webp",
-      "capture": {"route": "/fixed-assets/checks", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Which assets have not been seen since January?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.register"]

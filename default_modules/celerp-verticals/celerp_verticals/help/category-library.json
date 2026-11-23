@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant to add categories from an industry preset, one at a time or a whole preset. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/category-library-3.webp",
-      "capture": {"route": "/settings/inventory?tab=categories", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Add the jewelry categories"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["verticals.business-type"]

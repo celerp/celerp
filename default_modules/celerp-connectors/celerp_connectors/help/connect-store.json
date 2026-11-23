@@ -36,7 +36,7 @@
       "text": "You can also ask the assistant to run a sync now, show what a sync would change, or set which way a connection syncs. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/connect-store-5.webp",
-      "capture": {"route": "/settings/cloud", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Show what a sync would change"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["connectors.accountant-access"]

@@ -30,7 +30,7 @@
       "text": "You can also ask the assistant to create a list or quotation, reprice it, finalize it or convert it into a document. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/lists-quotations-4.webp",
-      "capture": {"route": "/lists", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Convert my latest quotation into an invoice"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["docs.sales-documents"]

@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant to create, send, finalize or void an invoice or credit note, or record a payment against it. It shows each change as a card and makes it only when you confirm. A card that sends a document outside Celerp says so.",
       "labels": {},
       "image": "img/sales-documents-2.webp",
-      "capture": {"route": "/docs?type=invoice", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Create an invoice for 10 mugs"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["docs.purchasing-documents", "docs.lists-quotations", "docs.settings"]

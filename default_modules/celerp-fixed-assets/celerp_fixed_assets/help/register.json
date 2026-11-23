@@ -36,7 +36,7 @@
       "text": "You can also ask the assistant to add an asset, take one in from a bill line or update an asset's details. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/register-5.webp",
-      "capture": {"route": "/fixed-assets", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Add a delivery van to the register"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.depreciation-and-disposals", "fixed-assets.settings"]

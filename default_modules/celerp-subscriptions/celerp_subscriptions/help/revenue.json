@@ -86,11 +86,16 @@
       "labels": {},
       "image": "img/revenue-5.webp",
       "capture": {
-        "route": "/revenue",
-        "selector": "main",
-        "actions": [],
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "What is our recurring revenue this month?"
+          }
+        ],
         "evidence": [
-          "h1.page-title"
+          "#ai-query-input"
         ]
       }
     }

@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant to change the company's details or what the side menu offers. It shows each change as a card and makes it only when you confirm. Changing your own password stays with you on this page.",
       "labels": {},
       "image": "img/settings-3.webp",
-      "capture": {"route": "/settings/general?tab=password", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Change the company's phone number"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["core.companies", "core.users"]

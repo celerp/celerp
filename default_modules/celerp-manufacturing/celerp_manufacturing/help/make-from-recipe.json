@@ -48,7 +48,7 @@
       "text": "You can also ask the assistant to create the work order, issue its components or complete it. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/make-from-recipe-7.webp",
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Create a work order for 10 tables"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["manufacturing.demand-planning", "manufacturing.production"]

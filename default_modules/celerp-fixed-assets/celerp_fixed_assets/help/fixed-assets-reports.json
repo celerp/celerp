@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant to read these reports for you, such as the depreciation for last year or what was disposed of this quarter.",
       "labels": {},
       "image": "img/reports-3.webp",
-      "capture": {"route": "/fixed-assets/reports", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "What was the depreciation for last year?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.register"]

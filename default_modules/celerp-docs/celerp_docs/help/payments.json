@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant to record a payment against a document, refund or void one, or match an online payment that found no invoice. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/payments-2.webp",
-      "capture": {"route": "/payments", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Record a payment against my latest invoice"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["docs.sales-documents", "docs.purchasing-documents"]

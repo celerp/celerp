@@ -30,7 +30,7 @@
       "text": "You can also ask the assistant to add a bank account or a chart account, set a posting account, lock a period or close the year. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/settings-4.webp",
-      "capture": {"route": "/settings/accounting", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Lock the books up to the end of last month"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["accounting.journal-entries", "accounting.reconcile"]

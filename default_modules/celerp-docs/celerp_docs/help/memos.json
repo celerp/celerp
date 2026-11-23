@@ -48,7 +48,7 @@
       "text": "You can also ask the assistant to create a memo, mark lines shipped or available, invoice lines or close the memo. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/memos-7.webp",
-      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Invoice the lines kept from my latest memo"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["docs.sales-documents", "docs.payments"]

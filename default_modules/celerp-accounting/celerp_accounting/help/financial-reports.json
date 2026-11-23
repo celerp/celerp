@@ -48,7 +48,7 @@
       "text": "You can also ask the assistant to read these reports for you, such as the profit for last quarter, the cash position at month end or the balance of one account.",
       "labels": {},
       "image": "img/financial-reports-7.webp",
-      "capture": {"route": "/reports", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "What was the profit for last quarter?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["accounting.journal-entries", "reports.operational-reports"]

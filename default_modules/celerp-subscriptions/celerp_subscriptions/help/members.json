@@ -105,11 +105,16 @@
       "labels": {},
       "image": "img/members-6.webp",
       "capture": {
-        "route": "/members",
-        "selector": "main",
-        "actions": [],
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Which members are overdue?"
+          }
+        ],
         "evidence": [
-          "h1.page-title"
+          "#ai-query-input"
         ]
       }
     }

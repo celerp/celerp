@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant who changed a record, or what happened on a day.",
       "labels": {},
       "image": "img/history-2.webp",
-      "capture": {"route": "/history", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "What changed in the records yesterday?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["dashboard.overview"]

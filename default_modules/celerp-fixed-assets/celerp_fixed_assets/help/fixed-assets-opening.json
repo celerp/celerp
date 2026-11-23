@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant how the opening balances stand, or to finish them. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/opening-2.webp",
-      "capture": {"route": "/fixed-assets/opening", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "How do the opening balances stand?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.register"]

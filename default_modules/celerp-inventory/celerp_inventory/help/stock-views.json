@@ -30,7 +30,7 @@
       "text": "You can also ask the assistant what was sold, archived or disposed of, or to restore an item or start a stock audit. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/stock-views-4.webp",
-      "capture": {"route": "/inventory", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "What was sold this month?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["inventory.add-item", "inventory.settings"]

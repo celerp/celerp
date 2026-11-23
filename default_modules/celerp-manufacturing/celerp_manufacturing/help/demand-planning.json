@@ -36,7 +36,7 @@
       "text": "You can also ask the assistant what needs making and to create the work orders for it. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/demand-planning-5.webp",
-      "capture": {"route": "/manufacturing", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "What needs making?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["manufacturing.production", "manufacturing.settings"]

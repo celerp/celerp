@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant when the last backup ran, to list your backups or to start one now. It shows each change as a card and makes it only when you confirm. Restoring a backup stays with you on this page.",
       "labels": {},
       "image": "img/cloud-backup-3.webp",
-      "capture": {"route": "/settings/cloud", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "When did the last backup run?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["backup.local-backup"]

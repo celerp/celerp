@@ -85,11 +85,16 @@
       "labels": {},
       "image": "img/donors-5.webp",
       "capture": {
-        "route": "/donors",
-        "selector": "main",
-        "actions": [],
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Who gave last quarter?"
+          }
+        ],
         "evidence": [
-          "h1.page-title"
+          "#ai-query-input"
         ]
       }
     }

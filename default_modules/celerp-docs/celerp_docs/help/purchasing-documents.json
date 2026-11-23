@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant to create a purchase order or bill, receive a purchase order, record a payment or convert one document into another. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/purchasing-documents-2.webp",
-      "capture": {"route": "/docs?type=purchase_order", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Create a purchase order for 20 mugs"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["docs.sales-documents", "docs.received", "docs.settings"]

@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant which subscriptions are due or how many are active; importing a file stays with you on this page.",
       "labels": {},
       "image": "img/import-2.webp",
-      "capture": {"route": "/subscriptions/import", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "How many subscriptions are active?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["subscriptions.overview"]

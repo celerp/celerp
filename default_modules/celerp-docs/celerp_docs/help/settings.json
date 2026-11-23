@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant to change the taxes, terms and conditions or numbering for sales or purchasing. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/settings-3.webp",
-      "capture": {"route": "/settings/sales", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Change the numbering for sales invoices"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["docs.sales-documents", "docs.purchasing-documents"]

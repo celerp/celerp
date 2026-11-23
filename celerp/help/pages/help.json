@@ -36,7 +36,7 @@
       "text": "You can also ask the assistant a question in your own language: it searches these help pages, reads the one that fits and answers from it.",
       "labels": {},
       "image": "img/help-5.webp",
-      "capture": {"route": "/help", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "¿Cómo registro un pago de un cliente?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": []

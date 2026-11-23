@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant to add or change locations, categories or units. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/settings-2.webp",
-      "capture": {"route": "/settings/inventory", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Add a location called Back Store"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["inventory.add-item", "inventory.stock-views"]

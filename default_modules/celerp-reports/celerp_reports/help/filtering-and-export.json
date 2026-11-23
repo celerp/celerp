@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant for a report over any period, such as what customers owed at the end of last month.",
       "labels": {},
       "image": "img/filtering-and-export-2.webp",
-      "capture": {"route": "/reports/ar-aging", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "What did customers owe at the end of last month?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["reports.operational-reports", "accounting.financial-reports"]

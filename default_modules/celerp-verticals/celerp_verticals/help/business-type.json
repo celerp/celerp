@@ -30,7 +30,7 @@
       "text": "You can also ask the assistant to set your business type. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/business-type-4.webp",
-      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": ["h1.auth-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Set our business type to retail"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["verticals.category-library"]

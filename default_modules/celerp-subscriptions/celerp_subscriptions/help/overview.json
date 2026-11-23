@@ -36,7 +36,7 @@
       "text": "You can also ask the assistant to generate the invoices that are due, or to pause, resume, cancel or change a subscription. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/overview-5.webp",
-      "capture": {"route": "/subscriptions", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Generate the invoices that are due"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["subscriptions.import"]

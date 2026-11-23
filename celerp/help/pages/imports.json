@@ -66,7 +66,7 @@
       "text": "You can also ask the assistant to move your books for you: it can read the export files you give it, start the move and take you through the review. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/imports-10.webp",
-      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": [], "evidence": ["h1.auth-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Move my books from Sage 50 for me"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["core.companies"]

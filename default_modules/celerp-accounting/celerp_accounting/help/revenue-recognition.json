@@ -150,11 +150,16 @@
       "labels": {},
       "image": "img/revenue-recognition-9.webp",
       "capture": {
-        "route": "/inventory?inventory_type=service",
-        "selector": "main",
-        "actions": [],
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "What is still deferred?"
+          }
+        ],
         "evidence": [
-          "h1.page-title"
+          "#ai-query-input"
         ]
       }
     }

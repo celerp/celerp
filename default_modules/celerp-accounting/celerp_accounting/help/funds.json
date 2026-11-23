@@ -268,11 +268,16 @@
       "labels": {},
       "image": "img/funds-13.webp",
       "capture": {
-        "route": "/settings/accounting?tab=funds",
-        "selector": "main",
-        "actions": [],
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Move 500 from the general fund to the building fund"
+          }
+        ],
         "evidence": [
-          "h1.page-title"
+          "#ai-query-input"
         ]
       }
     }

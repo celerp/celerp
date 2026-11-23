@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant whether the register agrees with the ledger, and what any difference comes from.",
       "labels": {},
       "image": "img/reconciliation-2.webp",
-      "capture": {"route": "/fixed-assets/reconciliation", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Does the register agree with the ledger?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.register"]

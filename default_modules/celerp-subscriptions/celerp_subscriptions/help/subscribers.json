@@ -81,11 +81,16 @@
       "labels": {},
       "image": "img/subscribers-4.webp",
       "capture": {
-        "route": "/subscribers",
-        "selector": "main",
-        "actions": [],
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Pause the subscription for my newest subscriber"
+          }
+        ],
         "evidence": [
-          "h1.page-title"
+          "#ai-query-input"
         ]
       }
     }

@@ -104,10 +104,8 @@ _NO_TAX_REGIME = "no first-party module ships a tax regime, so the page shows wh
 _SHOWS_EMPTY_STATE: dict[str, str] = {
     "ai.ask-questions#2": "the step is about the box a question is typed into, which a new chat shows",
     "fixed-assets.tax-books#1": _NO_TAX_REGIME,
-    "fixed-assets.tax-books#2": _NO_TAX_REGIME,
     "fixed-assets.year-end#1": _NO_TAX_REGIME,
     "fixed-assets.year-end#2": _NO_TAX_REGIME,
-    "fixed-assets.year-end#3": _NO_TAX_REGIME,
     "core.settings-payments#1": _CONNECT_SALES,
     "backup.cloud-backup#1": _CONNECT_SALES,
     "connectors.connect-store#1": _CONNECT_SALES,
@@ -170,15 +168,13 @@ _CAPTURE_PAGE_SCRIPT = """Object.defineProperty(window, "Chart", {configurable: 
   set(chart) { chart.defaults.animation = false;
                Object.defineProperty(window, "Chart", {value: chart, writable: true, configurable: true}); }});
 window.open = url => { location.assign(url); return null; };"""
-_SUBSCRIBED: dict[str, str] = {
+# A step on the assistant's screen is taken with the AI subscription; the two that picture what a
+# company without it sees are listed as None.
+_SUBSCRIBED: dict[str, str | None] = {
     "core.company-handoff#2": _COPIES, "core.company-handoff#4": _COPIES,
-    "core.web-access#2": _CONNECT,
-    "backup.cloud-backup#2": _CONNECT, "backup.cloud-backup#3": _CONNECT,
+    "core.web-access#2": _CONNECT, "backup.cloud-backup#2": _CONNECT,
     "connectors.connect-store#3": _CONNECT, "connectors.connect-store#4": _CONNECT,
-    "connectors.connect-store#5": _CONNECT,
-    "ai.ask-questions#2": _AI, "ai.ask-questions#4": _AI,
-    **{f"ai.usage-settings#{n}": _AI for n in range(1, 4)},
-    **{f"ai.review-proposals#{n}": _AI for n in range(1, 5)},
+    "ai.ask-questions#1": None, "ai.ask-questions#3": None,
 }
 
 
@@ -1072,7 +1068,7 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
         step_id = f"{page_id}#{n}"
         # The installed modules as the app finds them, from the bundled tree (the suite's
         # process runs with none, which the modules page would picture as none installed).
-        with _capture_clock(), _subscription(_SUBSCRIBED.get(step_id)), \
+        with _capture_clock(), _subscription(_SUBSCRIBED.get(step_id, _AI if step["capture"]["route"].startswith("/ai") else None)), \
                 patch.dict(os.environ, {"MODULE_DIR": "default_modules"}), \
                 patch("ui.routes.documents._free_send_quota", return_value=_FREE_EMAIL_QUOTA), \
                 _STEP_STATE.get(step_id, contextlib.nullcontext)():

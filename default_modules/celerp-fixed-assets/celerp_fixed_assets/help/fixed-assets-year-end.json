@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant what is still open for the year end.",
       "labels": {},
       "image": "img/year-end-3.webp",
-      "capture": {"route": "/fixed-assets/year-end", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "What is still open for the year end?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.register"]

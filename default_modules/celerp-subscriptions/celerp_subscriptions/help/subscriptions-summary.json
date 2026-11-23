@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant what automatic billing did, or to generate the invoices that are due. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/summary-2.webp",
-      "capture": {"route": "/subscriptions/summary", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "What did automatic billing do?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["subscriptions.overview", "subscriptions.catch-up"]

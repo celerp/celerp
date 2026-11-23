@@ -18,7 +18,7 @@
       "text": "You can also give the assistant a spreadsheet of contacts: it previews the rows and shows the import as a card that runs only when you confirm.",
       "labels": {},
       "image": "img/crm-import-2.webp",
-      "capture": {"route": "/crm/import/contacts", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Import my contacts from a spreadsheet"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["contacts.add-customer", "contacts.add-vendor"]

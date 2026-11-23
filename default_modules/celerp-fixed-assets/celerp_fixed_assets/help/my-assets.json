@@ -18,7 +18,7 @@
       "text": "You can also ask the assistant which assets are in your care, to confirm you still hold one, or to report a problem with one. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/my-assets-2.webp",
-      "capture": {"route": "/fixed-assets/mine", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Which assets are in my care?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.register"]

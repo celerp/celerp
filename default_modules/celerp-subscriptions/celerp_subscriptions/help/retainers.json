@@ -65,11 +65,16 @@
       "labels": {},
       "image": "img/retainers-4.webp",
       "capture": {
-        "route": "/retainers",
-        "selector": "main",
-        "actions": [],
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Generate the retainer invoices that are due"
+          }
+        ],
         "evidence": [
-          "h1.page-title"
+          "#ai-query-input"
         ]
       }
     }

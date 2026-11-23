@@ -30,7 +30,7 @@
       "text": "You can also ask the assistant to add, change or remove a work center, or set the default one. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/settings-4.webp",
-      "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Add a work center called Assembly"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["manufacturing.production"]

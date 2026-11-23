@@ -24,7 +24,7 @@
       "text": "You can also ask the assistant which corrections are waiting, or to apply one. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": "img/corrections-3.webp",
-      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": [], "evidence": ["h1.page-title"]}
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Which corrections are waiting?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.register"]
