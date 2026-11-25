@@ -597,10 +597,16 @@ async def create_item(client, headers: dict, location_id: str, sku: str = "SKU-P
     return r.json()["id"]
 
 
-async def perm_setup(client, session):
-    """Bootstrap: admin token, manager token, operator token, location_id, item_id."""
+async def perm_setup(client, session, *, currency: str | None = None):
+    """Bootstrap: admin token, manager token, operator token, location_id, item_id.
+
+    ``currency`` sets the books' currency as company setup does; the assistant refuses
+    imports and postings until one is set."""
     admin_tok = await register_admin(client)
     admin_h = {"Authorization": f"Bearer {admin_tok}"}
+    if currency is not None:
+        r = await client.patch("/companies/me/books", headers=admin_h, json={"currency": currency})
+        assert r.status_code == 200, r.text
 
     loc_r = await client.post(
         "/companies/me/locations",

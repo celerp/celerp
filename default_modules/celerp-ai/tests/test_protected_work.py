@@ -103,7 +103,7 @@ async def test_old_pending_action_is_dismissed_through_the_api(client, session, 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("tools_open_when_called", "model_answers_unscripted_runs")
 async def test_old_retryable_action_is_read_and_retried_through_the_api(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     on = await client.put("/accounting/funds/setting", headers=admin, json={"enabled": True})
     assert on.status_code == 200, on.text

@@ -162,7 +162,7 @@ async def _crash_after_running(client, headers, session, conv_id, message_id, to
 async def test_keyed_retry_reuses_the_key(client, session, agent_caps, ai_session):
     """A fund create whose answer was lost is retryable; the retry carries the same
     key, so the company ends with one fund and the second answer equals the first."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     on = await client.put("/accounting/funds/setting", headers=admin, json={"enabled": True})
     assert on.status_code == 200, on.text
@@ -415,7 +415,7 @@ async def test_for_each_stopped_after_k_records_runs_only_the_rest(client, sessi
 @pytest.mark.asyncio
 async def test_run_again_on_a_keyed_record_never_runs_a_second_copy(client, session, agent_caps, ai_session):
     """Run again is refused on a keyed record; its plain retry carries the first key."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     assert (await client.put("/accounting/funds/setting", headers=admin, json={"enabled": True})).status_code == 200
     before = await _fund_count(client, admin)

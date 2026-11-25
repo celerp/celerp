@@ -343,7 +343,7 @@ async def test_supplier_catalog_xlsx_preview_then_commit(client, session, agent_
     """Importing a supplier catalog composes preview then commit: the model reads
     the preview hash out of the live preview result and echoes it into the commit
     call, which is confirmed to land the rows."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     file_id = await xlsx_upload(client, admin, {"Catalog": [
         ["sku", "name", "sell_by", "quantity", "retail_price"],

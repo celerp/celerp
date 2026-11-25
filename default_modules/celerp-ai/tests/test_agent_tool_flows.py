@@ -429,7 +429,7 @@ async def test_two_questions_whose_keyed_changes_share_a_call_id_each_run_their_
     """A provider may number each reply's calls from call_0. A keyed change's idempotency key
     is scoped by the message that proposed it, so the second question's import is never
     answered with the first one's result (the import skips a key it has already stored)."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     op = _op(agent_caps, "POST", "/companies/import/batch")
 
