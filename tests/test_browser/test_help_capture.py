@@ -454,13 +454,15 @@ async def seed_subscriptions(client: httpx.AsyncClient, auth: dict, contacts: li
     await _ok(await client.post(f"/subscriptions/{member}/generate-due", headers=auth,
                                 json={"request_key": uuid.uuid4().hex}))
     # A member in each other standing the members guide explains: a first bill past due inside
-    # its grace days, one past them, a cancelled membership and a settled lifetime sale.
+    # its grace days, one past them (each billed on the day its year began, a bill being issued
+    # the day it is made), a cancelled membership and a settled lifetime sale.
     for contact, days_ago, grace in ((customers[5 % len(customers)], 35, 60), (customers[6 % len(customers)], 120, 10)):
-        owing = await agreement(customers[3], today - timedelta(days=days_ago), [line("Annual membership", 60.0)],
-                                kind="membership", frequency="annually", grace_days=grace,
-                                beneficiary_contact_id=contact["id"])
-        await _ok(await client.post(f"/subscriptions/{owing}/generate-due", headers=auth,
-                                    json={"request_key": uuid.uuid4().hex}))
+        with pytest.MonkeyPatch.context() as mp:
+            freeze_day(mp, (start := today - timedelta(days=days_ago)).isoformat())
+            owing = await agreement(customers[3], start, [line("Annual membership", 60.0)], kind="membership",
+                                    frequency="annually", grace_days=grace, beneficiary_contact_id=contact["id"])
+            await _ok(await client.post(f"/subscriptions/{owing}/generate-due", headers=auth,
+                                        json={"request_key": uuid.uuid4().hex}))
     ended = await agreement(customers[3], today.replace(month=1, day=1), [line("Annual membership", 60.0)],
                             kind="membership", frequency="annually", beneficiary_contact_id=customers[7 % len(customers)]["id"])
     await _ok(await client.post(f"/subscriptions/{ended}/cancel", headers=auth))

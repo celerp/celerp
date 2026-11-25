@@ -160,17 +160,21 @@
       "image": "img/reconcile-5.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": "main div.bank-groups",
+        "selector": "#bank-body",
         "actions": [
           {
             "click": "a.bank-list__name"
           },
           {
             "wait": ".bank-views"
+          },
+          {
+            "click": "input[data-role=group]"
           }
         ],
         "evidence": [
-          "{suggest}"
+          "{suggest}",
+          ".bulk-toolbar__post"
         ]
       }
     },
@@ -197,6 +201,9 @@
           },
           {
             "wait": ".bank-panel"
+          },
+          {
+            "click": ".bank-panel > label.form-label"
           }
         ],
         "evidence": [
