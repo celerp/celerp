@@ -116,7 +116,8 @@ async def _commercial_state(request: Request) -> dict:
     return state
 
 
-def _cloud_tabs(active: str, has_team_features: bool = False, lang: str = "en") -> FT:
+def _cloud_tabs(active: str, has_team_features: bool = False, can_claim: bool = False,
+                lang: str = "en") -> FT:
     tabs = [("status", t("settings.team_url", lang))]
     if has_team_features:
         tabs.append(("infrastructure", t("cloud.tab_infrastructure", lang)))
@@ -128,6 +129,8 @@ def _cloud_tabs(active: str, has_team_features: bool = False, lang: str = "en") 
     # not-yet-connected visitor lands amid the plans/features pitch instead of
     # a dead Connect button. Links to its own page (needs live status).
     tabs.append(("payments", t("nav.payments", lang)))
+    if can_claim:
+        tabs.append(("partner", t("settings_cloud.partner_tab", lang)))
     return Div(
         *[
             A(label,
@@ -945,14 +948,13 @@ def setup_routes(app):
             relay_status in ("active", "tos_required", "connecting", "error")
             or (token_bound and entitlement_known)))
 
-        # Partner adoption is a pre-connection onboarding/recovery action. It
-        # never shares the normal subscription/Connect surface after connection.
+        # Every unmanaged install with a cloud identity can adopt a partner,
+        # with Web Access on or off; a partner-managed install already has one.
         from celerp.gateway.state import get_commercial_mode
         commercial_mode = get_commercial_mode()
         can_claim = (
             is_owner_admin
             and commercial_mode != "partner_managed"
-            and disconnected
             and token_bound
         )
         catalog: dict = {}
@@ -990,7 +992,9 @@ def setup_routes(app):
         from celerp.gateway.state import get_local_infra_state
         grace_notice = _grace_notice(get_local_infra_state(), lang=lang)
 
-        if tab == "infrastructure" and has_team:
+        if tab == "partner" and can_claim:
+            content = _partner_claim_card(lang=lang)
+        elif tab == "infrastructure" and has_team:
             content = _infrastructure_tab(grace_notice=grace_notice,
                                           owner=await _api.installation_owner(token))
         elif tab in ("website", "accounting"):
@@ -1038,7 +1042,7 @@ def setup_routes(app):
             _section_breadcrumb(t("settings_cloud.web_access", lang)),
             page_header(t("settings_cloud.web_access", lang)),
             *notice_flash,
-            _cloud_tabs(tab, has_team_features=has_team, lang=lang),
+            _cloud_tabs(tab, has_team_features=has_team, can_claim=can_claim, lang=lang),
             content,
             title=page_title("settings_cloud.web_access"),
             nav_active="web-access",

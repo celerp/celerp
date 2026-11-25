@@ -126,9 +126,10 @@ async def test_partner_claim_requires_owner_admin(client, role, path):
     "/settings/partner-claim/resolve",
     "/settings/partner-claim/accept",
 ])
-async def test_partner_claim_stale_form_cannot_run_after_reconnect(client, path):
-    """A form opened while disconnected cannot bind after another tab reconnects."""
-    post_mock = AsyncMock()
+async def test_partner_claim_runs_with_web_access_on(client, path):
+    """An unmanaged install with Web Access on can claim: the request reaches the
+    relay instead of being refused for being connected."""
+    post_mock = _relay_post_mock(_relay_resp(409, {"detail": "claim not acceptable"}))
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.cloud_disconnected", False),
@@ -138,12 +139,12 @@ async def test_partner_claim_stale_form_cannot_run_after_reconnect(client, path)
         r = await client.post(
             path,
             headers=await _role_headers(client, "owner"),
-            json={"claim_token": "tok-stale-tab"},
+            json={"claim_token": "tok-connected"},
         )
 
     assert r.status_code == 200
-    assert "disconnected" in r.json()["error"].lower()
-    assert post_mock.await_count == 0
+    assert post_mock.await_count == 2  # bearer exchange, then the claim
+    assert "no longer available" in r.json()["error"]
 
 
 # -- resolve: contract identity ----------------------------------------------
@@ -329,13 +330,15 @@ async def test_partner_claim_resolve_rejects_oversized_token(client):
     "/settings/partner-claim/resolve",
     "/settings/partner-claim/accept",
 ])
-async def test_partner_claim_requires_cloud_identity(client, path):
-    """Without a live or preserved credential, both routes fail before relay I/O."""
+@pytest.mark.parametrize("disconnected", [True, False])
+async def test_partner_claim_requires_cloud_identity(client, path, disconnected):
+    """Without a live or preserved credential, both routes fail before relay I/O,
+    with Web Access on or off."""
     post_mock = AsyncMock()
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", ""),
-        patch("celerp.config.settings.cloud_disconnected", True),
+        patch("celerp.config.settings.cloud_disconnected", disconnected),
         patch("celerp.services.cloud_entitlement.stored_api_key", new=AsyncMock(return_value="")),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = post_mock
@@ -641,11 +644,11 @@ async def test_partner_claim_hidden_on_partner_managed():
     ("inactive", "free", None, False),
     ("active", "cloud", "https://direct.celerp.com", True),
 ])
-async def test_partner_claim_hidden_once_direct_install_is_connected(
+async def test_partner_claim_shown_on_connected_direct_install(
     relay_status, tier, public_url, entitled,
 ):
-    """Connected direct customers never see partner adoption, including free tier;
-    a stale ?tab=partner URL safely falls back to the normal connected status view."""
+    """An unmanaged install keeps its partner tab with Web Access on, free or paid,
+    and ?tab=partner opens the claim card."""
     from httpx import ASGITransport, AsyncClient
     from ui.app import app as ui_app
     from test_helpers import make_test_token
@@ -681,8 +684,8 @@ async def test_partner_claim_hidden_once_direct_install_is_connected(
                 "/settings/cloud?tab=partner",
             )
     assert r.status_code == 200
-    assert 'id="partner-claim-card"' not in r.text
-    assert 'href="/settings/cloud?tab=partner"' not in r.text
+    assert 'id="partner-claim-card"' in r.text
+    assert 'href="/settings/cloud?tab=partner"' in r.text
 
 
 # -- unconnected Web Access recovery invariant -------------------------------
@@ -722,8 +725,8 @@ async def test_unconnected_direct_owner_admin_always_has_subscription_recovery(
 ):
     """Every normal unconnected direct-customer Web Access view retains an
     explicit subscription recovery action, regardless of how it became
-    unconnected. Partner adoption is available only as a separate tab and never
-    replaces the normal Connect/Link-subscription surface."""
+    unconnected. Partner adoption is its own tab on any install with a cloud
+    identity and never replaces the normal Connect/Link-subscription surface."""
     from httpx import ASGITransport, AsyncClient
     from ui.app import app as ui_app
     from test_helpers import make_test_token
@@ -757,7 +760,7 @@ async def test_unconnected_direct_owner_admin_always_has_subscription_recovery(
     assert 'id="partner-claim-card"' not in r.text
     assert (
         'href="/settings/cloud?tab=partner"' in r.text
-    ) is (disconnected and token_bound)
+    ) is token_bound
 
 
 @pytest.mark.asyncio
@@ -768,7 +771,7 @@ async def test_terminal_gateway_error_always_has_recovery(
 ):
     """The full Web Access route propagates entitlement state into a terminal
     gateway error: retry is always present, Link Subscription is added only
-    when account authority is unknown, and partner adoption stays isolated."""
+    when account authority is unknown, and partner adoption stays in its own tab."""
     from httpx import ASGITransport, AsyncClient
     from ui.app import app as ui_app
     from test_helpers import make_test_token
@@ -810,14 +813,14 @@ async def test_terminal_gateway_error_always_has_recovery(
     assert 'hx-post="/settings/cloud-disconnect"' in r.text
     assert ("Link subscription" in r.text) is (not entitlement_known)
     assert 'id="partner-claim-card"' not in r.text
-    assert 'href="/settings/cloud?tab=partner"' not in r.text
+    assert 'href="/settings/cloud?tab=partner"' in r.text
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["owner", "admin"])
-async def test_inactive_known_paid_account_has_reconnect_not_partner_claim(role):
+async def test_inactive_known_paid_account_has_reconnect_and_partner_tab(role):
     """A paid account that remains inactive after status self-heal has retry
-    rather than a Disconnect-only dead end, without reopening partner adoption."""
+    rather than a Disconnect-only dead end; partner adoption stays in its own tab."""
     from httpx import ASGITransport, AsyncClient
     from ui.app import app as ui_app
     from test_helpers import make_test_token
@@ -856,17 +859,17 @@ async def test_inactive_known_paid_account_has_reconnect_not_partner_claim(role)
     assert 'id="cloud-connect-btn"' in r.text
     assert 'hx-post="/settings/cloud-disconnect"' in r.text
     assert 'id="partner-claim-card"' not in r.text
-    assert 'href="/settings/cloud?tab=partner"' not in r.text
+    assert 'href="/settings/cloud?tab=partner"' in r.text
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["owner", "admin"])
 @pytest.mark.parametrize("relay_status", ["inactive", "active", "error"])
-async def test_lapsed_paid_account_always_has_subscription_recovery_without_partner_claim(
+async def test_lapsed_paid_account_always_has_subscription_recovery_and_partner_tab(
     role, relay_status,
 ):
     """A valid credential with a lapsed paid entitlement remains an account state,
-    but it must expose subscription recovery and never reopen partner adoption."""
+    but it must expose subscription recovery; partner adoption stays in its own tab."""
     from httpx import ASGITransport, AsyncClient
     from ui.app import app as ui_app
     from test_helpers import make_test_token
@@ -905,7 +908,7 @@ async def test_lapsed_paid_account_always_has_subscription_recovery_without_part
     assert r.status_code == 200
     assert "Link subscription" in r.text
     assert 'id="partner-claim-card"' not in r.text
-    assert 'href="/settings/cloud?tab=partner"' not in r.text
+    assert 'href="/settings/cloud?tab=partner"' in r.text
     if relay_status in ("inactive", "error"):
         assert 'id="cloud-connect-btn"' in r.text
     if relay_status == "inactive":
@@ -965,6 +968,6 @@ async def test_web_access_route_never_strands_unusable_direct_account(
     has_link_subscription = "Link subscription" in r.text
     assert has_connect or has_link_subscription, case
 
-    # Partner adoption may be reachable through its separate tab while genuinely
-    # unconnected, but it must never replace or co-render inside recovery.
+    # Partner adoption is reachable through its separate tab, but it must never
+    # replace or co-render inside recovery.
     assert 'id="partner-claim-card"' not in r.text, case
