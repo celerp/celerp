@@ -650,3 +650,111 @@ class TestReorderDigestUpsell:
         assert "upsell=1" not in loc
         relay.assert_awaited()  # the read was attempted, then swallowed
         assert patch_co.await_args.args[1]["reorder_alert_email"] is True  # saved as submitted
+
+
+class TestSettingsListDelete:
+    """DELETE /settings/<list>/<idx> on a list kept as one array (taxes, payment terms)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("prefix", "get_fn", "patch_fn", "redirect"), [
+        ("taxes", "get_taxes", "patch_taxes", "/settings/sales?tab=taxes"),
+        ("purchasing-terms", "get_purchasing_payment_terms", "patch_purchasing_payment_terms",
+         "/settings/purchasing?tab=terms"),
+    ])
+    async def test_deleting_a_row_saves_the_rest_and_returns_to_the_list(self, ui_client, prefix, get_fn, patch_fn, redirect):
+        ui_client.cookies.update(_authed())
+        save = AsyncMock(return_value=None)
+        with patch(f"ui.api_client.{get_fn}", new=AsyncMock(return_value=[{"name": "A"}, {"name": "B"}, {"name": "C"}])), \
+                patch(f"ui.api_client.{patch_fn}", new=save):
+            resp = await ui_client.delete(f"/settings/{prefix}/1")
+        assert resp.status_code == 204
+        assert resp.headers["HX-Redirect"] == redirect
+        assert save.await_args.args[1] == [{"name": "A"}, {"name": "C"}]
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_is_not_there_saves_nothing(self, ui_client):
+        ui_client.cookies.update(_authed())
+        save = AsyncMock(return_value=None)
+        with patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[{"name": "A"}])), \
+                patch("ui.api_client.patch_taxes", new=save):
+            resp = await ui_client.delete("/settings/taxes/5")
+        assert resp.status_code == 204
+        save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_save_shows_the_refusal(self, ui_client):
+        ui_client.cookies.update(_authed())
+        with patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[{"name": "A"}])), \
+                patch("ui.api_client.patch_taxes", new=AsyncMock(side_effect=APIError(409, "Tax A is in use"))):
+            resp = await ui_client.delete("/settings/taxes/0")
+        assert (resp.status_code, resp.text) == (409, "Tax A is in use")
+
+    @pytest.mark.asyncio
+    async def test_signed_out_goes_to_sign_in(self, ui_client):
+        save = AsyncMock(return_value=None)
+        with patch("ui.api_client.patch_taxes", new=save):
+            resp = await ui_client.delete("/settings/taxes/0")
+        assert resp.status_code == 302 and resp.headers["location"].startswith("/login")
+        save.assert_not_awaited()
+
+
+class TestColumnSetupSave:
+    """POST /column-prefs: the page's column setup goes to the user's one server copy."""
+
+    @pytest.mark.asyncio
+    async def test_the_layout_is_saved_as_sent(self, ui_client):
+        ui_client.cookies.update(_authed())
+        save = AsyncMock(return_value={"ok": True})
+        body = {"inventory": {"vis": {"sku": False}}, "contacts": None}
+        with patch("ui.api_client.patch_column_prefs", new=save):
+            resp = await ui_client.post("/column-prefs", json=body)
+        assert resp.status_code == 204
+        assert save.await_args.args[1] == body
+
+    @pytest.mark.asyncio
+    async def test_a_body_that_is_not_json_is_refused_unsaved(self, ui_client):
+        ui_client.cookies.update(_authed())
+        save = AsyncMock()
+        with patch("ui.api_client.patch_column_prefs", new=save):
+            resp = await ui_client.post("/column-prefs", content=b"not json", headers={"content-type": "application/json"})
+        assert resp.status_code == 400
+        save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_layout_answers_with_the_refusal(self, ui_client):
+        ui_client.cookies.update(_authed())
+        with patch("ui.api_client.patch_column_prefs", new=AsyncMock(side_effect=APIError(422, "Unknown column setting"))):
+            resp = await ui_client.post("/column-prefs", json={"inventory": {"colour": "red"}})
+        assert (resp.status_code, resp.text) == (422, "Unknown column setting")
+
+    @pytest.mark.asyncio
+    async def test_signed_out_saves_nothing(self, ui_client):
+        save = AsyncMock()
+        with patch("ui.api_client.patch_column_prefs", new=save):
+            resp = await ui_client.post("/column-prefs", json={"inventory": None})
+        assert resp.status_code == 302 and resp.headers["location"].startswith("/login")
+        save.assert_not_awaited()
+
+
+class TestColumnLayoutsRead:
+    """api.column_layouts: what a list page renders its columns with."""
+
+    @pytest.mark.asyncio
+    async def test_the_saved_layouts_are_returned(self):
+        from ui import api_client
+        saved = {"inventory": {"vis": {"sku": False}}}
+        with patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value=saved)):
+            assert await api_client.column_layouts("tok") == saved
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_setup_opens_default_columns(self):
+        from ui import api_client
+        with patch("ui.api_client.get_column_prefs", new=AsyncMock(side_effect=APIError(503, "down"))):
+            assert await api_client.column_layouts("tok") == {}
+
+    @pytest.mark.asyncio
+    async def test_an_ended_session_is_raised(self):
+        from ui import api_client
+        with patch("ui.api_client.get_column_prefs", new=AsyncMock(side_effect=APIError(401, "expired"))):
+            with pytest.raises(APIError):
+                await api_client.column_layouts("tok")
