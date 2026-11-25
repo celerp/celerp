@@ -1282,4 +1282,24 @@ def test_a_control_another_element_covers_is_not_evidence_of_the_screen(page):
           <li>Bank account</li></ul></main>""")
     assert _evidence_missing(page, page.locator("#t"), step) == ["{post}", "#t button"]
     page.locator("ul").evaluate("e => e.remove()")
-    assert [labels[e[1:-1]] for e in _evidence_missing(page, page.locator("#t"), step)] == []
+    assert _evidence_missing(page, page.locator("#t"), step) == []
+
+
+def test_a_control_covered_where_the_picture_is_taken_is_not_evidence_of_the_screen(page):
+    """A dropdown opens below its field when the viewport has room for it, else above. Scrolled
+    where it opens above, the Post button under the field is free; the picture, the whole kept
+    part laid out at once, shows the dropdown open below and over it."""
+    step = {"labels": {"post": "btn.post"}, "capture": {"evidence": ["{post}"]}}
+    page.set_content(f"""<div style='height:1000px'></div>
+        <main id='t' style='position:relative;height:900px'>
+          <input id='f' style='position:absolute;top:300px;left:10px'>
+          <button style='position:absolute;top:400px;left:10px'>{_shown('btn.post')}</button></main>
+        <div style='height:1000px'></div>
+        <ul id='dd' style='position:fixed;left:0;width:300px;height:250px;margin:0;background:#fff'><li>Bank</li></ul>
+        <script>
+          const place = () => {{ const r = f.getBoundingClientRect();
+            dd.style.top = (innerHeight - r.bottom >= 250 ? r.bottom : r.top - 250) + "px"; }};
+          addEventListener("scroll", place); addEventListener("resize", place);
+        </script>""")
+    page.evaluate("() => { scrollTo(0, f.getBoundingClientRect().top + scrollY - (innerHeight - 120)); place(); }")
+    assert _evidence_missing(page, page.locator("#t"), step) == ["{post}"]
