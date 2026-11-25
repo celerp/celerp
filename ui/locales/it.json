@@ -8902,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Ritira dal magazzino i prodotti finiti ricevuti da un ciclo di produzione finché non sono stati modificati.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Riapri un ciclo di produzione completato, annullando gli effetti della sua conclusione.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Carica a magazzino i prodotti finiti di un ciclo di produzione.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Completa un ciclo di produzione, prelevando i materiali rimanenti e caricando i prodotti finiti.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Completa un ciclo di produzione, prelevando i materiali rimanenti e caricando il prodotto ed eventuali prodotti aggiuntivi.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Registra il valore dei materiali di un ciclo di produzione che la cronologia non permette di dimostrare.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Correggi quanto registrato da una versione precedente sui prodotti ottenuti da un ciclo di produzione.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Annulla un ciclo di produzione senza materiali né prodotti finiti.",

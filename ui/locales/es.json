@@ -8902,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Deshaga la recepción de productos terminados de una orden de producción mientras no hayan cambiado.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Reabra una orden de producción finalizada y revierta los efectos de su finalización.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Reciba en inventario los productos terminados de una orden de producción.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Finalice una orden de producción entregando los materiales restantes y recibiendo los productos resultantes.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Finalice una orden de producción entregando los materiales restantes y recibiendo el producto y cualquier producto adicional.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Registre el valor de los materiales de una orden de producción cuando su historial no permita acreditarlo.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Repare la información que una versión anterior registró sobre los productos resultantes de una orden de producción.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Cancele una orden de producción que no tenga materiales ni productos resultantes.",

@@ -8902,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "ያልተቀየሩ የተጠናቀቁ ምርቶችን ከማምረቻ ሂደት የተቀበለውን መቀበል ይቀልብሱ።",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "የተጠናቀቀ የማምረቻ ሂደትን እንደገና ይክፈቱ፤ በማጠናቀቁ የተፈጠሩ ለውጦችን ይቀልብሱ።",
   "tool.receive_order_manufacturing__order_id__receive_post": "ከማምረቻ ሂደት የተጠናቀቁ ምርቶችን ወደ ክምችት ይቀበሉ።",
-  "tool.complete_order_manufacturing__order_id__complete_post": "የቀሩትን ቁሳቁሶች በማውጣትና የተጠናቀቁ ምርቶችን በመቀበል የማምረቻ ሂደትን ያጠናቅቁ።",
+  "tool.complete_order_manufacturing__order_id__complete_post": "የቀሩትን ቁሳቁሶች በማውጣትና ምርቱን ከማንኛውም ተጨማሪ ምርት ጋር በመቀበል የማምረቻ ሂደትን ያጠናቅቁ።",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "የታሪክ መዝገቡ ማረጋገጥ የማይችለውን የማምረቻ ሂደት ቁሳቁስ ዋጋ ይመዝግቡ።",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "ቀደም ያለ ስሪት ስለ ማምረቻ ሂደት ውጤት የመዘገበውን ያስተካክሉ።",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "ምንም ቁሳቁስ ወይም የተመረተ እቃ የሌለበትን የማምረቻ ሂደት ይሰርዙ።",

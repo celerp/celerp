@@ -131,11 +131,15 @@ async def test_block_bad_extra_flashes(ui_client, value):
     assert op.await_count == 0 and "flash--error" in r.text
 
 
+_MANUFACTURING = {"name": "celerp-manufacturing", "api_routes": "celerp_manufacturing.routes", "first_party": True}
+
+
 def test_ai_tools_extras(monkeypatch):
     """The recipe, create and complete tools offer also_produces."""
     from celerp.ai import tools as ai_tools
     from celerp.main import app
 
+    monkeypatch.setattr(ai_tools, "loaded_modules", lambda: [_MANUFACTURING])
     caps = ai_tools.compile_agent_capabilities(app, {})
     wanted = {("PUT", "/manufacturing/items/{item_id}/recipe"), ("POST", "/manufacturing"),
               ("POST", "/manufacturing/{order_id}/complete")}

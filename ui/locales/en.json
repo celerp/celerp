@@ -8903,7 +8903,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Take back finished goods a production run received while they are unchanged.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Reopen a completed production run, reversing what completing it did.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Receive finished goods from a production run into stock.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Complete a production run, issuing any remaining materials and receiving the output.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Complete a production run, issuing any remaining materials and receiving the product and any extra outputs.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Record the value of the materials in a production run whose history cannot prove it.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Repair what an older version recorded about a production run's output.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Cancel a production run that holds no materials or output.",

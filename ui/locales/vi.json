@@ -8902,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Thu hồi thành phẩm đã nhập kho từ đợt sản xuất khi chúng chưa bị thay đổi.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Mở lại đợt sản xuất đã hoàn tất, đảo các tác động của việc hoàn tất.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Nhập kho thành phẩm từ đợt sản xuất.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Hoàn tất đợt sản xuất bằng cách xuất hết nguyên vật liệu còn lại và nhập kho thành phẩm.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Hoàn tất đợt sản xuất bằng cách xuất hết nguyên vật liệu còn lại và nhập kho thành phẩm cùng các sản phẩm phụ (nếu có).",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Ghi nhận giá trị nguyên vật liệu trong đợt sản xuất mà lịch sử không đủ chứng minh.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Sửa thông tin về sản lượng của một đợt sản xuất do phiên bản cũ ghi nhận.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Hủy đợt sản xuất không còn giữ nguyên vật liệu hoặc thành phẩm.",

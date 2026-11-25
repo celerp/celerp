@@ -693,9 +693,10 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str,
 
 async def complete(session: AsyncSession, company_id, user_id, order_id: str, payload: dict,
                    key: str | None, *, at: str, quantity: float | None = None) -> dict:
-    """Finish a run: issue what is outstanding, receive the output still to come (``quantity``
-    of it when given, else all of it, or none when every component issued was wasted) and close. ``payload`` holds the closing details
-    (waste_items, or the waste_quantity shorthand with waste_unit; waste_reason, labor_hours).
+    """Finish a run: issue what is outstanding, receive the product still to come (``quantity``
+    of it when given, else all of it, or none when every component issued was wasted) and each
+    extra (_extras_request), and close. ``payload`` holds the closing details (waste_items, or
+    the waste_quantity shorthand with waste_unit; waste_reason, labor_hours; also_produces).
     What it made is what it received."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
@@ -857,8 +858,8 @@ def value_waste(run_state: dict, waste_items: list[dict], currency: str,
 async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
                  wasted: list[dict] | None = None, names: dict[str, str] | None = None) -> None:
     """Close a run, leaving it holding nothing: waste to cost of goods sold, and the rest
-    shared over its lots (by cost share between outputs, then by quantity, _output_shares), each lot restated by the difference from what it took
-    when it was received. ``ck`` keys this completion, so a reopened run completes afresh.
+    shared over its lots (by cost share between outputs, then by quantity, _output_shares),
+    each lot restated by the difference from what it took when it was received. ``ck`` keys this completion, so a reopened run completes afresh.
     The completion records what it moved, so reopening reverses exactly that."""
     state = run.state
     issued, held = _money(state.get("wip_issued")), _wip(state)

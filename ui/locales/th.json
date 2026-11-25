@@ -8902,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "นำสินค้าสำเร็จรูปที่รับจากรอบการผลิตกลับออก หากสินค้าเหล่านั้นยังไม่เปลี่ยนแปลง",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "เปิดรอบการผลิตที่เสร็จแล้วอีกครั้ง พร้อมยกเลิกผลของการเสร็จสิ้น",
   "tool.receive_order_manufacturing__order_id__receive_post": "รับสินค้าสำเร็จรูปจากรอบการผลิตเข้าคลัง",
-  "tool.complete_order_manufacturing__order_id__complete_post": "ปิดรอบการผลิตโดยเบิกวัสดุที่เหลือและรับสินค้าสำเร็จรูป",
+  "tool.complete_order_manufacturing__order_id__complete_post": "ปิดรอบการผลิตโดยเบิกวัสดุที่เหลือ และรับสินค้าสำเร็จรูปพร้อมผลผลิตอื่นที่ได้ร่วมกัน (ถ้ามี)",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "บันทึกมูลค่าวัสดุในรอบการผลิตที่ประวัติไม่สามารถยืนยันได้",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "แก้ไขข้อมูลผลผลิตของรอบการผลิตที่ระบบเวอร์ชันเก่าบันทึกไว้",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "ยกเลิกรอบการผลิตที่ไม่มีวัตถุดิบหรือผลผลิตคงอยู่",

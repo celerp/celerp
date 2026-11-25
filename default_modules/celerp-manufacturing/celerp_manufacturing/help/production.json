@@ -6,7 +6,7 @@
   "routes": ["/manufacturing/production", "/manufacturing/runs/{run_id}/reconcile"],
   "permission": "manage_manufacturing",
   "order": 2,
-  "checked": "06a6773d67ff9aa55d1dc99ed305842689bfe07b3f6e63f6acdfc7e4c832ecfd",
+  "checked": "5d1a8b1b9fc9420b7577ab23f263efbd8758929d0165c505aa4ba8594e35a167",
   "steps": [
     {
       "text": "Open {wip} from the sidebar to see production runs on the floor.",
@@ -17,6 +17,12 @@
     {
       "text": "Status cards split the queue by stage, from {planned} to {hold} to {done}; tick runs and choose an action from the bulk actions above the table to move them along.",
       "labels": {"planned": "enum.mfg_run_status.planned", "hold": "enum.mfg_run_status.on_hold", "done": "enum.mfg_run_status.completed"},
+      "image": null,
+      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
+    },
+    {
+      "text": "A run that yields extras, such as oil cake beside oil, has a quantity box for each one in its row on the product's {tab} tab, filled with what is still to come. Change it to what was really made before you choose Complete, and enter 0 for an extra that was not made or was thrown away. Completing runs from this page receives each extra's planned quantity.",
+      "labels": {"tab": "nav.manufacturing"},
       "image": null,
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     },

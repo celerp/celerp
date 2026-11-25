@@ -8902,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Recolha os produtos acabados recebidos de um lote de produção enquanto permanecerem inalterados.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Reabra um lote de produção concluído, revertendo os efeitos de sua conclusão.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Receba no estoque os produtos acabados de um lote de produção.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Conclua um lote de produção, baixando os materiais restantes e recebendo a produção.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Conclua um lote de produção, baixando os materiais restantes e recebendo o produto e eventuais produtos adicionais.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Registre o valor dos materiais de um lote de produção que não pode ser comprovado pelo histórico.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Repare o que uma versão antiga registrou sobre a produção concluída de um lote.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Cancele um lote de produção que não possui materiais nem produtos acabados.",

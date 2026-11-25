@@ -8902,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Tarik kembali barang jadi yang telah diterima dari proses produksi selama belum berubah.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Buka kembali proses produksi yang selesai dan batalkan akibat dari penyelesaiannya.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Terima barang jadi dari proses produksi ke stok.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Selesaikan proses produksi dengan mengeluarkan bahan yang tersisa dan menerima hasilnya.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Selesaikan proses produksi dengan mengeluarkan bahan yang tersisa dan menerima produk beserta hasil tambahannya.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Catat nilai bahan dalam proses produksi yang tidak dapat dibuktikan oleh riwayatnya.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Perbaiki data hasil proses produksi yang dicatat oleh versi sebelumnya.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Batalkan proses produksi yang tidak lagi menyimpan bahan atau hasil produksi.",

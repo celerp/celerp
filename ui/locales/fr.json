@@ -8902,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Annulez la réception de produits finis d’un ordre de fabrication tant qu’ils n’ont pas été modifiés.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Rouvrez un ordre de fabrication terminé en annulant les effets de son achèvement.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Réceptionnez en stock les produits finis d’un ordre de fabrication.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Terminez un ordre de fabrication en sortant les matières restantes et en réceptionnant les produits fabriqués.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Terminez un ordre de fabrication en sortant les matières restantes et en réceptionnant le produit et ses éventuels produits supplémentaires.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Saisissez la valeur des matières d’un ordre de fabrication lorsque son historique ne permet pas de la prouver.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Corrigez les données enregistrées par une ancienne version concernant les produits d’un ordre de fabrication.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Annulez un ordre de fabrication ne détenant ni matières ni produits finis.",

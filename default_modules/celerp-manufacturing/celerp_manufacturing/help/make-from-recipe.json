@@ -6,7 +6,7 @@
   "routes": ["/manufacturing", "/manufacturing/production"],
   "permission": "manage_manufacturing",
   "order": 3,
-  "checked": "c86512efd1ca4b79d44ca9a1cfb4d49d693a129162778652c4c7c274e70db471",
+  "checked": "40630bfe656b524db341c3e87752b3328de864dabdb1287d47f0ee1ac44f8b26",
   "steps": [
     {
       "text": "Open the item and choose its {tab} tab. The recipe there lists the components and the quantity of each that one unit takes, so a recipe for pressed rapeseed oil lists the seed.",
@@ -39,10 +39,10 @@
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     },
     {
-      "text": "A work order makes one product. A second product from the same batch, such as oil cake from pressing rapeseed, is not part of the run: add it to stock as its own item with {add}.",
-      "labels": {"add": "btn.add_item"},
+      "text": "A work order can make more than one product. If pressing rapeseed also gives oil cake, add the cake to the oil's recipe under {also}, with the quantity one batch yields and its share of the cost. Each work order then receives the cake into stock beside the oil, and the cost of the run is split between them by those shares.",
+      "labels": {"also": "inventory.also_produces"},
       "image": null,
-      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+      "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to create the work order, issue its components or complete it. It shows each change as a card and makes it only when you confirm.",

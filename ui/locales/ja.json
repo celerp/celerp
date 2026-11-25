@@ -8902,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "未変更の完成品に限り、製造作業で受け入れた完成品の入庫を取り消します。",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "完了済みの製造作業を再開し、完了時の処理を取り消します。",
   "tool.receive_order_manufacturing__order_id__receive_post": "製造作業の完成品を在庫に入庫します。",
-  "tool.complete_order_manufacturing__order_id__complete_post": "残りの原材料を払い出して完成品を受け入れ、製造作業を完了します。",
+  "tool.complete_order_manufacturing__order_id__complete_post": "残りの原材料を払い出し、製品と併産品（ある場合）を受け入れて、製造作業を完了します。",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "履歴から確認できない製造作業の材料費を記録します。",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "旧バージョンで記録された製造作業の生産実績を修正します。",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "原材料や完成品を保持していない製造作業をキャンセルします。",

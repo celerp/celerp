@@ -8902,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "تراجع عن استلام المنتجات التامة من دورة إنتاج ما دامت دون تغيير.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "أعد فتح دورة إنتاج مكتملة، مع عكس الآثار التي أحدثها إكمالها.",
   "tool.receive_order_manufacturing__order_id__receive_post": "استلم المنتجات التامة من دورة إنتاج وأدخلها المخزون.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "أكمل دورة إنتاج بصرف المواد المتبقية واستلام المنتجات الناتجة.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "أكمل دورة إنتاج بصرف المواد المتبقية واستلام المنتج وأي منتجات إضافية.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "سجّل قيمة المواد في دورة إنتاج يتعذر إثبات قيمتها من سجلها التاريخي.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "أصلح ما سجّله إصدار أقدم عن مخرجات دورة إنتاج.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "ألغِ دورة إنتاج لا تحتجز مواد أو نواتج.",

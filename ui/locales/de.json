@@ -8902,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Fertigerzeugnisse aus einem Fertigungsauftrag zurücknehmen, solange sie unverändert sind.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Einen abgeschlossenen Fertigungsauftrag wieder öffnen und die durch den Abschluss vorgenommenen Vorgänge rückgängig machen.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Fertigerzeugnisse eines Fertigungsauftrags als Wareneingang ins Lager übernehmen.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Einen Fertigungsauftrag abschließen, dabei verbleibendes Material entnehmen und die gefertigten Artikel einlagern.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Einen Fertigungsauftrag abschließen, dabei verbleibendes Material entnehmen und das Produkt sowie etwaige Nebenprodukte einlagern.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Den Materialwert eines Fertigungsauftrags erfassen, wenn er anhand der bisherigen Buchungshistorie nicht nachweisbar ist.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Die in einer älteren Version erfassten Angaben zum Produktionsergebnis eines Fertigungsauftrags berichtigen.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Einen Fertigungsauftrag ohne gebundenes Material oder Fertigerzeugnisse abbrechen.",

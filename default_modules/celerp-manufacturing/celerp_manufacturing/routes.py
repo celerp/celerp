@@ -159,7 +159,8 @@ class ExtraYield(MfgInput):
 
 
 class CompleteBody(BaseModel):
-    # What a run made is what was received from it; a declared yield is refused, not ignored.
+    # What a run made is what was received from it; a declared yield of the product is refused,
+    # not ignored.
     # Waste names each component and how much of it was wasted; waste_quantity (in waste_unit)
     # is the shorthand for a run with one component. also_produces says how much of each extra
     # is received now; left out, each extra still to come is received.
@@ -305,8 +306,8 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
                               locked: dict[str, Projection] | None = None):
     """The one way a new run is written, by every door that creates one.
 
-    A run makes ``quantity`` of one product, ``data["output_item_id"]``, from the components
-    in ``data["inputs"]``; what it expects to make is taken from the product. Every item it
+    A run makes ``quantity`` of one product, ``data["output_item_id"]``, and the extras in
+    ``data["also_produces"]`` beside it, from the components in ``data["inputs"]``; what it expects to make is taken from the product. Every item it
     names must be a stocked item or component of this company, so a run never stores an item
     that does not exist or one production cannot move. The items are locked first
     (``locked`` when the caller already locked them), so a Delete of one either finishes
@@ -1292,7 +1293,8 @@ async def import_manufacturing_template():
 # fields. Progress, status and value come only from the run's own movements.
 _IMPORTED_FIELDS = ("planned_start", "priority", "source_doc_id", "source_doc_number",
                     "source_doc_type", "source_contact_name", "source_due")
-# Listing outputs is refused on import as on every other door: a run's output is its product.
+# Listing outputs is refused on import as on every other door: a run makes its product, and
+# its extras come only from also_produces.
 _REFUSED_ON_IMPORT = ("expected_outputs", "outputs")
 
 
@@ -1916,7 +1918,8 @@ async def receive_order(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Receive finished goods from a run as a discrete lot under the product. Omitting
-    `quantity` receives everything still outstanding; once fully received the run completes."""
+    `quantity` receives everything still outstanding; a run without extras completes once fully
+    received, and a run with extras stays open until Complete receives them."""
     result = await movements.receive(session, company_id, user.id, order_id,
                                      payload.quantity if payload else None,
                                      payload.idempotency_key if payload else None,
@@ -1925,7 +1928,7 @@ async def receive_order(
     return result
 
 
-@router.post("/{order_id}/complete", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Complete a production run, issuing any remaining materials and receiving the output.")
+@router.post("/{order_id}/complete", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Complete a production run, issuing any remaining materials and receiving the product and any extra outputs.")
 async def complete_order(
     order_id: str,
     payload: CompleteBody | None = None,
@@ -1934,10 +1937,11 @@ async def complete_order(
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Finish a run now: issue any outstanding components, receive all outstanding output, and close.
+    """Finish a run now: issue any outstanding components, receive the product and each extra
+    still to come, and close.
 
-    This is the one-tap close used by the product hub's Complete action; the output lands as a
-    discrete lot under the product, never a nameless throwaway item.
+    This is the one-tap close used by the product hub's Complete action; each output lands as a
+    discrete lot under its own item, never a nameless throwaway item.
     """
     details = payload.model_dump(exclude={"idempotency_key"}) if payload else {}
     result = await movements.complete(session, company_id, user.id, order_id, details,
