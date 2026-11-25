@@ -5700,6 +5700,8 @@
   "mfg.reconciliation_required": "የዚህ የምርት ዙር የዕቃዎች ዋጋ ገና በሂሳብ መዝገብ አልተመዘገበም ወይም ከታሪኩ ሊሰላ አይችልም። ዕቃዎቹን ወይም ምርቱን ከመቀየርዎ በፊት ያስታርቁት።",
   "mfg.insufficient_stock": "ከ{sku} በክምችት ያለው እና ያልተያዘው {available:g} ብቻ ነው፤ የሚያስፈልገው {needed:g} ነው።",
   "mfg.over_receipt": "ከዚህ የምርት ዙር ለመቀበል የቀረው {remaining:g} ብቻ ነው፤ {quantity:g} መቀበል አይቻልም።",
+  "mfg.not_an_extra": "{sku} የዚህ የምርት ዙር ተጨማሪ ውጤት አይደለም።",
+  "mfg.extra_quantity": "የተቀበለው የ{sku} መጠን ከዜሮ በታች ሊሆን አይችልም።",
   "mfg.cancel_moved": "ይህ የምርት ዙር አሁንም ዕቃዎች ወይም ምርት ይዟል፣ ስለዚህ ሊሰረዝ አይችልም። መጀመሪያ ዕቃዎቹን ይመልሱ እና ደረሰኞቹን ይቀልብሱ።",
   "mfg.run_not_found": "የምርት ትዕዛዝ {order} አልተገኘም።",
   "mfg.wip_location_unknown": "ቦታ {value} የዚህ ኩባንያ ቦታ አይደለም። ከቅንብሮች > ቦታዎች ቦታ ይምረጡ፣ ወይም ባዶ ይተዉት።",

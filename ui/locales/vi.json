@@ -5702,6 +5702,8 @@
   "mfg.reconciliation_required": "Giá trị nguyên vật liệu của đợt sản xuất này chưa được ghi sổ hoặc không thể tính được từ lịch sử của nó. Hãy đối chiếu trước khi thay đổi nguyên vật liệu hoặc thành phẩm.",
   "mfg.insufficient_stock": "Chỉ có {available:g} {sku} trong kho và chưa được giữ chỗ; cần {needed:g}.",
   "mfg.over_receipt": "Chỉ còn {remaining:g} cần nhận từ đợt sản xuất này; không thể nhận {quantity:g}.",
+  "mfg.not_an_extra": "{sku} không phải là sản phẩm phụ của đợt sản xuất này.",
+  "mfg.extra_quantity": "Số lượng {sku} nhận được không thể nhỏ hơn 0.",
   "mfg.cancel_moved": "Đợt sản xuất này vẫn còn nguyên vật liệu hoặc thành phẩm nên không thể hủy. Hãy trả lại nguyên vật liệu và hoàn tác các lần nhận trước.",
   "mfg.run_not_found": "Không tìm thấy lệnh sản xuất {order}.",
   "mfg.wip_location_unknown": "Vị trí {value} không thuộc các vị trí của công ty này. Hãy chọn một vị trí trong Cài đặt > Vị trí, hoặc để trống.",

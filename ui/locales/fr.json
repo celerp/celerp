@@ -5702,6 +5702,8 @@
   "mfg.reconciliation_required": "La valeur des matières de ce cycle n'est pas encore comptabilisée ou ne peut pas être déterminée à partir de son historique. Rapprochez-la avant de modifier ses matières ou sa production.",
   "mfg.insufficient_stock": "Seulement {available:g} de {sku} en stock et non réservés ; {needed:g} sont nécessaires.",
   "mfg.over_receipt": "Il ne reste que {remaining:g} à réceptionner de ce cycle ; {quantity:g} ne peuvent pas être réceptionnés.",
+  "mfg.not_an_extra": "{sku} n'est pas une production secondaire de ce cycle.",
+  "mfg.extra_quantity": "La quantité réceptionnée de {sku} ne peut pas être inférieure à zéro.",
   "mfg.cancel_moved": "Ce cycle contient encore des matières ou de la production, il ne peut donc pas être annulé. Retournez d'abord ses matières et annulez ses réceptions.",
   "mfg.run_not_found": "L'ordre de production {order} est introuvable.",
   "mfg.wip_location_unknown": "L'emplacement {value} n'est pas un emplacement de cette entreprise. Choisissez un emplacement dans Paramètres > Emplacements, ou laissez le champ vide.",

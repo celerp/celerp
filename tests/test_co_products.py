@@ -375,6 +375,15 @@ async def test_extra_item_changed(client, session, auth, change):
     cake refuses and names it; entering 0 completes without it; finalizing a sale that
     auto-completes the run tells the user it did not complete."""
     seed, oil, cake = await press(client, auth)
+    if change != "merged":
+        # Only a draft that never held stock can be deleted or change its inventory type.
+        r = await client.post("/items", headers=auth["headers"], json={
+            "sku": f"CAKE-{uuid.uuid4().hex[:6]}", "name": "Cake", "quantity": 0, "sell_by": "piece",
+            "status": "draft"})
+        assert r.status_code == 200, r.text
+        cake = r.json()["id"]
+        r = await put_recipe(client, auth, oil, [(seed, 3)], [{"item_id": cake, "quantity": 2, "cost_share": 20}])
+        assert r.status_code == 200, r.text
     sku = (await _state(session, auth, cake))["sku"]
     order = await start(client, auth, oil, 10)
     if change == "deleted":
@@ -454,14 +463,7 @@ async def test_doors_default_extras(client, session, auth):
     """Build-and-complete, make from a sale, finalize auto-complete and bulk complete all
     receive the extras shown on the run."""
     seed, oil, cake = await press(client, auth)
-    order = await start(client, auth, oil, 2, complete=True)
-    assert (await lots_of(session, auth, order))[cake][0]["quantity"] == 4
-
-    order = await start(client, auth, oil, 3)
-    r = await client.post(f"{MFG}/bulk-action", headers=auth["headers"], json={"run_ids": [order], "action": "complete"})
-    assert r.status_code == 200, r.text
-    assert (await lots_of(session, auth, order))[cake][0]["quantity"] == 6
-
+    # The sale doors first: a run is made for what stock on hand does not cover.
     osku = (await _state(session, auth, oil))["sku"]
 
     async def invoice(qty):
@@ -483,8 +485,16 @@ async def test_doors_default_extras(client, session, auth):
     assert r.status_code == 200, r.text
     await invoice(5)
     runs = (await client.get(MFG, headers=auth["headers"])).json()["items"]
-    auto = [o for o in runs if o.get("output_item_id") == oil and o.get("quantity") == 5]
+    auto = [o for o in runs if o.get("output_item_id") == oil and o.get("received_qty") == 5]
     assert auto and (await lots_of(session, auth, auto[0]["id"]))[cake][0]["quantity"] == 10
+
+    order = await start(client, auth, oil, 2, complete=True)
+    assert (await lots_of(session, auth, order))[cake][0]["quantity"] == 4
+
+    order = await start(client, auth, oil, 3)
+    r = await client.post(f"{MFG}/bulk-action", headers=auth["headers"], json={"run_ids": [order], "action": "complete"})
+    assert r.status_code == 200, r.text
+    assert (await lots_of(session, auth, order))[cake][0]["quantity"] == 6
 
 
 # ---------------------------------------------------------------------------

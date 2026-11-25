@@ -151,12 +151,21 @@ class WasteItem(BaseModel):
     quantity: FiniteFloat = Field(gt=0)
 
 
+class ExtraYield(MfgInput):
+    # How much of one of the run's extras Complete receives. 0 finishes without it; a negative
+    # quantity, or an item the run does not yield, is refused by complete (movements), which
+    # names the item.
+    model_config = ConfigDict(extra="forbid")
+
+
 class CompleteBody(BaseModel):
     # What a run made is what was received from it; a declared yield is refused, not ignored.
     # Waste names each component and how much of it was wasted; waste_quantity (in waste_unit)
-    # is the shorthand for a run with one component.
+    # is the shorthand for a run with one component. also_produces says how much of each extra
+    # is received now; left out, each extra still to come is received.
     model_config = ConfigDict(extra="forbid")
 
+    also_produces: list[ExtraYield] | None = None
     waste_items: list[WasteItem] | None = None
     waste_quantity: FiniteFloat | None = Field(default=None, ge=0)
     waste_unit: str | None = None

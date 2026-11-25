@@ -5702,6 +5702,8 @@
   "mfg.reconciliation_required": "Il valore dei materiali di questa produzione non è ancora registrato in contabilità o non può essere ricavato dalla sua cronologia. Riconcilialo prima di modificarne i materiali o la produzione.",
   "mfg.insufficient_stock": "Solo {available:g} di {sku} sono a magazzino e non riservati; ne servono {needed:g}.",
   "mfg.over_receipt": "Da questa produzione restano da ricevere solo {remaining:g}; non è possibile riceverne {quantity:g}.",
+  "mfg.not_an_extra": "{sku} non è una produzione aggiuntiva di questa produzione.",
+  "mfg.extra_quantity": "La quantità ricevuta di {sku} non può essere inferiore a zero.",
   "mfg.cancel_moved": "Questa produzione contiene ancora materiali o articoli prodotti, quindi non può essere annullata. Prima restituisci i materiali e annulla i ricevimenti.",
   "mfg.run_not_found": "L'ordine di produzione {order} non è stato trovato.",
   "mfg.wip_location_unknown": "L'ubicazione {value} non è una delle ubicazioni di questa azienda. Scegli un'ubicazione da Impostazioni > Ubicazioni oppure lascia il campo vuoto.",

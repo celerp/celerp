@@ -5702,6 +5702,8 @@
   "mfg.reconciliation_required": "Der Wert des Materials in diesem Produktionslauf ist noch nicht verbucht oder lässt sich aus seiner Historie nicht ermitteln. Stimmen Sie ihn ab, bevor Sie Material oder Ausbringung ändern.",
   "mfg.insufficient_stock": "Nur {available:g} von {sku} sind auf Lager und nicht reserviert; benötigt werden {needed:g}.",
   "mfg.over_receipt": "Aus diesem Produktionslauf sind nur noch {remaining:g} entgegenzunehmen; {quantity:g} können nicht entgegengenommen werden.",
+  "mfg.not_an_extra": "{sku} ist kein weiteres Erzeugnis dieses Produktionslaufs.",
+  "mfg.extra_quantity": "Die entgegengenommene Menge von {sku} darf nicht unter null liegen.",
   "mfg.cancel_moved": "Dieser Produktionslauf enthält noch Material oder Ware und kann daher nicht storniert werden. Geben Sie zuerst das Material zurück und machen Sie die Eingänge rückgängig.",
   "mfg.run_not_found": "Der Produktionslauf {order} wurde nicht gefunden.",
   "mfg.wip_location_unknown": "Der Standort {value} gehört nicht zu diesem Unternehmen. Wählen Sie einen Standort unter Einstellungen > Standorte oder lassen Sie das Feld leer.",

@@ -5702,6 +5702,8 @@
   "mfg.reconciliation_required": "O valor dos materiais deste ciclo ainda não está registrado na contabilidade ou não pode ser apurado a partir do seu histórico. Concilie-o antes de alterar os seus materiais ou a sua produção.",
   "mfg.insufficient_stock": "Há apenas {available:g} de {sku} em estoque e não reservados; são necessários {needed:g}.",
   "mfg.over_receipt": "Restam apenas {remaining:g} a receber deste ciclo; não é possível receber {quantity:g}.",
+  "mfg.not_an_extra": "{sku} não é uma produção adicional deste ciclo.",
+  "mfg.extra_quantity": "A quantidade recebida de {sku} não pode ser menor que zero.",
   "mfg.cancel_moved": "Este ciclo ainda contém materiais ou produção, por isso não pode ser cancelado. Primeiro devolva os materiais e desfaça os recebimentos.",
   "mfg.run_not_found": "A ordem de produção {order} não foi encontrada.",
   "mfg.wip_location_unknown": "O local {value} não é um dos locais desta empresa. Escolha um local em Configurações > Locais ou deixe o campo vazio.",

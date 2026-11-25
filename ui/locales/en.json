@@ -5789,6 +5789,8 @@
   "mfg.reconciliation_required": "The value of the materials in this run is not recorded in the books yet, or cannot be worked out from its history. Reconcile it before changing its materials or output.",
   "mfg.insufficient_stock": "Only {available:g} of {sku} is in stock and not reserved; {needed:g} is needed.",
   "mfg.over_receipt": "Only {remaining:g} is still to be received from this run; {quantity:g} cannot be received.",
+  "mfg.not_an_extra": "{sku} is not an extra output of this run.",
+  "mfg.extra_quantity": "The quantity of {sku} received cannot be below zero.",
   "mfg.cancel_moved": "This run still holds materials or output, so it cannot be cancelled. Return its materials and undo its receipts first.",
   "mfg.run_not_found": "Production run {order} was not found.",
   "mfg.wip_location_unknown": "Location {value} is not one of this company's locations. Choose a location from Settings > Locations, or leave it empty.",

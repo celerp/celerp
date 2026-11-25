@@ -1157,6 +1157,9 @@ class MfgOrderReceived(BaseModel):
     received_by: str | None = None
     # The work in progress value the received lot carries.
     value: str | None = None
+    # Set only when the lot is of one of the run's extras, not its product.
+    output_item_id: str | None = None
+    sku: str | None = None
 
 
 class MfgOrderWipOpened(BaseModel):
