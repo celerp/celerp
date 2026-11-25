@@ -3001,8 +3001,11 @@ async def refuse_mislabelled_bank(session: AsyncSession, company_id: uuid.UUID, 
     """Refuse a write that imports onto or posts from *bank* while its label and its entries
     disagree (``_relabel_to``): every amount on it would be read in the wrong currency, so
     nothing goes through until the account is set to the books' currency."""
-    lines = _bank_lines(await journal_rows(session, company_id), bank)
-    relabel = _relabel_to(bank, await _base_currency(session, company_id), lines) if lines else None
+    base = await _base_currency(session, company_id)
+    if bank.currency == base:
+        return
+    lines = _bank_lines(await journal_rows(session, company_id, account=bank.chart_account_code), bank)
+    relabel = _relabel_to(bank, base, lines) if lines else None
     if relabel:
         raise HTTPException(status_code=422, detail=catalog_refusal(
             "acct.err_bank_mislabelled", currency=bank.currency, base=relabel))
@@ -3020,7 +3023,7 @@ async def set_bank_currency(session: AsyncSession, company_id: uuid.UUID, bank: 
     account would be read again in another currency."""
     if target == bank.currency:
         return None
-    lines = _bank_lines(await journal_rows(session, company_id), bank)
+    lines = _bank_lines(await journal_rows(session, company_id, account=bank.chart_account_code), bank)
     statuses = set((await session.execute(select(ReconciliationSession.status).where(
         ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id,
     ))).scalars())

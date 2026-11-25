@@ -167,6 +167,25 @@ async def test_import_and_posting_on_a_mislabelled_bank_are_refused_naming_the_c
     assert statuses == {"unmatched"}, statuses
 
 
+async def test_the_mislabelled_check_reads_only_the_banks_own_account(client, session):
+    """The refusal check runs on every import and posting, so it never reads the whole
+    journal: each read it makes is narrowed to the bank's ledger account, and an account in
+    the books' currency is not read at all."""
+    from unittest.mock import patch
+    import celerp_accounting.routes as R
+    B, co, bk, lines = await _mislabelled_bank_with_lines(client, session)
+    real, reads = R.journal_rows, []
+
+    async def counted(*a, **k):
+        reads.append(k.get("account"))
+        return await real(*a, **k)
+    acme = next(line["id"] for line in lines if line["description"] == "ACME SUPPLIES")
+    with patch.object(R, "journal_rows", counted):
+        r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [acme], "kind": "post", "account_code": "5100"}])
+    assert r.status_code == 422, r.text
+    assert reads and set(reads) == {bk["chart_account_code"]}, reads
+
+
 async def test_a_corrected_bank_imports_and_posts_again(client, session):
     """The neighbouring invariant: once the account is set to the books' currency (the
     correction the refusal names), the same import and posting go through."""
