@@ -982,26 +982,32 @@ def _evidence_missing(page, target, step: dict) -> list[str]:
     """The step's evidence entries with no visible match lying wholly inside the part of
     ``target`` a picture keeps (its top _MAX_HEIGHT pixels) and on top at its centre: a match
     elsewhere on the page, hidden, cut by the picture's edge or covered by another element (an
-    open dropdown) does not count."""
-    clip = target.evaluate("""(el, maxHeight) => {
-        const r = el.getBoundingClientRect();
-        return [r.left, r.top, r.right, r.top + Math.min(r.height, maxHeight)];
-    }""", _MAX_HEIGHT)
-    return [entry for entry in step["capture"]["evidence"]
-            if not _evidence_locator(page, entry, step["labels"]).evaluate_all("""(els, [l, t, r, b]) =>
-                els.some(e => {
-                    const box = e.getBoundingClientRect();
-                    if (!(e.checkVisibility() && box.width > 0 && box.height > 0 && box.left >= l - 1
-                          && box.top >= t - 1 && box.right <= r + 1 && box.bottom <= b + 1)) return false;
-                    // The element hit at the centre of its widest line box (a wrapped label's
-                    // whole box has gaps), brought into the viewport to be hit-tested.
-                    const [x, y] = [scrollX, scrollY];
-                    e.scrollIntoView({block: "nearest", inline: "nearest"});
-                    const now = [...e.getClientRects()].reduce((a, c) => c.width > a.width ? c : a);
-                    const hit = document.elementFromPoint((now.left + now.right) / 2, (now.top + now.bottom) / 2);
-                    scrollTo(x, y);
-                    return hit !== null && e.contains(hit);
-                })""", clip)]
+    open dropdown) does not count. The page is laid out as the picture is taken, the whole kept
+    part inside the viewport, so a dropdown opens where the picture shows it."""
+    viewport = page.viewport_size
+    page.set_viewport_size({"width": viewport["width"], "height": viewport["height"] + _MAX_HEIGHT})
+    try:
+        clip = target.evaluate("""(el, maxHeight) => new Promise(done => {
+            el.scrollIntoView({block: "start", inline: "nearest"});
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+                const r = el.getBoundingClientRect();
+                done([r.left, r.top, r.right, r.top + Math.min(r.height, maxHeight)]);
+            }));
+        })""", _MAX_HEIGHT)
+        return [entry for entry in step["capture"]["evidence"]
+                if not _evidence_locator(page, entry, step["labels"]).evaluate_all("""(els, [l, t, r, b]) =>
+                    els.some(e => {
+                        const box = e.getBoundingClientRect();
+                        if (!(e.checkVisibility() && box.width > 0 && box.height > 0 && box.left >= l - 1
+                              && box.top >= t - 1 && box.right <= r + 1 && box.bottom <= b + 1)) return false;
+                        // The element hit at the centre of its widest line box (a wrapped
+                        // label's whole box has gaps).
+                        const line = [...e.getClientRects()].reduce((a, c) => c.width > a.width ? c : a);
+                        const hit = document.elementFromPoint((line.left + line.right) / 2, (line.top + line.bottom) / 2);
+                        return hit !== null && e.contains(hit);
+                    })""", clip)]
+    finally:
+        page.set_viewport_size(viewport)
 
 
 def _empty_state_shown(target) -> list[str]:
