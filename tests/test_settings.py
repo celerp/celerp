@@ -712,11 +712,13 @@ class TestColumnSetupSave:
         assert save.await_args.args[1] == body
 
     @pytest.mark.asyncio
-    async def test_a_body_that_is_not_json_is_refused_unsaved(self, ui_client):
+    # application/json is refused by the framework's body parser; any other type reaches the route's own check
+    @pytest.mark.parametrize("ctype", ["application/json", "text/plain"])
+    async def test_a_body_that_is_not_json_is_refused_unsaved(self, ui_client, ctype):
         ui_client.cookies.update(_authed())
         save = AsyncMock()
         with patch("ui.api_client.patch_column_prefs", new=save):
-            resp = await ui_client.post("/column-prefs", content=b"not json", headers={"content-type": "application/json"})
+            resp = await ui_client.post("/column-prefs", content=b"not json", headers={"content-type": ctype})
         assert resp.status_code == 400
         save.assert_not_awaited()
 
