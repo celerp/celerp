@@ -3822,7 +3822,6 @@ svg[aria-hidden="true"] { vertical-align: -0.125em; flex-shrink: 0; }
 .bank-entries { margin: 8px 0; }
 .bank-entry { display: flex; gap: 12px; align-items: center; padding: 2px 0; }
 .bank-search { margin: 8px 0; max-width: 420px; }
-.bulk-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
 .bank-groups { display: flex; flex-direction: column; border-top: 1px solid var(--c-border); }
 .bank-row { display: grid; gap: 8px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--c-border); }
 .bank-row--group { grid-template-columns: 24px minmax(160px, 2fr) 60px 120px minmax(160px, 2fr) 110px; font-weight: 600; }
