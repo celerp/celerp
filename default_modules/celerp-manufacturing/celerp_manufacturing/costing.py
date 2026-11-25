@@ -146,12 +146,19 @@ def roll_up_cost(recipe: dict, lookup: ItemLookup, *, currency: str = "USD", _pa
     labor = sum(_labor_line_cost(l) for l in recipe.get("labor", []))
     overhead = sum(float(o.get("amount") or 0) for o in recipe.get("overhead", []))
     output_qty = output_quantity(recipe)
-    total = None if materials is None else materials + labor + overhead
+    total = None if materials is None else to_decimal(materials + labor + overhead)
+    # Extras carry their cost share of the batch on their own line; the product the rest.
+    main_share = to_decimal(100)
+    for line in recipe.get("also_produces") or []:
+        share = to_decimal(line.get("cost_share") or 0)
+        main_share -= share
+        line["unit_cost"] = None if total is None else float(round_rate(
+            total * share / 100 / to_decimal(line["quantity"]), currency))
     return {
         "materials_cost": None if materials is None else float(round_money(materials, currency)),
         "labor_cost": float(round_money(labor, currency)),
         "overhead_cost": float(round_money(overhead, currency)),
-        "unit_cost": None if total is None else float(round_rate(to_decimal(total) / to_decimal(output_qty), currency)),
+        "unit_cost": None if total is None else float(round_rate(total * main_share / 100 / to_decimal(output_qty), currency)),
     }
 
 

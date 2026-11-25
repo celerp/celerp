@@ -21,9 +21,10 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
-from mfg_runs import cancel, complete, give_back, issue, receive, refusal, reopen, undo_receipt
+from mfg_runs import cancel, complete, give_back, issue, product, receive, refusal, reopen, undo_receipt
 from stock_books import assert_settled
 from test_cost_restatement import _item, _merge, _sell, _state
+from test_posting_roles_delete import _delete, _draft
 
 pytestmark = pytest.mark.asyncio
 
@@ -167,13 +168,18 @@ async def test_cost_share_oracle(client, session, auth, lines, accepted, key):
     seed = await _item(client, auth, 2000.0, qty=1000, sku=f"S-{tag}")
     oil = await _item(client, auth, 0.0, qty=0, sku=f"O-{tag}")
     items = {"seed": seed, "product": oil, "missing": f"item:{uuid.uuid4()}"}
-    for name in ("a", "b", "deleted", "service"):
+    for name in ("a", "b"):
         items[name] = await _item(client, auth, 0.0, qty=0, sku=f"{name}-{tag}")
-    r = await client.post("/items/bulk/delete", headers=auth["headers"], json={"entity_ids": [items["deleted"]]})
+    r = await client.post("/items", headers=auth["headers"], json={
+        "sku": f"service-{tag}", "name": "Service", "quantity": 0, "sell_by": "piece", "status": "available",
+        "inventory_type": "service"})
     assert r.status_code == 200, r.text
-    r = await client.patch(f"/items/{items['service']}", headers=auth["headers"],
-                           json={"fields_changed": {"inventory_type": {"old": None, "new": "service"}}})
-    assert r.status_code == 200, r.text
+    items["service"] = r.json()["id"]
+    # A draft another recipe names moves to Deleted rather than going away.
+    items["deleted"] = await _draft(client, auth)
+    await product(client, auth, [(items["deleted"], 1)])
+    r = await _delete(client, auth, items["deleted"])
+    assert r.json()["moved_to_deleted"] == 1, r.text
     one = await _item(client, auth, 0.0, qty=1, sku=f"m1-{tag}")
     two = await _item(client, auth, 0.0, qty=1, sku=f"m2-{tag}")
     await _merge(client, auth, [two, one])

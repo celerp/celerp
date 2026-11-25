@@ -37,6 +37,7 @@ from celerp.accounting_roles import (
     SCHEMA_KEY,
     VALUED_FROM_KEY,
     AccountRole,
+    catalog_refusal,
 )
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company
@@ -135,6 +136,48 @@ async def require_not_merged(session: AsyncSession, company_id, state: dict, ite
     raise refuse(http_status, "component_merged",
                  f"{sku} was merged into {into}, so it holds no stock of its own. Name {into} in the recipe "
                  "instead.", sku=sku, merged_into=into)
+
+
+async def require_valid_extras(session: AsyncSession, company_id, lines: list[dict], product_id: str,
+                               component_ids, http_status: int = 422) -> None:
+    """The extras a recipe or run yields beside its product: each a live stocked item that
+    is neither the product nor one of its components, listed once, with a cost share of 0
+    or more; the shares together stay under 100, so the product always carries some of the
+    value. Each line's sku and unit are set from the item. Raises http_status: 422 when
+    the lines are sent, 409 when a run that holds them is completed."""
+    excluded = {product_id, *component_ids}
+    seen: set[str] = set()
+    states: dict[str, dict] = {}
+    missing: list[str] = []
+    for line in lines:
+        item_id = line["item_id"]
+        if item_id in excluded:
+            raise HTTPException(status_code=http_status, detail=catalog_refusal(
+                "manufacturing.err_coproduct_in_recipe", item=line.get("sku") or item_id))
+        if item_id in seen:
+            raise HTTPException(status_code=http_status, detail=catalog_refusal(
+                "manufacturing.err_coproduct_duplicate", item=line.get("sku") or item_id))
+        seen.add(item_id)
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+        if row is None or row.entity_type != "item":
+            missing.append(item_id)
+            continue
+        states[item_id] = row.state or {}
+    if missing:
+        raise HTTPException(status_code=http_status, detail=catalog_refusal(
+            "manufacturing.err_components_missing", items=", ".join(sorted(missing))))
+    shares = [Decimal(str(line.get("cost_share") or 0)) for line in lines]
+    total = sum(shares, Decimal(0))
+    if any(s < 0 or s >= 100 for s in shares) or total >= 100:
+        raise HTTPException(status_code=http_status, detail=catalog_refusal(
+            "manufacturing.err_cost_shares", total=f"{total.normalize():f}"))
+    for line in lines:
+        state = states[line["item_id"]]
+        require_stock(state, line["item_id"], http_status)
+        require_not_deleted(state, line["item_id"], http_status)
+        await require_not_merged(session, company_id, state, line["item_id"], http_status)
+        line["sku"] = state.get("sku") or line.get("sku")
+        line["unit"] = state.get("sell_by") or state.get("unit") or line.get("unit")
 
 
 async def mfg_settings(session: AsyncSession, company_id) -> dict:

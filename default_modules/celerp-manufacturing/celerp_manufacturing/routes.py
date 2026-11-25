@@ -341,16 +341,21 @@ async def set_item_recipe(
 
     Validates components, rolls the standard cost up from current component costs,
     and emits ``item.recipe.set``. Hard errors (422) on self-reference, unknown
-    component SKUs, items that are not stock, deleted items, items merged into another, and recipe cycles. Per GDR, validation lives
+    component SKUs, items that are not stock, deleted items, items merged into another, recipe cycles,
+    and extras (also_produces) that are the product or a component, listed twice, or whose
+    cost shares do not leave the product some of the value. Per GDR, validation lives
     at the function level. The company lock is taken before anything is read, so the items
     the recipe names are checked and saved in one step that a Delete cannot come between.
     """
-    item = (await lock_projections(session, company_id, [item_id])).get(item_id)
+    extra_ids = [line.item_id for line in payload.also_produces]
+    item = (await lock_projections(session, company_id, [item_id, *extra_ids])).get(item_id)
     if item is None or item.entity_type != "item":
         raise HTTPException(status_code=404, detail=t("manufacturing.err_item_not_found"))
     movements.require_stock(item.state or {}, item_id)
 
     recipe = payload.model_dump()
+    if not recipe["also_produces"]:
+        del recipe["also_produces"]  # a recipe with no extras is stored as before they existed
     if any(c.get("item_id") == item_id for c in recipe["components"]):
         raise HTTPException(status_code=422, detail=t("manufacturing.err_component_is_self"))
 
@@ -371,6 +376,8 @@ async def set_item_recipe(
         await movements.require_not_merged(session, company_id, cstate, comp.get("item_id"))
         comp["unit"] = cstate.get("sell_by") or cstate.get("unit") or comp.get("unit")
         comp["sku"] = cstate.get("sku") or comp.get("sku")
+    await movements.require_valid_extras(session, company_id, recipe.get("also_produces", []), item_id,
+                                         [c.get("item_id") for c in recipe["components"]])
 
     try:
         breakdown = roll_up_cost(recipe, graph.get, _path=frozenset({item_id}))
