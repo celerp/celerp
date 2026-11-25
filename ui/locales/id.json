@@ -6948,7 +6948,7 @@
   "ai.err_refused_in_answer": "Celerp tidak dapat melakukan ini. Buka layarnya untuk melihat alasannya.",
   "ai.err_too_much_data": "Terlalu banyak data yang dikembalikan; ajukan pertanyaan yang lebih spesifik.",
   "ai.err_capability_timeout": "Langkah ini tidak selesai dalam {seconds} detik. Coba lagi.",
-  "ai.err_books_currency_unset": "Mata uang perusahaan Anda belum diatur, sehingga asisten tidak akan mengimpor atau membukukan apa pun. Atur mata uang di Pengaturan > Akuntansi, lalu tanyakan lagi.",
+  "ai.err_books_currency_unset": "Mata uang perusahaan Anda belum diatur, sehingga asisten tidak akan mengimpor atau membukukan apa pun. Atur mata uang di Detail Perusahaan, lalu tanyakan lagi.",
   "ai.err_invalid_arguments": "Asisten menyiapkan langkah ini dengan data yang tidak dapat digunakan Celerp. Minta asisten untuk mencoba lagi.",
   "ai.err_no_authorization": "Celerp tidak dapat memastikan login Anda untuk langkah ini. Masuk lagi, lalu coba lagi.",
   "ai.err_mixed_turn": "Asisten mencoba membaca dan mengubah data dalam langkah yang sama. Ajukan pertanyaan lagi.",

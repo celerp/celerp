@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from pathlib import Path
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -553,6 +554,16 @@ async def test_no_import_or_posting_is_proposed_while_the_books_currency_is_not_
     refusal = model.tool_result(3, "c3")
     assert _error_code(refusal) == "books_currency_unset"
     assert refusal["error"]["message_key"] == "ai.err_books_currency_unset"
+
+
+@pytest.mark.parametrize("lang", sorted(p.stem for p in (Path(__file__).parents[1] / "ui/locales").glob("*.json")))
+def test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set(lang):
+    """The way out the refusal names is real: the company currency is edited on Company
+    Details (its settings card carries the currency field), and the refusal names that page."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _company_settings_card
+    assert 'hx-get="/settings/company/currency' in to_xml(_company_settings_card({"currency": ""}, lang))
+    assert t("nav.company_details", lang) in t("ai.err_books_currency_unset", lang)
 
 
 @pytest.mark.asyncio

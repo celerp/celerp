@@ -292,7 +292,7 @@ say so and name the screen where they do it themselves:
 
 _BOOKS_CURRENCY_PROMPT = """
 
-The company keeps its books in {currency}, as set in Settings > Accounting. Take the
+The company keeps its books in {currency}, as set in Company Details. Take the
 books' currency from there only, never from a bank account or a file. When a file, a
 statement or a bank account is in another currency, say so and ask the user to check
 the company and bank account currencies before you propose importing or posting it."""
@@ -703,7 +703,7 @@ def _books_currency_unset(parsed: list, company_settings: dict) -> dict[str, dic
         call_id: _agent_error(
             "books_currency_unset", "ai.err_books_currency_unset",
             "The company's books currency is not set, so nothing may be imported or posted. Ask the "
-            "user to set it in Settings > Accounting, then propose this again.")
+            "user to set it in Company Details, then propose this again.")
         for call_id, _name, capability, _arguments, error in parsed
         if error is None and capability is not None and capability.get("requires_confirmation")
         and _BOOKS_PERMISSIONS & set(capability.get("required_permissions") or ())
