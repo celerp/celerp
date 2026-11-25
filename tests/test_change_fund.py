@@ -609,3 +609,45 @@ async def test_change_fund_opening_held_document_refused(client, session, auth):
 
     doc = await _outside_invoice(client, auth, f["R"])
     assert (await _change_doc(client, session, auth, doc, document="unrestricted")).status_code == 200
+
+
+async def test_change_fund_gates_in_check_order(client, session, auth):
+    """Funds off refuses first; then a record that is not there, a change that chooses nothing,
+    and an outside record that never posted are each refused naming why, and nothing moves."""
+    body = {"expected_version": 1, "request_key": uuid.uuid4().hex, "reason": REASON, "document": "unrestricted"}
+    r = await client.post("/docs/doc:none/change-fund", headers=auth["headers"], json=body)
+    assert r.status_code == 422 and _key(r) == "fund.not_enabled", r.text
+
+    f = await _setup(client, auth)
+    r = await client.post("/docs/doc:none/change-fund", headers=auth["headers"], json=body)
+    assert r.status_code == 404 and _key(r) == "documents.document_not_found", r.text
+    r = await client.post("/accounting/journal/je:none/change-fund", headers=auth["headers"],
+                          json={**body, "document": None, "all": "unrestricted"})
+    assert r.status_code == 404 and _key(r) == "acct.err_je_not_found", r.text
+
+    doc = await _outside_invoice(client, auth, f["R"])
+    r = await _change_doc(client, session, auth, doc)
+    assert r.status_code == 422 and _key(r) == "posting.fund.choice_empty", r.text
+    assert (await _state(session, auth, f"je:auto:{doc}:fin"))["status"] == "posted"
+
+    item = await _item(client, auth, "Outside draft")
+    draft = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    record = _issued_import(draft, [_line(item, "Outside draft", 25)])
+    record["data"].update(status="draft", import_treatment=None)
+    r = await client.post("/docs/import/batch", headers=auth["headers"], json={
+        "records": [record], "fund_choices": {"records": {draft: f["R"]}}})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    r = await _change_doc(client, session, auth, draft, document="unrestricted")
+    assert r.status_code == 422 and _key(r) == "posting.fund.change_not_posted", r.text
+
+    je = f"je:{uuid.uuid4()}"
+    r = await client.post("/accounting/import/batch", headers=auth["headers"], json={
+        "records": [{"entity_id": je, "event_type": "acc.journal_entry.created", "source": "csv",
+                     "idempotency_key": uuid.uuid4().hex,
+                     "data": {"status": "draft", "ts": "2026-03-01", "memo": "Filed, not posted",
+                              "entries": [{"account": "1111", "debit": 10, "credit": 0},
+                                          {"account": "4000", "debit": 0, "credit": 10}]}}],
+        "fund_choices": {"all": f["R"]}})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    r = await _change_journal(client, session, auth, je, all="unrestricted")
+    assert r.status_code == 422 and _key(r) == "posting.fund.change_not_posted", r.text
