@@ -6,7 +6,7 @@
   "routes": ["/manufacturing", "/manufacturing/production"],
   "permission": "manage_manufacturing",
   "order": 3,
-  "checked": "bfe36f5816302cace11ec2d6714e64688a836f38e43304835089823f3ce69066",
+  "checked": "7315bb55190ddc52865c476e9f58bc99238a394b5651c6cead492d94471ce785",
   "steps": [
     {
       "text": "Open the item and choose its {tab} tab. The recipe there lists the components and the quantity of each that one unit takes, so a recipe for pressed rapeseed oil lists the seed.",

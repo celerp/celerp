@@ -30,7 +30,7 @@
       "text": "A run that yields extras, such as oil cake beside oil, has a quantity box for each one in its row on the product's {tab} tab, filled with what is still to come. Change it to what was really made before you choose Complete, and enter 0 for an extra that was not made or was thrown away. Completing runs from this page receives each extra's planned quantity.",
       "labels": {"tab": "nav.manufacturing"},
       "image": "img/production-4.webp",
-      "capture": {"route": "/inventory?q=OIL-001", "selector": "#production-block", "actions": [{"click": "main a.table-link[href^=\"/inventory/item:\"] >> nth=-1"}, {"wait": ".category-tabs"}, {"click": ".category-tabs a[href$=\"tab=manufacturing\"]"}, {"wait": ".category-tab--active[href$=\"tab=manufacturing\"]"}, {"wait": "#recipe-section tr.data-row"}, {"wait": "#production-block input[name^=\"also:\"]"}], "evidence": ["#production-block input[name^=\"also:\"]"]}
+      "capture": {"route": "/inventory?q=OIL-001", "selector": "#production-block .doc-section:has(#wo-orders-table)", "actions": [{"click": "main a.table-link[href^=\"/inventory/item:\"] >> nth=-1"}, {"wait": ".category-tabs"}, {"click": ".category-tabs a[href$=\"tab=manufacturing\"]"}, {"wait": ".category-tab--active[href$=\"tab=manufacturing\"]"}, {"wait": "#recipe-section tr.data-row"}, {"wait": "#production-block input[name^=\"also:\"]"}], "evidence": ["#production-block input[name^=\"also:\"]"]}
     },
     {
       "text": "You can also ask the assistant how a work order stands, or to start, hold, issue materials to, receive or complete it. It shows each change as a card and makes it only when you confirm.",
