@@ -524,6 +524,7 @@ async def test_untracked_ignores_extras(client, session, auth):
     seed, oil, cake = await press(client, auth)
     order = await start(client, auth, oil, 10)
     assert (await complete(client, auth, order, key="c")).status_code == 200
+    assert [x["quantity"] for x in (await lots_of(session, auth, order))[cake]] == [20.0]
     from celerp_manufacturing.movements import _untracked_qty
     assert _untracked_qty(await _state(session, auth, order)) == 0
 
