@@ -1317,3 +1317,12 @@ def test_a_control_covered_where_the_picture_is_taken_is_not_evidence_of_the_scr
         </script>""")
     page.evaluate("() => { scrollTo(0, f.getBoundingClientRect().top + scrollY - (innerHeight - 120)); place(); }")
     assert _evidence_missing(page, page.locator("#t"), step) == ["{post}"]
+
+
+def test_a_screen_sized_to_the_viewport_is_checked_in_the_layout_its_picture_shows(page):
+    """A screen as tall as the viewport, its form at the bottom: the picture shows the form, so
+    checking it must not lay the screen out taller and move the form out of the kept part."""
+    step = {"labels": {"post": "btn.post"}, "capture": {"evidence": ["{post}"]}}
+    page.set_content(f"""<body style='margin:0'><main id='t' style='position:relative;height:100vh'>
+        <button style='position:absolute;bottom:10px;left:10px'>{_shown('btn.post')}</button></main></body>""")
+    assert _evidence_missing(page, page.locator("#t"), step) == []
