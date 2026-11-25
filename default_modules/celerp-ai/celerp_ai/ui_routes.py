@@ -2256,13 +2256,14 @@ def _chat_view(
                 *_operation_input(str(uuid.uuid4())),
                 # Text input row
                 Div(
-                    Input(
-                        type="text",
+                    Textarea(
                         name="query",
                         id="ai-query-input",
+                        rows="1",
                         placeholder=t("msg.ask_anything_about_your_business_data", lang),
                         cls="ai-input__field",
                         autocomplete="off",
+                        onkeydown="celerpAiComposerKey(event)",
                     ),
                     Button(t("btn.send", lang), type="submit", cls="btn btn--primary ai-input__send"),
                     Button(
@@ -2371,6 +2372,17 @@ function celerpAiRefreshComposer() {
         zone.classList.toggle('ai-chat-dropzone--disabled', blocked);
         zone.setAttribute('aria-disabled', blocked ? 'true' : 'false');
     }
+}
+
+// Enter sends, as the Send button does (and not while it is disabled); Shift+Enter
+// starts a new line; Ctrl/Cmd+Enter also sends. An Enter that confirms an input
+// method's word (Thai, Chinese, Japanese) belongs to the input method.
+function celerpAiComposerKey(e) {
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    var form = document.getElementById('ai-chat-form');
+    var send = form && form.querySelector('.ai-input__send');
+    if (send && !send.disabled) form.requestSubmit(send);
 }
 
 function celerpAiOpenFilePicker() {

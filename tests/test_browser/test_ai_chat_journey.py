@@ -354,7 +354,7 @@ def test_sidebar_header_input_layout_intact(page: Page, ui_server):
     assert inp["y"] >= header["y"] + header["height"] - 2
 
 
-def test_bulk_card_lists_every_record_in_a_scrolling_box(page: Page, ui_server, agent_caps):
+def test_bulk_card_lists_every_record_in_a_scrolling_box(page: Page, ui_server, agent_caps, company_with_books):
     """A propose_for_each card at its largest set shows every record and the values it
     writes in a box that scrolls on the page, amounts right-aligned under their header."""
     rule = agent_caps[("PATCH", "/accounting/rules/{rule_id}")]["name"]
@@ -379,7 +379,7 @@ def test_bulk_card_lists_every_record_in_a_scrolling_box(page: Page, ui_server, 
     expect(rows.last).to_contain_text("RENT-0199")
 
 
-def test_bulk_card_wide_records_scroll_inside_their_own_box_not_the_page(page: Page, ui_server, agent_caps):
+def test_bulk_card_wide_records_scroll_inside_their_own_box_not_the_page(page: Page, ui_server, agent_caps, company_with_books):
     """A for_each table with enough columns to need horizontal scrolling scrolls inside
     its own box; it never pushes the page itself wider than the viewport."""
     rule = agent_caps[("PATCH", "/accounting/rules/{rule_id}")]["name"]

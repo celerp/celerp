@@ -586,6 +586,15 @@ def fresh_company(api_server, browser_context, api):
         yield client
 
 
+@pytest.fixture
+def company_with_books(fresh_company):
+    """A company whose books currency is set: the assistant proposes accounting changes
+    only once the books have a currency (it refuses them while none is set)."""
+    r = fresh_company.patch("/companies/me/books", json={"currency": "USD"})
+    assert r.status_code == 200, r.text
+    return fresh_company
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _reset_event_loop_after_playwright():
     """Playwright's sync API creates and closes its own asyncio event loop.

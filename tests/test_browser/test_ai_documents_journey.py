@@ -271,7 +271,8 @@ def _preview(api, job_id: str) -> dict:
         time.sleep(0.2)
 
 
-def test_statement_reconcile_journey(page: Page, ui_server, api, agent_caps):
+def test_statement_reconcile_journey(page: Page, ui_server, company_with_books, agent_caps):
+    api = company_with_books
     api_root = "/accounting/reconciliation"
     read_cap = agent_caps[("POST", f"{api_root}/read-statement")]
     preview_cap = agent_caps[("GET", f"{api_root}/statement-preview/{{job_id}}")]

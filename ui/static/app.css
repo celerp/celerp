@@ -2559,7 +2559,11 @@ th.cell--right { text-align: right !important; }
 .ai-showcase__input-send { padding: 0.5rem 1.1rem; border-radius: var(--radius); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); color: #8892a4; font-size: 0.85rem; font-weight: 600; cursor: not-allowed; }
 
 /* Chat layout (cloud users) */
-.ai-chat { display: flex; flex: 1; height: calc(100vh - 56px); overflow: hidden; }
+/* The chat fills the window under the top bar and any banner: its column is one window
+   tall, so only the thread scrolls and the composer stays in view. */
+.content-area:has(> .main-content > .ai-chat) { height: 100dvh; }
+.main-content:has(> .ai-chat) { display: flex; flex-direction: column; min-height: 0; }
+.ai-chat { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .ai-sidebar { width: 220px; flex-shrink: 0; background: var(--c-bg2); border-right: 1px solid var(--c-border); display: flex; flex-direction: column; padding: 0.75rem 0.75rem 1rem; gap: 0.5rem; overflow-y: auto; overflow-x: hidden; transition: width 0.2s ease, padding 0.2s ease; }
 .ai-sidebar--collapsed { width: 48px; padding: 0.75rem 0.5rem 1rem; overflow-y: hidden; }
 .ai-sidebar__toggle { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: var(--radius); background: transparent; border: 1px solid var(--c-border); color: var(--c-text2); cursor: pointer; font-size: 1rem; flex-shrink: 0; align-self: flex-end; transition: background 0.1s; margin-bottom: 0.25rem; }
@@ -2591,7 +2595,8 @@ th.cell--right { text-align: right !important; }
 /* Input bar (active chat) */
 .ai-input { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem 1rem; border-top: 1px solid var(--c-border); background: var(--c-bg); position: relative; }
 .ai-input__attach { min-width: 36px; width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; flex-shrink: 0; }
-.ai-input__field { flex: 1; padding: 0.5rem 0.75rem; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-bg2); color: var(--c-text); font-size: 0.9rem; }
+/* The prompt grows with its text, up to a third of the window, then scrolls. */
+.ai-input__field { flex: 1; padding: 0.5rem 0.75rem; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-bg2); color: var(--c-text); font: inherit; font-size: 0.9rem; line-height: 1.45; resize: none; field-sizing: content; max-height: 33vh; overflow-y: auto; }
 .ai-input__field:focus { outline: 2px solid var(--c-accent); border-color: var(--c-accent); }
 .ai-input__send { flex-shrink: 0; }
 .ai-input__send:disabled, .ai-input__receipts:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -2921,7 +2926,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 }
 
 /* ── AI drag-drop upload zone ────────────────────────────────────────────── */
-.ai-input__row { display: flex; gap: 0.5rem; align-items: center; }
+.ai-input__row { display: flex; gap: 0.5rem; align-items: flex-end; }
 .ai-chat-dropzone { border: 2px dashed var(--c-border); border-radius: 0.5rem; padding: 0.625rem 0.875rem; margin-top: 0.5rem; cursor: pointer; display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; color: var(--c-text2); font-size: 0.82rem; transition: border-color 0.15s, background 0.15s; user-select: none; }
 .ai-chat-dropzone:hover { border-color: var(--c-accent); color: var(--c-text); }
 .ai-chat-dropzone--disabled { opacity: 0.55; cursor: not-allowed; pointer-events: none; }
