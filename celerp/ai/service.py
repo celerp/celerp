@@ -290,9 +290,12 @@ say so and name the screen where they do it themselves:
 {groups}"""
 
 
+# The screen whose settings card holds the company currency field (nav.company_details).
+BOOKS_CURRENCY_SCREEN = "Company Details"
+
 _BOOKS_CURRENCY_PROMPT = """
 
-The company keeps its books in {currency}, as set in Company Details. Take the
+The company keeps its books in {currency}, as set in {screen}. Take the
 books' currency from there only, never from a bank account or a file. When a file, a
 statement or a bank account is in another currency, say so and ask the user to check
 the company and bank account currencies before you propose importing or posting it."""
@@ -300,8 +303,7 @@ the company and bank account currencies before you propose importing or posting 
 _NO_BOOKS_CURRENCY_PROMPT = """
 
 The company's books currency is not set yet. Never guess it from a bank account or a
-file. Propose no import or posting; ask the user to set the currency in Settings >
-Accounting first."""
+file. Propose no import or posting; tell the user to set the currency in {screen}, then ask again."""
 
 # Changes that bring amounts into the books: while the books' currency is not set, they
 # would be read in a guessed one. Setting the currency (``BOOKS_CURRENCY_ROUTE``) stays open.
@@ -348,7 +350,8 @@ def agent_system_prompt(lang: str, capabilities: dict, company_settings: dict) -
                                        areas=", ".join(f"{a} ({labels.get(a, a)})" for a in used))
     prompt += _ASK_PROMPT.format(groups="\n".join(f"- {reason}" for reason in USER_ACTION_EXCLUSIONS.values()))
     currency = company_settings.get("currency")
-    prompt += _BOOKS_CURRENCY_PROMPT.format(currency=currency) if currency else _NO_BOOKS_CURRENCY_PROMPT
+    prompt += (_BOOKS_CURRENCY_PROMPT if currency else _NO_BOOKS_CURRENCY_PROMPT).format(
+        currency=currency, screen=BOOKS_CURRENCY_SCREEN)
     return prompt + _HELP_PROMPT.format(language=lang_label(lang),
                                         help_modules=", ".join(_help_modules(company_settings)))
 
@@ -703,7 +706,7 @@ def _books_currency_unset(parsed: list, company_settings: dict) -> dict[str, dic
         call_id: _agent_error(
             "books_currency_unset", "ai.err_books_currency_unset",
             "The company's books currency is not set, so nothing may be imported or posted. Ask the "
-            "user to set it in Company Details, then propose this again.")
+            f"user to set it in {BOOKS_CURRENCY_SCREEN}, then propose this again.")
         for call_id, _name, capability, _arguments, error in parsed
         if error is None and capability is not None and capability.get("requires_confirmation")
         and _BOOKS_PERMISSIONS & set(capability.get("required_permissions") or ())

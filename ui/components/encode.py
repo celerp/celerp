@@ -133,12 +133,14 @@ def to_markup(node) -> Admitted:
 
 
 class _Markdown(MarkdownIt):
-    """CommonMark with tables and strikethrough, raw HTML shown as text, and a link
-    only where ``safe_url`` keeps its target."""
+    """CommonMark with tables and strikethrough, raw HTML shown as text, a link only
+    where ``safe_url`` keeps its target, and no images: image syntax shows as text, so
+    rendered text never makes the browser fetch anything."""
 
     def __init__(self):
         super().__init__("commonmark", {"html": False})
         self.enable(["table", "strikethrough"])
+        self.disable("image")
 
     def validateLink(self, url: str) -> bool:
         return super().validateLink(url) and safe_url(url) == url

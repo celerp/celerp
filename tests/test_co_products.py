@@ -156,8 +156,10 @@ SHARE_CASES = [
     ([("deleted", 10)], False, "mfg.component_deleted"),
     ([("merged", 10)], False, "mfg.component_merged"),
     ([("service", 10)], False, "mfg.not_stock"),
-    ([("missing", 10)], False, None),
+    ([("missing", 10)], False, "manufacturing.err_coproduct_missing"),
 ]
+# The refusals that name an item name it by its own SKU, read from the item record.
+NAMED = {"manufacturing.err_coproduct_in_recipe", "manufacturing.err_coproduct_duplicate"}
 
 
 @pytest.mark.parametrize("lines,accepted,key", SHARE_CASES)
@@ -196,6 +198,12 @@ async def test_cost_share_oracle(client, session, auth, lines, accepted, key):
         assert r.status_code == 422, r.text
         if key:
             assert _key(r) == key, r.text
+        message = r.json()["detail"]["message"] if key else ""
+        if key in NAMED:
+            sku = {"product": f"O-{tag}", "seed": f"S-{tag}"}.get(lines[0][0], f"{lines[0][0]}-{tag}")
+            assert message.startswith(f"{sku} "), r.text
+        if key == "manufacturing.err_coproduct_missing":
+            assert "Also produces" in message and "line 1" in message and ": ." not in message, r.text
         if key == "manufacturing.err_cost_shares" and len(lines) > 1:
             assert "100" in r.json()["detail"]["message"], r.text
         assert "also_produces" not in ((await _state(session, auth, oil)).get("recipe") or {})

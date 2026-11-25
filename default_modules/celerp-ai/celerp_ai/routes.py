@@ -60,7 +60,8 @@ from celerp.services.auth import (
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import kept, read_kept, refusal_text, t
 from ui.components.encode import inert_media_type
-from celerp.accounting_roles import Refused
+from celerp.accounting_roles import Refused, refused
+from celerp_ai import MAX_PROMPT_CHARS
 
 # AI routes count on Celerp's one limiter, per caller: tighter limits than the global
 # 60/min default, as LLM queries are expensive and uploads have file-size costs.
@@ -91,8 +92,15 @@ _OPERATION_ID_DESCRIPTION = (
 )
 
 
+def _require_prompt_length(query: str) -> None:
+    """A question past the limit refused naming the limit and its own length. The models
+    take any length so this refusal, not a field validation list, is what the user reads."""
+    if len(query) > MAX_PROMPT_CHARS:
+        raise refused(422, "ai.err_prompt_too_long", limit=MAX_PROMPT_CHARS, length=len(query))
+
+
 class QueryRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=2000, description="Natural language question")
+    query: str = Field(..., min_length=1, description="Natural language question")
     file_ids: list[str] | None = Field(default=None, description="List of file IDs returned from /ai/upload")
     operation_id: uuid.UUID | None = Field(default=None, description=_OPERATION_ID_DESCRIPTION)
 
@@ -207,6 +215,7 @@ async def ai_query(
     The same ``operation_id`` asks it again and returns the answer it already has."""
     import time
 
+    _require_prompt_length(body.query)
     from celerp.ai import jobs
     started = time.monotonic()
     out = await jobs.ask(company_id=company_id, user_id=user.id, query=body.query, file_ids=body.file_ids,
@@ -383,7 +392,7 @@ class RenameConversationRequest(BaseModel):
 
 
 class ConversationQueryRequest(BaseModel):
-    query: str = Field("", max_length=2000)
+    query: str = ""
     file_ids: list[str] | None = None
     document_mode: Literal["chat", "receipts"] = "chat"
     operation_id: uuid.UUID | None = Field(default=None, description=_OPERATION_ID_DESCRIPTION)
@@ -743,6 +752,7 @@ async def query_in_conversation(
     An id that names another question, or one that can no longer be asked, is refused as
     ``operation_conflict``: a new question needs a new id.
     """
+    _require_prompt_length(body.query)
     from sqlalchemy.exc import IntegrityError
 
     from celerp.ai import jobs

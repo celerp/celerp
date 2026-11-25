@@ -144,27 +144,29 @@ async def require_valid_extras(session: AsyncSession, company_id, lines: list[di
     or more; the shares together stay under 100, so the product always carries some of the
     value. Each line's sku and unit are set from the item. Raises http_status: 422 when
     the lines are sent, 409 when a run that holds them is completed."""
-    excluded = {product_id, *component_ids}
-    seen: set[str] = set()
     states: dict[str, dict] = {}
     missing: list[str] = []
-    for line in lines:
-        item_id = line["item_id"]
-        if item_id in excluded:
-            raise HTTPException(status_code=http_status, detail=catalog_refusal(
-                "manufacturing.err_coproduct_in_recipe", item=line.get("sku") or item_id))
-        if item_id in seen:
-            raise HTTPException(status_code=http_status, detail=catalog_refusal(
-                "manufacturing.err_coproduct_duplicate", item=line.get("sku") or item_id))
-        seen.add(item_id)
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    for number, line in enumerate(lines, 1):
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": line["item_id"]})
         if row is None or row.entity_type != "item":
-            missing.append(item_id)
-            continue
-        states[item_id] = row.state or {}
+            missing.append(str(number))
+        else:
+            states[line["item_id"]] = row.state or {}
     if missing:
         raise HTTPException(status_code=http_status, detail=catalog_refusal(
-            "manufacturing.err_components_missing", items=", ".join(sorted(missing))))
+            "manufacturing.err_coproduct_missing", lines=", ".join(missing)))
+    excluded = {product_id, *component_ids}
+    seen: set[str] = set()
+    for line in lines:
+        item_id = line["item_id"]
+        name = states[item_id].get("sku") or states[item_id].get("name")
+        if item_id in excluded:
+            raise HTTPException(status_code=http_status, detail=catalog_refusal(
+                "manufacturing.err_coproduct_in_recipe", item=name))
+        if item_id in seen:
+            raise HTTPException(status_code=http_status, detail=catalog_refusal(
+                "manufacturing.err_coproduct_duplicate", item=name))
+        seen.add(item_id)
     shares = [Decimal(str(line.get("cost_share") or 0)) for line in lines]
     total = sum(shares, Decimal(0))
     if any(s < 0 or s >= 100 for s in shares) or total >= 100:

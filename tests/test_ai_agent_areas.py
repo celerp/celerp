@@ -566,6 +566,24 @@ def test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set(lan
     assert t("nav.company_details", lang) in t("ai.err_books_currency_unset", lang)
 
 
+@pytest.mark.parametrize("settings", [{}, {"currency": "THB"}])
+def test_the_assistant_prompt_names_the_screen_that_sets_the_books_currency(settings):
+    """The assistant is told to send the user to the screen the refusal names, in the
+    refusal's own words: one screen name for the prompt, the tool error and the refusal."""
+    from celerp.ai.service import BOOKS_CURRENCY_SCREEN, _books_currency_unset, agent_system_prompt
+    prompt = " ".join(agent_system_prompt("en", {}, settings).split())
+    assert BOOKS_CURRENCY_SCREEN == t("nav.company_details", "en")
+    assert BOOKS_CURRENCY_SCREEN in prompt and "Settings >" not in prompt
+    if not settings:
+        way_out = f"set the currency in {BOOKS_CURRENCY_SCREEN}, then ask again"
+        assert way_out in prompt
+        assert way_out.lower() in t("ai.err_books_currency_unset", "en").lower()
+        capability = {"requires_confirmation": True, "required_permissions": ["import_export_data"],
+                      "method": "POST", "path": "/x"}
+        error = _books_currency_unset([("c1", "n", capability, {}, None)], {})["c1"]
+        assert BOOKS_CURRENCY_SCREEN in str(error)
+
+
 @pytest.mark.asyncio
 async def test_setting_the_books_currency_stays_open_and_a_set_currency_lets_imports_through(monkeypatch, real_app):
     """The neighbouring invariant: the fix (setting the currency) is still proposed, and

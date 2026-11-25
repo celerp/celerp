@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 from celerp.error_body import keyed
+from celerp_ai import MAX_PROMPT_CHARS
 from celerp.gateway.state import MULTI_FILE_TIERS, PAID_TIERS
 import ui.api_client as api
 from ui.api_client import APIError
@@ -2271,6 +2272,7 @@ def _chat_view(
                         cls="ai-input__field",
                         autocomplete="off",
                         onkeydown="celerpAiComposerKey(event)",
+                        oninput="celerpAiCountPrompt()",
                     ),
                     Button(t("btn.send", lang), type="submit", cls="btn btn--primary ai-input__send"),
                     Button(
@@ -2281,6 +2283,8 @@ def _chat_view(
                     ),
                     cls="ai-input__row",
                 ),
+                Div(f"0 / {MAX_PROMPT_CHARS}", id="ai-query-count", cls="ai-input__count",
+                    data_limit=str(MAX_PROMPT_CHARS)),
                 # Drop zone
                 Div(
                     Span(icon("folder"), cls="ai-chat-dropzone__icon"),
@@ -2392,6 +2396,17 @@ function celerpAiComposerKey(e) {
     if (send && !send.disabled) form.requestSubmit(send);
 }
 
+// The prompt's length against the limit the API refuses past; a longer prompt is kept
+// as typed and marked, never cut short.
+function celerpAiCountPrompt() {
+    var count = document.getElementById('ai-query-count');
+    var field = document.getElementById('ai-query-input');
+    if (!count || !field) return;
+    var limit = Number(count.dataset.limit), length = Array.from(field.value).length;
+    count.textContent = length + ' / ' + limit;
+    count.classList.toggle('ai-input__count--over', length > limit);
+}
+
 function celerpAiOpenFilePicker() {
     if (CELERP_AI_REQUESTING || CELERP_AI_UPLOADING > 0) return;
     var input = document.getElementById('ai-file-input');
@@ -2467,6 +2482,7 @@ function celerpAiRemoveChip(btn, fileId) {
 
 function celerpAiResetForm() {
     document.getElementById('ai-query-input').value = '';
+    celerpAiCountPrompt();
     document.getElementById('ai-file-ids').value = '';
     document.getElementById('ai-file-input').value = '';
     document.getElementById('ai-file-chips').replaceChildren();

