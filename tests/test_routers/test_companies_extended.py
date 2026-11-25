@@ -293,7 +293,8 @@ async def test_locations_batch_import_creates_and_skips(client):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("path", "body", "read"), [
-    ("/companies/me/column-prefs", {"prefs": {"__all__": ["sku", "name"]}}, {"__all__": ["sku", "name"]}),
+    ("/companies/me/column-prefs", {"prefs": {"inventory": {"vis": {"sku": True, "name": False}, "order": ["name", "sku"]}}},
+     {"inventory": {"vis": {"sku": True, "name": False}, "order": ["name", "sku"]}}),
     ("/companies/me/contact-tags", {"tags": [{"name": "VIP", "color": "gold"}]}, [{"name": "VIP", "color": "gold"}]),
     ("/companies/me/default-price-list", {"name": "Wholesale"}, "Wholesale"),
 ])
@@ -302,6 +303,33 @@ async def test_company_setting_patch_is_read_back(client, path, body, read):
     r = await client.patch(path, json=body, headers=headers)
     assert r.status_code == 200, r.text
     assert (await client.get(path, headers=headers)).json() == read
+
+
+@pytest.mark.asyncio
+async def test_each_user_keeps_their_own_column_setup(client):
+    """Column setup belongs to the signed-in user: a colleague's change never moves theirs, a
+    later change to one part keeps the others, and null forgets the table."""
+    owner = await _register(client, "colprefs")
+    r = await client.post("/companies/me/users", headers=owner, json={
+        "name": "Staff", "email": "staff_colprefs@test.example", "password": "pw123val", "role": "operator"})
+    assert r.status_code == 200, r.text
+    r = await client.post("/auth/login", json={"email": "staff_colprefs@test.example", "password": "pw123val"})
+    assert r.status_code == 200, r.text
+    staff = {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+    for h, vis in ((owner, {"sku": False}), (staff, {"sku": True})):
+        assert (await client.patch("/companies/me/column-prefs", headers=h,
+                                   json={"prefs": {"contacts": {"vis": vis}}})).status_code == 200
+    await client.patch("/companies/me/column-prefs", headers=owner,
+                       json={"prefs": {"contacts": {"widths": {"sku": "120px"}}}})
+    assert (await client.get("/companies/me/column-prefs", headers=owner)).json() == {
+        "contacts": {"vis": {"sku": False}, "widths": {"sku": "120px"}}}
+    assert (await client.get("/companies/me/column-prefs", headers=staff)).json() == {"contacts": {"vis": {"sku": True}}}
+
+    await client.patch("/companies/me/column-prefs", headers=owner, json={"prefs": {"contacts": None}})
+    assert (await client.get("/companies/me/column-prefs", headers=owner)).json() == {}
+    assert (await client.patch("/companies/me/column-prefs", headers=owner,
+                               json={"prefs": {"contacts": {"colour": "red"}}})).status_code == 422
 
 
 # ── /health routes ────────────────────────────────────────────────────────────

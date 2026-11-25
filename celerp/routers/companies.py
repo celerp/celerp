@@ -217,9 +217,21 @@ class CategorySchemaPatch(BaseModel):
         return self
 
 
+_ColumnKey = Annotated[str, Field(min_length=1, max_length=100)]
+
+
+class ColumnLayout(BaseModel):
+    """One table's column setup: which columns show, their order, and their widths (a CSS
+    width or a percentage of the table)."""
+    model_config = ConfigDict(extra="forbid")
+    vis: dict[_ColumnKey, bool] | None = Field(default=None, max_length=200)
+    order: list[_ColumnKey] | None = Field(default=None, max_length=200)
+    widths: dict[_ColumnKey, Annotated[str, Field(max_length=20)] | float] | None = Field(default=None, max_length=200)
+
+
 class ColumnPrefsPatch(BaseModel):
-    # key = category name or "__all__"; value = list of visible column keys
-    prefs: dict[str, list[str]]
+    # key = table name; a layout's given parts replace the saved ones, null forgets the table
+    prefs: dict[_ColumnKey, ColumnLayout | None] = Field(max_length=50)
 
 
 class TaxRate(BaseModel):
@@ -1670,29 +1682,37 @@ async def set_category_gift(
     return {"ok": True, "category": category_key, "gift": payload.gift}
 
 
-@router.get("/me/column-prefs", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read which columns the item list shows for each category.")
-async def get_column_prefs(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    """Return column visibility prefs keyed by category or '__all__'."""
+@router.get("/me/column-prefs", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read the signed-in user's column setup for each table.")
+async def get_column_prefs(user=Depends(get_current_user), company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+    """Return the signed-in user's column layouts, keyed by table name."""
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return company.settings.get("column_prefs") or {}
+    return (company.settings.get("column_prefs") or {}).get(str(user.id)) or {}
 
 
-@router.patch("/me/column-prefs", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general", "x-celerp-agent-any-role": True}, summary="Change which columns the item list shows for a category.")
+@router.patch("/me/column-prefs", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general", "x-celerp-agent-any-role": True}, summary="Change the signed-in user's column setup for a table.")
 async def patch_column_prefs(
     payload: ColumnPrefsPatch,
+    user=Depends(get_current_user),
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Merge column visibility prefs. Any user (not admin-only) can save their view prefs."""
+    """Merge the signed-in user's column layouts: each user keeps their own, and any user (not
+    admin-only) can save theirs."""
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
-    prefs = dict(settings.get("column_prefs") or {})
-    prefs.update(payload.prefs)
-    settings["column_prefs"] = prefs
+    every_user = dict(settings.get("column_prefs") or {})
+    mine = dict(every_user.get(str(user.id)) or {})
+    for table, layout in payload.prefs.items():
+        if layout is None:
+            mine.pop(table, None)
+        else:
+            mine[table] = {**mine.get(table, {}), **layout.model_dump(exclude_none=True)}
+    every_user[str(user.id)] = mine
+    settings["column_prefs"] = every_user
     company.settings = settings
     await session.commit()
     return {"ok": True}

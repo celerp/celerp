@@ -4535,8 +4535,7 @@ class TestColumnDefaults:
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 1, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 1, "category_counts": {}})),
         ):
             r = await ui_client.get("/inventory")
-        assert b"localStorage" in r.content
-        assert b"celerp_cols_" in r.content
+        assert b"celerpColumns(" in r.content
 
     @pytest.mark.asyncio
     async def test_col_resize_handle_css_exists(self):
@@ -16124,27 +16123,27 @@ class TestInventoryUXFixes:
         from fasthtml.common import to_xml
         from ui.routes.inventory import _column_manager
         schema = [{"key": "name", "label": "Name", "show_in_table": True}]
-        html = to_xml(_column_manager(schema, {}))
+        html = to_xml(_column_manager(schema))
         assert "col-mgr-btn" in html
         assert "col-mgr-menu" in html
         # No <details> element
         assert "<details" not in html
 
-    def test_column_manager_has_localstorage_js(self):
-        """Column manager JS must save to localStorage."""
+    def test_column_manager_saves_to_the_users_server_setup(self):
+        """Column manager JS saves to the user's server-side column setup, never a browser copy."""
         from fasthtml.common import to_xml
         from ui.routes.inventory import _column_manager
         schema = [{"key": "name", "label": "Name", "show_in_table": True}]
-        html = to_xml(_column_manager(schema, {}))
-        assert "localStorage" in html
-        assert "saveVis" in html
+        html = to_xml(_column_manager(schema))
+        assert "celerpColumns('inventory', CFG.layout)" in html and "saveVis" in html
+        assert "localStorage" not in html
 
     def test_column_manager_closes_on_outside_click(self):
         """Column manager JS must have click-outside-to-close handler."""
         from fasthtml.common import to_xml
         from ui.routes.inventory import _column_manager
         schema = [{"key": "name", "label": "Name", "show_in_table": True}]
-        html = to_xml(_column_manager(schema, {}))
+        html = to_xml(_column_manager(schema))
         assert "document.addEventListener" in html
         assert "menu.style.display" in html
 
@@ -16169,7 +16168,7 @@ class TestInventoryUXFixes:
         assert "dragstart" in html
         assert "dragover" in html
         assert "drop" in html
-        assert "ORDER_KEY" in html
+        assert "COLS.set('order', newOrder)" in html
 
     def test_column_manager_has_drag_reorder_on_labels(self):
         """Column manager checkboxes must have draggable=true for menu reorder."""
@@ -16179,7 +16178,7 @@ class TestInventoryUXFixes:
             {"key": "name", "label": "Name", "show_in_table": True},
             {"key": "sku", "label": "SKU", "show_in_table": True},
         ]
-        html = to_xml(_column_manager(schema, {}))
+        html = to_xml(_column_manager(schema))
         assert 'draggable="true"' in html
 
     def test_data_table_js_no_force_hide_branch(self):

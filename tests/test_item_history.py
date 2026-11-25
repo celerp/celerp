@@ -380,7 +380,7 @@ def test_activity_table_resizable_opt_in():
     evs = [{"id": 1, "event_type": "item.created", "entity_id": "item:x",
             "ts": "2026-06-21T10:00:00+00:00", "data": {"sku": "S", "name": "n"}}]
     on = to_xml(activity_table(evs, resizable=True))
-    assert "col-resize-handle" in on and "table-layout:fixed" in on and "celerp_activity_wpct_v1" in on
+    assert "col-resize-handle" in on and "table-layout:fixed" in on and "celerpColumns(CFG.table,CFG.layout)" in on
     assert 'class="col-event"' in on
     off = to_xml(activity_table(evs))
     assert "col-resize-handle" not in off and "table-layout:fixed" not in off

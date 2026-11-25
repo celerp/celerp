@@ -326,7 +326,7 @@ class TestVirtualCostTotalColumn:
             {"key": "cost_price", "show_in_table": True},
             {"key": "cost_price_total", "show_in_table": True, "virtual": True, "paired_with": "cost_price"},
         ]
-        visible = _resolve_visible_cols(eff_schema, {}, "", [])
+        visible = _resolve_visible_cols(eff_schema, {}, [])
         assert "cost_price_total" in visible
         cp_idx = visible.index("cost_price")
         ct_idx = visible.index("cost_price_total")
@@ -340,7 +340,7 @@ class TestVirtualCostTotalColumn:
             {"key": "cost_price"},
             {"key": "cost_price_total", "virtual": True, "paired_with": "cost_price"},
         ]
-        visible = _resolve_visible_cols(eff_schema, {}, "", ["sku", "cost_price"])
+        visible = _resolve_visible_cols(eff_schema, {}, ["sku", "cost_price"])
         assert "cost_price_total" in visible
         assert visible.index("cost_price_total") == visible.index("cost_price") + 1
 

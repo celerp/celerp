@@ -203,10 +203,38 @@
     setTimeout(function () { btn.classList.remove('share-url__copy--done'); }, 1500);
   }
 
-  // Forget the stored column choices of a table, then reload.
-  function celerpResetColumns(keys) {
-    keys.forEach(function (k) { localStorage.removeItem(k); });
-    location.reload();
+  // ---------------------------------------------------------------- column setup
+  // A user's column setup for each table lives on the server, so every device shows the same
+  // columns. The page carries a table's saved layout ({vis, order, widths}); the first script
+  // to name a table seeds it, later scripts and re-rendered fragments read the copy this page
+  // holds, and each change is saved back.
+  var columnLayouts = {};
+  function celerpColumns(table, saved) {
+    if (!(table in columnLayouts)) columnLayouts[table] = saved || {};
+    var layout = columnLayouts[table];
+    return {
+      get: function (part) { return layout[part] || null; },
+      // What the page shows until the user changes it: held for the other scripts, not saved.
+      hold: function (part, value) { layout[part] = value; },
+      set: function (part, value) {
+        layout[part] = value;
+        var change = {}; change[table] = {}; change[table][part] = value;
+        saveColumns(change);
+      }
+    };
+  }
+  function saveColumns(change) {
+    return celerpFetch('/column-prefs', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                         body: JSON.stringify(change)})
+      .then(function (r) { if (!r.ok) throw new Error(r.status); })
+      .catch(function () { showGlobalUiError(window.__shellI18n.requestFailed); });
+  }
+
+  // Forget the saved column setup of the given tables, then reload.
+  function celerpResetColumns(tables) {
+    var change = {};
+    tables.forEach(function (t) { change[t] = null; delete columnLayouts[t]; });
+    saveColumns(change).then(function () { location.reload(); });
   }
 
   // An inline panel's Cancel, or Escape on it (given ev), removes the element it sits in.
@@ -240,6 +268,7 @@
   window.celerpShowModalOnAnswer = celerpShowModalOnAnswer;
   window.celerpToastWhenReady = celerpToastWhenReady;
   window.celerpCopyField = celerpCopyField;
+  window.celerpColumns = celerpColumns;
   window.celerpResetColumns = celerpResetColumns;
   window.celerpRemoveClosest = celerpRemoveClosest;
 })();

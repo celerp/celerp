@@ -393,18 +393,18 @@ class TestColumnManagerUi:
             {"key": "name", "label": "Name", "show_in_table": True},
             {"key": "sku", "label": "SKU", "show_in_table": True},
         ]
-        html = to_xml(_column_manager(schema, {}, "", ["name", "sku"]))
+        html = to_xml(_column_manager(schema, "", ["name", "sku"]))
         assert "col-mgr-reset-btn" in html, "Reset button CSS class missing from column manager"
 
-    def test_reset_button_clears_all_three_ls_keys(self):
-        """Reset button JS must clear visibility, order, AND widths from localStorage."""
+    def test_reset_button_forgets_the_saved_inventory_setup(self):
+        """Reset button forgets the user's saved inventory column setup (visibility, order and
+        widths together), never a browser copy."""
         from fasthtml.common import to_xml
         from ui.routes.inventory import _column_manager
         schema = [{"key": "name", "label": "Name", "show_in_table": True}]
-        html = to_xml(_column_manager(schema, {}, "", ["name"]))
-        assert "celerp_cols_inventory" in html
-        assert "celerp_col_order_inventory" in html
-        assert "celerp_col_widths_inventory" in html
+        html = to_xml(_column_manager(schema, "", ["name"]))
+        assert "celerpResetColumns" in html and "inventory" in html
+        assert "localStorage" not in html
 
     def test_css_table_layout_fixed(self):
         """app.css must set table-layout: auto on .data-table so resize expands table, not shrinks other columns."""
@@ -423,17 +423,17 @@ class TestColumnManagerUi:
         assert "table-scroll-wrap" in css
         assert "overflow-x: auto" in css
 
-    def test_resize_widths_persisted_to_localstorage(self):
-        """data_table JS must reference WIDTH_KEY for persisting column widths."""
+    def test_resize_widths_come_from_the_saved_setup(self):
+        """data_table restores column widths from the user's saved setup it is given."""
         from fasthtml.common import to_xml
         from ui.components.table import data_table
         schema = [
             {"key": "name", "label": "Name", "show_in_table": True, "type": "text", "editable": True},
         ]
         rows = [{"id": "item:1", "name": "Ruby"}]
-        html = to_xml(data_table(schema, rows, entity_type="inventory"))
-        cfg = script_cfg(html, "var WIDTH_KEY = 'celerp_col_widths_' + CFG.entityType")
-        assert cfg["entityType"] == "inventory"
+        html = to_xml(data_table(schema, rows, entity_type="inventory", layout={"widths": {"name": "120px"}}))
+        cfg = script_cfg(html, "function loadWidths() { return COLS.get('widths'); }")
+        assert cfg["entityType"] == "inventory" and cfg["layout"] == {"widths": {"name": "120px"}}
 
 
 @pytest.mark.asyncio

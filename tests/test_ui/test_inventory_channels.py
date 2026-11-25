@@ -75,7 +75,7 @@ async def test_channels_column_with_real_wiring():
     shopify = html.split('id="channel-item-chan-2-shopify"', 1)[1].split("</div>", 1)[0]
     assert "--" in shopify and "<button" not in shopify
     # The column is listed in Manage Columns, so it can be hidden and shown again.
-    assert 'value="_channels"' in to_xml(_column_manager(eff_schema, {}, "", visible))
+    assert 'value="_channels"' in to_xml(_column_manager(eff_schema, "", visible))
 
 
 @pytest.mark.asyncio

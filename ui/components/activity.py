@@ -1167,6 +1167,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
                    currency: str | None = None,
                    category_names: dict | None = None,
                    resizable: bool = False,
+                   layout: dict | None = None,
                    deleted: dict[str, dict] | None = None,
                    docs_on: bool = False) -> FT:
     """Unified DRY activity table used by all detail pages and dashboard.
@@ -1248,7 +1249,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
     resizer = ""
     if resizable:
         from ui.components.table import col_resize_script
-        resizer = col_resize_script("table.activity-table", "celerp_activity_wpct_v1")
+        resizer = col_resize_script("table.activity-table", "activity", layout)
 
     return Div(
         Div(*header_parts, cls="section-header") if icon else H3(title, cls="section-title"),

@@ -761,6 +761,23 @@ def _company_reset_card(company_name: str) -> FT:
 
 def setup_routes(app):
 
+    @app.post("/column-prefs")
+    async def column_prefs_save(request: Request):
+        """Save the signed-in user's column setup ({table: layout or null}) to their server copy,
+        the one every device reads."""
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        try:
+            prefs = await request.json()
+        except ValueError:
+            return Response(status_code=400)
+        try:
+            await api.patch_column_prefs(token, prefs)
+        except APIError as e:
+            return Response(e.detail, status_code=e.status)
+        return Response(status_code=204)
+
     @app.get("/settings")
     async def settings_redirect(request: Request):
         """Redirect legacy /settings to the new /settings/general."""

@@ -944,7 +944,7 @@ async def _load_inventory_static_metadata(token: str) -> tuple:
     labels).
 
     One round-trip-collapsing snapshot backs every inventory view (page,
-    content, columns, search); each caller unpacks the same shape here rather
+    content, search); each caller unpacks the same shape here rather
     than repeating a six-call gather. Company/settings is deliberately not part
     of this snapshot: it carries authorization state and is fetched fresh per
     request. Raises `APIError` so the caller decides how to degrade (401 ->
@@ -985,7 +985,7 @@ async def _export_columns(token: str, p: dict) -> list[str]:
     )
     active_cat = p.get("category", "")
     eff_schema = _effective_schema(schema, cat_schemas, active_cat)
-    cols = list(p.get("cols") or []) or _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
+    cols = list(p.get("cols") or []) or _resolve_visible_cols(eff_schema, col_prefs, [])
     if not p.get("cols"):
         if p.get("on_memo_to") or p.get("consigned_from"):
             cols.append("holding_value")
@@ -1018,12 +1018,11 @@ async def _render_inventory_fragment(
 ):
     """Load the view metadata then render #inventory-content, degrading identically.
 
-    Shared by every HTMX fragment route (content, columns, search): each one loads
+    Shared by every HTMX fragment route (content, search): each one loads
     fresh view metadata and renders content in the same two steps, and each must
     degrade the same way on failure - a 401 from either step sends the browser to
     login, any other APIError falls back to the honest content-error fragment
-    rather than a blank or broken swap. Extra keyword arguments (e.g.
-    col_manager_open) pass straight through to `_inventory_content`.
+    rather than a blank or broken swap.
 
     The full page route does not use this helper: it wraps a single try/except
     around both the metadata load and the content render together (one honest
@@ -1168,7 +1167,7 @@ def _inventory_table(
             "position": _position, "show_in_table": True,
         }]
 
-    visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
+    visible_cols = _resolve_visible_cols(eff_schema, col_prefs, p.get("cols") or [])
     for _key, _label, _position in derived_money_cols:
         if _key not in visible_cols:
             # Saved column prefs predate this derived column, so force it visible.
@@ -1204,7 +1203,6 @@ async def _inventory_content(
     locations: list[dict],
     units: list[dict],
     category_display_names: dict,
-    col_manager_open: bool = False,
     lang: str = "en",
     role: str = "owner",
 ) -> FT:
@@ -1306,7 +1304,7 @@ async def _inventory_content(
         _bulk_toolbar(locations, p, total_items, settings=_settings, role=role,
                       connected_connectors=connected_connectors),
         Div(
-            _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
+            _column_manager(eff_schema, active_cat, visible_cols, col_prefs.get("inventory")),
             cls="column-manager-row",
         ),
         P(t("inventory.search_not_found", codes=", ".join(not_found)), cls="flash flash--warning")
@@ -1320,6 +1318,7 @@ async def _inventory_content(
             sort_target="#inventory-content",
             auto_hide_empty=False,
             column_filters=_inventory_column_filters(eff_schema, schema, locations, attribute_facets, p),
+            layout=col_prefs.get("inventory"),
             **table_args,
         ) if items else _inventory_empty_state(p, _settings, role),
         pagination(p["page"], list_total, p["per_page"], "/inventory", extra_params),
@@ -1516,43 +1515,6 @@ def setup_routes(app):
         p = _parse_params(request)
         lang = get_lang(request)
         return await _render_inventory_fragment(token, p, lang, _get_role(request))
-
-    @app.post("/inventory/columns")
-    async def inventory_columns(request: Request):
-        """Save column prefs and return updated #inventory-content fragment."""
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        cols = [v.strip() for v in form.getlist("cols") if v.strip()]
-        cat_pref = str(form.get("_cat_pref", "__all__")).strip() or "__all__"
-        # Save column prefs for this view
-        try:
-            existing_prefs = await api.get_column_prefs(token)
-        except APIError:
-            existing_prefs = {}
-        existing_prefs[cat_pref] = cols
-        try:
-            await api.patch_column_prefs(token, existing_prefs)
-        except APIError:
-            pass
-        # Rebuild params from hidden form fields (category, status, etc.)
-        p = {
-            "q": str(form.get("q", "")).strip(),
-            "page": 1,
-            "status": str(form.get("status", "")).strip(),
-            "category": str(form.get("category", "")).strip(),
-            "sort": str(form.get("sort", "")).strip(),
-            "dir": str(form.get("dir", "desc")).strip() or "desc",
-            "per_page": int(form.get("per_page", _DEFAULT_PER_PAGE) or _DEFAULT_PER_PAGE),
-            "cols": [],  # cols are now saved in prefs; don't pass via URL
-        }
-        lang = get_lang(request)
-        # The column-pref write above invalidated the metadata snapshot, so this
-        # reload reflects the saved prefs rather than a stale cached copy.
-        return await _render_inventory_fragment(
-            token, p, lang, _get_role(request), col_manager_open=True,
-        )
 
     @app.get("/inventory/search")
     async def inventory_search(request: Request):
@@ -6064,14 +6026,12 @@ async def _reorder_placeholder(token: str, entity_id: str, field: str, value) ->
     return str(sv) if sv not in (None, "") else None
 
 
-def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_cols: list[str] | None = None, keep_open: bool = False) -> FT:
-    """Column manager dropdown with immediate JS toggle + localStorage + drag-and-drop reorder.
-
-    Server-side pref save is preserved for cross-device sync (background fetch).
-    Client-side: checkboxes immediately show/hide columns and persist to localStorage.
+def _column_manager(schema: list[dict], active_cat: str = "", visible_cols: list[str] | None = None,
+                    layout: dict | None = None) -> FT:
+    """Column manager dropdown with immediate JS toggle + drag-and-drop reorder, saved to the
+    signed-in user's inventory column setup (``layout`` is its saved copy).
     """
     selected = set(visible_cols) if visible_cols else {f.get("key") for f in schema if f.get("show_in_table", True)}
-    cat_pref = active_cat or "__all__"
     # JS data for all columns (key, label, visible) — exclude paired secondaries and virtual columns
     _cm_exclude = _PAIRED_SECONDARY_KEYS | {f.get("key") for f in schema if f.get("virtual")}
     col_data = [{"key": f.get("key", ""), "label": field_label(f)} for f in schema if f.get("key") not in _cm_exclude]
@@ -6085,8 +6045,6 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     virtual_followers = _vf_map
     selected_keys = sorted(selected)
     # Hidden inputs for fallback server save (category, status, sort etc.)
-    hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
-    hidden_state["_cat_pref"] = cat_pref
 
     # Build checkbox list for initial render (exclude paired secondaries - they render inside primary cells)
     checkboxes = [
@@ -6107,40 +6065,32 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         if f.get("key") not in _cm_exclude
     ]
 
-    hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
-
-    # JS: localStorage key matches data_table's PAGE_KEY for inventory
-    paired_secondaries = list(_PAIRED_TABLE.values())
 
     col_mgr_js = """
 (function() {var CFG=JSON.parse(document.currentScript.dataset.cfg);
-  var LS_VIS_KEY = 'celerp_cols_inventory';
-  var LS_ORDER_KEY = 'celerp_col_order_inventory';
-  var CAT_PREF = CFG.catPref;
+  var COLS = celerpColumns('inventory', CFG.layout);
   var SELECTED_KEYS = CFG.selected;
   var ALL_COLS = CFG.allCols;
-  // Keys that are now merged into their primary column - strip from saved prefs
-  var MERGED_SECONDARIES = CFG.merged;
   // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
   var VIRTUAL_FOLLOWERS = CFG.followers;
   var btn = document.getElementById('col-mgr-btn');
   var menu = document.getElementById('col-mgr-menu');
   if (!btn || !menu) return;
 
-  // Load visibility from localStorage
+  // The saved visibility
   function loadVis() {
-    try { return JSON.parse(localStorage.getItem(LS_VIS_KEY) || 'null'); } catch(e) { return null; }
+    return COLS.get('vis');
   }
   function saveVis(prefs) {
-    localStorage.setItem(LS_VIS_KEY, JSON.stringify(prefs));
+    COLS.set('vis', prefs);
   }
 
-  // Load order from localStorage
+  // The saved order
   function loadOrder() {
-    try { return JSON.parse(localStorage.getItem(LS_ORDER_KEY) || 'null'); } catch(e) { return null; }
+    return COLS.get('order');
   }
   function saveOrder(order) {
-    localStorage.setItem(LS_ORDER_KEY, JSON.stringify(order));
+    COLS.set('order', order);
   }
 
   // Apply column visibility to the data table
@@ -6162,7 +6112,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     window.celerpSyncExportCols(table);
   }
 
-  // Sync checkboxes in menu to match localStorage
+  // Sync checkboxes in menu to the saved visibility
   function syncCheckboxes() {
     var prefs = loadVis() || {};
     menu.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
@@ -6228,16 +6178,6 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) { return l.dataset.col; });
   }
 
-  // Save cols to server (background, no page reload)
-  function saveToServer(visibleKeys) {
-    var form = new FormData();
-    visibleKeys.forEach(function(k) { form.append('cols', k); });
-    Object.entries(CFG.hidden).forEach(function(kv) {
-      form.append(kv[0], kv[1]);
-    });
-    fetch('/inventory/columns', {method:'POST', body:form}).catch(function(){});
-  }
-
   // Toggle open/close
   btn.addEventListener('click', function(e) {
     e.stopPropagation();
@@ -6268,9 +6208,6 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     applyVisToTable(prefs);
     // Re-apply picker order so the newly-visible column lands in the right slot
     applyOrderToTable(pickerOrder());
-    // Save visible keys to server
-    var visibleKeys = ALL_COLS.filter(function(c) { return prefs[c.key] !== false; }).map(function(c){return c.key;});
-    saveToServer(visibleKeys);
   });
 
   // Drag-and-drop reordering within column manager menu
@@ -6311,22 +6248,16 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     applyOrderToPicker(e.detail.order);
   });
 
-  // Init: apply localStorage state on page load
-  // Strip merged secondary keys from any saved prefs (migration for users who had them as separate columns)
+  // Init: apply the saved setup on page load
   var storedVis = loadVis();
-  if (storedVis) {
-    MERGED_SECONDARIES.forEach(function(k) { delete storedVis[k]; });
-    applyVisToTable(storedVis);
-  }
+  if (storedVis) applyVisToTable(storedVis);
   var storedOrder = loadOrder();
   if (storedOrder) {
-    storedOrder = storedOrder.filter(function(k) { return MERGED_SECONDARIES.indexOf(k) === -1; });
     applyOrderToPicker(storedOrder);
     applyOrderToTable(storedOrder);
   }
 
-  // Keep menu closed unless keep_open is set
-  menu.style.display = CFG.menuDisplay;
+  menu.style.display = 'none';
 })();
 """
 
@@ -6339,13 +6270,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
                 id="col-mgr-reset",
                 cls="btn btn--sm btn--ghost col-mgr-reset-btn",
                 type="button",
-                onclick=(
-                    f"localStorage.removeItem('celerp_cols_inventory');"
-                    f"localStorage.removeItem('celerp_col_order_inventory');"
-                    f"localStorage.removeItem('celerp_col_widths_inventory');"
-                    f"fetch('/inventory/columns',{{method:'POST',body:new FormData()}});"
-                    f"location.reload();"
-                ),
+                onclick=call("celerpResetColumns", ["inventory"]),
                 title=t("btn.reset_columns_title"),
             ),
             A(
@@ -6358,16 +6283,11 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
                 id="col-mgr-custom-link",
                 cls="col-mgr-custom-link",
             ),
-            Form(
-                *hidden_inputs,
-                id="col-mgr-form",
-                style="display:none",
-            ),
             cls="column-menu",
             id="col-mgr-menu",
-            style="display:none" if not keep_open else "",
+            style="display:none",
         ),
-        Script(col_mgr_js, data_cfg=js_value({'catPref': cat_pref, 'allCols': col_data, 'merged': paired_secondaries, 'followers': virtual_followers, 'hidden': hidden_state, 'selected': selected_keys, 'menuDisplay': '' if keep_open else 'none'})),
+        Script(col_mgr_js, data_cfg=js_value({'layout': layout or {}, 'allCols': col_data, 'followers': virtual_followers, 'selected': selected_keys})),
         cls="column-manager",
         id="col-mgr-details",
     )
@@ -8226,12 +8146,12 @@ def _effective_schema(
 def _resolve_visible_cols(
     eff_schema: list[dict],
     col_prefs: dict,
-    active_cat: str,
     url_cols: list[str],
 ) -> list[str]:
     """Determine visible column list for the current view.
 
-    Priority: URL ?cols= override > saved pref for this view > schema defaults.
+    Priority: URL ?cols= override > the user's saved inventory column setup (its order, then
+    each column it does not name in schema order, shown unless it hides them) > schema defaults.
 
     Virtual columns (e.g. cost_price_total) are always injected immediately after
     their ``paired_with`` column when that column is visible.
@@ -8239,9 +8159,12 @@ def _resolve_visible_cols(
     if url_cols:
         base = url_cols
     else:
-        pref_key = active_cat if active_cat else "__all__"
-        saved = col_prefs.get(pref_key)
-        base = saved if saved else [f["key"] for f in eff_schema if f.get("show_in_table", True)]
+        layout = col_prefs.get("inventory") or {}
+        vis, order = layout.get("vis") or {}, layout.get("order") or []
+        schema_keys = [f["key"] for f in eff_schema]
+        default = {f["key"]: f.get("show_in_table", True) for f in eff_schema}
+        ordered = [k for k in order if k in default] + [k for k in schema_keys if k not in order]
+        base = [k for k in ordered if vis.get(k, default[k])]
 
     # Inject virtual columns immediately after their paired_with counterpart
     virtual_cols = {f["key"]: f for f in eff_schema if f.get("virtual")}

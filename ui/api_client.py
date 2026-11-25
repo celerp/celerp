@@ -1251,7 +1251,18 @@ async def get_column_prefs(token: str) -> dict:
         return _raise(await c.get("/companies/me/column-prefs")).json()
 
 
-async def patch_column_prefs(token: str, prefs: dict[str, list[str]]) -> dict:
+async def column_layouts(token: str) -> dict:
+    """The signed-in user's saved column setup for a page to render with: when it cannot be read,
+    each table opens with its default columns (an ended session still raises)."""
+    try:
+        return await get_column_prefs(token)
+    except APIError as e:
+        if e.status == 401:
+            raise
+        return {}
+
+
+async def patch_column_prefs(token: str, prefs: dict[str, dict | None]) -> dict:
     async with _api_client(token) as c:
         result = _raise(await c.patch("/companies/me/column-prefs", json={"prefs": prefs})).json()
     _invalidate_inventory_metadata()

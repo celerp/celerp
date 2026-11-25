@@ -685,11 +685,13 @@ def _contacts_content(
     sort: str,
     sort_dir: str,
     currency: str | None = None,
+    layout: dict | None = None,
 ) -> FT:
-    """Inner content fragment for contacts list - used by full page and HTMX partial."""
+    """Inner content fragment for contacts list - used by full page and HTMX partial. ``layout``
+    is the signed-in user's saved column setup for this list."""
     schema = _contact_schema(contact_type)
     # All columns are rendered in the DOM so the column manager can toggle them.
-    # show_in_table controls only the *initial* visible set (seeded into localStorage).
+    # show_in_table controls only the visible set until the user saves their own.
     base_url = f"/contacts/{contact_type}s"
     create_url = f"/contacts/create?type={contact_type}"
     extra_params = {"type": contact_type, "q": q, "dir": sort_dir} if q else {"type": contact_type, "dir": sort_dir}
@@ -710,6 +712,7 @@ def _contacts_content(
             schema,
             [{**c, "_row_read_only": True} if c.get("is_self") else c for c in contacts],
             entity_type=f"{contact_type}s",
+            layout=layout,
             sort_key=sort,
             sort_dir=sort_dir,
             sort_url="/contacts/content",
@@ -746,6 +749,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
     search_url = f"/contacts/content?type={contact_type}"
     schema = _contact_schema(contact_type)
     et = f"{contact_type}s"
+    layout = (await api.column_layouts(_token(request))).get(et)
 
     _settings = settings or {}
     _role = _get_role(request)
@@ -766,9 +770,9 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
             A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _can_import_export else "",
             A(import_icon(), t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary", data_import_hint=True) if _can_import_export else "",
         ),
-        Div(column_manager(schema, et), cls="column-manager-row"),
+        Div(column_manager(schema, et, layout=layout), cls="column-manager-row"),
         _contacts_bulk_toolbar(),
-        _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
+        _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency, layout),
         Script("""
 (function(){
   var PAGE = JSON.parse(document.currentScript.dataset.cfg);
@@ -1166,7 +1170,8 @@ def setup_routes(app):
         contacts = sorted(contacts, key=lambda c: (0 if (c.get("name") or "").strip() == _placeholder else 1))
         page_query = urlencode([(k, v) for k, v in request.query_params.multi_items() if k != "type"])
         return search_results(
-            _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
+            _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency,
+                              (await api.column_layouts(token)).get(f"{contact_type}s")),
             f"/contacts/{contact_type}s?{page_query}",
         )
 
