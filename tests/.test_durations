@@ -32629,5 +32629,18 @@
     "tests/test_browser/test_bulk_bar_selection.py::test_bulk_bar_shows_once_a_row_is_ticked[chromium]": 1.078427552129142,
     "tests/test_browser/test_column_setup_devices.py::test_a_column_change_on_one_device_shows_on_the_other[chromium]": 2.329829039052129,
     "tests/test_browser/test_sticky_header.py::test_sideways_scroll_offset_reaches_only_the_box_and_its_shades[chromium]": 3.2349578090943396,
-    "tests/test_browser/test_sticky_header.py::test_sideways_scroll_while_pinned_keeps_the_header_pinned[chromium]": 2.110103660961613
+    "tests/test_browser/test_sticky_header.py::test_sideways_scroll_while_pinned_keeps_the_header_pinned[chromium]": 2.110103660961613,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[am]": 0.03530446998775005,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[ar]": 0.007285158964805305,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[de]": 0.00670694001019001,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[en]": 0.0029548880411311984,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[es]": 0.0066622530575841665,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[fr]": 0.006783339893445373,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[id]": 0.0062923169462010264,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[it]": 0.007080760900862515,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[ja]": 0.007305774954147637,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[pt]": 0.006685413070954382,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[th]": 0.008588124881498516,
+    "tests/test_ai_agent_areas.py::test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set[vi]": 0.007697097025811672,
+    "tests/test_recon_default_bank_currency.py::test_the_mislabelled_check_reads_only_the_banks_own_account": 1.3430378850316629
 }
