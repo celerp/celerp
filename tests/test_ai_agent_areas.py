@@ -520,3 +520,54 @@ async def test_a_bulk_card_shows_every_record_it_changes_and_each_value(monkeypa
     assert html.count("<tr>") == service.MAX_FOR_EACH + 1
     for n in range(service.MAX_FOR_EACH):
         assert f"Forklift {n:03}" in html and f"SN-{n:04}" in html
+
+
+# -- The books' currency ------------------------------------------------------
+
+def _books_caps(real_app) -> tuple[dict, str, str]:
+    caps = ai_tools.compile_agent_capabilities(real_app, {}, "owner", caller_gates=frozenset())
+    by_route = {(c["method"], c["path"]): n for n, c in caps.items()}
+    return caps, by_route[("POST", "/accounting/reconciliation/import-statement")], by_route[("PATCH", "/companies/me/books")]
+
+
+async def _propose(monkeypatch, real_app, settings: dict, tool_key: int):
+    caps, imp, books = _books_caps(real_app)
+    tool, args = [(imp, {"body": {"job_id": "j", "statements": [{"header": {}, "lines": []}], "idempotency_key": "k"}}),
+                  (books, {"body": {"currency": "THB"}})][tool_key]
+    model = _script(monkeypatch, [
+        _turn(calls=[(LIST_TOOLS, {"area": service.agent_area(caps[tool])}, "c1")]),
+        _turn(calls=[(OPEN_TOOLS, {"names": [tool]}, "c2")]),
+        _turn(calls=[(tool, args, "c3")]),
+        _turn("done"),
+    ], caps=caps)
+    result = await _run(company_settings=settings)
+    return model, result
+
+
+@pytest.mark.asyncio
+async def test_no_import_or_posting_is_proposed_while_the_books_currency_is_not_set(monkeypatch, real_app):
+    """With no currency set, an import or posting would be read in a guessed currency:
+    the assistant refuses it, saying why and what to do next, and proposes nothing."""
+    model, result = await _propose(monkeypatch, real_app, {}, 0)
+    assert result.pending_actions == []
+    refusal = model.tool_result(3, "c3")
+    assert _error_code(refusal) == "books_currency_unset"
+    assert refusal["error"]["message_key"] == "ai.err_books_currency_unset"
+
+
+@pytest.mark.asyncio
+async def test_setting_the_books_currency_stays_open_and_a_set_currency_lets_imports_through(monkeypatch, real_app):
+    """The neighbouring invariant: the fix (setting the currency) is still proposed, and
+    once a currency is set the same import goes on a card."""
+    _model, result = await _propose(monkeypatch, real_app, {}, 1)
+    assert len(result.pending_actions) == 1
+    _model, result = await _propose(monkeypatch, real_app, {"currency": "THB"}, 0)
+    assert len(result.pending_actions) == 1
+
+
+def test_the_prompt_names_the_books_currency_from_the_company_settings_only():
+    """The assistant reads the books' currency from the company's settings, never from a
+    bank account or a file, and is told when none is set."""
+    assert "THB" in agent_system_prompt("en", {}, {"currency": "THB"})
+    unset = agent_system_prompt("en", {}, {})
+    assert "not set" in unset and "USD" not in unset

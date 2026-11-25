@@ -142,6 +142,25 @@ async def _amount_unknown_relabel(client, h, session, tok):
     await _complete(client, h, sid)
 
 
+async def _bank_mislabelled(client, h, session, tok):
+    """Way out: the button at the top of the bank page sets the account to the books'
+    currency, then the statement imports."""
+    b = await bank(client, h, currency="THB", opening=0.0)
+    await legacy_deposit(client, h, session, b, "2026-09-10", 200.0)
+    co = await B.co_of(client, h)
+    header = {"opening_balance": "200.00", "closing_balance": "150.00", "period_start": "2026-10-01", "period_end": "2026-10-31"}
+    async def preview():
+        rows = B.csv_bytes([("2026-10-02", "RENT", "-50.00")])
+        return await B.read(client, co, [(rows, "oct.csv", "text/csv")], bank_id=b["id"])
+    r = await B.import_statement(client, co, await preview(), bank_id=b["id"], header=header, expect=422)
+    assert refusal_text(r["detail"]) == t("acct.err_bank_mislabelled", currency="THB", base="USD"), r
+    relabel, bank_page = f"/accounting/reconcile/relabel/{b['id']}", f"/accounting/reconcile/bank/{b['id']}"
+    async with _ui_as(tok) as ui:
+        assert f'action="{relabel}"' in (await ui.get(bank_page)).text
+        assert (await ui.post(relabel, data={"next": bank_page})).status_code == 303
+    assert (await B.import_statement(client, co, await preview(), bank_id=b["id"], header=header))["sessions"]
+
+
 async def _book_entry_no_amount(client, h, session, tok):
     """Way out where the account cannot be relabelled (it holds EUR amounts): void the
     entry and post it again with its EUR amount, then match it."""
@@ -195,6 +214,7 @@ async def _payment_bank_currency(client, h, session, tok):
 
 
 WAYS_OUT = {
+    "acct.err_bank_mislabelled": _bank_mislabelled,
     "acct.err_bank_currency_has_history": _currency_in_use,
     "acct.err_bank_currency_reconciled": _currency_reconciled,
     "acct.err_bank_rate_required": _rate_required,

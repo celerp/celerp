@@ -289,6 +289,25 @@ say so and name the screen where they do it themselves:
 {groups}"""
 
 
+_BOOKS_CURRENCY_PROMPT = """
+
+The company keeps its books in {currency}, as set in Settings > Accounting. Take the
+books' currency from there only, never from a bank account or a file. When a file, a
+statement or a bank account is in another currency, say so and ask the user to check
+the company and bank account currencies before you propose importing or posting it."""
+
+_NO_BOOKS_CURRENCY_PROMPT = """
+
+The company's books currency is not set yet. Never guess it from a bank account or a
+file. Propose no import or posting; ask the user to set the currency in Settings >
+Accounting first."""
+
+# Changes that bring amounts into the books: while the books' currency is not set, they
+# would be read in a guessed one. Setting the currency (``_BOOKS_CURRENCY_FIX``) stays open.
+_BOOKS_PERMISSIONS = frozenset({"import_export_data", "finalize_documents", "record_payments", "manage_accounting"})
+_BOOKS_CURRENCY_FIX = ("PATCH", "/companies/me/books")
+
+
 def agent_area(capability: dict) -> str:
     """The area a capability is listed under: its owning module, or core."""
     owner = capability.get("module")
@@ -319,7 +338,8 @@ def _help_modules(company_settings: dict) -> list[str]:
 
 def agent_system_prompt(lang: str, capabilities: dict, company_settings: dict) -> str:
     """The agent's system prompt for a user who reads ``lang``: the areas the caller's
-    tools come from, the actions kept off the assistant, and the help modules."""
+    tools come from, the actions kept off the assistant, the books' currency as the
+    company set it, and the help modules."""
     prompt = _AGENT_SYSTEM_PROMPT
     if capabilities:
         labels = agent_areas(company_settings)
@@ -327,6 +347,8 @@ def agent_system_prompt(lang: str, capabilities: dict, company_settings: dict) -
         prompt += _AREAS_PROMPT.format(max_open=MAX_OPEN_PER_CALL,
                                        areas=", ".join(f"{a} ({labels.get(a, a)})" for a in used))
     prompt += _ASK_PROMPT.format(groups="\n".join(f"- {reason}" for reason in USER_ACTION_EXCLUSIONS.values()))
+    currency = company_settings.get("currency")
+    prompt += _BOOKS_CURRENCY_PROMPT.format(currency=currency) if currency else _NO_BOOKS_CURRENCY_PROMPT
     return prompt + _HELP_PROMPT.format(language=lang_label(lang),
                                         help_modules=", ".join(_help_modules(company_settings)))
 
@@ -672,6 +694,23 @@ def _repeated_changes(parsed: list, capabilities: dict) -> dict[str, dict]:
     return refused
 
 
+def _books_currency_unset(parsed: list, company_settings: dict) -> dict[str, dict]:
+    """Errors for changes that bring amounts into the books while the company has no books
+    currency set: never proposed in a guessed currency. The refusal says how to set it."""
+    if company_settings.get("currency"):
+        return {}
+    return {
+        call_id: _agent_error(
+            "books_currency_unset", "ai.err_books_currency_unset",
+            "The company's books currency is not set, so nothing may be imported or posted. Ask the "
+            "user to set it in Settings > Accounting, then propose this again.")
+        for call_id, _name, capability, _arguments, error in parsed
+        if error is None and capability is not None and capability.get("requires_confirmation")
+        and _BOOKS_PERMISSIONS & set(capability.get("required_permissions") or ())
+        and (str(capability["method"]).upper(), capability["path"]) != _BOOKS_CURRENCY_FIX
+    }
+
+
 async def run_agent(
     *,
     app,
@@ -859,7 +898,7 @@ async def _agent_loop(
                 dropped.append(call)
 
         parsed = [_parse_call(call, capabilities, opened) for call in kept]
-        refused = _repeated_changes(parsed, capabilities)
+        refused = _repeated_changes(parsed, capabilities) | _books_currency_unset(parsed, company_settings)
         parsed = [(call_id, name, capability, arguments, refused.get(call_id, error))
                   for (call_id, name, capability, arguments, error) in parsed]
         mutations = [

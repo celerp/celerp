@@ -131,3 +131,50 @@ async def test_relabel_returns_only_to_a_reconciliation_page(client, session):
         for back in ("https://elsewhere.example/", "//elsewhere.example/x", "/settings"):
             r = await ui.post(f"/accounting/reconcile/relabel/{b['id']}", data={"next": back})
             assert r.headers["location"].startswith(f"/accounting/reconcile/history/{b['id']}"), back
+
+
+async def _mislabelled_bank_with_lines(client, session):
+    """A bank whose postings and statement lines carry books-currency amounts only, then
+    labelled in another currency, as an install that seeded its default bank before the
+    books' currency was set left it: its amounts would be read in the wrong currency."""
+    from sqlalchemy import text
+    import bank_statement_helpers as B
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    rows = [("2026-03-05", "ACME SUPPLIES", "-120.00"), ("2026-03-12", "SHOP SALE", "300.00")]
+    _sid, lines = await B.lines_on(client, co, bk["id"], rows, opening="0.00", closing="180.00",
+                                   start="2026-03-01", end="2026-03-31")
+    await deposit(client, co["h"], bk, "2026-03-12", 300.0)
+    await session.execute(text("UPDATE bank_accounts SET currency = 'THB' WHERE id = :b"), {"b": bk["id"]})
+    await session.commit()
+    return B, co, bk, lines
+
+
+async def test_import_and_posting_on_a_mislabelled_bank_are_refused_naming_the_correction(client, session):
+    """Nothing is imported onto or posted from an account whose label and entries disagree:
+    the refusal names both currencies and the correction, and nothing is written."""
+    B, co, bk, lines = await _mislabelled_bank_with_lines(client, session)
+    want = t("acct.err_bank_mislabelled", currency="THB", base="USD")
+    preview = await B.read(client, co, [(B.csv_bytes([("2026-04-02", "RENT", "-50.00")]), "apr.csv", "text/csv")],
+                           bank_id=bk["id"])
+    r = await B.import_statement(client, co, preview, bank_id=bk["id"], expect=422, header={
+        "opening_balance": "180.00", "closing_balance": "130.00", "period_start": "2026-04-01", "period_end": "2026-04-30"})
+    assert refusal_text(r["detail"]) == want, r
+    acme = next(line["id"] for line in lines if line["description"] == "ACME SUPPLIES")
+    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [acme], "kind": "post", "account_code": "5100"}])
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == want, r.text
+    statuses = {line["status"] for line in B.all_lines(await B.groups(client, co, bk["id"], view="all"))}
+    assert statuses == {"unmatched"}, statuses
+
+
+async def test_a_corrected_bank_imports_and_posts_again(client, session):
+    """The neighbouring invariant: once the account is set to the books' currency (the
+    correction the refusal names), the same import and posting go through."""
+    B, co, bk, lines = await _mislabelled_bank_with_lines(client, session)
+    r = await client.patch(f"/accounting/bank-accounts/{bk['id']}", json={"currency": "USD"}, headers=co["h"])
+    assert r.status_code == 200, r.text
+    acme = next(line["id"] for line in lines if line["description"] == "ACME SUPPLIES")
+    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [acme], "kind": "post", "account_code": "5100"}])
+    assert r.status_code == 200 and all(x["ok"] for x in r.json()["results"]), r.text
+    await B.statement(client, co, bk["id"], [("2026-04-02", "RENT", "-50.00")], opening="180.00", closing="130.00",
+                      start="2026-04-01", end="2026-04-30")

@@ -40,7 +40,7 @@ from celerp.services.permissions import require_permission
 from celerp_accounting import statement_lines as SL
 from celerp_accounting.models import (Account, BankAccount, BankStatementLine, ReconciliationRule,
                                       ReconciliationSession, holding_any, stored_text)
-from celerp_accounting.routes import BankAccountCreate
+from celerp_accounting.routes import BankAccountCreate, refuse_mislabelled_bank
 from celerp_accounting.statement_reader import block_refusal
 from ui.i18n import refusal_text, t
 
@@ -553,6 +553,8 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
     await lock_company(db, company_id)
     if bank is None:
         bank = await add_bank(db, company_id, user.id, payload.new_bank)
+    else:
+        await refuse_mislabelled_bank(db, company_id, bank)
     base = await _base_currency(db, company_id)
     out = []
     for given, found in zip(payload.statements, read["statements"]):
@@ -1284,6 +1286,7 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
         return first
     await lock_company(db, company_id)
     bank = await _bank(db, company_id, bank_id)
+    await refuse_mislabelled_bank(db, company_id, bank)
     decisions = list(payload.decisions or [])
     by_line: dict = {}
     earlier: dict = {}
