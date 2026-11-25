@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 """Remember each unsettled request to close a company's online payments, each
-System Recovery restore Celerp Cloud must learn of, and each online payment that
+System Recovery restore Celerp Connect must learn of, and each online payment that
 could not be recorded on its invoice.
 
 Revision ID: q4f5a6b7c8d9

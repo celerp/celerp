@@ -88,6 +88,15 @@ async def test_taxes_tab_shows_a_compound_column(ui_client):
     assert html.index("/0/is_default/edit") < html.index("/0/is_compound/edit")
 
 
+async def test_taxes_tab_tax_type_column_shows_the_same_label_as_the_select(ui_client):
+    from ui.routes.settings import _taxes_tab
+
+    from fasthtml.common import to_xml
+    html = to_xml(_taxes_tab(_taxes(), prefix="taxes"))
+    assert f">{t('enum.tax_type.both')}<" in html
+    assert ">both<" not in html
+
+
 async def test_tax_cell_display_get_refuses_bad_input_and_shows_api_error(ui_client):
     url = "/settings/taxes/{idx}/{field}/display"
     r = await ui_client.get(url.format(idx=0, field="name"))
@@ -302,3 +311,16 @@ async def test_opening_a_numbering_cell_for_an_unknown_doc_type_does_not_fail(ui
     with patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_TRANSFER])):
         r = await ui_client.get(url)
     assert r.status_code == 200 and "editable-cell" in r.text
+
+
+@pytest.mark.parametrize("prefix, gname, pname", _PREFIXES)
+async def test_tax_side_cell_takes_only_the_three_sides(ui_client, prefix, gname, pname):
+    saved = AsyncMock(return_value={})
+    ui_client.cookies.update(_authed())
+    with patch(f"ui.api_client.{gname}", new=AsyncMock(side_effect=lambda *_: _taxes())), \
+         patch(f"ui.api_client.{pname}", new=saved):
+        r = await ui_client.patch(f"/settings/{prefix}/0/tax_type", data={"value": "output"})
+        assert "cell-error" in r.text
+        saved.assert_not_awaited()
+        r = await ui_client.patch(f"/settings/{prefix}/0/tax_type", data={"value": "purchase"})
+        assert saved.await_args.args[1][0]["tax_type"] == "purchase"

@@ -53,7 +53,7 @@ READ_ROUTE_WRITES: dict[tuple[str, str], ReadNote] = {
         "templates are read, so the first labels print at once; each is added under the company's lock"),
     ("payment_recoveries", "UPDATE"): ReadNote(
         ("generation",), ("celerp/services/payments.py report_recoveries",),
-        "Celerp Cloud's confirmation of an earlier System Recovery restore, stored as it answers before "
+        "Celerp Connect's confirmation of an earlier System Recovery restore, stored as it answers before "
         "a payment opens; a customer opens the payment from an emailed link, a GET",
         route="GET /pay/{token}"),
 }

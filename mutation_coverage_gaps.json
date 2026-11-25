@@ -990,18 +990,6 @@
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
  {
-  "site": "celerp/routers/auth.py acknowledge_reset_notices execute",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
-  "site": "celerp/routers/auth.py authenticate execute",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
   "site": "celerp/services/auto_je.py void emit_event",
   "count": 1,
   "class": "not reached from a route",
@@ -1020,34 +1008,10 @@
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
  {
-  "site": "celerp/services/migration_batches.py add add",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
-  "site": "celerp/services/migration_batches.py remove delete",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
   "site": "celerp/services/migration_core_sink.py _import_location add",
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/services/migration_templates.py forget execute",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
-  "site": "celerp/services/migration_templates.py remember execute",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
   "site": "celerp/services/migration_xero_attachments.py attach execute",
@@ -1075,31 +1039,13 @@
  },
  {
   "site": "celerp/services/migrations.py discard execute",
-  "count": 2,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
-  "site": "celerp/services/payments.py _apply_refund execute",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
-  "site": "celerp/services/payments.py _settle delete",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
-  "site": "celerp/services/payments.py prepare_company_closure add",
   "count": 1,
   "class": "reached from a route",
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
   "site": "celerp/services/payments.py receive_payment execute",
-  "count": 2,
+  "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
@@ -1114,12 +1060,6 @@
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/services/payments.py return_unmatched execute",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
   "site": "celerp/services/payments.py unrecord_company execute",
@@ -1170,28 +1110,10 @@
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
  {
-  "site": "celerp/services/runtime_state.py _get_or_create add",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
   "site": "celerp/services/session_tracker.py run_jti_cleanup_loop execute",
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/services/supporter_badge.py claim add",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
-  "site": "celerp/services/supporter_badge.py remove delete",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
   "site": "default_modules/celerp-accounting/celerp_accounting/routes.py _add_seeded_accounts add",
@@ -1388,14 +1310,20 @@
  {
   "site": "celerp/notifications/service.py clear_every_company execute",
   "count": 1,
-  "class": "not reached from a route",
-  "reason": "Runs only at app startup (main.py), clearing the held-back notice once a start brings the records current. Driven by tests/test_projection_semantics_upgrade.py::test_a_failed_rebuild_settles_nothing_and_the_next_start_rebuilds_then_settles."
+  "class": "reached from a route",
+  "reason": "Company provisioning reaches it in the static call graph through sync_pack_notice, which clears every company only when called without a company; provisioning always passes its company. It runs at app startup (main.py), driven by tests/test_projection_semantics_upgrade.py::test_a_failed_rebuild_settles_nothing_and_the_next_start_rebuilds_then_settles."
  },
  {
   "site": "celerp/services/migration_core_sink.py stage_file_cleanup add",
   "count": 1,
   "class": "not reached from a route",
   "reason": "Runs only inside the migration runner, which schedule_run starts in a task and a session of its own, outside the request that asked for the run. Driven by tests/test_migration_attachment_durability.py::test_a_batch_names_its_company_in_every_run_and_cleanup_write."
+ },
+ {
+  "site": "celerp/notifications/service.py _notify_once execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Moves the keys of a notice told earlier to the keys it is told under now. Only the startup notices pass keys that change between releases, so no request reaches the move. Driven by tests/test_tax_seed_notice.py::test_a_notice_told_under_a_key_since_renamed_is_read_from_the_new_key."
  },
  {
   "site": "celerp/services/migrations.py _run_locked execute",

@@ -1,0 +1,22 @@
+{
+  "TH": {
+    "version": "fixture",
+    "schema_version": 1,
+    "sha256": "1c1a2679a1e7f99dbee7b914501212570d3c0f6c6580f124e5a4406c4f744416"
+  },
+  "MY": {
+    "version": "fixture",
+    "schema_version": 1,
+    "sha256": "1694b05c375535dbe55068b854c2c4f1b356395d7c0ebf096e8182013e55f321"
+  },
+  "AU": {
+    "version": "fixture",
+    "schema_version": 1,
+    "sha256": "7720729a2dc480e51fa2f6d4f22fbd5c2bb69d724bdaf1df328005746efb3078"
+  },
+  "IN": {
+    "version": "fixture",
+    "schema_version": 1,
+    "sha256": "5211832646f83bd7b85fe1e82b01e36348d9a7a5942ae9dd8185498559e80c23"
+  }
+}

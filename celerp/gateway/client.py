@@ -612,7 +612,7 @@ class GatewayClient:
                 and self._relay_status not in ("tos_required", "active_elsewhere")):
             raise ConnectionError("Gateway connection ended before activation.")
 
-    # Each Celerp Cloud delivery type this install records, and its handler. The
+    # Each Celerp Connect delivery type this install records, and its handler. The
     # hello declares exactly these keys, so Cloud holds back any type not listed.
     _DELIVERIES = {
         "invoice.payment": "_handle_invoice_payment",
@@ -900,7 +900,7 @@ class GatewayClient:
         await self._receive_delivery("collection.binding", receive_binding, payload)
 
     async def _receive_delivery(self, kind: str, receive, payload: dict) -> None:
-        """Hand a Celerp Cloud delivery to *receive*; acknowledge it once *receive*
+        """Hand a Celerp Connect delivery to *receive*; acknowledge it once *receive*
         reports it recorded, so an unrecorded delivery is delivered again."""
         delivery_id = payload.get("delivery_id")
         entity_id = payload.get("entity_id")

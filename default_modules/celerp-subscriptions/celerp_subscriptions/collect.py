@@ -7,7 +7,7 @@ issues, a period's or an amendment's, opens attempt 1 for what the invoice owes
 (billing.issue_document). Nothing leaves inside
 the billing transaction: every pass of the dispatcher, after billing commits, advances
 each invoice's collection here, one invoice at a time, never holding a lock while it
-waits on Celerp Cloud:
+waits on Celerp Connect:
 
 what each pass does is one cell of TABLE (the invoice's phase x what the pass finds). In short:
 - an attempt asked for and not answered is asked for again with exactly the request first

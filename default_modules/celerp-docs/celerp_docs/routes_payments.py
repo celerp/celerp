@@ -4,7 +4,7 @@
 Celerp Connect.
 
 Public: /pay/{token} (start), /pay/{token}/return (back to the invoice). A payment
-is recorded only when Celerp Cloud delivers it (``payments.receive_payment``), on
+is recorded only when Celerp Connect delivers it (``payments.receive_payment``), on
 the books its payment page opened with. Authed: the merchant's payment connection
 status + connect/disconnect. The instance stores no Stripe credentials; all money
 records through the same path as a manual payment.
@@ -465,7 +465,7 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
 @public_router.get("/pay/{token}/return", openapi_extra=agent_excluded("public"))
 async def return_from_payment(token: str):
     """Customer's return from Stripe: back to the invoice. Nothing is recorded here;
-    Celerp Cloud delivers the payment once Stripe reports it paid."""
+    Celerp Connect delivers the payment once Stripe reports it paid."""
     return RedirectResponse(f"/share/{token}", status_code=303)
 
 

@@ -843,7 +843,7 @@ def relay_error_detail(resp, fallback: str) -> str:
 
 def cloud_refusal(resp, key: str, /, **params) -> dict:
     """The refusal a route answers a relay refusal with: the relay's own words, quoted as
-    what Celerp Cloud answered, else the catalog refusal ``key``."""
+    what Celerp Connect answered, else the catalog refusal ``key``."""
     from celerp.accounting_roles import catalog_refusal
 
     words = _relay_words(resp)

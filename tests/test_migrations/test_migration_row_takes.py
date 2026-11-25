@@ -18,6 +18,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from alembic.script import ScriptDirectory
 
 from alembic_support import alembic_run, apply_migrations
@@ -61,7 +63,7 @@ def _company_with_chart_and_work_centers(async_url: str, sync_url: str) -> None:
     from celerp.models.sync_run import SyncRun
     from celerp.models.migration import MigrationEntityMap, MigrationRun
     from celerp.services.migration_core_sink import deterministic_id
-    from celerp_accounting.routes import THAI_CHART_OF_ACCOUNTS, _seeded_account
+    from celerp_accounting.routes import DEFAULT_CHART_OF_ACCOUNTS, _seeded_account
 
     upgrade_to(sync_url, RELEASE_HEAD)
     ids = _populate(sync_url)
@@ -69,7 +71,7 @@ def _company_with_chart_and_work_centers(async_url: str, sync_url: str) -> None:
     eng = create_engine(sync_url)
     try:
         company = uuid.UUID(ids["company"])
-        rows = [_seeded_account(company, entry) for entry in THAI_CHART_OF_ACCOUNTS if entry["code"] != "6970"]
+        rows = [_seeded_account(company, entry) for entry in DEFAULT_CHART_OF_ACCOUNTS if entry["code"] != "6970"]
         run_id = uuid.uuid4()
         code = "M" + deterministic_id(SimpleNamespace(run_id=run_id), "account", "xero-sales").hex[:8]
         # The accounting module's table comes from the boot's create_all, as it does live.
@@ -98,6 +100,9 @@ def _company_with_chart_and_work_centers(async_url: str, sync_url: str) -> None:
         eng.dispose()
 
 
+# The walk runs every writing revision down and up again, so its cost grows with the
+# migration chain: about 20s on its own, three times that on a loaded CI shard.
+@pytest.mark.timeout(240)
 def test_every_revision_that_writes_a_company_row_runs_over_one_both_ways():
     """Every revision function that writes a company's rows runs here over a company that has
     them, down and up again from head, so the lock checker judges each one (a writer it never saw stays

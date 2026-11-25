@@ -10,11 +10,11 @@ import re
 import uuid
 from datetime import date
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
-from celerp.importers.results import BatchImportResult, record_refused, row_n, row_refusal
+from celerp.importers.results import BatchImportResult, record_refused, row_flag, row_n, row_refusal
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.agent_markers import agent_excluded, agent_gate
@@ -50,9 +50,13 @@ from celerp.services.permissions import (
     role_has_permission,
 )
 from celerp.schemas.numbers import FiniteFloat
-from celerp.tax_regimes import TAXES_SEEDED_FOR, configured, get_regime, purchasing_taxes, sales_taxes, tax_country, with_taxes
+from celerp.tax_regimes import (
+    TAX_TYPES, TAXES_SEEDED_FOR, configured, get_regime, missing_pack_refusal, pack_missing, purchasing_taxes,
+    sales_taxes, tax_country, tax_name_key, with_taxes,
+)
 from celerp.services import company_lifecycle, nav_overrides
-from celerp.services.currencies import require_phone
+from celerp.services.currencies import CURRENCY_CODES, require_phone
+from celerp.services.locations import make_default_location
 from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
@@ -68,9 +72,27 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 logger = logging.getLogger(__name__)
 
-async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict | None) -> str | None:
-    """Seed the tax regime of the country in ``address`` into a company that has not
-    set anything up yet, and return the country whose taxes it set (None when it set none).
+async def _default_location_country(session: AsyncSession, company_id) -> str:
+    """The country stored on the company's one default location, "" when it names none."""
+    return _address_country((await session.execute(
+        select(Location.address).where(Location.company_id == company_id, Location.is_default.is_(True))
+    )).scalar_one_or_none())
+
+
+def _address_country(address) -> str:
+    return str(address.get("country") or "").strip() if isinstance(address, dict) else ""
+
+
+async def _apply_default_location(session: AsyncSession, company_id, before: str, address: dict | None) -> str | None:
+    """Every write that leaves ``address`` on the company's default location ends here: it
+    refuses a newly chosen country whose pack is missing, then seeds the country's tax
+    regime into a company that has not set anything up yet, and returns the country whose
+    taxes it set (None when it set none).
+
+    ``before`` is the default location's country before the write. A country newly chosen
+    there whose pack this installation lacks is refused, so no default location points at
+    taxes Celerp cannot set up; a country already stored is kept as it is, with the taxes
+    stored for it.
 
     Taxes are replaced only while they are unset or still the list Celerp itself seeded
     (TAXES_SEEDED_FOR), and only when the country differs from the one they were seeded
@@ -79,10 +101,10 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
     while none was ever saved. A company that has posted entries of its own keeps both:
     changing them would silently restate its books, so it changes them explicitly in
     settings. Safe to call repeatedly."""
-    if not address:
-        return None
-    country = str(address.get("country") or "").strip()
-    if not country:
+    country = _address_country(address)
+    if country.upper() != before.upper() and (refusal := missing_pack_refusal(country)):
+        raise HTTPException(status_code=422, detail=refusal)
+    if not country or pack_missing(country):
         return None
 
     company = await locked_company(session, company_id)
@@ -201,17 +223,158 @@ class ColumnPrefsPatch(BaseModel):
 
 
 class TaxRate(BaseModel):
+    """One tax of a company's list, as the settings API and the country packs both take it."""
     name: str
     rate: FiniteFloat  # percentage, e.g. 7.0
-    tax_type: str = "both"  # sales|purchase|both
+    tax_type: Literal[TAX_TYPES] = "both"
+    is_default: bool = False
+    description: str = ""
+    is_compound: bool = False
+    default_order: int = 0
+
+    @field_validator("tax_type", mode="before")
+    @classmethod
+    def _unset_side_is_both(cls, value):
+        # Every reader of a stored list takes a missing or blank side as both.
+        return "both" if value is None or value == "" else value
+
+
+def _unique_tax_names(taxes: list) -> list:
+    """No two taxes of one list share a name, as tax_name_key compares them."""
+    seen: set[str] = set()
+    for tax in taxes:
+        key = tax_name_key(tax.name)
+        if key in seen:
+            raise ValueError(f"duplicate tax name {tax.name.strip()!r}")
+        seen.add(key)
+    return taxes
+
+
+class TaxRatesPatch(BaseModel):
+    """A whole tax list: no two of its taxes share a name, as tax_name_key compares them."""
+    taxes: list[TaxRate]
+
+    _names_unique = field_validator("taxes")(_unique_tax_names)
+
+
+def _import_taxes(held: list[dict], payload: SettingsBatchImportRequest, res: BatchImportResult) -> list[dict]:
+    """The tax list *held* with each new row of an import added as a TaxRate, the model every
+    tax list writer takes: a name already held or earlier in the batch, as tax_name_key compares
+    them, is skipped, and a row TaxRate refuses (a rate that is not a finite number, an unknown
+    side) is refused on its own."""
+    taxes = list(held)
+    names = {tax_name_key(tax.get("name")) for tax in taxes}
+    for i, r in enumerate(rec.data for rec in (payload.records or [])):
+        name = str(r.get("name", "") or "").strip()
+        if not tax_name_key(name):
+            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
+            continue
+        if tax_name_key(name) in names:
+            res.skipped += 1
+            continue
+        tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
+        try:
+            tax = TaxRate(name=name, rate=r.get("rate"), tax_type=tax_type,
+                          is_default=row_flag(r.get("is_default", False)),
+                          description=str(r.get("description", "") or "").strip())
+        except ValidationError as exc:
+            if any(err["loc"][:1] == ("rate",) for err in exc.errors()):
+                res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
+            else:
+                res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
+            continue
+        taxes.append(tax.model_dump())
+        names.add(tax_name_key(name))
+        res.created += 1
+    return taxes
+
+
+def _named(name: str) -> str:
+    if not tax_name_key(name):
+        raise ValueError("a name is required")
+    return name
+
+
+def _known_currency(code: str) -> str:
+    if code not in CURRENCY_CODES:
+        raise ValueError(f"{code!r} is not a known currency code")
+    return code
+
+
+PackName = Annotated[str, AfterValidator(_named)]
+PackCurrency = Annotated[str, AfterValidator(_known_currency)]
+
+
+class _PackPart(BaseModel):
+    """A part of a country pack file. A pack writes only what it means: an unknown field, a value
+    of another type (no coercion) and a field written as null are refused, so every value that
+    passes means what its reader takes it to mean. A field left out takes its default; for a
+    retired row's match fields, left out means not compared."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_nulls(cls, data):
+        if isinstance(data, dict) and (nulls := sorted(str(k) for k, v in data.items() if v is None)):
+            raise ValueError(f"{', '.join(nulls)} written as null (leave a field out instead)")
+        return data
+
+
+class PackTaxRate(_PackPart):
+    """One tax of a country pack: the TaxRate fields, written as true, false, numbers and text."""
+    name: PackName
+    rate: FiniteFloat
+    tax_type: Literal[TAX_TYPES] = "both"
     is_default: bool = False
     description: str = ""
     is_compound: bool = False
     default_order: int = 0
 
 
-class TaxRatesPatch(BaseModel):
-    taxes: list[TaxRate]
+class RetiredTaxRow(_PackPart):
+    """A row a retired entry matches: its name, as tax_name_key compares it, and each other field given."""
+    name: PackName
+    rate: FiniteFloat | None = None
+    is_default: bool | None = None
+    is_compound: bool | None = None
+
+
+class RetiredTax(_PackPart):
+    """Rows an earlier release seeded that are no longer right, as a country pack lists them. A
+    company still holding them is told (services/tax_seed_notice.py), never changed. ``match`` is
+    "all" when a list must hold every row, "any" when one is enough; with ``currency`` given, only
+    a company whose books are in that currency holds the retired rows."""
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
+    match: Literal["all", "any"]
+    currency: PackCurrency | None = None
+    rows: list[RetiredTaxRow] = Field(min_length=1)
+
+
+class PackCompanyDefaults(_PackPart):
+    currency: PackCurrency
+
+
+class CountryPack(_PackPart):
+    """A country pack file (scripts/l10n_packs.py validates each one with it before locking it).
+    ``version`` is a tag word, letters and digits joined by dots or hyphens, as fetch names the
+    pack's release ``v<version>``."""
+    format: Literal["celerp-localization"]
+    schema_version: Literal[1]
+    country: str = Field(pattern=r"^[A-Z]{2}$")
+    version: str = Field(pattern=r"^[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$")
+    company_defaults: PackCompanyDefaults
+    taxes: list[PackTaxRate]
+    retired: list[RetiredTax] = []
+
+    _names_unique = field_validator("taxes")(_unique_tax_names)
+
+    @field_validator("retired")
+    @classmethod
+    def _ids_unique(cls, retired: list[RetiredTax]) -> list[RetiredTax]:
+        ids = [entry.id for entry in retired]
+        if dupes := sorted({i for i in ids if ids.count(i) > 1}):
+            raise ValueError(f"duplicate retired id {', '.join(dupes)}")
+        return retired
 
 
 class PaymentTermsPatch(BaseModel):
@@ -304,7 +467,7 @@ async def me(
     }
 
 
-@router.get("/commercial-state", openapi_extra={"x-celerp-agent": True}, summary="Show the company's Celerp Cloud plan state, such as active, trial or lapsed.")
+@router.get("/commercial-state", openapi_extra={"x-celerp-agent": True}, summary="Show the company's Celerp Connect plan state, such as active, trial or lapsed.")
 async def commercial_state(_: None = require_permission("manage_integrations")) -> dict:
     """Return the live commercial state the API process holds from the relay WS
     push, for the separate UI process to read over an authenticated seam.
@@ -681,18 +844,20 @@ async def create_location(
 ) -> dict:
     # Company first, then the location, as patch_location: the default regime below needs it too.
     await lock_company(session, company_id)
+    before = await _default_location_country(session, company_id)
     loc = Location(
         id=uuid.uuid4(),
         company_id=company_id,
         name=payload.name,
         type=payload.type,
         address=payload.address,
-        is_default=payload.is_default,
+        is_default=False,
     )
     session.add(loc)
     await _flush_location(session, payload.name)
     if payload.is_default:
-        await _maybe_apply_regime(session, company_id, payload.address)
+        await make_default_location(session, company_id, loc)
+        await _apply_default_location(session, company_id, before, payload.address)
     await session.commit()
     return {"id": str(loc.id)}
 
@@ -723,13 +888,15 @@ async def import_locations_batch(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     await lock_company(session, company_id)
-    existing = {
-        r.name
-        for r in (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
-    }
+    rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
+    existing = {r.name for r in rows}
+    # The first imported location becomes the default only when the company has none yet and
+    # no row marks one; a row marked ``is_default`` wins over that, the last one marked over
+    # an earlier one (both through make_default_location, so at most one default ever holds).
+    first: Location | None = None
+    marked: Location | None = None
     created = skipped = 0
     errors: list[dict] = []
-    first = True
     for i, rec in enumerate(payload.records):
         name = (rec.get("name") or "").strip()
         loc_type = (rec.get("type") or "warehouse").strip()
@@ -739,16 +906,17 @@ async def import_locations_batch(
         if name in existing:
             skipped += 1
             continue
-        session.add(Location(
-            id=uuid.uuid4(),
-            company_id=company_id,
-            name=name,
-            type=loc_type,
-            is_default=first,
-        ))
+        loc = Location(id=uuid.uuid4(), company_id=company_id, name=name, type=loc_type, is_default=False)
+        session.add(loc)
+        first = first or loc
+        if row_flag(rec.get("is_default", False)):
+            marked = loc
         existing.add(name)
         created += 1
-        first = False
+    if marked is not None:
+        await make_default_location(session, company_id, marked)
+    elif first is not None and not any(r.is_default for r in rows):
+        await make_default_location(session, company_id, first)
     await session.commit()
     return {"created": created, "skipped": skipped, "failed": len(errors), "errors": errors}
 
@@ -775,6 +943,7 @@ async def patch_location(
     # Company first, then the location: the order an import commit takes them in (and the
     # tax re-seed below needs the company lock), so the two wait instead of deadlocking.
     await lock_company(session, company_id)
+    before = await _default_location_country(session, company_id)
     loc = await session.get(Location, loc_uuid)
     if loc is None or loc.company_id != company_id:
         raise HTTPException(status_code=404, detail=t("company.err_location_not_found"))
@@ -785,19 +954,15 @@ async def patch_location(
         loc.address = payload.address
     if payload.type is not None:
         loc.type = payload.type
-    if payload.is_default is not None:
-        loc.is_default = payload.is_default
-        if payload.is_default:
-            # Clear default on all other locations for this company
-            others = (await session.execute(
-                select(Location).where(Location.company_id == company_id, Location.id != loc_uuid)
-            )).scalars().all()
-            for other in others:
-                other.is_default = False
+    if payload.is_default:
+        await make_default_location(session, company_id, loc)
+    elif payload.is_default is not None:
+        loc.is_default = False
     # Re-seed regime if this is (or is becoming) the default location with a country
     effective_default = payload.is_default if payload.is_default is not None else loc.is_default
     effective_address = payload.address if payload.address is not None else loc.address
-    taxes_from = await _maybe_apply_regime(session, company_id, effective_address) if effective_default else None
+    taxes_from = (await _apply_default_location(session, company_id, before, effective_address)
+                  if effective_default else None)
     await session.commit()
     return {"id": str(loc.id), "name": loc.name, "type": loc.type, "address": loc.address,
             "is_default": loc.is_default, "taxes_from": taxes_from}
@@ -1573,59 +1738,14 @@ async def import_taxes_batch(
 ) -> BatchImportResult:
     """Batch import tax rates into company.settings.taxes.
 
-    Deterministic behavior:
-    - Key: name
-    - If name exists (case-insensitive): skipped
-    - Else: created
+    Each row is taken as _import_taxes takes it: a name already held is skipped, else created.
     """
     await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
 
     settings = dict(company.settings)
-    taxes = list(sales_taxes(settings))
-    existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
-
-    records = [rec.data for rec in (payload.records or [])]
-    for i, r in enumerate(records):
-        name = str(r.get("name", "") or "").strip()
-        rate_raw = r.get("rate", None)
-        tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
-        is_default_raw = r.get("is_default", False)
-        description = str(r.get("description", "") or "").strip()
-
-        if not name:
-            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
-            continue
-
-        key = name.lower()
-        if key in existing_names:
-            res.skipped += 1
-            continue
-
-        try:
-            rate = float(rate_raw)
-        except Exception:
-            res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
-            continue
-
-        if tax_type not in {"sales", "purchase", "both"}:
-            res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
-            continue
-
-        is_default = bool(is_default_raw)
-        if not isinstance(is_default_raw, bool):
-            is_default = str(is_default_raw).strip().lower() in {"true", "1", "yes"}
-
-        taxes.append({
-            "name": name,
-            "rate": rate,
-            "tax_type": tax_type,
-            "is_default": is_default,
-            "description": description,
-        })
-        existing_names.add(key)
-        res.created += 1
+    taxes = _import_taxes(sales_taxes(settings), payload, res)
 
     settings = with_taxes(settings, taxes)
     company.settings = settings
@@ -1863,30 +1983,7 @@ async def import_purchasing_taxes_batch(
     await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-    taxes = list(purchasing_taxes(company.settings))
-    existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
-    for i, r in enumerate(rec.data for rec in (payload.records or [])):
-        name = str(r.get("name", "") or "").strip()
-        if not name:
-            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
-            continue
-        if name.lower() in existing_names:
-            res.skipped += 1
-            continue
-        try:
-            rate = float(r.get("rate", None))
-        except Exception:
-            res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
-            continue
-        tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
-        if tax_type not in {"sales", "purchase", "both"}:
-            res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
-            continue
-        is_default_raw = r.get("is_default", False)
-        is_default = bool(is_default_raw) if isinstance(is_default_raw, bool) else str(is_default_raw).strip().lower() in {"true", "1", "yes"}
-        taxes.append({"name": name, "rate": rate, "tax_type": tax_type, "is_default": is_default, "description": str(r.get("description", "") or "").strip()})
-        existing_names.add(name.lower())
-        res.created += 1
+    taxes = _import_taxes(purchasing_taxes(company.settings), payload, res)
     settings = dict(company.settings)
     settings["purchasing_taxes"] = taxes
     company.settings = settings

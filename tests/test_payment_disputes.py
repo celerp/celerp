@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""A customer disputes a card payment with their bank. Celerp Cloud delivers each step of
+"""A customer disputes a card payment with their bank. Celerp Connect delivers each step of
 the dispute (opened, the money taken from the account, the money given back, Stripe's
 decision) as an invoice.dispute delivery, in order, after the payment. Each step is
 recorded on the payment it disputes; the payment event is never deleted, so the invoice

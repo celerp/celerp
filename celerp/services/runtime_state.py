@@ -10,6 +10,11 @@ runtime flags shared across all workers.  The canonical flags are:
 
 All helpers are async and accept an ``AsyncSession``.  Callers must be in an
 async context (FastAPI handlers, lifespan tasks, etc.).
+
+Every writer reads the row through ``lock_runtime_state`` and replaces the dict
+on the row it returns: the row is locked until the writer commits and holds the
+current value, so two writers never write back each other's stale copy.  Reads
+(``get_runtime_state``) never lock.
 """
 from __future__ import annotations
 
@@ -17,6 +22,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.auth import SystemRuntimeState
@@ -70,13 +77,19 @@ def _drain_cache_bust() -> None:
     _drain_cache = None
 
 
-async def _get_or_create(session: AsyncSession) -> SystemRuntimeState:
-    row = await session.get(SystemRuntimeState, _SINGLETON_ID)
-    if row is None:
-        row = SystemRuntimeState(id=_SINGLETON_ID, value=dict(_DEFAULT_VALUE))
-        session.add(row)
-        await session.flush()
-    return row
+async def lock_runtime_state(session: AsyncSession, *, create: bool = True) -> SystemRuntimeState | None:
+    """The runtime-state row, locked until the caller commits; created when missing, or
+    None without *create* (a writer that only edits what is already recorded).
+
+    The row is read FOR UPDATE with populate_existing, so a copy this session read
+    earlier is refreshed to the value committed before the lock was granted.
+    """
+    if create:
+        await session.execute(pg_insert(SystemRuntimeState).values(
+            id=_SINGLETON_ID, value=dict(_DEFAULT_VALUE)).on_conflict_do_nothing())
+    return (await session.execute(
+        select(SystemRuntimeState).where(SystemRuntimeState.id == _SINGLETON_ID).with_for_update()
+        .execution_options(populate_existing=True))).scalar_one_or_none()
 
 
 async def get_runtime_state(session: AsyncSession) -> dict[str, Any]:
@@ -107,7 +120,7 @@ async def set_draining(session: AsyncSession, draining: bool) -> None:
 
     Always replaces the full dict to avoid JSON mutation tracking issues.
     """
-    row = await _get_or_create(session)
+    row = await lock_runtime_state(session)
     now_iso = datetime.now(timezone.utc).isoformat()
     current = dict(row.value) if row.value else {}
     if draining:
@@ -130,7 +143,7 @@ async def star_prompt_dismissed(session: AsyncSession) -> bool:
 
 async def dismiss_star_prompt(session: AsyncSession) -> None:
     """Mark the GitHub-star ask dismissed so the dashboard card stops."""
-    row = await _get_or_create(session)
+    row = await lock_runtime_state(session)
     current = dict(row.value) if row.value else {}
     row.value = {**current, "star_prompt_dismissed": True}
     await session.commit()

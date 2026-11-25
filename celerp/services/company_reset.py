@@ -48,7 +48,7 @@ INSTALL_WIDE = {
     "alembic_version": "the database schema version",
     "instance_meta": "the installation's upgrade markers, created at runtime",
     "payment_closures": "requests to close a company's online payments, which outlive the company",
-    "payment_recoveries": "the installation's System Recovery restores, as Celerp Cloud must learn of them",
+    "payment_recoveries": "the installation's System Recovery restores, as Celerp Connect must learn of them",
     "unmatched_payments": "online payments received for a company or invoice that no longer exists",
     "unmatched_refunds": "refunds of online payments kept until their payment is on its invoice",
 }
@@ -63,7 +63,7 @@ _LOCK_NOT_AVAILABLE = "55P03"
 _LOCK_PATIENCE_S = 2.0
 _LOCK_RETRY_S = 0.05
 PAYMENTS_NOT_CLOSED = {
-    "disconnected": (503, "Reconnect Celerp Cloud so this company's online invoice payments can be "
+    "disconnected": (503, "Reconnect Celerp Connect so this company's online invoice payments can be "
                           "closed, then reset it. Nothing was deleted."),
     "payment_settling": (409, "A payment on one of this company's invoices is still being processed. "
                               "Try again once it has finished. Nothing was deleted."),
@@ -75,7 +75,7 @@ PAYMENTS_NOT_CLOSED = {
                              "Nothing was deleted."),
     "fees_settling": (409, "The fees of an online payment on one of this company's invoices have not been "
                            "recorded yet. Try again in a few minutes. Nothing was deleted."),
-    "unconfirmed": (503, "Celerp could not confirm with Celerp Cloud that this company's online invoice "
+    "unconfirmed": (503, "Celerp could not confirm with Celerp Connect that this company's online invoice "
                          "payments are closed. Try again in a moment. Nothing was deleted."),
 }
 
@@ -339,7 +339,7 @@ async def reset(session: AsyncSession, company: Company, typed_name: str,
     transaction; then, whether it committed or rolled back, settles the payment closure
     (also when this raises ResetRefused carrying one) and, after a commit, runs the
     cleanup task. Nothing is written unless every check passes, and a company connected
-    to Celerp Cloud has its online payments closed there first; a database failure part
+    to Celerp Connect has its online payments closed there first; a database failure part
     way leaves the transaction to roll back. *next_session* issues the caller's next session
     without committing, or returns None when the caller has no other company; it runs under
     the members' session generations, before the deletes."""

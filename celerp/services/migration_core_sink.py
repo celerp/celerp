@@ -32,6 +32,7 @@ from celerp.importers.schema import (
     CIFTaxCode,
     ReconciliationExpectations,
 )
+from celerp.services.locations import make_default_location
 from celerp.importers.sinks import (
     DestinationMeasurement,
     SinkBatchResult,
@@ -337,15 +338,18 @@ async def _import_location(context: SinkContext, location: CIFLocation) -> tuple
     )).scalars().all()
     if any(r.name == location.name for r in rows):
         return location_id, catalog_refusal("migration.record.location_exists", name=location.name)
-    context.session.add(Location(
+    created = Location(
         id=location_id,
         company_id=context.company_id,
         name=location.name,
         type="warehouse",
         address={"text": location.address} if location.address else None,
-        is_default=not any(r.is_default for r in rows),
-    ))
+        is_default=False,
+    )
+    context.session.add(created)
     await context.session.flush()
+    if not any(r.is_default for r in rows):
+        await make_default_location(context.session, context.company_id, created)
     return location_id, None
 
 

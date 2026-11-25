@@ -266,7 +266,7 @@ async def test_send_shows_the_cloud_refusal_with_its_status(real_engine, real_cl
         "key": base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("="),
         "firm_name": "Owner books", "recipient": "client@example.com",
         "reply_to": "verified@example.com", "note": ""}, headers={"Authorization": f"Bearer {bearer}"})
-    assert (r.status_code, refusal_text(r.json()["detail"])) == (status, f"Celerp Cloud answered: {shown}")
+    assert (r.status_code, refusal_text(r.json()["detail"])) == (status, f"Celerp Connect answered: {shown}")
 
 
 @pytest.mark.asyncio

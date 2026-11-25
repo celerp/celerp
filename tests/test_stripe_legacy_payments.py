@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A customer who opened a payment page before the upgrade pays after it. Celerp
-Cloud delivers the payment as it delivers every payment taken on such a page: with
-no books and ``managed`` false (or, from a Celerp Cloud not yet upgraded, with
+Connect delivers the payment as it delivers every payment taken on such a page: with
+no books and ``managed`` false (or, from a Celerp Connect not yet upgraded, with
 neither, and no time it was paid). It is recorded once, on the books the invoice is
 paid on now, and is the company's to manage like a payment entered by hand: Stripe
 never sends its refunds, so it is refunded, voided or deleted here."""
@@ -25,7 +25,7 @@ PAID_AT = "2026-09-01T09:00:00+00:00"
 
 
 def _released_page_payment(company_id, entity_id: str) -> dict:
-    """The payment as Celerp Cloud delivers one taken on a page opened before the upgrade."""
+    """The payment as Celerp Connect delivers one taken on a page opened before the upgrade."""
     return {"company_id": str(company_id), "entity_id": entity_id, "amount_minor": 107000, "currency": "usd",
             "reference": "pi_7", "paid_at": PAID_AT, "occurred_at": PAID_AT, "context": None,
             "managed": False, "delivery_id": str(uuid.uuid4())}
