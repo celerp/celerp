@@ -226,6 +226,10 @@ async def test_run_scales_extras(client, session, auth):
     assert line["quantity"] == 3.0  # 3.333333 rounded to the item's unit, whole pieces
     assert {"sku", "name", "unit"} <= set(line)
 
+    r = await create(client, auth, oil, 1, [(seed, 3)])  # 0.333333 of a piece rounds to none
+    assert r.status_code == 200, r.text
+    assert "also_produces" not in await _state(session, auth, r.json()["id"])
+
     r = await create(client, auth, oil, 10, [(seed, 30)], also_produces=[])
     assert r.status_code == 200, r.text
     assert "also_produces" not in await _state(session, auth, r.json()["id"])

@@ -62,6 +62,7 @@ def test_recipe_editor_extras():
 
 @pytest.mark.parametrize("action, query, form, expect", [
     ("add", "action=add_also", {"also_new": "item:x"}, ["item:cake", "item:x"]),
+    ("add nothing", "action=add_also", {"also_new": ""}, None),
     ("remove", "action=remove_also&index=0", {}, []),
     ("clear", "action=clear", {}, []),
     ("component", "action=add_component", {"comp_new": "item:x"}, ["item:cake"]),
@@ -74,6 +75,9 @@ async def test_recipe_editor_extras_edits(ui_client, action, query, form, expect
           patch("ui.api_client.set_item_recipe", new=AsyncMock(return_value={})) as put):
         r = await ui_client.post(f"/api/items/item:oil/recipe-section?{query}", data=form)
     assert r.status_code == 200, r.text
+    if expect is None:
+        assert put.await_count == 0
+        return
     sent = put.await_args.args[2]
     assert [x["item_id"] for x in sent.get("also_produces", [])] == expect
 
@@ -120,8 +124,8 @@ async def test_block_complete_posts_extras(ui_client, form, sent):
     assert op.await_args.args[2] == sent or op.await_args.kwargs.get("data") == sent
 
 
-@pytest.mark.parametrize("value", ["", "lots"])
-async def test_block_bad_extra_flashes(ui_client, value):
+@pytest.mark.parametrize("value, below_zero", [("", False), ("lots", False), ("-2", True)])
+async def test_block_bad_extra_flashes(ui_client, value, below_zero):
     a, b, c = _hub()
     ui_client.cookies.update(_authed())
     with a, b, c, patch("ui.api_client.complete_mfg_order", new=AsyncMock(return_value={})) as op:
@@ -129,6 +133,7 @@ async def test_block_bad_extra_flashes(ui_client, value):
                                  data={"action": "complete", "idempotency_key": "k", "also:item:cake": value})
     assert r.status_code == 200, r.text
     assert op.await_count == 0 and "flash--error" in r.text
+    assert ("below zero" in r.text) is below_zero
 
 
 _MANUFACTURING = {"name": "celerp-manufacturing", "api_routes": "celerp_manufacturing.routes", "first_party": True}
