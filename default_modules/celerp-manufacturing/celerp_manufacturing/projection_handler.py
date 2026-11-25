@@ -174,6 +174,10 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
             current["closing"] = {**data["closing"], "before": {k: current[k] for k in _CLOSED if k in current}}
         current["status"] = "completed"
         current["is_in_production"] = False
+        # From the first completion on, what was not received of an extra was not made; a
+        # reopen keeps this, so Completing again receives only what is entered.
+        if current.get("also_produces"):
+            current["extras_completed"] = True
         if data.get("actual_outputs") is not None:
             current["actual_outputs"] = data["actual_outputs"]
         if data.get("waste") is not None:

@@ -5704,6 +5704,7 @@
   "mfg.over_receipt": "Solo quedan {remaining:g} por recibir de este ciclo; no se pueden recibir {quantity:g}.",
   "mfg.not_an_extra": "{sku} no es una producción adicional de este ciclo.",
   "mfg.extra_quantity": "La cantidad recibida de {sku} no puede ser menor que cero.",
+  "mfg.no_cost_share": "De este ciclo solo se recibieron producciones sin participación en el costo, así que su valor no tiene adónde ir. Reciba parte del producto o registre los materiales como merma.",
   "mfg.cancel_moved": "Este ciclo aún contiene materiales o producción, por lo que no se puede cancelar. Primero devuelva sus materiales y deshaga sus recepciones.",
   "mfg.run_not_found": "No se encontró la orden de producción {order}.",
   "mfg.wip_location_unknown": "La ubicación {value} no es una de las ubicaciones de esta empresa. Elija una ubicación en Configuración > Ubicaciones o déjela vacía.",

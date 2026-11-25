@@ -5704,6 +5704,7 @@
   "mfg.over_receipt": "Aus diesem Produktionslauf sind nur noch {remaining:g} entgegenzunehmen; {quantity:g} können nicht entgegengenommen werden.",
   "mfg.not_an_extra": "{sku} ist kein weiteres Erzeugnis dieses Produktionslaufs.",
   "mfg.extra_quantity": "Die entgegengenommene Menge von {sku} darf nicht unter null liegen.",
+  "mfg.no_cost_share": "Aus diesem Produktionslauf wurden nur Erzeugnisse ohne Kostenanteil entgegengenommen, daher kann sein Wert nirgends hin. Nehmen Sie etwas vom Produkt entgegen oder erfassen Sie die Materialien als Ausschuss.",
   "mfg.cancel_moved": "Dieser Produktionslauf enthält noch Material oder Ware und kann daher nicht storniert werden. Geben Sie zuerst das Material zurück und machen Sie die Eingänge rückgängig.",
   "mfg.run_not_found": "Der Produktionslauf {order} wurde nicht gefunden.",
   "mfg.wip_location_unknown": "Der Standort {value} gehört nicht zu diesem Unternehmen. Wählen Sie einen Standort unter Einstellungen > Standorte oder lassen Sie das Feld leer.",

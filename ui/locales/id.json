@@ -5704,6 +5704,7 @@
   "mfg.over_receipt": "Hanya {remaining:g} yang masih harus diterima dari proses produksi ini; {quantity:g} tidak dapat diterima.",
   "mfg.not_an_extra": "{sku} bukan hasil tambahan dari proses produksi ini.",
   "mfg.extra_quantity": "Jumlah {sku} yang diterima tidak boleh kurang dari nol.",
+  "mfg.no_cost_share": "Dari proses produksi ini hanya diterima hasil tanpa porsi biaya, sehingga nilainya tidak punya tujuan. Terima sebagian produk, atau catat bahan sebagai limbah.",
   "mfg.cancel_moved": "Proses produksi ini masih memegang bahan atau hasil, sehingga tidak dapat dibatalkan. Kembalikan bahannya dan batalkan penerimaannya terlebih dahulu.",
   "mfg.run_not_found": "Perintah produksi {order} tidak ditemukan.",
   "mfg.wip_location_unknown": "Lokasi {value} bukan salah satu lokasi perusahaan ini. Pilih lokasi dari Pengaturan > Lokasi, atau biarkan kosong.",

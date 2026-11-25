@@ -5704,6 +5704,7 @@
   "mfg.over_receipt": "Chỉ còn {remaining:g} cần nhận từ đợt sản xuất này; không thể nhận {quantity:g}.",
   "mfg.not_an_extra": "{sku} không phải là sản phẩm phụ của đợt sản xuất này.",
   "mfg.extra_quantity": "Số lượng {sku} nhận được không thể nhỏ hơn 0.",
+  "mfg.no_cost_share": "Đợt sản xuất này chỉ nhận các sản phẩm không có tỷ lệ chi phí, nên giá trị của nó không có nơi phân bổ. Hãy nhận một phần sản phẩm chính, hoặc ghi nhận nguyên vật liệu là hao hụt.",
   "mfg.cancel_moved": "Đợt sản xuất này vẫn còn nguyên vật liệu hoặc thành phẩm nên không thể hủy. Hãy trả lại nguyên vật liệu và hoàn tác các lần nhận trước.",
   "mfg.run_not_found": "Không tìm thấy lệnh sản xuất {order}.",
   "mfg.wip_location_unknown": "Vị trí {value} không thuộc các vị trí của công ty này. Hãy chọn một vị trí trong Cài đặt > Vị trí, hoặc để trống.",

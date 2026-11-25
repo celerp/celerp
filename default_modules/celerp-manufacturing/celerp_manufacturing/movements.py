@@ -857,7 +857,7 @@ def value_waste(run_state: dict, waste_items: list[dict], currency: str,
 async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
                  wasted: list[dict] | None = None, names: dict[str, str] | None = None) -> None:
     """Close a run, leaving it holding nothing: waste to cost of goods sold, and the rest
-    shared over its lots by quantity, each lot restated by the difference from what it took
+    shared over its lots (by cost share between outputs, then by quantity, _output_shares), each lot restated by the difference from what it took
     when it was received. ``ck`` keys this completion, so a reopened run completes afresh.
     The completion records what it moved, so reopening reverses exactly that."""
     state = run.state
@@ -882,7 +882,7 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
         raise refuse(409, "unaccounted_value",
                      "Nothing was received from this run, so the materials issued to it must be recorded "
                      "as waste before it can be completed.")
-    shares = allocate_pro_rata(finished - kept, [_money(r["quantity"]) for r in live], op.currency) if live else []
+    shares = _output_shares(state, live, finished - kept, op.currency)
 
     debits: dict[str, Decimal] = {}
     restated = []
@@ -903,6 +903,10 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
 
     expected = (state.get("expected_outputs") or [{}])[0]
     actual_outputs = [{**expected, "quantity": float(state.get("received_qty") or 0)}] if expected else []
+    for extra in run_outputs(state):
+        made = sum(float(r.get("quantity") or 0) for r in receipts if r.get("output_item_id") == extra["item_id"])
+        actual_outputs.append({"item_id": extra["item_id"], "sku": extra.get("sku"), "unit": extra.get("unit"),
+                               "quantity": round(made, 6)})
     await op.emit_run("mfg.order.completed", {
         "completed_by": str(op.user_id), "actual_outputs": actual_outputs,
         "waste": ({"items": waste_lines, "unit": payload.get("waste_unit"),
@@ -911,6 +915,32 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
         "transferred": str(finished), "wasted": str(waste), "request": request,
         "closing": {"held": str(held), "wasted": str(waste), "lots": restated, "booked": op.books},
     }, f"mfg:{op.order_id}:complete:{ck}")
+
+
+def _output_shares(state: dict, live: list[dict], amount: Decimal, currency: str) -> list[Decimal]:
+    """What each live receipt takes of ``amount``, the run's finished value: each output with
+    live receipts takes its cost share (the product 100 less every extra's share), then each
+    of its lots by quantity. When every output received has a share of 0, there is no value
+    left to place, or the run is refused."""
+    if not live:
+        return []
+    extras = {x["item_id"]: _money(x.get("cost_share")) for x in run_outputs(state)}
+    groups: dict[str | None, list[int]] = {}
+    for i, r in enumerate(live):
+        groups.setdefault(r.get("output_item_id"), []).append(i)
+    weights = [extras.get(g, _ZERO) if g else Decimal(100) - sum(extras.values(), _ZERO) for g in groups]
+    if not any(weights):
+        if amount:
+            raise refuse(409, "no_cost_share",
+                         "Only outputs with no cost share were received from this run, so the value it holds has "
+                         "nowhere to go. Receive some of the product, or record the materials as waste.")
+        return [_ZERO] * len(live)
+    shares = [_ZERO] * len(live)
+    for group_amount, members in zip(allocate_pro_rata(amount, weights, currency), groups.values()):
+        split = allocate_pro_rata(group_amount, [_money(live[i]["quantity"]) for i in members], currency)
+        for i, share in zip(members, split):
+            shares[i] = share
+    return shares
 
 
 async def _restate(op: _Op, lot_id: str, delta: Decimal, key: str, action: str) -> str | None:
@@ -1126,7 +1156,8 @@ async def undo_receipt(session: AsyncSession, company_id, user_id, order_id: str
                   f"mfg:{order_id}:unreceive:{rk}:archived", location_id=loc, metadata=mark)
     await op.post(f"unreceive:{rk}", f"Output receipt undone on production run {op.ref}", wip_code, value,
                   {code: -value} if code else {})
-    data = {"lot_item_id": lot_id, "quantity": qty, "value": str(value)}
+    data = {"lot_item_id": lot_id, "quantity": qty, "value": str(value),
+            **({"output_item_id": receipt["output_item_id"]} if receipt.get("output_item_id") else {})}
     await op.emit_run("mfg.order.receipt_undone", {**data, "undone_by": str(op.user_id), "request": request},
                       f"mfg:{order_id}:unreceive:{rk}")
     return data

@@ -292,7 +292,8 @@ async def test_press_run_oil_and_cake(client, session, auth):
     assert lots[cake] == [{"lot": lots[cake][0]["lot"], "quantity": 20.0, "cost": 12.0}]
     run = await _state(session, auth, order)
     assert run["status"] == "completed" and run["received_qty"] == 10
-    assert {o["item_id"]: o["quantity"] for o in run["actual_outputs"]} == {oil: 10.0, cake: 20.0}
+    skus = [(await _state(session, auth, i))["sku"] for i in (oil, cake)]
+    assert {o["sku"]: o["quantity"] for o in run["actual_outputs"]} == dict(zip(skus, (10.0, 20.0)))
     await assert_settled(client, session, auth)
 
 
