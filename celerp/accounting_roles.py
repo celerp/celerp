@@ -24,6 +24,8 @@ from contextvars import ContextVar
 from datetime import date
 from decimal import Decimal
 
+from fastapi import HTTPException
+
 from celerp.compat import StrEnum
 
 # Bumped when a release adds a role. Older companies and backups stay readable:
@@ -424,6 +426,12 @@ def catalog_refusal(key: str, /, **params) -> dict:
     with english():
         message = refusal_text(refusal(key, "", **params))
     return refusal(key, message, **params)
+
+
+def refused(status: int, key: str, /, **params) -> HTTPException:
+    """The refusal ``key`` of the catalog with the way on: ``href`` and ``action`` (the link's
+    label key), or ``links`` (each {"label", "href"}), which the page shows beside the message."""
+    return HTTPException(status_code=status, detail=catalog_refusal(key, **params))
 
 
 def period_locked_refusal(lock_date: str | date) -> dict:

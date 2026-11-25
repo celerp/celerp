@@ -15,6 +15,7 @@ import uuid
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refused
 from celerp_fixed_assets import setup
 from celerp_fixed_assets.operations import _effects, _run
 from celerp_fixed_assets.store import _emit, _state
@@ -89,7 +90,7 @@ async def undo_table(session, company_id, user_id, target_key: str, body: dict) 
         if op is None or op.get("type") != "class_table":
             raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_class_table_was_applied_under"))
         if op.get("undone_by"):
-            raise setup.refused(409, "fixed_assets.err_class_table_was_already_undone")
+            raise refused(409, "fixed_assets.err_class_table_was_already_undone")
         restore, archive, kept, basis = [], [], [], []
         for effect in (op.get("effects") or {}).get("table") or []:
             state = await _state(session, company_id, effect["id"]) or {}

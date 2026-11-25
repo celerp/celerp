@@ -187,10 +187,6 @@ def _status_badge(coverage: str) -> FT:
 
 
 
-def _doc_href(doc_id: str, doc_type: str) -> str:
-    return f"/lists/{doc_id}" if doc_type == "list" else f"/docs/{doc_id}"
-
-
 def _demand_lines(rows: list[dict]) -> list[dict]:
     """Flatten the product-centric to-make rows into one entry per demanding document line, each
     carrying its product and the document's pegged coverage. Needed first, then partial, then
@@ -217,7 +213,7 @@ def _demand_row(l: dict) -> FT:
     unit = l.get("unit")
     doc_type = l.get("doc_type") or ""
     doc_no = l.get("doc_number") or EMPTY
-    doc_cell = (A(doc_no, href=safe_url(_doc_href(l.get("doc_id"), doc_type)), cls="table-link")
+    doc_cell = (A(doc_no, href=safe_url(doc_href(l.get("doc_id"), doc_type)), cls="table-link")
                 if l.get("doc_id") else Span(doc_no))
     return Tr(
         # value carries the demand line (product + its document) so each makes a 1:1-linked work order.

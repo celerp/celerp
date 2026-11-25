@@ -158,6 +158,19 @@ async def ap_aging(
 # Sales report
 # ---------------------------------------------------------------------------
 
+def _period_key(ts: str, period: str) -> str:
+    """The bucket a dated row falls in: its day, the Monday of its ISO week, or its month."""
+    try:
+        d = date.fromisoformat(ts[:10])
+    except ValueError:
+        return "unknown"
+    if period == "daily":
+        return d.isoformat()
+    if period == "weekly":
+        return (d - timedelta(days=d.weekday())).isoformat()
+    return d.strftime("%Y-%m")
+
+
 @router.get("/sales", openapi_extra={"x-celerp-agent": True}, summary="Show sales over a period by customer, item or month.")
 async def sales_report(
     group_by: str = "customer",  # customer | item | period
@@ -303,25 +316,12 @@ async def sales_report(
         lines.sort(key=lambda l: (_bucket_order.get(l["price_range"], 99), l["item_name"].lower()))
 
     else:  # period
-        def _period_key(ts: str) -> str:
-            try:
-                d = date.fromisoformat(ts[:10])
-            except ValueError:
-                return "unknown"
-            if period == "daily":
-                return d.isoformat()
-            elif period == "weekly":
-                # ISO week start (Monday)
-                return (d - timedelta(days=d.weekday())).isoformat()
-            else:  # monthly
-                return d.strftime("%Y-%m")
-
         data = defaultdict(lambda: {
             "invoice_count": 0, "total_revenue": Decimal(0), "total_cost": Decimal(0),
         })
         for inv in invoices:
             ts = inv.get("date") or inv.get("created_at") or ""
-            key = _period_key(ts)
+            key = _period_key(ts, period)
             data[key]["invoice_count"] += 1
             data[key]["total_revenue"] += _parse_d(inv.get("total"))
             data[key]["total_cost"] += _doc_cogs(inv)
@@ -474,22 +474,10 @@ async def purchases_report(
         lines.sort(key=lambda l: (_bucket_order_po.get(l["price_range"], 99), l["item_name"].lower()))
 
     else:  # period
-        def _period_key(ts: str) -> str:
-            try:
-                d = date.fromisoformat(ts[:10])
-            except ValueError:
-                return "unknown"
-            if period == "daily":
-                return d.isoformat()
-            elif period == "weekly":
-                return (d - timedelta(days=d.weekday())).isoformat()
-            else:
-                return d.strftime("%Y-%m")
-
         data = defaultdict(lambda: {"po_count": 0, "total_spend": Decimal(0)})
         for po in pos:
             ts = po.get("date") or po.get("created_at") or ""
-            key = _period_key(ts)
+            key = _period_key(ts, period)
             data[key]["po_count"] += 1
             data[key]["total_spend"] += _parse_d(po.get("total"))
         lines = [

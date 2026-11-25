@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import catalog_refusal
 from celerp.db import get_session
-from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.events.engine import emit_event, find_event_by_idempotency, request_fingerprint
 from celerp.events.schemas import (
     _WORKFLOW_TIME_UNITS,
     CoProductSpec,
@@ -317,7 +317,7 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
     the run it first created; sent with a different request it is refused."""
     await lock_company(session, company_id)
     key = f"mfg:created:{idempotency_key or uuid.uuid4().hex}"
-    fingerprint = movements._fingerprint(request)
+    fingerprint = request_fingerprint(request)
     stored = await _created_before(session, company_id, key, fingerprint)
     if stored is not None:
         return stored
@@ -943,7 +943,7 @@ async def _once(session: AsyncSession, company_id, user_id, action: str, payload
         return await act(uuid.uuid4().hex)
     await lock_company(session, company_id)
     key = f"mfg:operation:{payload.idempotency_key}"
-    fingerprint = movements._fingerprint({action: payload.model_dump(exclude={"idempotency_key"})})
+    fingerprint = request_fingerprint({action: payload.model_dump(exclude={"idempotency_key"})})
     stored = await find_event_by_idempotency(session, company_id, key)
     if stored is not None:
         if stored.event_type != "mfg.operation.recorded" or (stored.metadata_ or {}).get("request") != fingerprint:
@@ -985,7 +985,7 @@ async def make_selected(session: AsyncSession, company_id, user_id, lines: list[
     for item_id, doc_id in sorted(selected, key=pegged):
         key = mfg_idem_key(doc_id, item_id, operation)
         request = {"make": item_id, "doc": doc_id, "complete": complete}
-        made = await _created_before(session, company_id, f"mfg:created:{key}", movements._fingerprint(request))
+        made = await _created_before(session, company_id, f"mfg:created:{key}", request_fingerprint(request))
         if made is not None:
             qty = float(made.data["expected_outputs"][0]["quantity"])
             created.append({"item_id": item_id, "doc_id": doc_id, "run_id": made.entity_id, "quantity": qty})
@@ -1354,7 +1354,7 @@ async def batch_import_manufacturing(
         try:
             order, quantity = _imported_order(rec.data)
             request = {"import": rec.entity_id, **order, "quantity": quantity}
-            if await _imported_before(session, company_id, rec, movements._fingerprint(request)):
+            if await _imported_before(session, company_id, rec, request_fingerprint(request)):
                 skipped += 1
                 continue
             await _emit_order_created(

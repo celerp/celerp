@@ -20,8 +20,6 @@ it writes is derived, so a retry finds what was written instead of moving anythi
 from __future__ import annotations
 
 import dataclasses
-import hashlib
-import json
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -39,7 +37,7 @@ from celerp.accounting_roles import (
     AccountRole,
     catalog_refusal,
 )
-from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.events.engine import emit_event, find_event_by_idempotency, request_fingerprint
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -197,10 +195,6 @@ async def require_unit_precision(session: AsyncSession, company_id, lines: list[
 
 def _money(value) -> Decimal:
     return Decimal(str(value or 0))
-
-
-def _fingerprint(request: dict) -> str:
-    return hashlib.sha256(json.dumps(request, sort_keys=True, default=str).encode()).hexdigest()[:32]
 
 
 @dataclass
@@ -374,7 +368,7 @@ async def issue(session: AsyncSession, company_id, user_id, order_id: str, items
     """Issue components into a run: the ``items`` given, or everything still outstanding."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({"items": items or None})
+    request = request_fingerprint({"items": items or None})
     stored = await _replayed(op, f"mfg:{order_id}:issue:{rk}", request)
     if stored is not None:
         return {"issued": stored.data.get("items") or [], "value": stored.data.get("value")}
@@ -486,7 +480,7 @@ async def return_materials(session: AsyncSession, company_id, user_id, order_id:
     issued. The undo of Issue, at the value the run recorded when they were issued."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({"items": items or None})
+    request = request_fingerprint({"items": items or None})
     stored = await _replayed(op, f"mfg:{order_id}:return:{rk}", request)
     if stored is not None:
         return {"returned": stored.data.get("items") or [], "value": stored.data.get("value")}
@@ -606,7 +600,7 @@ async def receive(session: AsyncSession, company_id, user_id, order_id: str, qua
     without extras whose output is fully received completes."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({"quantity": quantity})
+    request = request_fingerprint({"quantity": quantity})
     stored = await _replayed(op, f"mfg:{order_id}:receive:{rk}:received", request)
     if stored is not None:
         return {"received": stored.data.get("quantity"), "lot_item_id": stored.data.get("lot_item_id")}
@@ -700,7 +694,7 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
     What it made is what it received."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({"payload": _closing_request(payload), "quantity": quantity})
+    request = request_fingerprint({"payload": _closing_request(payload), "quantity": quantity})
     if await _replayed(op, f"mfg:{order_id}:complete:{rk}", request) is not None:
         return {"status": "completed"}
     run = await _run(op)
@@ -1130,7 +1124,7 @@ async def undo_receipt(session: AsyncSession, company_id, user_id, order_id: str
     it had never been received. Only while the lot is exactly as the run left it."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({"lot_item_id": lot_id})
+    request = request_fingerprint({"lot_item_id": lot_id})
     stored = await _replayed(op, f"mfg:{order_id}:unreceive:{rk}", request)
     if stored is not None:
         return {k: stored.data.get(k) for k in ("lot_item_id", "quantity", "value")}
@@ -1174,7 +1168,7 @@ async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key:
     Only while every lot it produced is exactly as completion left it."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({})
+    request = request_fingerprint({})
     if await _replayed(op, f"mfg:{order_id}:reopen:{rk}", request) is not None:
         return {"status": "reopened"}
     run = await _run(op)
@@ -1237,7 +1231,7 @@ async def transition(session: AsyncSession, company_id, user_id, order_id: str, 
     event_type, done = _TRANSITIONS[action]
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({"action": action, **data})
+    request = request_fingerprint({"action": action, **data})
     stored = await _replayed(op, f"mfg:{order_id}:{action}:{rk}", request)
     if stored is not None:
         return stored
@@ -1266,7 +1260,7 @@ async def cancel(session: AsyncSession, company_id, user_id, order_id: str, reas
     holds their value, which cancelling would lose: they are returned and undone first."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({"reason": reason})
+    request = request_fingerprint({"reason": reason})
     stored = await _replayed(op, f"mfg:{order_id}:cancel:{rk}", request)
     if stored is not None:
         return stored
@@ -1542,7 +1536,7 @@ async def repair_output(session: AsyncSession, company_id, user_id, order_id: st
     again from its corrected history (settle_open_runs)."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({"output_item_id": output_item_id})
+    request = request_fingerprint({"output_item_id": output_item_id})
     stored = await _replayed(op, f"mfg:{order_id}:repair:{rk}", request)
     if stored is not None:
         return {k: stored.data.get(k) for k in ("discarded", "output_item_id")}
@@ -1613,7 +1607,7 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
     work in progress afterwards just as after any live movement."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
-    request = _fingerprint({"components": components, "account": account})
+    request = request_fingerprint({"components": components, "account": account})
     stored = await _replayed(op, f"mfg:{order_id}:reconcile:{rk}", request)
     if stored is not None:
         return {k: stored.data.get(k) for k in ("issued", "components", "receipts")} | {

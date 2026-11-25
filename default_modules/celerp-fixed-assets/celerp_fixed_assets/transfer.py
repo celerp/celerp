@@ -18,6 +18,7 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
+from celerp.accounting_roles import refused
 from celerp.services.money import books_currency
 from celerp_fixed_assets import disposal, projections, runs, setup, taxbooks
 from celerp.services.periods import month_index
@@ -178,13 +179,13 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         day = _date(body.get("date"), "The transfer date")
         our_name, their_name = await _name(session, company_id), await _name(session, theirs)
         if not _uses(their_settings):
-            raise setup.refused(409, "fixed_assets.err_their_name_does_not_use_fixed", their_name=their_name)
+            raise refused(409, "fixed_assets.err_their_name_does_not_use_fixed", their_name=their_name)
         their_fa = setup.settings_of(their_settings)
         if day < their_fa["first_managed_period"]:
             raise setup.refuse("fixed_assets.err_their_name_manages_fixed_assets_from", their_name=their_name, first_managed_period=their_fa['first_managed_period'])
         their_books = await runs._books(session, theirs)
         if their_books.lock is not None and date.fromisoformat(day) <= their_books.lock:
-            raise setup.refused(409, "fixed_assets.err_day_locked_period_their_name_transfer", day=day, their_name=their_name, isoformat=(their_books.lock + timedelta(days=1)).isoformat())
+            raise refused(409, "fixed_assets.err_day_locked_period_their_name_transfer", day=day, their_name=their_name, isoformat=(their_books.lock + timedelta(days=1)).isoformat())
         await sales.refuse_waiting(session, company_id, asset_id, asset)
         receivable = str(body.get("receivable_account") or "")
         payable = str(body.get("payable_account") or "")
@@ -288,17 +289,17 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         await locked_authority(session, theirs, user_id, KEYS)
         asset = (await lock_projections(session, company_id, [asset_id]))[asset_id].state
         if int(latest["id"].rsplit(":", 1)[1]) != int(asset.get("movement_count") or 0):
-            raise setup.refused(409, "fixed_assets.err_number_has_changed_since_was_transferred", number=asset['number'])
+            raise refused(409, "fixed_assets.err_number_has_changed_since_was_transferred", number=asset['number'])
         day, name = latest["effective_date"], target["company_name"]
         books = await runs._books(session, company_id)
         if books.lock is not None and date.fromisoformat(day) <= books.lock:
-            raise setup.refused(409, "fixed_assets.err_day_locked_so_transfer_can_no", day=day)
+            raise refused(409, "fixed_assets.err_day_locked_so_transfer_can_no", day=day)
         their = (await lock_projections(session, theirs, [target["asset_id"]]))[target["asset_id"]].state
         if their.get("status") != "active" or int(their.get("movement_count") or 0) > 1:
-            raise setup.refused(409, "fixed_assets.err_number_has_changed_name_since_was", number=their['number'], name=name)
+            raise refused(409, "fixed_assets.err_number_has_changed_name_since_was", number=their['number'], name=name)
         their_books = await runs._books(session, theirs)
         if their_books.lock is not None and date.fromisoformat(day) <= their_books.lock:
-            raise setup.refused(409, "fixed_assets.err_day_locked_name_so_transfer_can", day=day, name=name)
+            raise refused(409, "fixed_assets.err_day_locked_name_so_transfer_can", day=day, name=name)
         (their_movement,) = await asset_movements(session, theirs, target["asset_id"])
         journals = [(company_id, latest["journal_id"]), (theirs, their_movement.get("journal_id"))]
         held_in = {company_id: books.currency, theirs: their_books.currency}

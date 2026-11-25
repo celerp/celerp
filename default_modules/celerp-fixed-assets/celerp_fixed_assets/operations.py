@@ -26,7 +26,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from celerp.accounting_roles import catalog_refusal, refusal
+from celerp.accounting_roles import catalog_refusal, refusal, refused
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.money import books_currency, round_money
@@ -89,7 +89,7 @@ def in_use(asset_id: str, asset: dict, cannot: str) -> None:
     """Refuse an operation on an asset no longer in use, before anything else on its form:
     what ``cannot`` (one of CANNOT) be done, then how the asset left use and the way back."""
     if (why := left_use(asset)) is not None:
-        raise setup.refused(409, "fixed_assets.err_not_in_use", links=left_use_links(asset_id, asset), why=why,
+        raise refused(409, "fixed_assets.err_not_in_use", links=left_use_links(asset_id, asset), why=why,
                             cannot=catalog_refusal(f"fixed_assets.err_cannot.{cannot}", number=asset["number"]))
 
 
@@ -245,7 +245,7 @@ async def _claim(session, company_id, user_id, line: dict, *, allocation: str, o
         "line_index": line["line_index"], "account": line["account"], "kind": line["kind"], "date": line["date"],
         **extra}, key=f"{claim}:claim:{line['generation']}")
     if getattr(event, "was_deduped", False):
-        raise setup.refused(409, "fixed_assets.err_description_was_already_registered", description=line['description'])
+        raise refused(409, "fixed_assets.err_description_was_already_registered", description=line['description'])
 
 
 # ── The operation contract ───────────────────────────────────────────────────
@@ -379,7 +379,7 @@ async def _stale(session, company_id, shown: dict, since: str) -> HTTPException:
     named = sorted((s["number"], a) for a, s in states.items() if s.get("number") in numbers)
     if not named:
         return unnamed
-    return setup.refused(409, "fixed_assets.err_review_stale.one" if len(named) == 1
+    return refused(409, "fixed_assets.err_review_stale.one" if len(named) == 1
                          else "fixed_assets.err_review_stale.many",
                          assets=_listed([f"{n} ({', '.join(dict.fromkeys(what[a]))})" for n, a in named]),
                          links=[{"label": n, "href": f"/fixed-assets/assets/{a}"} for n, a in named])
@@ -766,7 +766,7 @@ async def add_financial_details(session, company_id, user_id, asset_id: str, bod
         if row is None or row.entity_type != "fa_asset":
             raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
         if row.state.get("status") != "physical":
-            raise setup.refused(409, "fixed_assets.err_asset_already_has_its_financial_details")
+            raise refused(409, "fixed_assets.err_asset_already_has_its_financial_details")
         details = await _financials(session, company_id, fa, body)
         _, shown = _financials_shown(details)
         return ({"journals": shown, "assets": [{"number": row.state["number"], "name": row.state["name"],
@@ -935,7 +935,7 @@ async def changed_since(session, company_id, changed: list[tuple[str, dict, int]
         sentences.append(catalog_refusal(f"fixed_assets.err_changed_since.{since}."
                                          f"{'one' if len(in_use) == 1 else 'many'}", assets=_listed(named)))
     sentences += [await _ended(session, company_id, a) for _, a, _ in changed if a.get("status") in _ENDED]
-    return setup.refused(409, "fixed_assets.err_sentences", sentences=sentences,
+    return refused(409, "fixed_assets.err_sentences", sentences=sentences,
                          links=[{"label": a["number"], "href": f"/fixed-assets/assets/{i}"} for i, a, _ in changed])
 
 
@@ -952,11 +952,11 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         if not ops or any(op is None or op.get("type") in (None, "undo") for op in ops):
             raise setup.refuse("fixed_assets.err_there_nothing_undo_here")
         if any(op.get("undone_by") for op in ops):
-            raise setup.refused(409, "fixed_assets.err_was_already_undone")
+            raise refused(409, "fixed_assets.err_was_already_undone")
         transfer = next((op for op in ops if op.get("type") == "transfer_in"), None)
         if transfer:
             source = transfer["result"]["source"]
-            raise setup.refused(409, "fixed_assets.err_asset_was_transferred_from_company_name", company_name=source['company_name'], number=source['number'])
+            raise refused(409, "fixed_assets.err_asset_was_transferred_from_company_name", company_name=source['company_name'], number=source['number'])
         effects = _effects(**{k: [x for op in ops for x in (op.get("effects") or {}).get(k) or []]
                               for k in ("assets", "movements", "claims", "journals", "maint", "statuses",
                                         "changes", "classes")})
@@ -982,12 +982,12 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         for entity_id, fields in (effects.get("unchanged") or {}).items():
             now = await _state(session, company_id, entity_id) or {}
             if any(int(now.get(k) or 0) > v for k, v in fields.items()):
-                raise setup.refused(409, "fixed_assets.err_has_changed_since_so_can_no")
+                raise refused(409, "fixed_assets.err_has_changed_since_so_can_no")
         settings = await setup.company_settings(session, company_id)
         lock = settings.get("lock_date")
         locked = sorted(s["posting_date"] for s in movements.values() if s and lock and s["posting_date"] <= lock)
         if locked:
-            raise setup.refused(409, "fixed_assets.err_value_locked_period_so_can_no", value=locked[0])
+            raise refused(409, "fixed_assets.err_value_locked_period_so_can_no", value=locked[0])
         journals = {j: await _journal(session, company_id, j) for j in effects.get("journals", [])}
         shown = {"assets": [{"number": a["number"]} for _, a, _ in created],
                  "journals": [_reversed_lines(je, books_currency(settings)) for je in journals.values() if je and je.get("status") == "posted"]}

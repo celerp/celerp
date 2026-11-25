@@ -23,6 +23,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refused
 from celerp.services.business_time import business_today
 
 from celerp_fixed_assets import notices, projections, reclassify, runs, setup, sources
@@ -700,7 +701,7 @@ async def apply_request(session, company_id, user_id, correction_id: str, body: 
     async def planned(fa):
         saved = await record(session, company_id, correction_id)
         if saved.get("state") != "requested":
-            raise setup.refused(409, "fixed_assets.err_correction_was_get_so_there_nothing", get=saved.get('state'))
+            raise refused(409, "fixed_assets.err_correction_was_get_so_there_nothing", get=saved.get('state'))
         stored = {k: saved.get(k) for k in _REQUEST_FIELDS}
         return await plan(session, company_id, saved["asset_id"], {**stored, "posting_date": body.get("posting_date")},
                           fa)
@@ -725,7 +726,7 @@ async def withdraw(session, company_id, user_id, correction_id: str) -> dict:
     if saved.get("requested_by") != str(user_id):
         raise HTTPException(status_code=403, detail=t("fixed_assets.err_only_user_who_requested_correction_can"))
     if saved.get("state") != "requested":
-        raise setup.refused(409, "fixed_assets.err_correction_was_get_so_cannot_withdrawn", get=saved.get('state'))
+        raise refused(409, "fixed_assets.err_correction_was_get_so_cannot_withdrawn", get=saved.get('state'))
     await _emit(session, company_id, user_id, correction_id, "fa_correction", "fa.correction.withdrawn", {})
     await _tell_waiting(session, company_id)
     return {"id": correction_id, **saved, "state": "withdrawn"}
@@ -752,16 +753,16 @@ async def undo(session, company_id, user_id, correction_id: str, body: dict) -> 
     async def planned(fa):
         saved = await record(session, company_id, correction_id)
         if saved.get("state") != "applied":
-            raise setup.refused(409, "fixed_assets.err_only_applied_correction_can_undone")
+            raise refused(409, "fixed_assets.err_only_applied_correction_can_undone")
         asset_id = saved["asset_id"]
         asset = (await lock_projections(session, company_id, [asset_id]))[asset_id].state
         if (int(asset.get("movement_count") or 0) != saved["movement_count"]
                 or any(asset.get(k) != v for k, v in (saved.get("after") or {}).items())):
-            raise setup.refused(409, "fixed_assets.err_number_has_changed_since_correction_correct", number=asset['number'])
+            raise refused(409, "fixed_assets.err_number_has_changed_since_correction_correct", number=asset['number'])
         books = await runs._books(session, company_id)
         day = saved.get("posting_date") or saved.get("effective_date")
         if books.lock is not None and date.fromisoformat(day) <= books.lock:
-            raise setup.refused(409, "fixed_assets.err_day_locked_so_correction_can_no", day=day)
+            raise refused(409, "fixed_assets.err_day_locked_so_correction_can_no", day=day)
         journals = [await _journal(session, company_id, j) for j in saved.get("journals") or []]
         shown = {"correction": correction_id, "number": asset["number"],
                  "journals": [_reversed_lines(je, books.currency) for je in journals if je and je.get("status") == "posted"]}

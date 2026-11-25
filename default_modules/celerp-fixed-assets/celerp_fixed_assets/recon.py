@@ -38,7 +38,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import refusal, refused
 from celerp.services.business_time import company_today
 
 from celerp_fixed_assets import fixaccount, runs, setup, sources
@@ -358,9 +358,9 @@ async def acknowledge(session, company_id, user_id, body: dict) -> dict:
         raise setup.refuse("fixed_assets.err_describe_accounting_effect_accepting_difference")
     found = await find(session, company_id, key)
     if found["rule"] == 4:
-        raise setup.refused(409, "fixed_assets.err_line_was_noted_when_was_kept")
+        raise refused(409, "fixed_assets.err_line_was_noted_when_was_kept")
     if _dec(body.get("amount")) != _dec(found["amount"]):
-        raise setup.refused(409, "fixed_assets.err_difference_now_amount_review_again", amount=found['amount'])
+        raise refused(409, "fixed_assets.err_difference_now_amount_review_again", amount=found['amount'])
     data = {"key": key, "state": state, "amount": found["amount"], "reason": reason or None,
             "effect": effect or None, "by": str(user_id), "at": (await company_today(session, company_id)).isoformat()}
     await _emit(session, company_id, user_id, recon_id(key), "fa_recon", "fa.recon.recorded", data)

@@ -19,6 +19,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refused
 from celerp_fixed_assets import opening, recon, setup
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
@@ -494,7 +495,7 @@ async def import_rows(session, company_id, user_id, batch_id: str, body: dict) -
     async def plan(fa):
         batch = await _batch(session, company_id, batch_id)
         if batch["state"] == "undone":
-            raise setup.refused(409, "fixed_assets.err_import_was_undone_import_rows_again")
+            raise refused(409, "fixed_assets.err_import_was_undone_import_rows_again")
         waiting = {r["row"]: r for r in await _batch_rows(session, company_id, batch_id) if r["status"] == "rejected"}
         numbered = []
         for fix in fixes:
@@ -526,7 +527,7 @@ async def undo_import(session, company_id, user_id, batch_id: str, body: dict) -
     as undone. Refused, naming them, when an imported asset has changed since."""
     batch = await _batch(session, company_id, batch_id)
     if batch["state"] == "undone":
-        raise setup.refused(409, "fixed_assets.err_import_was_already_undone")
+        raise refused(409, "fixed_assets.err_import_was_already_undone")
 
     async def done(op_key):
         await _record_batch(session, company_id, user_id, batch_id, {**batch, "state": "undone", "undone_by": op_key})

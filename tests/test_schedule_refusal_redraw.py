@@ -35,7 +35,7 @@ async def _patch(field: str, value: str, sub=None):
     from ui.app import app as ui_app
     get_sub = sub or AsyncMock(return_value=_SUB)
     with patch("ui.api_client.update_subscription_schedule", new=AsyncMock(side_effect=APIError(409, _REFUSAL))), \
-         patch("ui.api_client.get_subscription", new=get_sub), \
+         patch("ui.api_client.get_doc", new=get_sub), \
          patch("ui.api_client.get_subscription_periods", new=AsyncMock(return_value=_PERIODS)), \
          patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:

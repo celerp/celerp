@@ -215,16 +215,31 @@ def _load_cat_schema_sorted(fields_raw: list[dict]) -> list[dict]:
     return sorted(fields_raw, key=lambda x: x.get("position", 0))
 
 
-def _load_cat_schema_sorted(fields_raw: list[dict]) -> list[dict]:
-    return sorted(fields_raw, key=lambda x: x.get("position", 0))
-
-
 # ── DRY tax/terms CRUD registration helpers ──────────────────────────────
 
 _TAX_FIELDS = frozenset({"name", "rate", "tax_type", "is_default", "is_compound", "description"})
 _TAX_BOOL_FIELDS = frozenset({"is_default", "is_compound"})
 _TAX_SELECT_FIELDS = _TAX_BOOL_FIELDS | {"tax_type"}
 _YES_NO = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}
+
+
+def _list_delete(gname: str, pname: str, redir: str):
+    """DELETE /{idx} for a settings list kept as one array: drop that row and save the rest."""
+    async def delete_row(request: Request, idx: int):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            rows = await getattr(api, gname)(token)
+            if 0 <= idx < len(rows):
+                rows.pop(idx)
+                await getattr(api, pname)(token, rows)
+        except APIError as e:
+            return api.refusal_response(e)
+        return _R("", status_code=204, headers={"HX-Redirect": redir})
+    return delete_row
+
 
 def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, redirect_url: str):
     """Register GET edit, PATCH, POST new, DELETE for tax CRUD at /settings/{prefix}/...
@@ -344,27 +359,12 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return create_tax
 
-    def _make_delete(gname, pname, redir):
-        async def delete_tax(request: Request, idx: int):
-            from starlette.responses import Response as _R
-            token = _token(request)
-            if not token:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            try:
-                taxes = await getattr(api, gname)(token)
-                if 0 <= idx < len(taxes):
-                    taxes.pop(idx)
-                    await getattr(api, pname)(token, taxes)
-            except APIError as e:
-                return api.refusal_response(e)
-            return _R("", status_code=204, headers={"HX-Redirect": redir})
-        return delete_tax
 
     app.get(f"/settings/{prefix}/{{idx}}/{{field}}/edit")(_make_edit(prefix, get_fn_name))
     app.patch(f"/settings/{prefix}/{{idx}}/{{field}}")(_make_patch(prefix, get_fn_name, patch_fn_name))
     app.get(f"/settings/{prefix}/{{idx}}/{{field}}/display")(_make_display(prefix, get_fn_name))
     app.post(f"/settings/{prefix}/new")(_make_new(get_fn_name, patch_fn_name, redirect_url))
-    app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url))
+    app.delete(f"/settings/{prefix}/{{idx}}")(_list_delete(get_fn_name, patch_fn_name, redirect_url))
 
 
 def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, redirect_url: str):
@@ -436,26 +436,11 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return create_term
 
-    def _make_delete(gname, pname, redir):
-        async def delete_term(request: Request, idx: int):
-            from starlette.responses import Response as _R
-            token = _token(request)
-            if not token:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            try:
-                terms = await getattr(api, gname)(token)
-                if 0 <= idx < len(terms):
-                    terms.pop(idx)
-                    await getattr(api, pname)(token, terms)
-            except APIError as e:
-                return api.refusal_response(e)
-            return _R("", status_code=204, headers={"HX-Redirect": redir})
-        return delete_term
 
     app.get(f"/settings/{prefix}/{{idx}}/{{field}}/edit")(_make_edit(prefix, get_fn_name))
     app.patch(f"/settings/{prefix}/{{idx}}/{{field}}")(_make_patch(prefix, get_fn_name, patch_fn_name))
     app.post(f"/settings/{prefix}/new")(_make_new(get_fn_name, patch_fn_name, redirect_url))
-    app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url))
+    app.delete(f"/settings/{prefix}/{{idx}}")(_list_delete(get_fn_name, patch_fn_name, redirect_url))
 
 
 def _toast_response(message: str, *fragments: FT):
@@ -3844,26 +3829,11 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return create_tc
 
-    def _make_delete(gname, pname, redir):
-        async def delete_tc(request: Request, idx: int):
-            from starlette.responses import Response as _R
-            token = _token(request)
-            if not token:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            try:
-                templates = await getattr(api, gname)(token)
-                if 0 <= idx < len(templates):
-                    templates.pop(idx)
-                    await getattr(api, pname)(token, templates)
-            except APIError as e:
-                return api.refusal_response(e)
-            return _R("", status_code=204, headers={"HX-Redirect": redir})
-        return delete_tc
 
     app.get(f"/settings/{prefix}/{{idx}}/{{field}}/edit")(_make_edit(prefix, get_fn_name))
     app.patch(f"/settings/{prefix}/{{idx}}/{{field}}")(_make_patch(prefix, get_fn_name, patch_fn_name))
     app.post(f"/settings/{prefix}/new")(_make_new(get_fn_name, patch_fn_name, redirect_url))
-    app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url))
+    app.delete(f"/settings/{prefix}/{{idx}}")(_list_delete(get_fn_name, patch_fn_name, redirect_url))
 
 
 def _pl_select(select_id: str, post_url: str, status_id: str, names: list[str], selected: str, oob: bool = False) -> FT:

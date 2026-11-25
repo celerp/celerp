@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from celerp.accounting_roles import refused
 from celerp_fixed_assets import disposal, operations, projections, runs, setup, transfer
 from celerp_fixed_assets.projections import money, said
 from celerp_fixed_assets.operations import (
@@ -232,9 +233,9 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
         if not cls.get("construction"):
             raise setup.refuse("fixed_assets.err_number_not_under_construction", number=site['number'])
         if site.get("status") == "placed_in_service":
-            raise setup.refused(409, "fixed_assets.err_number_already_placed_service_full", number=site['number'])
+            raise refused(409, "fixed_assets.err_number_already_placed_service_full", number=site['number'])
         if site.get("status") != "active":
-            raise setup.refused(409, "fixed_assets.err_number_not_use_so_cannot_placed", number=site['number'])
+            raise refused(409, "fixed_assets.err_number_not_use_so_cannot_placed", number=site['number'])
         day = _date(body.get("date"), "The available-for-use date")
         books = await runs._books(session, company_id)
         currency = books.currency
@@ -338,7 +339,7 @@ async def undo_latest(session, company_id, user_id, asset_id: str, body: dict) -
     if latest is None:
         raise setup.refuse("fixed_assets.err_number_has_nothing_undo", number=asset['number'])
     if latest.get("operation") in disposal._CHARGES:
-        raise setup.refused(409, "fixed_assets.err_depreciation_was_charged_number_after_its", number=asset['number'])
+        raise refused(409, "fixed_assets.err_depreciation_was_charged_number_after_its", number=asset['number'])
     op = await _state(session, company_id, f"fa:op:{latest['op_key']}") or {}
     if op.get("type") in ("disposal", "sale"):
         return await disposal.undo(session, company_id, user_id, asset_id, body)

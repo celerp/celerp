@@ -6,16 +6,10 @@ from __future__ import annotations
 from copy import deepcopy
 
 
-def _compose_address(addr: dict) -> str:
-    """Build a single-line address string from address dict fields."""
-    parts = [
-        addr.get("line1", ""),
-        addr.get("line2", ""),
-        addr.get("city", ""),
-        addr.get("state", ""),
-        addr.get("postal_code", ""),
-        addr.get("country", ""),
-    ]
+def compose_address(addr: dict) -> str:
+    """One-line address from a contact address dict."""
+    parts = [addr.get("line1", ""), addr.get("line2", ""), addr.get("city", ""), addr.get("state", ""),
+             addr.get("postal_code", ""), addr.get("country", "")]
     return ", ".join(p for p in parts if p)
 
 
@@ -32,7 +26,7 @@ def _sync_primary_address_fields(state: dict) -> None:
             of_type[0]["is_default"] = True  # a type with addresses always keeps exactly one primary
         default = next((a for a in of_type if a.get("is_default")), None)
         if default:
-            state[field] = _compose_address(default)
+            state[field] = compose_address(default)
 
 
 def apply_contact_event(state: dict, event_type: str, data: dict) -> dict:

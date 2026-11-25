@@ -312,7 +312,7 @@ def setup_routes(app):
             }
 
             try:
-                await api.create_subscription(token, payload)
+                await api.create_doc(token, payload)
                 created += 1
             except APIError as e:
                 api.raise_if_signed_out(e)

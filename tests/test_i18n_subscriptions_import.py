@@ -111,7 +111,7 @@ async def test_result_panel_entity_label_translates(monkeypatch, tmp_path):
         return {"id": 1}
 
     monkeypatch.setattr(si, "_token", lambda request: "tok")
-    monkeypatch.setattr(si.api, "create_subscription", _fake_create)
+    monkeypatch.setattr(si.api, "create_doc", _fake_create)
     monkeypatch.setattr("ui.api_client.get_company", _company)
     monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
 

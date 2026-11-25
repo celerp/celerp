@@ -62,10 +62,12 @@ def display_unit(name, fallback: str | None = None) -> str:
     return fallback if fallback is not None else raw
 
 
-def doc_href(doc_id) -> str:
-    """The page of a document or list, from its id."""
+def doc_href(doc_id, kind: str | None = None) -> str:
+    """The page of a document or list: by its kind ("list" or a document type) when the
+    caller holds it, as an imported list keeps the id it came with; else by its id."""
     did = str(doc_id or "")
-    return f"/lists/{did}" if did.startswith("list:") else f"/docs/{did}"
+    is_list = kind == "list" if kind else did.startswith("list:")
+    return f"/lists/{did}" if is_list else f"/docs/{did}"
 
 
 # Default column widths for fixed-layout tables.

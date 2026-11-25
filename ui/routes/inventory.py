@@ -64,6 +64,7 @@ from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from celerp.importers.tabular import known_headers
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN
 from celerp.services.money import currency_dp, rate_dp
+from celerp.services.lot_origin import is_draft
 from celerp.output.doc_print import fmt_rate, input_rate
 from ui.i18n import t, t_or, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text, doc_type_label
 from celerp.services.units import format_qty, is_weight_unit, is_pieces_unit
@@ -1143,7 +1144,7 @@ def _inventory_table(
     # server-side, so this is presentation only.
     if _draft_unlocked:
         for _it in items:
-            if _is_draft(_it):
+            if is_draft(_it):
                 _it["_row_editable_keys"] = _draft_unlocked
     # Derived read-only money columns, appended to the schema whenever their scope is active
     # (the same rule as _export_columns), so the column set follows from the page state alone
@@ -1950,7 +1951,7 @@ def setup_routes(app):
             else f
             for f in schema
         ]
-        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
+        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=is_draft(item))
         # Merge category-specific fields for this item's category
         item_cat = item.get("category", "")
         schema = item_detail_schema(schema, cat_schemas.get(item_cat) or [], item_cat)
@@ -2525,7 +2526,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                                 cell_type=_f.get("type", "text"), editable=False, domain="item_status")
-        if field in _locked_edit_keys(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item)):
+        if field in _locked_edit_keys(schema, _get_role(request), company.get("settings") or {}, is_draft=is_draft(item)):
             # Amount fields and sell_by (edit_inventory_amounts) and prices
             # (set_inventory_prices): this GET is the single edit-entry chokepoint, so
             # no gated cell can enter edit state without the permission, however it rendered.
@@ -2643,7 +2644,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
         locations = locs.get("items", [])
         # ESC restore inherits the same read-only state as the static cell, so a
         # restored gated cell never re-offers click-to-edit without the permission.
-        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
+        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=is_draft(item))
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
         if field == "default_sell_qty":
             return _default_sell_qty_cell(entity_id, item, f_def, await _units_by_name(token))
@@ -2964,7 +2965,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             _fp_company = await api.get_company(token)
         except Exception:
             _fp_company = {}
-        schema = _apply_edit_permission(schema, _get_role(request), _fp_company.get("settings") or {}, is_draft=_is_draft(item))
+        schema = _apply_edit_permission(schema, _get_role(request), _fp_company.get("settings") or {}, is_draft=is_draft(item))
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
         # Category change: context-aware response
         if field == "category":
@@ -3232,7 +3233,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             api.get_item_schema(token), api.get_item(token, entity_id),
             api.get_all_category_schemas(token), api.get_locations(token),
         )
-        schema = _apply_edit_permission(schema, role, settings or {}, is_draft=_is_draft(item))
+        schema = _apply_edit_permission(schema, role, settings or {}, is_draft=is_draft(item))
         # Purchase triple: purchase_unit + purchase_conversion_factor + sell_by (read-only)
         if field in ("purchase_unit", "purchase_conversion_factor"):
             from ui.components.table import purchase_display_cell
@@ -6362,10 +6363,6 @@ def _apply_edit_permission(schema: list[dict], role: str, settings: dict, *, is_
     the restriction, so no gated cell renders as click-to-edit without the permission."""
     locked = _locked_edit_keys(schema, role, settings, is_draft=is_draft)
     return [{**f, "editable": False} if f.get("key") in locked else f for f in schema]
-
-
-def _is_draft(item: dict) -> bool:
-    return str(item.get("status") or "").lower() == "draft"
 
 
 def _resolve_field_def(

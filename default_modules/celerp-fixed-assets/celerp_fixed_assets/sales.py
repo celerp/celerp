@@ -23,7 +23,7 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import catalog_refusal, refused
 from celerp.models.projections import Projection
 from celerp.services.account_roles import line_has_role, line_roles
 from celerp.services.money import currency_dp, round_money
@@ -68,7 +68,8 @@ def doc_number(state: dict | None, doc_id: str) -> str:
     return str(state.get("doc_number") or state.get("ref_id") or doc_id.removeprefix("doc:"))
 
 
-def _href(asset_id: str) -> str:
+def asset_href(asset_id: str) -> str:
+    """The page of one asset."""
     return f"/fixed-assets/assets/{asset_id}"
 
 
@@ -277,7 +278,7 @@ async def _draft_credit_notes(session, company_id, invoice_id: str, asset_id: st
 def _pending(asset: dict) -> dict:
     sale = asset.get("sale") or {}
     if sale.get("state") != "pending":
-        raise setup.refused(409, "fixed_assets.err_number_not_waiting_sale_invoice", number=asset['number'])
+        raise refused(409, "fixed_assets.err_number_not_waiting_sale_invoice", number=asset['number'])
     return sale
 
 
@@ -331,7 +332,7 @@ async def reissue(session, company_id, user_id, asset_id: str, body: dict) -> di
         sale = _pending(asset)
         invoice = await _state(session, company_id, sale["invoice_id"])
         if invoice is not None and invoice.get("status") == "draft" and _carries(invoice, asset_id):
-            raise setup.refused(409, "fixed_assets.err_number_already_draft_invoice_doc_number", number=asset['number'], doc_number=doc_number(invoice, sale['invoice_id']))
+            raise refused(409, "fixed_assets.err_number_already_draft_invoice_doc_number", number=asset['number'], doc_number=doc_number(invoice, sale['invoice_id']))
         day = _date(body.get("date") or sale["date"], "The sale date")
         shown = {"number": asset["number"], "date": day, "price": sale.get("price"),
                  "contact_name": (invoice or {}).get("contact_name") or sale.get("contact_name")}
@@ -524,7 +525,7 @@ async def _dispose(session, company_id, user_id, asset_id: str, asset: dict, sal
     je_id = await _post(session, company_id, user_id, key=f"asset:{short}:disposal:{int(asset.get('movement_count') or 0) + 1}",
                         operation="sale", day=day, memo=f"{asset['number']} {asset['name']} sold on invoice {invoice}",
                         lines=await _continued(session, company_id, item["lines"]), source_id=asset_id,
-                        href=_href(asset_id), label=asset["number"], op_key=op_key)
+                        href=asset_href(asset_id), label=asset["number"], op_key=op_key)
     currency = books.currency
     gain = money(_total(held) + item["gain"], currency)
     caught = await catch_up(session, company_id, user_id, asset_id, day=day, periods=item["periods"], op_key=op_key,
@@ -577,11 +578,11 @@ async def _unsell(session, company_id, user_id, asset_id: str, asset: dict, sale
                                     operation="sale_reverse", day=mv["effective_date"],
                                     memo=f"{asset['number']} sale reversed: clearing settled",
                                     lines=await _continued(session, company_id, lines), source_id=asset_id,
-                                    href=_href(asset_id), label=asset["number"], op_key=op_key))
+                                    href=asset_href(asset_id), label=asset["number"], op_key=op_key))
     await _set(session, company_id, user_id, asset_id, "active", disposal=None,
                sale={**sale, "state": "pending", "journal_id": None, "movement_id": None, "journals": journals})
     await create_keyed(session, company_id, "fixed_assets", "fixed_assets.notice.sale_reversed",
-                       {"number": asset["number"], "invoice": doc_number(doc, doc_id)}, action_url=_href(asset_id))
+                       {"number": asset["number"], "invoice": doc_number(doc, doc_id)}, action_url=asset_href(asset_id))
 
 
 async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dict, sale: dict, doc_id: str,
@@ -607,7 +608,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
         je_id = await _post(session, company_id, user_id, key=f"asset:{short}:credit:{uuid.uuid4().hex}",
                             operation="sale_adjust", day=day, memo=f"{number} sale credited: {doc_number(doc, doc_id)}",
                             lines=await _continued(session, company_id, restated + _through(clearing, added)),
-                            source_id=asset_id, href=_href(asset_id), label=number, op_key=op_key)
+                            source_id=asset_id, href=asset_href(asset_id), label=number, op_key=op_key)
         credits = {**(sale.get("credits") or {}), doc_id: {
             "kind": "adjust", "amount": money(amount, books.currency), "journal_id": je_id, "live": True, "date": day}}
         await _set(session, company_id, user_id, asset_id, asset["status"],
@@ -639,7 +640,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     lines += restated
     je_id = await _post(session, company_id, user_id, key=f"asset:{short}:credit:{uuid.uuid4().hex}",
                         operation="sale_return", day=day, memo=f"{number} returned: {doc_number(doc, doc_id)}",
-                        lines=await _continued(session, company_id, lines), source_id=asset_id, href=_href(asset_id),
+                        lines=await _continued(session, company_id, lines), source_id=asset_id, href=asset_href(asset_id),
                         label=number, op_key=op_key)
     await _move(session, company_id, user_id, asset_id, kind="reversal", operation="sale_return",
                 effective=mv["effective_date"], posting=day, amounts={k: -v for k, v in moved.items()},
@@ -681,7 +682,7 @@ async def _credit_reversed(session, company_id, user_id, asset_id: str, asset: d
                                     operation="sale_adjust", day=entry.get("date") or sale["date"],
                                     memo=f"{asset['number']} sale credit reversed: gain and loss restated",
                                     lines=await _continued(session, company_id, restated), source_id=asset_id,
-                                    href=_href(asset_id), label=asset["number"], op_key=op_key))
+                                    href=asset_href(asset_id), label=asset["number"], op_key=op_key))
     await _set(session, company_id, user_id, asset_id, asset["status"],
                disposal={**(asset.get("disposal") or {}), "gain_or_loss": money(gain, books.currency)},
                sale={**sale, "credits": credits, "journals": journals})

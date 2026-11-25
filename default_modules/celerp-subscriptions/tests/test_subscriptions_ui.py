@@ -91,7 +91,7 @@ class TestSubscriptionsUI:
 
     async def test_create_subscription_redirects_to_detail(self, ui_client):
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.create_subscription", new=AsyncMock(return_value=_SUB_DOC)):
+        with patch("ui.api_client.create_doc", new=AsyncMock(return_value=_SUB_DOC)):
             r = await ui_client.post(
                 "/subscriptions/new?direction=sales",
             )
@@ -100,7 +100,7 @@ class TestSubscriptionsUI:
     async def test_a_refused_new_agreement_says_why_where_the_user_is(self, ui_client):
         from ui.api_client import APIError
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.create_subscription", new=AsyncMock(side_effect=APIError(403, "Not allowed here"))):
+        with patch("ui.api_client.create_doc", new=AsyncMock(side_effect=APIError(403, "Not allowed here"))):
             r = await ui_client.post("/subscriptions/new?direction=sales")
         assert "HX-Redirect" not in r.headers
         assert "Not allowed here" in json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
@@ -108,7 +108,7 @@ class TestSubscriptionsUI:
     async def test_detail_page_renders(self, ui_client):
         ui_client.cookies.update(_authed())
         with (
-            patch("ui.api_client.get_subscription", new=AsyncMock(return_value=_SUB_DOC)),
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_SUB_DOC)),
             patch("ui.api_client.get_subscription_periods",
                   new=AsyncMock(return_value={"next_bill_date": "2026-02-01", "oldest_open_index": 0, "rows": []})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "ACME", "currency": "USD", "timezone": "UTC"})),
@@ -135,7 +135,7 @@ class TestSubscriptionsUI:
                     "rows": [recent], "oldest_due_row": due, "older_before": 74}
         periods = AsyncMock(return_value=schedule)
         with (
-            patch("ui.api_client.get_subscription", new=AsyncMock(return_value=_SUB_DOC)),
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_SUB_DOC)),
             patch("ui.api_client.get_subscription_periods", new=periods),
             patch("ui.api_client.get_company", new=AsyncMock(
                 return_value={"name": "ACME", "currency": "USD", "timezone": "UTC"})),
@@ -162,7 +162,7 @@ class TestSubscriptionsUI:
     async def test_detail_page_api_error_redirects_to_list(self, ui_client):
         from ui.api_client import APIError
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.get_subscription", new=AsyncMock(side_effect=APIError(404, "not found"))):
+        with patch("ui.api_client.get_doc", new=AsyncMock(side_effect=APIError(404, "not found"))):
             r = await ui_client.get("/subscriptions/bad-id")
         assert r.status_code == 302
         assert "/subscriptions" in r.headers["location"]
@@ -539,7 +539,7 @@ _PAGE_READS = [
     ("/subscriptions?direction=purchase", "ui.api_client.list_subscriptions"),
     ("/subscriptions/catch-up", "ui.api_client.subscriptions_catch_up"),
     ("/subscriptions/summary", "ui.api_client.subscriptions_summary"),
-    ("/subscriptions/sub-001", "ui.api_client.get_subscription"),
+    ("/subscriptions/sub-001", "ui.api_client.get_doc"),
 ]
 
 
@@ -583,7 +583,7 @@ async def test_subscription_detail_requires_its_periods(answer_client):
     from ui.api_client import APIError
 
     with (
-        patch("ui.api_client.get_subscription", new=AsyncMock(return_value=_SUB_DOC)),
+        patch("ui.api_client.get_doc", new=AsyncMock(return_value=_SUB_DOC)),
         patch("ui.api_client.get_subscription_periods",
               new=AsyncMock(side_effect=APIError(503, "Period service unavailable"))),
         patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "ACME", "timezone": "UTC"})),

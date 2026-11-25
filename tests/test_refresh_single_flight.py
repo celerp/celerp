@@ -216,7 +216,7 @@ async def test_orphan_failure_emits_no_unretrieved_task_warning(monkeypatch):
 @pytest.mark.asyncio
 async def test_expired_success_entries_for_other_hashes_are_pruned(monkeypatch):
     _install_counting_upstream(monkeypatch, result=("acc", "ref"))
-    other = api._refresh_key("a-different-refresh-token")
+    other = api._token_key("a-different-refresh-token")
     api._refresh_success[other] = (
         time.monotonic() - (api._REFRESH_GRACE_SECONDS + 1.0),
         ("stale", "stale"),

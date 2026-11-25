@@ -18,6 +18,7 @@ from datetime import date
 from decimal import Decimal
 
 from celerp_fixed_assets import projections, runs, setup
+from celerp.accounting_roles import refused
 from celerp.services.units import plain_number
 from celerp.services.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.projections import money
@@ -331,20 +332,20 @@ async def undo_refusal(session, company_id, asset: dict, movements: list[dict]) 
     if latest is None:
         return None
     if latest.get("reason") == "replaced":
-        return setup.refused(409, "fixed_assets.err_number_left_books_when_its_replacement", number=asset['number'])
+        return refused(409, "fixed_assets.err_number_left_books_when_its_replacement", number=asset['number'])
     if latest.get("reason") == "transferred":
-        return setup.refused(409, "fixed_assets.err_number_was_transferred_company_name_undo", number=asset['number'], company_name=latest['target']['company_name'])
+        return refused(409, "fixed_assets.err_number_was_transferred_company_name_undo", number=asset['number'], company_name=latest['target']['company_name'])
     if latest.get("reason") == "sold":
         from celerp_fixed_assets.sales import doc_number
 
         invoice = doc_number(await _state(session, company_id, latest["invoice_id"]), latest["invoice_id"])
-        return setup.refused(409, "fixed_assets.err_number_was_sold_invoice_invoice_void", number=asset['number'], invoice=invoice)
+        return refused(409, "fixed_assets.err_number_was_sold_invoice_invoice_void", number=asset['number'], invoice=invoice)
     since = [m for m in movements if int(m["id"].rsplit(":", 1)[1]) > int(latest["id"].rsplit(":", 1)[1])]
     if since:
-        return setup.refused(409, "fixed_assets.err_number_has_changed_since_was_disposed", number=asset['number'], changes=changes(since))
+        return refused(409, "fixed_assets.err_number_has_changed_since_was_disposed", number=asset['number'], changes=changes(since))
     books = await runs._books(session, company_id)
     if books.lock is not None and date.fromisoformat(latest["effective_date"]) <= books.lock:
-        return setup.refused(409, "fixed_assets.err_effective_date_locked_so_disposal_can", effective_date=latest['effective_date'])
+        return refused(409, "fixed_assets.err_effective_date_locked_so_disposal_can", effective_date=latest['effective_date'])
     return None
 
 

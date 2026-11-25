@@ -150,7 +150,7 @@ async def test_subscription_detail_follows_the_company_connection(ui_client, con
     ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
     with (
         _owned(connected),
-        patch("ui.api_client.get_subscription", new=AsyncMock(return_value=sub)),
+        patch("ui.api_client.get_doc", new=AsyncMock(return_value=sub)),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         patch("ui.api_client.get_subscription_periods", new=AsyncMock(return_value={"rows": [], "review": [], "set_aside": []})),
     ):
@@ -167,7 +167,7 @@ async def test_subscription_detail_follows_the_company_modules(ui_client, enable
     ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
     with (
         _owned({"shopify"}),
-        patch("ui.api_client.get_subscription", new=AsyncMock(return_value=sub)),
+        patch("ui.api_client.get_doc", new=AsyncMock(return_value=sub)),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
         patch("ui.api_client.get_subscription_periods", new=AsyncMock(return_value={"rows": [], "review": [], "set_aside": []})),
     ):

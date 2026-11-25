@@ -365,19 +365,6 @@ def _financial_summary(docs: list[dict], contact_id: str = "", invoice_totals: d
     )
 
 
-def _compose_address_str(addr: dict) -> str:
-    """Build a single-line address string for display/sync."""
-    parts = [
-        addr.get("line1", ""),
-        addr.get("line2", ""),
-        addr.get("city", ""),
-        addr.get("state", ""),
-        addr.get("postal_code", ""),
-        addr.get("country", ""),
-    ]
-    return ", ".join(p for p in parts if p)
-
-
 def _address_card(cid: str, addr: dict, *, read_only: bool = False) -> FT:
     """Render a single address card with edit/delete/make-primary actions."""
     addr_id = addr.get("address_id", "")

@@ -27,7 +27,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import catalog_refusal, refused
 from celerp.models.projections import Projection
 from celerp.services.business_time import business_today, company_today
 from celerp.services.money import books_currency, round_money
@@ -448,16 +448,16 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
     currency = books.currency
     label = period_label(month)
     if books.last is not None and month <= books.last:
-        raise setup.refused(409, "fixed_assets.err_run_posted", month=label,
+        raise refused(409, "fixed_assets.err_run_posted", month=label,
                             href=f"/fixed-assets/runs/{label}", action="fixed_assets.action.open_run")
     if _end(month) >= today:
         last = period_label(month_index(today) - 1)
-        raise setup.refused(422, "fixed_assets.err_month_not_ended", month=label, last=last,
+        raise refused(422, "fixed_assets.err_month_not_ended", month=label, last=last,
                             fill={"field": "month", "value": last, "action": "fixed_assets.action.review_through"})
     if month < books.first:
         raise setup.refuse("fixed_assets.err_run_before_first_period", month=label)
     if books.locked(month):
-        raise setup.refused(409, "fixed_assets.err_run_month_locked", month=label)
+        raise refused(409, "fixed_assets.err_run_month_locked", month=label)
     start = books.next
     charges = await _charges(session, company_id, books, month, start)
     open_months = [k for k in range(start, month + 1) if not books.locked(k)]
@@ -617,9 +617,9 @@ async def reverse(session, company_id, user_id, label: str, body: dict) -> dict:
         books = await _books(session, company_id)
         record = books.records.get(month)
         if books.last != month or record is None or record.get("status") not in _POSTED:
-            raise setup.refused(409, "fixed_assets.err_only_latest_posted_run_can_reversed", label=label)
+            raise refused(409, "fixed_assets.err_only_latest_posted_run_can_reversed", label=label)
         if books.locked(month):
-            raise setup.refused(409, "fixed_assets.err_label_locked_use_correct_change_its", label=label)
+            raise refused(409, "fixed_assets.err_label_locked_use_correct_change_its", label=label)
         last: dict[str, int] = {}
         for movement_id in record.get("movements") or []:
             mv = await _state(session, company_id, movement_id)
@@ -666,14 +666,14 @@ async def _open_asset(session, company_id, user_id, asset_id: str, keys: tuple[s
     if row is None or row.entity_type != "fa_asset":
         raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     if row.state.get("status") != "active":
-        raise setup.refused(409, "fixed_assets.err_only_asset_use_takes_readings_skipped")
+        raise refused(409, "fixed_assets.err_only_asset_use_takes_readings_skipped")
     return row.state, await _books(session, company_id)
 
 
 def _still_open(books: Books, asset: dict, month: int) -> None:
     held = (asset.get("exception") or {}).get("months") or []
     if books.last is not None and month <= books.last and period_label(month) not in held:
-        raise setup.refused(409, "fixed_assets.err_depreciation_period_label_already_posted_use", period_label=period_label(month))
+        raise refused(409, "fixed_assets.err_depreciation_period_label_already_posted_use", period_label=period_label(month))
 
 
 async def record_reading(session, company_id, user_id, asset_id: str, body: dict) -> dict:

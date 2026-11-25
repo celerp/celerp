@@ -16,7 +16,7 @@ from sqlalchemy.orm import aliased
 
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_projections
-from celerp_contacts.projections import _compose_address
+from celerp_contacts.projections import compose_address
 
 # The fields a contact's name is read from, first one set wins (contact_snapshot, party_name_sql).
 CONTACT_NAME_FIELDS = ("name", "display_name")
@@ -85,7 +85,7 @@ def contact_snapshot(state: dict) -> dict:
     def _text(addr_type: str) -> str:
         a = _pick(addr_type)
         if a:
-            return a.get("full_address") or a.get("address") or _compose_address(a) or a.get("label") or ""
+            return a.get("full_address") or a.get("address") or compose_address(a) or a.get("label") or ""
         return state.get(f"{addr_type}_address") or ""
 
     shipping = _pick("shipping")

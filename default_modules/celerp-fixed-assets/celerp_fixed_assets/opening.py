@@ -17,6 +17,7 @@ import uuid
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refused
 from celerp.services.business_time import business_today
 
 from celerp_fixed_assets import projections, runs, setup, sources
@@ -32,10 +33,10 @@ async def move_cutover(session, company_id, user_id, fa: dict, new_cut: str) -> 
     old_cut = setup.cutover(fa)
     books = await runs._books(session, company_id)
     if books.last is not None:
-        raise setup.refused(409, "fixed_assets.err_depreciation_period_label_has_posted_so", period_label=runs.period_label(books.last))
+        raise refused(409, "fixed_assets.err_depreciation_period_label_has_posted_so", period_label=runs.period_label(books.last))
     for line in await sources.lines(session, company_id):
         if line["claim"] and line["date"] <= new_cut:
-            raise setup.refused(409, "fixed_assets.err_description_date_registered_new_cutover_new", description=line['description'], date=line['date'], new_cut=new_cut)
+            raise refused(409, "fixed_assets.err_description_date_registered_new_cutover_new", description=line['description'], date=line['date'], new_cut=new_cut)
     assets = dict(await _entities(session, company_id, "fa_asset"))
     movements = await movements_by_asset(session, company_id)
     redate = []
@@ -44,10 +45,10 @@ async def move_cutover(session, company_id, user_id, fa: dict, new_cut: str) -> 
         for mv in projections.live(moved):
             if mv["operation"] == "opening":
                 if (assets[asset_id].get("available_date") or "") > new_cut:
-                    raise setup.refused(409, "fixed_assets.err_number_opening_asset_available_from_available", number=number, available_date=assets[asset_id]['available_date'], new_cut=new_cut)
+                    raise refused(409, "fixed_assets.err_number_opening_asset_available_from_available", number=number, available_date=assets[asset_id]['available_date'], new_cut=new_cut)
                 redate.append(mv)
             elif mv["operation"] not in runs.OPENING_OPERATIONS and mv["posting_date"] <= new_cut:
-                raise setup.refused(409, "fixed_assets.err_number_has_change_dated_posting_date", number=number, posting_date=mv['posting_date'], new_cut=new_cut)
+                raise refused(409, "fixed_assets.err_number_has_change_dated_posting_date", number=number, posting_date=mv['posting_date'], new_cut=new_cut)
     op_key = f"cutover.{uuid.uuid4().hex[:12]}"
     for mv in redate:
         amounts = mv.get("amounts") or {}

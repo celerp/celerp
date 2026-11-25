@@ -14,7 +14,7 @@ from decimal import Decimal, InvalidOperation
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import catalog_refusal, refused
 from celerp.models.projections import Projection
 from celerp.services.business_time import business_today, company_today
 from celerp_fixed_assets.calc import rules
@@ -79,12 +79,6 @@ def number(value, field: str) -> Decimal:
     if not out.is_finite():
         raise refuse("fixed_assets.err_not_number", field=field)
     return out
-
-
-def refused(status: int, key: str, /, **params) -> HTTPException:
-    """The refusal ``key`` of the catalog with the way on: ``href`` and ``action`` (the link's
-    label key), or ``links`` (each {"label", "href"}), which the page shows beside the message."""
-    return HTTPException(status_code=status, detail=catalog_refusal(key, **params))
 
 
 def day(value, field: str) -> date:

@@ -23,6 +23,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refused
 from celerp_fixed_assets import runs, setup
 from celerp_fixed_assets.projections import said
 from celerp_fixed_assets.operations import MODULE, _dec, _effects, _journal_view, _post, _run, _undo
@@ -112,7 +113,7 @@ async def refuse_stranding(session, company_id, class_id: str, cls: dict, change
     assets = await _class_assets(session, company_id, class_id)
     for field in moving:
         if _held(assets, field):
-            raise setup.refused(409, "fixed_assets.err_assets_name_hold_balance_account_value", name=cls['name'], value=cls[field])
+            raise refused(409, "fixed_assets.err_assets_name_hold_balance_account_value", name=cls['name'], value=cls[field])
 
 
 def _day(books: runs.Books) -> str:
@@ -161,7 +162,7 @@ async def _split(session, company_id, account: str, amount: Decimal, keys: list[
             used[key] = used.get(key, Decimal(0)) + take
             left -= take
     if left:
-        raise setup.refused(409, "fixed_assets.err_ledger_holds_said_account_account_these", said=said(amount - left, currency), account=account, said2=said(amount, currency))
+        raise refused(409, "fixed_assets.err_ledger_holds_said_account_account_these", said=said(amount - left, currency), account=account, said2=said(amount, currency))
     return lines
 
 

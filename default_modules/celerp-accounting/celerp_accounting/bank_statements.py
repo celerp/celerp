@@ -27,7 +27,7 @@ from sqlalchemy import func, or_, select, true, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from celerp.accounting_roles import KeyedRefusal, catalog_refusal
+from celerp.accounting_roles import KeyedRefusal, catalog_refusal, refused
 from celerp.agent_markers import agent_excluded
 from celerp.db import get_session
 from celerp.events.engine import emit_event, keyed_event, refuse_other_request, request_fingerprint
@@ -981,7 +981,7 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
     # Under the locks the named pair must still be the transfer's counterpart.
     still = [c["id"] for c in await _pairs(db, company_id, line, target, d.to_amount)] if other_id else []
     if pair_id is not None and pair_id not in still:
-        raise _refused(409, "reconciliation.line_not_open")
+        raise refused(409, "reconciliation.line_not_open")
     je_ids = await SL.post_transfer(db, company_id=company_id, actor_id=actor_id, bank=bank, line=line, target=target,
                                     paired=by_id.get(pair_id) if pair_id else None, rate=d.rate,
                                     to_amount=d.to_amount, key=key)
@@ -989,10 +989,6 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
         SL.write_suggestion(by_id[hint_id], {"kind": "match", "source": "transfer", "je_ids": je_ids, "confidence": "low",
                                              "reason": str(t("acct.recon_reason_transfer", date=line.line_date[:10]))})
     return {str(line.id): je_ids}
-
-
-def _refused(status: int, key: str, /, **params) -> HTTPException:
-    return HTTPException(status_code=status, detail=catalog_refusal(key, **params))
 
 
 class _Twins(HTTPException):
@@ -1078,19 +1074,19 @@ async def _pay_doc(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str,
     if (keyed := await _keyed_instead(db, company_id, bank, line, instead, book, want, d.separate_from)) is not None:
         return {str(line.id): keyed}
     if not d.docs:
-        raise _refused(422, "acct.err_recon_pay_needs_doc")
+        raise refused(422, "acct.err_recon_pay_needs_doc")
     amount = abs(Decimal(str(line.amount)))
     total = sum((Decimal(str(x.amount)) for x in d.docs), Decimal(0)) + \
         sum((Decimal(str(p.amount)) for p in d.parts or ()), Decimal(0))
     if total != amount:
-        raise _refused(422, "acct.err_split_total", total=money_text(total, bank.currency),
+        raise refused(422, "acct.err_split_total", total=money_text(total, bank.currency),
                        amount=money_text(amount, bank.currency))
     want = "invoice" if line.amount > 0 else "bill"
     je_ids: list[str] = []
     for x in d.docs:
         row = rows[x.doc_id]
         if row is not None and row.entity_type == "doc" and (row.state or {}).get("doc_type") != want:
-            raise _refused(422, "acct.err_recon_doc_direction")
+            raise refused(422, "acct.err_recon_doc_direction")
         event, _applied = await apply_doc_payment(
             db, str(company_id), x.doc_id,
             {"amount": x.amount, "payment_date": line.line_date, "bank_account": bank.chart_account_code,
@@ -1114,7 +1110,7 @@ def _offsets(d: Decision, lines: list[BankStatementLine]) -> list[tuple[dict, De
         _one(lines)
         return [[(fields(s.account_code, s.contact, s.fund_id), Decimal(str(s.amount))) for s in d.splits]]
     if not d.account_code:
-        raise _refused(422, "acct.err_recon_needs_account")
+        raise refused(422, "acct.err_recon_needs_account")
     return [[(fields(d.account_code, d.contact, d.fund_id), abs(Decimal(str(l.amount))))] for l in lines]
 
 
@@ -1125,7 +1121,7 @@ async def _decide(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, 
     to that entry instead, noted in ``instead`` (see _keyed_instead). Only a post to one
     account can be remembered: any other answer asked to be remembered is refused whole."""
     if d.remember and (d.kind != "post" or not d.account_code):
-        raise _refused(422, "acct.err_recon_remember_kind")
+        raise refused(422, "acct.err_recon_remember_kind")
     if d.kind in ("transfer", "cash"):
         return await _transfer(db, company_id, actor_id, bank, d, key, instead, book)
     if d.kind == "pay_doc":
@@ -1188,7 +1184,7 @@ async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, 
                 and suggestion_version(line.suggestion) == accept.versions[line.id]:
             chosen.append(line)
         else:
-            raise _refused(409, "reconciliation.line_not_open")
+            raise refused(409, "reconciliation.line_not_open")
     tax_account = None
     out = []
     for line in sorted(chosen, key=lambda l: (l.line_date, str(l.id))):
@@ -1208,7 +1204,7 @@ async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, 
         elif s.get("kind") == "pay_doc":
             base["docs"] = s.get("docs")
         if s.get("kind") not in _KINDS.__args__:
-            raise _refused(409, "reconciliation.line_not_open")
+            raise refused(409, "reconciliation.line_not_open")
         out.append(Decision(**base))
     return out, earlier
 

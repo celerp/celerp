@@ -514,7 +514,7 @@ def _enrich_doc_files(doc: dict) -> list[dict]:
 
 def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kwargs):
     return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
-from ui.components.notes import _safe_id
+from ui.components.files import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import category_label, doc_type_label, get_lang, refusal_text, sentence, t
 from ui.routes.reports import _company_today, _date_presets, _get_company, _parse_dates, _resolve_preset

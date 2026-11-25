@@ -13,7 +13,7 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from celerp.help.bundle import MAX_IMAGE_BYTES, MAX_STEPS, TOPIC_ID, entry_problems, is_webp
+from celerp.help.bundle import MAX_IMAGE_BYTES, MAX_STEPS, TOPIC_ID, entry_problems, is_str_list, is_webp
 
 PAGE_KEYS = frozenset({"id", "title", "summary", "keywords", "routes", "permission",
                        "order", "steps", "related"})
@@ -58,10 +58,6 @@ def module_prefix(module: str) -> str:
     return module.removeprefix("celerp-")
 
 
-def _str_list(value) -> bool:
-    return isinstance(value, list) and all(isinstance(v, str) for v in value)
-
-
 def _keys(where: str, data: dict, allowed: frozenset[str], optional: frozenset[str] = frozenset()) -> list[str]:
     errors = [f"{where}unknown key {k!r}" for k in sorted(set(data) - allowed - optional)]
     errors += [f"{where}missing key {k!r}" for k in sorted(allowed - set(data))]
@@ -92,7 +88,7 @@ def _capture_errors(where: str, capture, labels) -> list[str]:
                           '{"upload": file input selector, "value": file text}, '
                           '{"press": key} or {"wait": selector}')
     evidence = capture["evidence"]
-    if not (_str_list(evidence) and evidence and all(e.strip() for e in evidence)):
+    if not (is_str_list(evidence) and evidence and all(e.strip() for e in evidence)):
         return [*errors, f"{where}capture evidence must be a non-empty list of selectors or {{label}} names"]
     names = {m.group(1) for e in evidence for m in PLACEHOLDER.finditer(e)}
     if isinstance(labels, dict):
@@ -140,9 +136,9 @@ def validate(data, help_dir: Path, prefix: str) -> tuple[HelpPage | None, list[s
         if isinstance(steps, list) else steps
     errors += entry_problems(title, data["summary"], texts, None)
     for key in ("keywords", "related"):
-        if not _str_list(data[key]):
+        if not is_str_list(data[key]):
             errors.append(f"{key} must be a list of strings")
-    if not _str_list(data["routes"]) or not all(r.startswith("/") for r in data["routes"]):
+    if not is_str_list(data["routes"]) or not all(r.startswith("/") for r in data["routes"]):
         errors.append("routes must be a list of paths starting with /")
     if data["permission"] is not None and not isinstance(data["permission"], str):
         errors.append("permission must be a permission key or null")
