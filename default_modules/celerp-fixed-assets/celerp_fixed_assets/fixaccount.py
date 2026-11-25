@@ -24,9 +24,10 @@ from decimal import Decimal
 from fastapi import HTTPException
 
 from celerp.accounting_roles import refused
+from celerp.services.money import to_decimal
 from celerp_fixed_assets import runs, setup
 from celerp_fixed_assets.projections import said
-from celerp_fixed_assets.operations import MODULE, _dec, _effects, _journal_view, _post, _run, _undo
+from celerp_fixed_assets.operations import MODULE, _effects, _journal_view, _post, _run, _undo
 from celerp_fixed_assets.store import _emit, _entities, _state
 from ui.i18n import t
 
@@ -100,8 +101,8 @@ async def _class_assets(session, company_id, class_id: str) -> list[tuple[str, d
 def _held(assets: list[tuple[str, dict]], field: str) -> Decimal:
     """What the class's assets hold on the account in ``field``, signed as the ledger holds it."""
     if field == "asset_account":
-        return sum((_dec(s.get("cost")) for _, s in assets), Decimal(0))
-    return -sum((_dec(s.get("accumulated_depreciation")) + _dec(s.get("accumulated_impairment"))
+        return sum((to_decimal(s.get("cost")) for _, s in assets), Decimal(0))
+    return -sum((to_decimal(s.get("accumulated_depreciation")) + to_decimal(s.get("accumulated_impairment"))
                  for _, s in assets), Decimal(0))
 
 

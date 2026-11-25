@@ -30,7 +30,7 @@ from decimal import Decimal
 from celerp.accounting_roles import catalog_refusal, refused
 from celerp.models.projections import Projection
 from celerp.services.business_time import business_today, company_today
-from celerp.services.money import books_currency, round_money
+from celerp.services.money import books_currency, round_money, to_decimal
 from celerp_fixed_assets import notices, operations, setup, sources
 from celerp_fixed_assets.calc import rules
 from celerp_fixed_assets.calc.engine import (
@@ -45,7 +45,7 @@ from celerp_fixed_assets.calc.engine import (
     schedule,
 )
 from celerp.services.periods import month_index, parse_period, period_label
-from celerp_fixed_assets.operations import MODULE, _dec, _move
+from celerp_fixed_assets.operations import MODULE, _move
 from celerp_fixed_assets.projections import REMEASUREMENTS, live, money
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state, movements_by_asset
 from fastapi import HTTPException
@@ -162,7 +162,7 @@ def _first(movements: list[dict]) -> int | None:
     for m in movements:
         if m.get("operation") not in _NOT_ACQUIRED:
             day = m["effective_date"]
-            by_day[day] = by_day.get(day, Decimal(0)) + _dec((m.get("amounts") or {}).get("cost"))
+            by_day[day] = by_day.get(day, Decimal(0)) + to_decimal((m.get("amounts") or {}).get("cost"))
     starts += [month_index(date.fromisoformat(day)) for day, cost in by_day.items() if cost]
     return min(starts, default=None)
 
@@ -190,7 +190,7 @@ def engine_movements(asset: dict, movements: list[dict], currency: str) -> list:
     opening = [m for m in movements if m.get("operation") in OPENING_OPERATIONS]
     first = next((m for m in opening if m.get("operation") == "opening"), None)
     if first is not None:
-        totals = {k: sum((_dec((m.get("amounts") or {}).get(k)) for m in opening), Decimal(0))
+        totals = {k: sum((to_decimal((m.get("amounts") or {}).get(k)) for m in opening), Decimal(0))
                   for k in ("cost", "accumulated_depreciation", "accumulated_impairment")}
         # The life left at the cutover: the life less the months used through it.
         cutover = date.fromisoformat(first["posting_date"])
@@ -199,35 +199,35 @@ def engine_movements(asset: dict, movements: list[dict], currency: str) -> list:
                            + totals["accumulated_impairment"], max(int(policy.get("life_months") or 0) - used, 0)))
     by_day: dict[str, Decimal] = {}
     for m in movements:
-        cost = _dec((m.get("amounts") or {}).get("cost"))
+        cost = to_decimal((m.get("amounts") or {}).get("cost"))
         if m.get("operation") not in _NOT_ACQUIRED and cost:
             by_day[m["effective_date"]] = by_day.get(m["effective_date"], Decimal(0)) + cost
     out += [Acquire(date.fromisoformat(day), cost) for day, cost in sorted(by_day.items()) if cost]
     for m in movements:
         on = date.fromisoformat(m["effective_date"])
         if m.get("operation") == "improvement":
-            out.append(Improve(on, _dec(m["amounts"].get("cost")), m.get("life_months")))
+            out.append(Improve(on, to_decimal(m["amounts"].get("cost")), m.get("life_months")))
         elif m.get("operation") == "revaluation":
-            out.append(Revalue(on, _dec(m["carrying_amount"])))
+            out.append(Revalue(on, to_decimal(m["carrying_amount"])))
         elif m.get("operation") in REMEASUREMENTS:
-            out.append(Impair(on, _dec(m["carrying_amount"])))
+            out.append(Impair(on, to_decimal(m["carrying_amount"])))
     disposals = sorted((m for m in movements if m.get("operation") == "disposal"), key=lambda m: m["effective_date"])
-    out += [Dispose(date.fromisoformat(m["effective_date"]), _dec(m.get("share") or 1)) for m in disposals]
+    out += [Dispose(date.fromisoformat(m["effective_date"]), to_decimal(m.get("share") or 1)) for m in disposals]
     start = _first(movements)
     readings = asset.get("readings") or {}
     for m in estimates(movements):
         on, new = date.fromisoformat(m["effective_date"]), m["policy"]
         method = rules.method(new["method"])
         if method.uses_readings:
-            used = sum((_dec(u) for p, u in readings.items() if parse_period(p) < month_index(on)), Decimal(0))
-            left = _dec(new["params"].get("total_units")) - used
+            used = sum((to_decimal(u) for p, u in readings.items() if parse_period(p) < month_index(on)), Decimal(0))
+            left = to_decimal(new["params"].get("total_units")) - used
         else:
             left = Decimal(int(new.get("life_months") or 0) - max(month_index(on) - (start or month_index(on)), 0))
         cost = sum(by_day.get(d, Decimal(0)) for d in by_day if d <= m["effective_date"])
-        cost += sum(_dec(d["amounts"].get("cost")) for d in disposals if d["effective_date"] <= m["effective_date"])
+        cost += sum(to_decimal(d["amounts"].get("cost")) for d in disposals if d["effective_date"] <= m["effective_date"])
         if first is not None:
             cost += totals["cost"]
-        out.append(EstimateChange(on, max(left, Decimal(0)), round_money(cost * _dec(new["residual_percent"]) / 100,
+        out.append(EstimateChange(on, max(left, Decimal(0)), round_money(cost * to_decimal(new["residual_percent"]) / 100,
                                                                           currency),
                                   method=new["method"], params=new.get("params") or {},
                                   convention=new.get("convention")))
@@ -255,14 +255,14 @@ def full_schedule(asset: dict, movements: list[dict], settings: dict, through: i
     currency = books_currency(settings)
     policy = base_policy(asset, movements)
     # The residual is a share of what the asset was acquired or brought in at.
-    cost = sum((_dec((m.get("amounts") or {}).get("cost")) for m in live(movements)
+    cost = sum((to_decimal((m.get("amounts") or {}).get("cost")) for m in live(movements)
                 if m.get("operation") not in (*REMEASUREMENTS, "disposal", "improvement", "construction_out")),
                Decimal(0))
     engine_policy = Policy(policy["method"], int(policy.get("life_months") or 0),
-                           round_money(cost * _dec(policy.get("residual_percent")) / 100, currency),
+                           round_money(cost * to_decimal(policy.get("residual_percent")) / 100, currency),
                            policy.get("convention") or "full_month",
                            int(str(settings.get("fiscal_year_start") or "01-01")[:2]), policy.get("params") or {})
-    readings = {p: _dec(u) for p, u in (asset.get("readings") or {}).items()}
+    readings = {p: to_decimal(u) for p, u in (asset.get("readings") or {}).items()}
     return schedule(engine_movements(asset, movements, currency), engine_policy, through=period_label(through),
                     currency=currency, readings=readings)
 
@@ -276,9 +276,9 @@ def charged_by_month(movements: list[dict]) -> dict[int, Decimal]:
             continue
         if m.get("periods") is not None:
             for p, amount in m["periods"].items():
-                out[parse_period(p)] = out.get(parse_period(p), Decimal(0)) + _dec(amount)
+                out[parse_period(p)] = out.get(parse_period(p), Decimal(0)) + to_decimal(amount)
             continue
-        amount = _dec((m.get("amounts") or {}).get("accumulated_depreciation"))
+        amount = to_decimal((m.get("amounts") or {}).get("accumulated_depreciation"))
         if amount:
             k = month_index(date.fromisoformat(m["effective_date"]))
             out[k] = out.get(k, Decimal(0)) + amount
@@ -347,7 +347,7 @@ class Charge:
             for c in m.get("contributions") or []:
                 if not str(c.get("journal_id")).startswith(_JOURNAL):
                     key = (c["journal_id"], c.get("line_index"))
-                    net[key] = net.get(key, Decimal(0)) + _dec(c.get("amount"))
+                    net[key] = net.get(key, Decimal(0)) + to_decimal(c.get("amount"))
         for je in dict.fromkeys(je for (je, _), amount in net.items() if amount):
             state = await _journal(session, company_id, je)
             if state is not None and state.get("status") == "void":
@@ -643,8 +643,8 @@ async def reverse(session, company_id, user_id, label: str, body: dict) -> dict:
             mv = await _state(session, company_id, movement_id)
             await _move(session, company_id, user_id, mv["asset_id"], kind="reversal", operation="reverse_run",
                         effective=mv["effective_date"], posting=mv["posting_date"],
-                        amounts={k: -_dec(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
-                        contributions=[{**c, "amount": str(-_dec(c.get("amount")))}
+                        amounts={k: -to_decimal(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
+                        contributions=[{**c, "amount": str(-to_decimal(c.get("amount")))}
                                        for c in mv.get("contributions") or []], reverses=movement_id)
         await _emit(session, company_id, user_id, f"fa:run:{label}", "fa_run", "fa.run.reversed", {"op_key": op_key})
         return {"month": label, "status": "reversed"}, operations._effects()
@@ -745,7 +745,7 @@ async def _restore(session, company_id, books: Books) -> bool:
         assets = dict(await _entities(session, company_id, "fa_asset"))
         items = [{"asset_id": s["asset_id"], "number": assets[s["asset_id"]]["number"],
                   "name": assets[s["asset_id"]].get("name"), "month": month_index(date.fromisoformat(s["effective_date"])),
-                  "amount": _dec(s["amounts"]["accumulated_depreciation"])} for _, s in moves]
+                  "amount": to_decimal(s["amounts"]["accumulated_depreciation"])} for _, s in moves]
         await _emit(session, company_id, None, f"fa:run:{period_label(k)}", "fa_run", "fa.run.posted", _record(
             k, "posted", items, {}, books.currency, cycle=cycle, journal_ids=[je["id"]],
             movements=[eid for eid, _ in moves]))

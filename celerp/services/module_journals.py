@@ -38,6 +38,7 @@ from celerp.models.projections import Projection
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.company_lock import lock_projections
 from celerp.services.je_keys import je_void_data
+from celerp.services.money import to_decimal
 from celerp.services.journal_accounts import UnbalancedJournalEntry, lock_accounts, require_destinations
 from celerp.services.permissions import is_permission_key, locked_authority
 
@@ -195,9 +196,6 @@ async def _check_source(session, company_id, op: OperationType, source: JournalS
                       "A module journal points at one of the module's own records in this company.")
 
 
-def _amount(value) -> Decimal:
-    return Decimal(str(value or 0))
-
 
 LEDGER_PREFIX = "ledger:"
 
@@ -237,7 +235,7 @@ async def recognized_balances(session, company_id, module: str,
 
     def add(key, entry):
         if key in balances:
-            balances[key] += _amount(entry.get("debit")) - _amount(entry.get("credit"))
+            balances[key] += to_decimal(entry.get("debit")) - to_decimal(entry.get("credit"))
 
     def ledger_day(own: bool, entity_id: str, source: str | None) -> str:
         """The date an entry stands in the ledger from, for the ledger keys ("" for none)."""
@@ -280,7 +278,7 @@ async def _check_accounts(session, company_id, module: str, lines: list[JournalL
         if code not in accounts:
             raise _refuse(422, "posting.destination.not_in_chart",
                           f"Account {code} is not in the chart of accounts.", code=code)
-        net = sum((_amount(ln.debit) - _amount(ln.credit) for ln in moving
+        net = sum((to_decimal(ln.debit) - to_decimal(ln.credit) for ln in moving
                    if (ln.account, ln.recognized_in) == (code, je)), Decimal(0))
         held = balances[(code, je)]
         if (net < 0 and held + net < 0) or (net > 0 and held + net > 0):
@@ -293,7 +291,7 @@ def _intent_hash(operation: str, date: str, lines: list[JournalLine], source: Jo
             # A line with no fund hashes without the field, so a journal stored before lines
             # carried funds still matches its own retry.
             "lines": [{**{k: v for k, v in asdict(ln).items() if k != "fund_id" or v},
-                       "debit": str(_amount(ln.debit)), "credit": str(_amount(ln.credit))}
+                       "debit": str(to_decimal(ln.debit)), "credit": str(to_decimal(ln.credit))}
                       for ln in lines]}
     return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -322,7 +320,7 @@ async def post_journal(session, *, company_id, user_id, module: str, key: str, o
     await _check_accounts(session, company_id, module, lines)
     entries = []
     for ln in lines:
-        entry = {"account": ln.account, "debit": _amount(ln.debit), "credit": _amount(ln.credit)}
+        entry = {"account": ln.account, "debit": to_decimal(ln.debit), "credit": to_decimal(ln.credit)}
         if ln.role:
             entry["account_roles"] = [ln.role]
         if ln.recognized_in:

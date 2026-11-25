@@ -28,14 +28,13 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
-from celerp.services.money import books_currency
+from celerp.services.money import books_currency, to_decimal
 from celerp_fixed_assets import disposal, notices, projections, runs, setup
 from celerp.services.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.projections import money, said
 from celerp_fixed_assets.operations import (
     _continued,
     _date,
-    _dec,
     _effects,
     _journal_view,
     _lines,
@@ -81,8 +80,8 @@ def _position(books: runs.Books, asset: dict, movements: list[dict], day: str) -
     depreciates = asset["policy"]["method"] != "none"
     restated: dict[int, Decimal] = {}
     base = [m for m in live if m.get("operation") not in projections.REMEASUREMENTS]
-    cost_base = sum((_dec((m.get("amounts") or {}).get("cost")) for m in base), _ZERO)
-    opening = sum((_dec((m.get("amounts") or {}).get(k)) for m in base if m.get("operation") in runs.OPENING_OPERATIONS
+    cost_base = sum((to_decimal((m.get("amounts") or {}).get("cost")) for m in base), _ZERO)
+    opening = sum((to_decimal((m.get("amounts") or {}).get(k)) for m in base if m.get("operation") in runs.OPENING_OPERATIONS
                    for k in (_AD, _IMP)), _ZERO)
     shadow = cost_base - opening
     if depreciates:
@@ -96,9 +95,9 @@ def _position(books: runs.Books, asset: dict, movements: list[dict], day: str) -
     caught_up = sum((restated.get(k, _ZERO) - charged.get(k, _ZERO) for k in {*restated, *charged} if k <= month),
                     _ZERO)
     later = sum((v for k, v in charged.items() if k > month), _ZERO)
-    accumulated = _dec(asset.get(_AD)) + caught_up - later
-    carrying = _dec(asset.get("cost")) - accumulated - _dec(asset.get(_IMP))
-    losses = sum((_dec(m.get("pnl")) for m in live if m.get("operation") in projections.REMEASUREMENTS), _ZERO)
+    accumulated = to_decimal(asset.get(_AD)) + caught_up - later
+    carrying = to_decimal(asset.get("cost")) - accumulated - to_decimal(asset.get(_IMP))
+    losses = sum((to_decimal(m.get("pnl")) for m in live if m.get("operation") in projections.REMEASUREMENTS), _ZERO)
     return {"month": month, "accumulated": accumulated, "carrying": carrying, "shadow": max(shadow, _ZERO),
             "losses": max(losses, _ZERO), "charged": charged}
 
@@ -128,7 +127,7 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
     disposal.check_date(books, asset, projections.live(movements), day, what="measurement")
     currency = books.currency
     at = _position(books, asset, movements, day)
-    carrying, impairment, surplus = at["carrying"], _dec(asset.get(_IMP)), _dec(asset.get(_SURPLUS))
+    carrying, impairment, surplus = at["carrying"], to_decimal(asset.get(_IMP)), to_decimal(asset.get(_SURPLUS))
     roles = disposal.accounts(books)
     revalues = setup.measurement(cls) == "revaluation"
     accumulated_account = cls["accumulated_depreciation_account"]
@@ -323,7 +322,7 @@ async def revalue_class(session, company_id, user_id, class_id: str, body: dict)
             items.append(_plan(books, asset_id, locked[asset_id].state, cls,
                                await asset_movements(session, company_id, asset_id), day, "revaluation", value,
                                _basis(row)))
-        totals = {k: money(sum((_dec(i["shown"][field]) for i in items), _ZERO), currency)
+        totals = {k: money(sum((to_decimal(i["shown"][field]) for i in items), _ZERO), currency)
                   for k, field in (("carrying_amount", "carrying_amount"), ("fair_value", "measured"),
                                    ("surplus", "surplus"), ("profit_or_loss", "profit_or_loss"))}
         shown = {"date": day, "class": cls["name"], "missing": missing, "totals": totals,
@@ -462,7 +461,7 @@ async def record_review(session, company_id, user_id, asset_id: str, body: dict)
             "recoverable_amount": None if recoverable is None else str(recoverable), "status": "active"}
     await _emit(session, company_id, user_id, review_id, "fa_review", "fa.review.recorded", data)
     await session.flush()
-    carrying = _dec(asset.get("cost")) - _dec(asset.get(_AD)) - _dec(asset.get(_IMP))
+    carrying = to_decimal(asset.get("cost")) - to_decimal(asset.get(_AD)) - to_decimal(asset.get(_IMP))
     impairment = ({"date": day, "recoverable_amount": money(recoverable, currency), "basis": basis}
                   if recoverable is not None and recoverable < carrying else None)
     found = await reviews(session, company_id, asset_id)

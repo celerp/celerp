@@ -21,11 +21,11 @@ from celerp_fixed_assets import projections, runs, setup
 from celerp.accounting_roles import refused
 from celerp.services.units import plain_number
 from celerp.services.periods import month_index, parse_period, period_label
+from celerp.services.money import to_decimal
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
     MODULE,
     _date,
-    _dec,
     _effects,
     _journal_view,
     _lines,
@@ -51,7 +51,7 @@ _CHARGES = ("run", "depreciation", "link_depreciation")
 
 def _share(asset: dict, body: dict) -> tuple[Decimal, Decimal]:
     """The share of the asset disposed of, and the quantity that leaves with it."""
-    quantity = _dec(asset.get("quantity"))
+    quantity = to_decimal(asset.get("quantity"))
     if quantity > 1:
         if body.get("percent") not in (None, ""):
             raise setup.refuse("fixed_assets.err_record_holds_quantity_so_disposed_by")
@@ -95,7 +95,7 @@ def accounts(books: runs.Books) -> dict:
 def surplus_account(accounts: dict, asset: dict) -> str:
     """The account an asset's revaluation surplus is kept on: the one it was recognized
     on while the asset holds any, else today's (``accounts``)."""
-    if _dec(asset.get("revaluation_surplus")) and asset.get("surplus_account"):
+    if to_decimal(asset.get("revaluation_surplus")) and asset.get("surplus_account"):
         return asset["surplus_account"]
     return accounts["surplus"]()
 
@@ -161,7 +161,7 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     in_use(asset_id, asset, "dispose")
     live = projections.live(movements)
     check_date(books, asset, live, day, what="sale" if clearing_role else "disposal")
-    cost = _dec(asset.get("cost"))
+    cost = to_decimal(asset.get("cost"))
     gone_cost = _split(cost, share, currency)
     month = month_index(date.fromisoformat(day))
     through = max(month, books.last if books.last is not None else month)
@@ -171,19 +171,19 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     parted = planned.parted[-1] if planned is not None and share < 1 else Decimal(0)
     depreciation = sum(diff.values(), Decimal(0))
     if share == 1:
-        gone_ad = _dec(asset.get(_AD)) + depreciation
+        gone_ad = to_decimal(asset.get(_AD)) + depreciation
     else:
         from celerp.services.money import round_money
 
         # The share of everything charged before the disposal month (opening values, runs,
         # catch-up, and layers an impairment or revaluation replaced), and what the share
         # itself was charged in the month it left.
-        before = _dec(asset.get(_AD)) + depreciation - sum(
+        before = to_decimal(asset.get(_AD)) + depreciation - sum(
             (p.amount for p in planned.periods if parse_period(p.period) >= month), Decimal(0)) \
-            if planned is not None else _dec(asset.get(_AD))
+            if planned is not None else to_decimal(asset.get(_AD))
         gone_ad = _split(before, share, currency) + round_money(parted, currency)
-    gone_imp = _split(_dec(asset.get(_IMP)), share, currency)
-    gone_surplus = _split(_dec(asset.get(_SURPLUS)), share, currency)
+    gone_imp = _split(to_decimal(asset.get(_IMP)), share, currency)
+    gone_surplus = _split(to_decimal(asset.get(_SURPLUS)), share, currency)
     carrying = gone_cost - gone_ad - gone_imp
     gain = proceeds - carrying
     expense = asset.get("depreciation_account") or cls["depreciation_account"]
@@ -293,12 +293,12 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
             row = rows[asset_id]
             await sales.refuse_waiting(session, company_id, asset_id, row.state)
             cls = await setup.get_class(session, company_id, row.state.get("class_id"))
-            share, quantity = (Decimal(1), _dec(row.state.get("quantity"))) if bulk else _share(row.state, body)
+            share, quantity = (Decimal(1), to_decimal(row.state.get("quantity"))) if bulk else _share(row.state, body)
             items.append(_plan_asset(books, asset_id, row.state, cls,
                                      await asset_movements(session, company_id, asset_id), day, share, quantity,
                                      accounts(books)))
         currency = books.currency
-        totals = {k: money(sum((_dec(i["shown"][k]) for i in items), Decimal(0)), currency) for k in LEAVING}
+        totals = {k: money(sum((to_decimal(i["shown"][k]) for i in items), Decimal(0)), currency) for k in LEAVING}
         shown = {"date": day, "reason": reason, "note": note, **totals, "assets": [i["shown"] for i in items],
                  "journals": [_journal_view(i["lines"], currency) for i in items]}
         basis = [[(i["asset"].get("version"), i["asset"].get("movement_count")) for i in items],

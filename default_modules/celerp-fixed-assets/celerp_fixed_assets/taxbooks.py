@@ -24,11 +24,11 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
 
-from celerp.services.money import books_currency
+from celerp.services.money import books_currency, to_decimal
 from celerp_fixed_assets import projections, setup
 from celerp_fixed_assets.calc import rules
 from celerp_fixed_assets.calc.tax import PoolInputs, TaxAssetInputs, TaxTransferResult, TaxYearResult
-from celerp_fixed_assets.projections import REMEASUREMENTS, _dec, live
+from celerp_fixed_assets.projections import REMEASUREMENTS, live
 from celerp_fixed_assets.store import _emit, _entities, _state, movements_by_asset
 from ui.i18n import t
 
@@ -118,10 +118,10 @@ async def _assets(session, company_id, regime) -> list[_Asset]:
         gone = left.get("date") if asset.get("status") in ("sold", "disposed") else None
         sold, proceeds = None, _ZERO
         if asset.get("status") == "sold":
-            sold, proceeds = (asset.get("sale") or {}).get("date"), _dec((asset.get("sale") or {}).get("proceeds"))
+            sold, proceeds = (asset.get("sale") or {}).get("date"), to_decimal((asset.get("sale") or {}).get("proceeds"))
         elif gone and left.get("reason") == "transferred":
             # Transferred to a related company: it leaves at the value the regime carries across.
-            sold, proceeds = gone, _dec((left.get("tax_values") or {}).get(regime.key, left.get("price")))
+            sold, proceeds = gone, to_decimal((left.get("tax_values") or {}).get(regime.key, left.get("price")))
         # Transferred in from a related company: it comes in at the value carried across.
         carried_in = asset.get("tax_values") or {}
         out.append(_Asset(
@@ -129,8 +129,8 @@ async def _assets(session, company_id, regime) -> list[_Asset]:
             available=date.fromisoformat(asset["available_date"]),
             category=category if category in categories else None, elections=dict(book.get("elections") or {}),
             movements=tuple((date.fromisoformat(m["effective_date"]),
-                             _dec(carried_in[regime.key]) if m.get("operation") == "transfer_in" and regime.key
-                             in carried_in else _dec((m.get("amounts") or {}).get("cost")))
+                             to_decimal(carried_in[regime.key]) if m.get("operation") == "transfer_in" and regime.key
+                             in carried_in else to_decimal((m.get("amounts") or {}).get("cost")))
                             for m in live(movements.get(asset_id, [])) if m.get("operation") not in _NOT_ADDED),
             gone=date.fromisoformat(gone) if gone else None, sold=date.fromisoformat(sold) if sold else None,
             proceeds=proceeds))
@@ -197,10 +197,10 @@ def _years(regime, end_setting: str, currency: str, assets: list[_Asset], frozen
                     continue
                 counted[row["asset_id"]] = end
                 if row.get("closing") is not None:
-                    carried[row["asset_id"]] = _dec(row["closing"])
+                    carried[row["asset_id"]] = to_decimal(row["closing"])
             for pool in closed.get("pools") or []:
                 if pool.get("status") == "ok" and pool.get("closing") is not None:
-                    carried[f"pool:{pool['key']}"] = _dec(pool["closing"])
+                    carried[f"pool:{pool['key']}"] = to_decimal(pool["closing"])
                 else:
                     missing.setdefault(f"pool:{pool['key']}", year)
             out[year] = closed

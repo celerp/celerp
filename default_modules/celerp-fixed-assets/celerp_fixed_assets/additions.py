@@ -23,13 +23,13 @@ from __future__ import annotations
 from decimal import Decimal
 
 from celerp.accounting_roles import refused
+from celerp.services.money import to_decimal
 from celerp_fixed_assets import disposal, operations, projections, runs, setup, transfer
 from celerp_fixed_assets.projections import money, said
 from celerp_fixed_assets.operations import (
     _claim,
     _create_asset,
     _date,
-    _dec,
     _effects,
     _journal_view,
     _move,
@@ -81,7 +81,7 @@ async def _funding(session, company_id, body: dict, asset_account: str, currency
         line = await _open_line(session, company_id, body["source"])
         if line["kind"] != "acquisition":
             raise setup.refuse("fixed_assets.err_only_line_adds_asset_account_pays")
-        amount = _dec(line["amount"])
+        amount = to_decimal(line["amount"])
         lines = _reclass(line, asset_account, amount) if line["account"] != asset_account else []
         contributions = [{"journal_id": line["journal_id"], "line_index": line["line_index"], "amount": str(amount)}]
         return {"line": line, "amount": amount, "lines": lines, "contributions": contributions,
@@ -202,11 +202,11 @@ async def _replaced(session, company_id, books, asset_id: str, asset: dict, cls:
         part_cls = await setup.get_class(session, company_id, part.get("class_id"))
         return disposal._plan_asset(books, part_id, part, part_cls,
                                     await asset_movements(session, company_id, part_id), day, Decimal(1),
-                                    _dec(part.get("quantity")), roles)
+                                    to_decimal(part.get("quantity")), roles)
     from celerp.services.money import round_money
 
     estimate = round_money(setup.number(replaced["estimate"], "The estimated cost of the old part"), books.currency)
-    cost = _dec(asset.get("cost"))
+    cost = to_decimal(asset.get("cost"))
     if estimate <= 0 or estimate >= cost:
         raise setup.refuse("fixed_assets.err_estimated_cost_old_part_more_than", number=asset['number'], said=said(cost, books.currency))
     return disposal._plan_asset(books, asset_id, asset, cls, movements, day, estimate / cost, _ZERO, roles)
@@ -244,7 +244,7 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
         rows = body.get("allocations")
         if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
             raise setup.refuse("fixed_assets.err_allocate_cost_at_least_one_asset")
-        balance = _dec(site.get("cost"))
+        balance = to_decimal(site.get("cost"))
         allocations = []
         for row in rows:
             target = await setup.get_class(session, company_id, row.get("class_id"))

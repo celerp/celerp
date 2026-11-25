@@ -19,9 +19,10 @@ from fastapi import HTTPException
 
 from celerp.accounting_roles import refused
 from celerp.services.business_time import business_today
+from celerp.services.money import to_decimal
 
 from celerp_fixed_assets import projections, runs, setup, sources
-from celerp_fixed_assets.operations import _dec, _move
+from celerp_fixed_assets.operations import _move
 from celerp_fixed_assets.store import _entities, movements_by_asset
 
 OPENING_STATES = ("finished", "kept_open")
@@ -54,7 +55,7 @@ async def move_cutover(session, company_id, user_id, fa: dict, new_cut: str) -> 
         amounts = mv.get("amounts") or {}
         await _move(session, company_id, user_id, mv["asset_id"], kind="reversal", operation="cutover_moved",
                     effective=mv["effective_date"], posting=old_cut, op_key=op_key,
-                    amounts={k: -_dec(v) for k, v in amounts.items()}, quantity=str(-_dec(mv.get("quantity"))),
+                    amounts={k: -to_decimal(v) for k, v in amounts.items()}, quantity=str(-to_decimal(mv.get("quantity"))),
                     reverses=mv["id"])
         await _move(session, company_id, user_id, mv["asset_id"], kind="opening", operation="opening",
                     effective=mv["effective_date"], posting=new_cut, op_key=op_key, amounts=amounts,
@@ -70,7 +71,7 @@ async def view(session, company_id) -> dict:
     return {"cutover": at_cut["cutover"], "state": at_cut["opening"],
             "accounts": [{"account": a["account"], "name": a["name"], "label": a["label"], "ledger": a["ledger"],
                           "registered": a["registered"],
-                          "difference": str(_dec(a["ledger"]) - _dec(a["registered"]))}
+                          "difference": str(to_decimal(a["ledger"]) - to_decimal(a["registered"]))}
                          for a in at_cut["accounts"]]}
 
 
@@ -85,7 +86,7 @@ async def finish(session, company_id, user_id, body: dict) -> dict:
     reopen, keep_open = bool(body.get("reopen")), bool(body.get("keep_open"))
     shown = await view(session, company_id)
     if not reopen and not keep_open:
-        apart = [f"{a['label']} ({a['difference']})" for a in shown["accounts"] if _dec(a["difference"])]
+        apart = [f"{a['label']} ({a['difference']})" for a in shown["accounts"] if to_decimal(a["difference"])]
         if apart:
             from celerp.accounting_roles import refusal
 

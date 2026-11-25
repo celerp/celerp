@@ -26,14 +26,13 @@ from decimal import Decimal
 from celerp.accounting_roles import catalog_refusal, refused
 from celerp.models.projections import Projection
 from celerp.services.account_roles import line_has_role, line_roles
-from celerp.services.money import currency_dp, round_money
+from celerp.services.money import currency_dp, round_money, to_decimal
 from celerp_fixed_assets import disposal, runs, setup
 from celerp_fixed_assets.projections import money, said
 from celerp_fixed_assets.operations import (
     MODULE,
     _continued,
     _date,
-    _dec,
     _effects,
     _journal_view,
     _money_in,
@@ -82,7 +81,7 @@ def _carries(doc: dict | None, asset_id: str) -> dict | None:
 
 def _credited(sale: dict) -> Decimal:
     """What the live credit notes crediting part of the price took off the proceeds."""
-    return sum((_dec(c["amount"]) for c in (sale.get("credits") or {}).values()
+    return sum((to_decimal(c["amount"]) for c in (sale.get("credits") or {}).values()
                 if c.get("live") and c.get("kind") == "adjust"), Decimal(0))
 
 
@@ -108,7 +107,7 @@ async def _cleared(session, company_id, settings: dict, doc_id: str, asset_id: s
         for e in state.get("entries") or []:
             if e.get("asset_id") == asset_id and line_has_role(settings, e, _CLEARING):
                 await same_fund(session, company_id, e, asset)
-                net[e["account"]] = net.get(e["account"], Decimal(0)) + _dec(e.get("debit")) - _dec(e.get("credit"))
+                net[e["account"]] = net.get(e["account"], Decimal(0)) + to_decimal(e.get("debit")) - to_decimal(e.get("credit"))
     used = [(a, v) for a, v in net.items() if v]
     if len(used) > 1:
         raise refuse("fixed_assets.err_sale_many_clearing", number=number, accounts=", ".join(a for a, _ in used))
@@ -128,7 +127,7 @@ async def _held(session, company_id, settings: dict, sale: dict) -> dict[str, li
             if roles:
                 slot = held.setdefault(e["account"], [set(), Decimal(0)])
                 slot[0] |= roles
-                slot[1] += _dec(e.get("credit")) - _dec(e.get("debit"))
+                slot[1] += to_decimal(e.get("credit")) - to_decimal(e.get("debit"))
     return held
 
 
@@ -220,7 +219,7 @@ async def _plan(session, company_id, books: runs.Books, asset_id: str, asset: di
     cls = await setup.get_class(session, company_id, asset.get("class_id"))
     accounts = _homes(disposal.accounts(books), held or {})
     return disposal._plan_asset(books, asset_id, asset, cls, await asset_movements(session, company_id, asset_id),
-                                day, Decimal(1), _dec(asset.get("quantity")), accounts, proceeds=proceeds,
+                                day, Decimal(1), to_decimal(asset.get("quantity")), accounts, proceeds=proceeds,
                                 clearing=(clearing or accounts["clearing"]()) if proceeds else None,
                                 clearing_role=_CLEARING)
 
@@ -343,7 +342,7 @@ async def reissue(session, company_id, user_id, asset_id: str, body: dict) -> di
         asset, sale, invoice = context["asset"], context["sale"], context["invoice"] or {}
         old = _carries(invoice, asset_id)
         line = ({k: v for k, v in old.items() if k not in ("line_id", "line_total", "asset_id")} if old else
-                {"name": f"{asset['number']} {asset['name']}", "unit_price": float(_dec(sale.get("price")))})
+                {"name": f"{asset['number']} {asset['name']}", "unit_price": float(to_decimal(sale.get("price")))})
         header = {k: invoice[k] for k in ("currency", "conversion_rate", "contact_id", "contact_name")
                   if invoice.get(k) not in (None, "")}
         header = {**{k: sale[k] for k in ("contact_id", "contact_name") if sale.get(k)}, **header}
@@ -406,8 +405,8 @@ async def credit(session, company_id, user_id, asset_id: str, body: dict) -> dic
         if drafts:
             return ({"number": asset["number"], "open_draft": drafts[0]["number"]},
                     {"open_draft": drafts[0]["id"], "basis": [asset.get("version"), drafts[0]["id"]]})
-        remaining = _dec(sale["proceeds"]) - _credited(sale)
-        rate = _dec(invoice.get("conversion_rate") or 1)
+        remaining = to_decimal(sale["proceeds"]) - _credited(sale)
+        rate = to_decimal(invoice.get("conversion_rate") or 1)
         base = await setup.currency(session, company_id)
         in_doc = str(invoice.get("currency") or base).upper()
         if kind == "adjust":
@@ -469,7 +468,7 @@ async def view(session, company_id, asset_id: str) -> dict:
     if sale["state"] == "pending":
         books = await runs._books(session, company_id)
         line = _carries(invoice, asset_id)
-        proceeds = _dec(sale.get("price"))
+        proceeds = to_decimal(sale.get("price"))
         if line is not None:
             proceeds = asset_line_proceeds(invoice, books.currency, asset_id)
         out["invoice_void"] = (invoice or {}).get("status") == "void"
@@ -491,15 +490,15 @@ async def view(session, company_id, asset_id: str) -> dict:
     currency = await setup.currency(session, company_id)
     if sale["state"] == "returned":
         # A return credits what was left, and the sale's result went back with the asset.
-        out.update(proceeds=money(_dec(sale["proceeds"]), currency), credited=money(_dec(sale["proceeds"]), currency),
+        out.update(proceeds=money(to_decimal(sale["proceeds"]), currency), credited=money(to_decimal(sale["proceeds"]), currency),
                    remaining=money(0, currency), carrying_amount=None, gain_or_loss=None, actions=[],
                    draft_credit_notes=[])
         return out
     credited = _credited(sale)
     drafts = await _draft_credit_notes(session, company_id, sale["invoice_id"], asset_id)
     je = await _journal(session, company_id, sale["journal_id"]) if sale.get("journal_id") else None
-    out.update(proceeds=money(_dec(sale["proceeds"]), currency), credited=money(credited, currency),
-               remaining=money(_dec(sale["proceeds"]) - credited, currency),
+    out.update(proceeds=money(to_decimal(sale["proceeds"]), currency), credited=money(credited, currency),
+               remaining=money(to_decimal(sale["proceeds"]) - credited, currency),
                carrying_amount=sale.get("carrying_amount"),
                gain_or_loss=(asset.get("disposal") or {}).get("gain_or_loss"),
                draft_credit_notes=drafts, actions=["credit"] if sale["state"] == "sold" and not drafts else [],
@@ -598,7 +597,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     clearing, amount = await _cleared(session, company_id, books.settings, doc_id, asset_id, asset)
     held = await _held(session, company_id, books.settings, sale)
     gain = _total(held)
-    remaining = _dec(sale["proceeds"]) - _credited(sale)
+    remaining = to_decimal(sale["proceeds"]) - _credited(sale)
     day = doc.get("issue_date") or sale["date"]
     short = asset_id.removeprefix("fa:asset:")
     if not line.get("asset_returned"):
@@ -621,7 +620,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
         raise refuse("fixed_assets.err_return_amount", number=number, amount=said(remaining, books.currency))
     mv = await _state(session, company_id, sale["movement_id"])
     cls = await setup.get_class(session, company_id, asset.get("class_id"))
-    moved = {k: _dec((mv.get("amounts") or {}).get(k)) for k in ("cost", _AD, _IMP, _SURPLUS)}
+    moved = {k: to_decimal((mv.get("amounts") or {}).get(k)) for k in ("cost", _AD, _IMP, _SURPLUS)}
     gone_cost, gone_ad, gone_imp = -moved["cost"], -moved[_AD], -moved[_IMP]
     from celerp.services.module_journals import JournalLine
 
@@ -632,7 +631,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     for e in sold.get("entries") or []:
         role = next(iter(set(line_roles(books.settings, e)) & _CARRIED_ROLES), None)
         if role:
-            lines.append(JournalLine(account=e["account"], debit=_dec(e.get("credit")), credit=_dec(e.get("debit")),
+            lines.append(JournalLine(account=e["account"], debit=to_decimal(e.get("credit")), credit=to_decimal(e.get("debit")),
                                      role=role))
     if amount:
         lines.append(JournalLine(account=clearing, credit=amount, role=_CLEARING))
@@ -644,7 +643,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
                         label=number, op_key=op_key)
     await _move(session, company_id, user_id, asset_id, kind="reversal", operation="sale_return",
                 effective=mv["effective_date"], posting=day, amounts={k: -v for k, v in moved.items()},
-                op_key=op_key, quantity=str(-_dec(mv.get("quantity"))), reverses=sale["movement_id"])
+                op_key=op_key, quantity=str(-to_decimal(mv.get("quantity"))), reverses=sale["movement_id"])
     credits = {**(sale.get("credits") or {}), doc_id: {"kind": "returned", "amount": money(amount, books.currency),
                                                        "journal_id": je_id, "live": True, "date": day,
                                                        "clearing": clearing}}
@@ -662,8 +661,8 @@ async def _credit_reversed(session, company_id, user_id, asset_id: str, asset: d
     credits = {**sale["credits"], doc_id: {**entry, "live": False}}
     if entry["kind"] == "returned":
         await _dispose(session, company_id, user_id, asset_id, asset, {**sale, "credits": credits},
-                       day=sale["date"], proceeds=_dec(entry["amount"]), clearing=entry.get("clearing"),
-                       op_key=op_key, sale_proceeds=_dec(sale["proceeds"]))
+                       day=sale["date"], proceeds=to_decimal(entry["amount"]), clearing=entry.get("clearing"),
+                       op_key=op_key, sale_proceeds=to_decimal(sale["proceeds"]))
         return
     if sale.get("state") == "returned":
         returned = next(cn for cn, c in sale["credits"].items() if c.get("live") and c["kind"] == "returned")

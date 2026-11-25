@@ -70,7 +70,7 @@ from celerp.services.lot_origin import (
     refuse_draft,
     value_moved,
 )
-from celerp.services.money import allocate_pro_rata, round_money
+from celerp.services.money import allocate_pro_rata, round_money, to_decimal
 from celerp.services.record_quantities import (EPS, extra_to_receive, main_receipts, outstanding_inputs, outstanding_output,
                                                run_name, run_outputs)
 from celerp.services.units import build_unit_map, get_company_units, require_moving_fits_units, validate_line_quantity
@@ -192,9 +192,6 @@ async def require_unit_precision(session: AsyncSession, company_id, lines: list[
         validate_line_quantity(qty, state.get("sell_by"), unit_map, label=state.get("sku") or state.get("name"),
                                require_positive=False)
 
-
-def _money(value) -> Decimal:
-    return Decimal(str(value or 0))
 
 
 @dataclass
@@ -321,7 +318,7 @@ async def _require_executable_shape(op: _Op, state: dict) -> None:
 
 def _wip(state: dict) -> Decimal:
     """What the run holds: issued value not yet moved to its lots or waste."""
-    return _money(state.get("wip_issued")) - _money(state.get("wip_transferred")) - _money(state.get("wip_wasted"))
+    return to_decimal(state.get("wip_issued")) - to_decimal(state.get("wip_transferred")) - to_decimal(state.get("wip_wasted"))
 
 
 async def _wip_target(op: _Op) -> str:
@@ -520,9 +517,9 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
         inp = inputs[line["item_id"]]
         if "issued_value" not in inp:
             raise _reconcile()
-        have, recorded = float(inp.get("issued_qty") or 0), _money(inp["issued_value"])
+        have, recorded = float(inp.get("issued_qty") or 0), to_decimal(inp["issued_value"])
         values[line["item_id"]] = (recorded if line["quantity"] >= have - EPS
-                                   else op.round(recorded * _money(line["quantity"]) / _money(have)))
+                                   else op.round(recorded * to_decimal(line["quantity"]) / to_decimal(have)))
 
     from celerp_inventory.projections import is_item_available
     from celerp_inventory.services import topped_up_cost
@@ -644,7 +641,7 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str,
     if extra_id is not None:
         amount = _ZERO
     else:
-        amount = wip if qty >= outstanding - EPS else op.round(wip * _money(qty) / _money(outstanding))
+        amount = wip if qty >= outstanding - EPS else op.round(wip * to_decimal(qty) / to_decimal(outstanding))
     wip_code = state.get("wip_account_code")
     if op.books:
         code = await resolve(op.session, op.company_id, AccountRole.INVENTORY_PURCHASED)
@@ -733,8 +730,8 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
 
 def _all_wasted(state: dict, wasted: list[dict]) -> bool:
     """Whether the waste is every component issued to the run, all of it."""
-    issued = {i.get("item_id"): _money(i.get("issued_qty") or 0) for i in state.get("inputs", [])}
-    lost = {w["item_id"]: _money(w["quantity"]) for w in wasted}
+    issued = {i.get("item_id"): to_decimal(i.get("issued_qty") or 0) for i in state.get("inputs", [])}
+    lost = {w["item_id"]: to_decimal(w["quantity"]) for w in wasted}
     return bool(wasted) and all(lost.get(item_id, _ZERO) >= qty for item_id, qty in issued.items())
 
 
@@ -767,7 +764,7 @@ def merge_item_lines(items: list[dict] | None) -> list[dict]:
     """Each item once, its quantities summed, in item order: wasted components, or extras received."""
     merged: dict[str, Decimal] = {}
     for line in items or []:
-        merged[line["item_id"]] = merged.get(line["item_id"], _ZERO) + _money(line["quantity"])
+        merged[line["item_id"]] = merged.get(line["item_id"], _ZERO) + to_decimal(line["quantity"])
     return [{"item_id": i, "quantity": float(q)} for i, q in sorted(merged.items())]
 
 
@@ -846,8 +843,8 @@ def value_waste(run_state: dict, waste_items: list[dict], currency: str,
         inp = inputs[item_id]
         if inp.get("issued_value") is None:
             raise _reconcile()
-        have, recorded = float(inp.get("issued_qty") or 0), _money(inp["issued_value"])
-        value = recorded if qty >= have - EPS else round_money(recorded * _money(qty) / _money(have), currency)
+        have, recorded = float(inp.get("issued_qty") or 0), to_decimal(inp["issued_value"])
+        value = recorded if qty >= have - EPS else round_money(recorded * to_decimal(qty) / to_decimal(have), currency)
         lines.append({"item_id": item_id, "quantity": qty, "value": str(value)})
         total += value
     return lines, total
@@ -860,14 +857,14 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
     each lot restated by the difference from what it took when it was received. ``ck`` keys this completion, so a reopened run completes afresh.
     The completion records what it moved, so reopening reverses exactly that."""
     state = run.state
-    issued, held = _money(state.get("wip_issued")), _wip(state)
+    issued, held = to_decimal(state.get("wip_issued")), _wip(state)
     # Waste is what the components wasted carried in, whether or not the output was already
     # received: the lots then give back what they took for it.
     waste_lines, waste = value_waste(state, wasted or [], op.currency, names)
     receipts = [r for r in state.get("receipts") or [] if float(r.get("quantity") or 0) > 0]
     # Output an older release took off along a path no re-cost can follow keeps what it was
     # given (reconcile); the finished value it does not carry is shared over the rest.
-    kept = sum((_money(r.get("value")) for r in receipts if r.get("fixed")), _ZERO)
+    kept = sum((to_decimal(r.get("value")) for r in receipts if r.get("fixed")), _ZERO)
     live = [r for r in receipts if not r.get("fixed")]
     if waste > issued - kept:
         raise refuse(422, "waste_kept", "Output an older release received from this run keeps its cost, "
@@ -886,7 +883,7 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
     debits: dict[str, Decimal] = {}
     restated = []
     for receipt, share in zip(live, shares):
-        delta = share - _money(receipt.get("value"))
+        delta = share - to_decimal(receipt.get("value"))
         if not delta:
             continue
         lot_id = receipt["lot_item_id"]
@@ -923,7 +920,7 @@ def _output_shares(state: dict, live: list[dict], amount: Decimal, currency: str
     left to place, or the run is refused."""
     if not live:
         return []
-    extras = {x["item_id"]: _money(x.get("cost_share")) for x in run_outputs(state)}
+    extras = {x["item_id"]: to_decimal(x.get("cost_share")) for x in run_outputs(state)}
     groups: dict[str | None, list[int]] = {}
     for i, r in enumerate(live):
         groups.setdefault(r.get("output_item_id"), []).append(i)
@@ -936,7 +933,7 @@ def _output_shares(state: dict, live: list[dict], amount: Decimal, currency: str
         return [_ZERO] * len(live)
     shares = [_ZERO] * len(live)
     for group_amount, members in zip(allocate_pro_rata(amount, weights, currency), groups.values()):
-        split = allocate_pro_rata(group_amount, [_money(live[i]["quantity"]) for i in members], currency)
+        split = allocate_pro_rata(group_amount, [to_decimal(live[i]["quantity"]) for i in members], currency)
         for i, share in zip(members, split):
             shares[i] = share
     return shares
@@ -953,7 +950,7 @@ async def _restate(op: _Op, lot_id: str, delta: Decimal, key: str, action: str) 
     try:
         await restate_item_cost(
             op.session, op.company_id, lot_id, event_type="item.cost_adjusted",
-            data={"cost_total": float(_money(goods_basis(lot.state or {})) + delta), _ORDER_MARK: op.order_id},
+            data={"cost_total": float(to_decimal(goods_basis(lot.state or {})) + delta), _ORDER_MARK: op.order_id},
             actor_id=op.user_id, source="api", idempotency_key=key, day=op.day)
     except CostRestatementConflict as exc:
         raise _recost_refusal(action, str(exc)) from exc
@@ -1137,7 +1134,7 @@ async def undo_receipt(session: AsyncSession, company_id, user_id, order_id: str
     receipt = next((r for r in state.get("receipts") or [] if r.get("lot_item_id") == lot_id), None)
     if receipt is None:
         raise refuse(422, "not_a_receipt", "That lot was not received from this run.")
-    qty, value = float(receipt["quantity"]), _money(receipt["value"])
+    qty, value = float(receipt["quantity"]), to_decimal(receipt["value"])
     row = (await lock_projections(op.session, op.company_id, [lot_id])).get(lot_id)
     await _require_untouched(op, row, lot_id, qty, value)
     code = lot_account(row.state or {}) if op.books and value else None
@@ -1184,7 +1181,7 @@ async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key:
                      "be reopened; start a new run for further work.")
     _require_settled(op, state)
     await require_moving_fits_units(session, company_id, order_id, "mfg_order", reopened(state))
-    deltas = {lot["lot_item_id"]: _money(lot["delta"]) for lot in closing.get("lots") or []}
+    deltas = {lot["lot_item_id"]: to_decimal(lot["delta"]) for lot in closing.get("lots") or []}
     # Completion re-costed only the lots whose cost it could still reach; a lot that keeps what
     # it was given (reconcile) is none of its business.
     receipts = [r for r in state.get("receipts") or [] if float(r.get("quantity") or 0) > 0 and not r.get("fixed")]
@@ -1192,14 +1189,14 @@ async def reopen(session: AsyncSession, company_id, user_id, order_id: str, key:
     for r in receipts:
         lot_id = r["lot_item_id"]
         await _require_untouched(op, rows.get(lot_id), lot_id, float(r["quantity"]),
-                                 _money(r["value"]) + deltas.get(lot_id, _ZERO))
+                                 to_decimal(r["value"]) + deltas.get(lot_id, _ZERO))
 
     credits: dict[str, Decimal] = {}
     for lot_id, delta in deltas.items():
         code = await _restate(op, lot_id, -delta, f"mfg:{order_id}:reopen:{rk}:recost:{lot_id}", "reopened")
         if code:
             credits[code] = credits.get(code, _ZERO) - delta
-    held, waste = _money(closing.get("held")), _money(closing.get("wasted"))
+    held, waste = to_decimal(closing.get("held")), to_decimal(closing.get("wasted"))
     wip_code = state.get("wip_account_code")
     if op.books and held:
         wip_code = await continue_role(op.session, op.company_id, AccountRole.WORK_IN_PROGRESS, wip_code)
@@ -1426,7 +1423,7 @@ async def _settle(session: AsyncSession, company_id) -> None:
         await op.post("wip-booked", f"Materials in production run {op.ref} when Accounting was turned on",
                       wip_code, held, {}, equity=-held)
         await op.emit_run("mfg.order.wip_opened", {
-            "issued": str(_money(state.get("wip_issued"))), "transferred": str(_money(state.get("wip_transferred"))),
+            "issued": str(to_decimal(state.get("wip_issued"))), "transferred": str(to_decimal(state.get("wip_transferred"))),
             "receipts": list(state.get("receipts") or []), "wip_account_code": wip_code}, f"mfg:{run.entity_id}:wip-booked")
     for order, reason in sorted(unresolved.items()):
         if rows[order].state.get("wip_unresolved") == reason:
@@ -1503,7 +1500,7 @@ async def _untracked_lots(session: AsyncSession, company_id, order_id: str, stat
         quantity = sum(float((e.data or {}).get("quantity_produced") or 0) for e in mine if e.event_type == "item.produced")
         if len(created) != 1 or quantity <= EPS:
             return None
-        found.append({"lot_item_id": lot, "quantity": quantity, "value": _money(created[0].data.get("cost_total"))})
+        found.append({"lot_item_id": lot, "quantity": quantity, "value": to_decimal(created[0].data.get("cost_total"))})
     return found
 
 
@@ -1628,7 +1625,7 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
     for line in components:
         item_id = line.get("item_id")
         try:
-            value = op.round(_money(line.get("value")))
+            value = op.round(to_decimal(line.get("value")))
         except InvalidOperation:
             label = await sku(item_id)
             raise refuse(422, "reconcile_value_too_large", f"The value given for {label} is too large to record.",
@@ -1678,8 +1675,8 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
                          f"was given, more than the {op.round(total)} stated. Give the value that was issued to "
                          "this run, at least that much.", lots=names, kept=str(op.round(fixed)),
                          issued=str(op.round(total)))
-        weights = [_money(r["quantity"]) for r, k in zip(legacy, kept) if not k]
-        rest = _money(made) - sum((_money(r["quantity"]) for r in legacy), _ZERO)
+        weights = [to_decimal(r["quantity"]) for r, k in zip(legacy, kept) if not k]
+        rest = to_decimal(made) - sum((to_decimal(r["quantity"]) for r in legacy), _ZERO)
         weights += [rest] if rest > 0 else []
         shares = iter(allocate_pro_rata(total - fixed, weights, op.currency) if weights else [])
         for r, k in zip(legacy, kept):
@@ -1749,7 +1746,7 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
         if total - transferred:
             wip_code = await _wip_target(op)
     for r, old in zip(receipts, legacy):
-        delta = _money(r["value"]) - old["value"]
+        delta = to_decimal(r["value"]) - old["value"]
         if delta:
             code = await _restate(op, r["lot_item_id"], delta,
                                   f"mfg:{order_id}:reconcile:{rk}:recost:{r['lot_item_id']}", "reconciled")

@@ -8,21 +8,17 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
+from celerp.services.money import round_money, to_decimal
+
 # The money buckets a movement carries, as signed amounts.
 BUCKETS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus")
 # Measurements that restate the carrying amount (calc.engine Revalue and Impair).
 REMEASUREMENTS = ("revaluation", "impairment", "impairment_reversal")
 
 
-def _dec(value) -> Decimal:
-    return Decimal(str(value or 0))
-
-
 def money(value, currency: str) -> str:
     """An amount as stored and shown: rounded once to ``currency``'s precision."""
-    from celerp.services.money import round_money
-
-    return str(round_money(_dec(value), currency))
+    return str(round_money(to_decimal(value), currency))
 
 
 def said(value, currency: str) -> str:
@@ -44,8 +40,8 @@ def fold_movements(movements: list[dict]) -> dict:
     quantity = Decimal(0)
     for mv in movements:
         for k in BUCKETS:
-            out[k] += _dec((mv.get("amounts") or {}).get(k))
-        quantity += _dec(mv.get("quantity"))
+            out[k] += to_decimal((mv.get("amounts") or {}).get(k))
+        quantity += to_decimal(mv.get("quantity"))
     return {**{k: str(v) for k, v in out.items()}, "quantity": _whole(quantity)}
 
 
@@ -55,8 +51,8 @@ def _whole(value: Decimal):
 
 def _moved(state: dict, data: dict) -> dict:
     for k in BUCKETS:
-        state[k] = str(_dec(state.get(k)) + _dec((data.get("amounts") or {}).get(k)))
-    state["quantity"] = _whole(_dec(state.get("quantity")) + _dec(data.get("quantity")))
+        state[k] = str(to_decimal(state.get(k)) + to_decimal((data.get("amounts") or {}).get(k)))
+    state["quantity"] = _whole(to_decimal(state.get("quantity")) + to_decimal(data.get("quantity")))
     state["movement_count"] = int(state.get("movement_count") or 0) + 1
     if data.get("surplus_account"):
         state["surplus_account"] = data["surplus_account"]

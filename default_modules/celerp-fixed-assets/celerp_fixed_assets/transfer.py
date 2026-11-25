@@ -19,7 +19,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from celerp.accounting_roles import refused
-from celerp.services.money import books_currency
+from celerp.services.money import books_currency, to_decimal
 from celerp_fixed_assets import disposal, projections, runs, setup, taxbooks
 from celerp.services.periods import month_index
 from celerp_fixed_assets.projections import money
@@ -27,7 +27,6 @@ from celerp_fixed_assets.operations import (
     MODULE,
     _create_asset,
     _date,
-    _dec,
     _effects,
     _journal_view,
     _lines,
@@ -202,7 +201,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
             raise setup.refuse("fixed_assets.err_class_archived_their_name_choose_class", their_name=their_name)
         movements = await asset_movements(session, company_id, asset_id)
         item = disposal._plan_asset(books, asset_id, asset, cls, movements, day, Decimal(1),
-                                    _dec(asset.get("quantity")), disposal.accounts(books), proceeds=price,
+                                    to_decimal(asset.get("quantity")), disposal.accounts(books), proceeds=price,
                                     clearing=receivable)
         cost = round_money(price * rate, theirs_in)
         their_lines = _lines(their_cls["asset_account"], payable, cost) if cost else []
@@ -221,7 +220,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
             "item": item, "day": day, "price": price, "cost": cost, "their_cls": their_cls,
             "their_lines": their_lines, "number": number, "currency": ours_in, "our_name": our_name, "their_name": their_name,
             "policy": _life_left(asset, setup.policy_of(their_cls, their_fa), day),
-            "tax_values": values, "their_tax_values": {k: money(_dec(v) * rate, theirs_in)
+            "tax_values": values, "their_tax_values": {k: money(to_decimal(v) * rate, theirs_in)
                                                        for k, v in values.items()},
             "history": [{k: m.get(k) for k in _HISTORY} for m in projections.live(movements)],
             "basis": [asset.get("version"), asset.get("movement_count"),
@@ -258,7 +257,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         their_movement = await _move(
             session, theirs, user_id, their_id, kind="posted", operation="transfer_in", effective=day, posting=day,
             amounts={"cost": context["cost"]}, op_key=op_key, contributions=contributions,
-            quantity=str(_dec(asset.get("quantity")) or 1), provenance="transfer", source=source,
+            quantity=str(to_decimal(asset.get("quantity")) or 1), provenance="transfer", source=source,
             journal_id=their_journals[0] if their_journals else None)
         their_result = {"assets": [{"id": their_id, "number": context["number"]}], "journals": their_journals,
                         "source": source}

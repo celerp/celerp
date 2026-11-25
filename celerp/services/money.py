@@ -52,11 +52,12 @@ def to_decimal(v: _MoneyInput) -> Decimal:
 
     Always use str() conversion for float inputs to avoid IEEE 754 representation
     errors (e.g. Decimal(38.6) produces 38.5999999... but Decimal('38.6') is exact).
+    A missing or blank amount (None, "") reads as zero.
     """
-    if v is None:
-        return Decimal(0)
     if isinstance(v, Decimal):
         return v
+    if not v:
+        return Decimal(0)
     return Decimal(str(v))
 
 

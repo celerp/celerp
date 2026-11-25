@@ -29,9 +29,9 @@ from decimal import Decimal
 from celerp.accounting_roles import catalog_refusal, refusal, refused
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services.money import books_currency, round_money
+from celerp.services.money import books_currency, round_money, to_decimal
 from celerp_fixed_assets import setup, sources
-from celerp_fixed_assets.projections import BUCKETS, _dec, money, said
+from celerp_fixed_assets.projections import BUCKETS, money, said
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state, recorded
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -208,7 +208,7 @@ async def catch_up(session, company_id, user_id, asset_id: str, *, day: str, per
     when one was owed."""
     if not periods:
         return {"periods": {}}
-    charged = sum((_dec(v) for v in periods.values()), Decimal(0))
+    charged = sum((to_decimal(v) for v in periods.values()), Decimal(0))
     movement_id = await _move(session, company_id, user_id, asset_id, kind="posted", operation="depreciation",
                               effective=day, posting=day, amounts={"accumulated_depreciation": charged},
                               op_key=op_key, periods=periods, journal_id=journal_id)
@@ -471,7 +471,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
         if mode not in REGISTER_MODES:
             raise setup.refuse("fixed_assets.err_choose_how_register_line")
         currency = await setup.currency(session, company_id)
-        amount = _dec(line["amount"])
+        amount = to_decimal(line["amount"])
         context = {"line": line, "mode": mode, "generation": line["generation"]}
         if mode in ("expense", "maintenance"):
             account = str(body.get("expense_account") or "")
@@ -491,7 +491,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
         if not name:
             raise setup.refuse("fixed_assets.err_asset_needs_name")
         available = _date(body.get("available_date") or line["date"], "The available-for-use date")
-        quantity = _dec(line["quantity"])
+        quantity = to_decimal(line["quantity"])
         if mode == "separate":
             if quantity != quantity.to_integral_value():
                 raise setup.refuse("fixed_assets.err_separate_assets_need_whole_quantity_register")
@@ -617,7 +617,7 @@ async def link_depreciation(session, company_id, user_id, body: dict) -> dict:
             await same_fund(session, company_id, line, asset)
             shares.append((asset_id, asset["number"], _money_in(a.get("amount"), "Each amount", currency, positive=True)))
         total = sum((s for _, _, s in shares), Decimal(0))
-        if total != round_money(_dec(line["amount"]), currency):
+        if total != round_money(to_decimal(line["amount"]), currency):
             raise setup.refuse("fixed_assets.err_amounts_add_up_said_not_said2", said=said(total, currency), said2=said(line['amount'], currency))
         return ({"journals": [], "assets": [{"number": n, "accumulated_depreciation": money(s, currency)} for _, n, s in shares]},
                 {"line": line, "shares": shares, "generation": line["generation"]})
@@ -876,10 +876,10 @@ async def reverse_move(session, company_id, user_id, movement_id: str, mv: dict,
     and then the same for the depreciation it brought up to date (:func:`catch_up`)."""
     reversed_id = await _move(session, company_id, user_id, mv["asset_id"], kind="reversal", operation=operation,
                               effective=mv["effective_date"], posting=mv["posting_date"],
-                              amounts={k: -_dec(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
-                              contributions=[{**c, "amount": str(-_dec(c.get("amount")))}
+                              amounts={k: -to_decimal(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
+                              contributions=[{**c, "amount": str(-to_decimal(c.get("amount")))}
                                              for c in mv.get("contributions") or []],
-                              quantity=str(-_dec(mv.get("quantity"))), reverses=movement_id)
+                              quantity=str(-to_decimal(mv.get("quantity"))), reverses=movement_id)
     if mv.get("catch_up"):
         await reverse_move(session, company_id, user_id, mv["catch_up"],
                            await _state(session, company_id, mv["catch_up"]), op_key, operation)

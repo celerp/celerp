@@ -19,9 +19,10 @@ from fastapi import HTTPException
 from celerp_fixed_assets import disposal, projections, runs, setup
 from celerp.accounting_roles import refused
 from celerp.services.periods import month_index, period_label
+from celerp.services.money import to_decimal
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
-    _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, in_use)
+    _date, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, in_use)
 from celerp_fixed_assets.store import _emit
 from ui.i18n import t
 
@@ -69,7 +70,7 @@ async def reclassify(session, company_id, user_id, asset_id: str, body: dict) ->
         disposal.check_date(books, asset, projections.live(movements), day, what="reclassification")
         owed, _ = disposal.owed(books, asset, movements, month - 1, month - 1)
         caught_up = sum(owed.values(), Decimal(0))
-        cost, ad, imp = _dec(asset.get("cost")), _dec(asset.get(_AD)), _dec(asset.get(_IMP))
+        cost, ad, imp = to_decimal(asset.get("cost")), to_decimal(asset.get(_AD)), to_decimal(asset.get(_IMP))
         expense = asset.get("depreciation_account") or old["depreciation_account"]
         lines = _lines(expense, old["accumulated_depreciation_account"], caught_up) if caught_up else []
         for moved, _ in balance_moves(asset["number"], old, new, cost, ad + caught_up + imp):

@@ -40,9 +40,10 @@ from decimal import Decimal
 
 from celerp.accounting_roles import refusal, refused
 from celerp.services.business_time import company_today
+from celerp.services.money import to_decimal
 
 from celerp_fixed_assets import fixaccount, runs, setup, sources
-from celerp_fixed_assets.operations import MODULE, _dec
+from celerp_fixed_assets.operations import MODULE
 from celerp_fixed_assets.projections import fold_movements, money
 from celerp_fixed_assets.store import _emit, _entities
 
@@ -84,7 +85,7 @@ def _class_accounts(classes: dict, surpluses: set[str], clearings: set[str]) -> 
 
 
 def _signed(entry: dict) -> Decimal:
-    return _dec(entry.get("debit")) - _dec(entry.get("credit"))
+    return to_decimal(entry.get("debit")) - to_decimal(entry.get("credit"))
 
 
 async def classify(session, company_id, at: str) -> list[dict]:
@@ -116,7 +117,7 @@ async def classify(session, company_id, at: str) -> list[dict]:
             for source, unit in sorted((by_journal.get(je_id) or {}).items()):
                 claim = unit.get("claim")
                 if claim and claim["allocation"] not in NOTED_ALLOCATIONS and claim.get("account") in accounts:
-                    amount = _SIGN[claim["kind"]] * _dec(claim["amount"])
+                    amount = _SIGN[claim["kind"]] * to_decimal(claim["amount"])
                     out.append(_unit(f"void:{source}", 3, claim["account"], amount, claim.get("date") or day, je_id,
                                      claim["description"], source=source, registered=amount, synthetic=True))
             continue
@@ -140,7 +141,7 @@ async def classify(session, company_id, at: str) -> list[dict]:
             if unit.get("account") not in rest:
                 continue
             claim = unit.get("claim")
-            amount = sign * _SIGN[unit["kind"]] * _dec(unit["amount"])
+            amount = sign * _SIGN[unit["kind"]] * to_decimal(unit["amount"])
             if reversal:
                 rule = 3
             elif claim is None:
@@ -295,7 +296,7 @@ def _difference(key: str, rule, cause: str, amount: Decimal, day: str, units: li
     mark = fixing["marks"].get(key) or {}
     if units and units[0]["rule"] == 4:
         state, reason, effect = "noted", units[0].get("reason"), None
-    elif mark.get("state") in ("noted", "accepted") and _dec(mark.get("amount")) == amount:
+    elif mark.get("state") in ("noted", "accepted") and to_decimal(mark.get("amount")) == amount:
         state, reason, effect = mark["state"], mark.get("reason"), mark.get("effect")
     else:
         state, reason, effect = "open", None, None
@@ -359,7 +360,7 @@ async def acknowledge(session, company_id, user_id, body: dict) -> dict:
     found = await find(session, company_id, key)
     if found["rule"] == 4:
         raise refused(409, "fixed_assets.err_line_was_noted_when_was_kept")
-    if _dec(body.get("amount")) != _dec(found["amount"]):
+    if to_decimal(body.get("amount")) != to_decimal(found["amount"]):
         raise refused(409, "fixed_assets.err_difference_now_amount_review_again", amount=found['amount'])
     data = {"key": key, "state": state, "amount": found["amount"], "reason": reason or None,
             "effect": effect or None, "by": str(user_id), "at": (await company_today(session, company_id)).isoformat()}
