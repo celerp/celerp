@@ -32512,5 +32512,6 @@
     "tests/test_tax_import_invariants.py::test_a_rate_that_is_not_finite_is_refused_per_row[inf-/companies/me/taxes/import/batch]": 0.12154929799726233,
     "tests/test_tax_import_invariants.py::test_a_rate_that_is_not_finite_is_refused_per_row[nan-/companies/me/purchasing-taxes/import/batch]": 0.11823321599513292,
     "tests/test_tax_import_invariants.py::test_a_rate_that_is_not_finite_is_refused_per_row[nan-/companies/me/taxes/import/batch]": 0.12443503603572026,
-    "tests/test_tax_import_invariants.py::test_every_tax_list_writer_takes_its_taxes_through_the_shared_checks": 0.042784047953318805
+    "tests/test_tax_import_invariants.py::test_every_tax_list_writer_takes_its_taxes_through_the_shared_checks": 0.042784047953318805,
+    "tests/test_browser/test_page_cold_storage.py::test_a_page_starts_without_the_storage_a_page_left_on_about_blank_wrote": 6.82764928904362
 }
