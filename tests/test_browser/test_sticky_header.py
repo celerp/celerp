@@ -317,6 +317,43 @@ def test_pinned_header_tracks_horizontal_scroll(page, ui_server, sticky_inventor
     assert lefts is not None and abs(lefts[0] - lefts[1]) <= 2
 
 
+_SCROLL_SIDEWAYS_JS = """(n) => new Promise(res => {
+  var w = document.querySelector('#data-table-wrap .table-scroll-wrap'), i = 0;
+  (function step(){ w.scrollLeft += 15; if (++i < n) requestAnimationFrame(step); else setTimeout(res, 300); })();
+})"""
+
+
+def test_sideways_scroll_offset_reaches_only_the_box_and_its_shades(page, ui_server, sticky_inventory):
+    """The scroll cue holds its shades at the visible edges with the box's scroll offset. That
+    offset must stop at the box: inherited by every cell, each scroll event restyled the whole
+    table (63 ms a frame at 500 rows), which made sideways scrolling a long list choppy."""
+    _goto(page, ui_server)
+    page.evaluate("() => { document.querySelector('#data-table thead th[data-key]').style.width = '900px'; }")
+    page.evaluate(_SCROLL_SIDEWAYS_JS, 20)
+    got = page.evaluate("""() => {
+      var w = document.querySelector('#data-table-wrap .table-scroll-wrap');
+      var td = w.querySelector('tbody td');
+      return {left: w.scrollLeft, box: getComputedStyle(w).getPropertyValue('--scroll-x').trim(),
+              shade: getComputedStyle(w, '::before').left,
+              cell: getComputedStyle(td).getPropertyValue('--scroll-x').trim()}; }""")
+    assert got["left"] > 0 and got["box"] == f"{got['left']}px", got
+    assert got["shade"] == f"{got['left']}px", f"left shade left the visible edge: {got}"
+    assert got["cell"] in ("", "0px"), f"a cell takes the box's scroll offset, so every scroll restyles the table: {got}"
+
+
+def test_sideways_scroll_while_pinned_keeps_the_header_pinned(page, ui_server, sticky_inventory):
+    """Scrolling sideways under a pinned header only moves it: the scroll cue's own write on the
+    box is no change to the table, so the header is never unpinned and pinned again per frame."""
+    _goto(page, ui_server)
+    page.evaluate("() => { document.querySelector('#data-table thead th[data-key]').style.width = '900px'; }")
+    _scroll_to_pin(page)
+    page.evaluate("""() => { window.__flips = 0; new MutationObserver(function(rs){ window.__flips += rs.length; })
+      .observe(document.getElementById('data-table'), {attributes: true, attributeFilter: ['class']}); }""")
+    page.evaluate(_SCROLL_SIDEWAYS_JS, 20)
+    assert _pinned(page)
+    assert page.evaluate("() => window.__flips") == 0, "the header was unpinned and pinned again while scrolling sideways"
+
+
 def test_top_scroll_pinned_css_floors_width_before_js_sets_it(page, ui_server, sticky_inventory):
     _goto(page, ui_server)
     page.wait_for_selector(".table-top-scroll")

@@ -2208,7 +2208,7 @@ _STICKY_HEADER_JS = """
   window.addEventListener('beforeprint', function(){ printing = true; unpinAll(); });
   window.addEventListener('afterprint', function(){ printing = false; onScroll(); });
 
-  mo = new MutationObserver(onFull);
+  mo = new MutationObserver(function(records){ if(!celerpScrollCueOnly(records)) onFull(); });
   // attributes:true catches a column-resize style write on a th; the controller's own writes
   // never re-fire it because pauseObserver disconnects the observer for the duration of each pass.
   function observe(){ if(mo && document.body) mo.observe(document.body, {childList:true, subtree:true, attributes:true}); }
@@ -2247,6 +2247,13 @@ _STICKY_HEADER_JS = """
   }
   document.addEventListener('DOMContentLoaded', watch);
   document.addEventListener('htmx:afterSwap', watch);
+  // True when a batch of DOM changes is only this cue moving its shades (the box's style), which
+  // changes no column: observers that re-measure a table skip it, or every scroll re-measures.
+  window.celerpScrollCueOnly = function(records){
+    return records.every(function(r){
+      return r.type === 'attributes' && r.attributeName === 'style' && !!r.target.dataset && !!r.target.dataset.scrollCue;
+    });
+  };
 })();
 """
 

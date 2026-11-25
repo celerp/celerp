@@ -2430,8 +2430,11 @@ function sendToTypeChanged(docType, docLabel){
   var inner = phantom && phantom.firstElementChild;
   if (!wrap || !phantom || !inner) return;
   // Size the inner spacer to match the scrollable content width
+  // Written only when it changes: an unchanged write is still a DOM change that wakes the
+  // pinned header's observer, which re-pins the header every frame of a sideways scroll.
   function syncWidth() {
-    inner.style.width = wrap.scrollWidth + 'px';
+    var w = wrap.scrollWidth + 'px';
+    if (inner.style.width !== w) inner.style.width = w;
   }
   syncWidth();
   // Bidirectional scroll sync (guard flag prevents infinite loop)
@@ -2447,7 +2450,8 @@ function sendToTypeChanged(docType, docLabel){
     syncing = false;
   });
   // Re-sync width if columns change (e.g. column manager toggle)
-  new MutationObserver(syncWidth).observe(wrap, {childList: true, subtree: true, attributes: true});
+  new MutationObserver(function(records){ if(!celerpScrollCueOnly(records)) syncWidth(); })
+    .observe(wrap, {childList: true, subtree: true, attributes: true});
 })();
 """)
     top_scroll = Div(Div(style="height:1px"), cls="table-top-scroll") if len(rows) > 10 else None

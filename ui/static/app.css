@@ -377,6 +377,9 @@ a:hover { text-decoration: underline; }
 .scroll-more-left::before, .scroll-more-right::after {
   content: ""; position: absolute; top: 0; bottom: 0; width: 20px; z-index: 4; pointer-events: none;
 }
+/* The offset stops at the box's children, so a scroll restyles the box and its shades, never
+   every cell under it. */
+[data-scroll-cue] > * { --scroll-x: 0px; }
 .scroll-more-left::before { left: var(--scroll-x, 0px); background: linear-gradient(to right, rgba(26,29,46,0.3), transparent); }
 .scroll-more-right::after { right: calc(-1 * var(--scroll-x, 0px)); background: linear-gradient(to left, rgba(26,29,46,0.3), transparent); }
 @media print { .scroll-more-left::before, .scroll-more-right::after { content: none; } }
