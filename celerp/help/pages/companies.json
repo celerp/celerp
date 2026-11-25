@@ -12,7 +12,7 @@
       "text": "On {title} in Global Config, pick a company from the list to switch to it, or use {new} to start another one from scratch.",
       "labels": {"title": "settings.your_companies", "new": "btn.new_company"},
       "image": "img/companies-1.webp",
-      "capture": {"route": "/settings/general?tab=company", "selector": "main div.settings-card", "actions": [], "evidence": ["{title}", "{new}"]}
+      "capture": {"route": "/settings/general?tab=company", "selector": "main div.settings-card", "actions": [], "evidence": ["{title}", "a.btn:has-text('{new}')"]}
     },
     {
       "text": "{clients} opens a separate list for an accountant or bookkeeper working across several companies, showing what needs attention in each one.",

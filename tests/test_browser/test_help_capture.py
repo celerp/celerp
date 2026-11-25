@@ -19,6 +19,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import math
 import os
 import random
 import re
@@ -985,17 +986,22 @@ def _evidence_missing(page, target, step: dict) -> list[str]:
     ``target`` a picture keeps (its top _MAX_HEIGHT pixels) and on top at its centre: a match
     elsewhere on the page, hidden, cut by the picture's edge or covered by another element (an
     open dropdown) does not count. The page is laid out as the picture is taken, the whole kept
-    part inside the viewport, so a dropdown opens where the picture shows it."""
+    part inside the viewport, so a dropdown opens where the picture shows it; the viewport grows
+    only by what the kept part overflows, so a screen sized to the viewport keeps its layout."""
     viewport = page.viewport_size
-    page.set_viewport_size({"width": viewport["width"], "height": viewport["height"] + _MAX_HEIGHT})
+    kept_part = """(el, maxHeight) => new Promise(done => {
+        el.scrollIntoView({block: "start", inline: "nearest"});
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            const r = el.getBoundingClientRect();
+            done([r.left, r.top, r.right, r.top + Math.min(r.height, maxHeight)]);
+        }));
+    })"""
     try:
-        clip = target.evaluate("""(el, maxHeight) => new Promise(done => {
-            el.scrollIntoView({block: "start", inline: "nearest"});
-            requestAnimationFrame(() => requestAnimationFrame(() => {
-                const r = el.getBoundingClientRect();
-                done([r.left, r.top, r.right, r.top + Math.min(r.height, maxHeight)]);
-            }));
-        })""", _MAX_HEIGHT)
+        for _ in range(3):
+            clip = target.evaluate(kept_part, _MAX_HEIGHT)
+            if clip[3] <= page.viewport_size["height"]:
+                break
+            page.set_viewport_size({"width": viewport["width"], "height": math.ceil(clip[3])})
         return [entry for entry in step["capture"]["evidence"]
                 if not _evidence_locator(page, entry, step["labels"]).evaluate_all("""(els, [l, t, r, b]) =>
                     els.some(e => {
@@ -1212,8 +1218,8 @@ _SAME_VISUAL = {
     frozenset({"subscriptions.overview#1", "subscriptions.overview#2"}): "the agreements list holds the tabs, New and Import",
     frozenset({"subscriptions.plans#1", "subscriptions.plans#2"}): _LIST_INTRO,
     frozenset({"subscriptions.retainers#1", "subscriptions.retainers#2"}): _LIST_INTRO,
-    frozenset({f"subscriptions.revenue#{n}" for n in range(1, 5)}):
-        "the revenue page fits on one screen: the period, currency, cohorts and definitions",
+    frozenset({f"subscriptions.revenue#{n}" for n in range(1, 4)}):
+        "the revenue page's first screen holds the period, currency and cohorts",
     frozenset({"verticals.business-type#1", "verticals.business-type#2", "verticals.business-type#3"}):
         "the business type page holds the choices, their presets and Apply",
 }

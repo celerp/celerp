@@ -1410,7 +1410,7 @@ def _not_converted(data: dict) -> list[FT]:
 
 def _definitions() -> FT:
     return Div(H3(t("subscriptions.definitions_heading")),
-               *[P(t(f"subscriptions.{k}"), cls="text-muted") for k in _DEFINITIONS])
+               *[P(t(f"subscriptions.{k}"), cls="text-muted") for k in _DEFINITIONS], id="sub-definitions")
 
 
 def _revenue_body(data: dict, *, filtered: bool) -> list[FT]:

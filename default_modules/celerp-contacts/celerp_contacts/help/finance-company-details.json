@@ -16,7 +16,7 @@
     },
     {
       "text": "Fill in the name, {bill} and {ship}, email and phone; each change is saved as you go, and {files} keeps documents such as registration papers.",
-      "labels": {"bill": "contacts.field_billing_address", "ship": "contacts.field_shipping_address", "files": "label.files"},
+      "labels": {"bill": "page.billing_addresses", "ship": "page.shipping_addresses", "files": "label.files"},
       "image": "img/finance-company-details-2.webp",
       "capture": {"route": "/finance/company-details", "selector": "main", "actions": [], "evidence": ["{bill}", "{ship}", "{files}"]}
     },

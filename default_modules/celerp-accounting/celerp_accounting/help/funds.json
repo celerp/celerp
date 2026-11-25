@@ -205,7 +205,6 @@
         "evidence": [
           "{reason}",
           "{activity}",
-          "{reports}",
           "{movements}",
           "{reverse}"
         ]

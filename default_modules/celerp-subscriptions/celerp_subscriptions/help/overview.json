@@ -30,7 +30,7 @@
       "text": "Click a subscription to open it. Under {periods} you see each billing period, when it bills, and the invoice it produced, which you can open.",
       "labels": {"periods": "subscriptions.periods_heading"},
       "image": "img/overview-4.webp",
-      "capture": {"route": "/subscriptions", "selector": "#sub-periods", "actions": [{"click": "table tbody tr:has-text('Annually') a"}], "evidence": ["{periods}", "table.data-table td a[href^='/docs/']"]}
+      "capture": {"route": "/subscriptions", "selector": "#sub-periods", "actions": [{"click": "table tbody tr:has-text('Annually'):has-text('Active') a"}], "evidence": ["{periods}", "table.data-table td a[href^='/docs/']"]}
     },
     {
       "text": "You can also ask the assistant to generate the invoices that are due, or to pause, resume, cancel or change a subscription. It shows each change as a card and makes it only when you confirm.",

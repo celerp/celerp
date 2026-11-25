@@ -46,7 +46,7 @@
         "actions": [],
         "evidence": [
           "{new}",
-          "{plan}",
+          "label.form-label:has-text('{plan}')",
           "{seats}",
           "{trial}"
         ]
