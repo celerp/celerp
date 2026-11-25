@@ -120,6 +120,11 @@ def run_outputs(run_state: dict) -> list[dict]:
     return list(run_state.get("also_produces") or [])
 
 
+def output_skus(run_state: dict) -> list[str]:
+    """Every sku a run makes: its products, then its extras. Search over runs reads this."""
+    return [str(x.get("sku", "")) for x in [*(run_state.get("expected_outputs") or []), *run_outputs(run_state)]]
+
+
 def main_receipts(run_state: dict) -> list[dict]:
     """The run's live receipts of its product; a receipt naming an output item is an extra's."""
     return [r for r in run_state.get("receipts") or [] if not r.get("output_item_id")]

@@ -29,7 +29,7 @@ from ui.i18n import reconcile_reason, refusal_text, t
 from ui.routes.reports import _company_today, _get_company
 from celerp.services.business_time import business_today
 from celerp.services.ledger_display import run_reference
-from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES
+from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES, output_skus
 from ui.components.encode import call, EVENT, html_response, safe_url, THIS
 
 logger = logging.getLogger(__name__)
@@ -549,7 +549,7 @@ def setup_routes(app):
             shown = [o for o in orders_all if str(o.get("status") or "").lower() == active]
         if q:
             shown = [o for o in shown
-                     if q in " ".join(str(x.get("sku", "")) for x in o.get("expected_outputs", [])).lower()
+                     if q in " ".join(output_skus(o)).lower()
                      or q in str(o.get("description", "")).lower()]
         body = (
             _intro("factory", t("manufacturing.wip_intro")),

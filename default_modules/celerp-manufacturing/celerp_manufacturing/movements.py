@@ -73,7 +73,7 @@ from celerp.services.lot_origin import (
     value_moved,
 )
 from celerp.services.money import allocate_pro_rata, round_money
-from celerp.services.record_quantities import (EPS, extra_to_receive, outstanding_inputs, outstanding_output,
+from celerp.services.record_quantities import (EPS, extra_to_receive, main_receipts, outstanding_inputs, outstanding_output,
                                                run_name, run_outputs)
 from celerp.services.units import build_unit_map, get_company_units, require_moving_fits_units, validate_line_quantity
 
@@ -1248,6 +1248,13 @@ async def transition(session: AsyncSession, company_id, user_id, order_id: str, 
     return await op.emit_run(event_type, {**data, "request": request}, f"mfg:{order_id}:{action}:{rk}")
 
 
+def _holds_anything(state: dict) -> bool:
+    """Whether a run still holds materials, value or output: any lot it received, the
+    product's or an extra's, keeps it from being cancelled."""
+    return bool(float(state.get("received_qty") or 0) > EPS or state.get("receipts") or _wip(state) or any(
+        float(i.get("issued_qty") or 0) > EPS for i in state.get("inputs", [])))
+
+
 async def cancel(session: AsyncSession, company_id, user_id, order_id: str, reason: str | None,
                  key: str | None, *, at: str):
     """Cancel a run that holds nothing. A run still holding issued materials or received output
@@ -1262,8 +1269,7 @@ async def cancel(session: AsyncSession, company_id, user_id, order_id: str, reas
     _require_open(run.state, "cancelled")
     # Its materials cannot be returned until it is reconciled, so that comes first.
     _require_settled(op, run.state)
-    if float(run.state.get("received_qty") or 0) > EPS or _wip(run.state) or any(
-            float(i.get("issued_qty") or 0) > EPS for i in run.state.get("inputs", [])):
+    if _holds_anything(run.state):
         raise refuse(409, "cancel_moved",
                      "This run still holds materials or output, so it cannot be cancelled. Return its "
                      "materials and undo its receipts first.")
@@ -1476,9 +1482,10 @@ async def still_held(session: AsyncSession, company_id, order_id: str,
 
 
 def _untracked_qty(state: dict) -> float:
-    """What a run received before value was tracked: everything received but its valued receipts."""
+    """What a run received before value was tracked: its product received but not in a valued
+    receipt. Extras never count in received_qty, so their receipts are left out too."""
     return float(state.get("received_qty") or 0) - sum(float(r.get("quantity") or 0)
-                                                       for r in state.get("receipts") or [])
+                                                       for r in main_receipts(state))
 
 
 async def _untracked_lots(session: AsyncSession, company_id, order_id: str, state: dict) -> list[dict] | None:

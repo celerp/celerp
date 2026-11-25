@@ -528,15 +528,22 @@ async def test_undo_extra_receipt(client, session, auth):
 
 
 async def test_cancel_refused_extra_lot(client, session, auth):
-    """A run holding only an extra's lot cannot be cancelled."""
+    """A run holding only an extra's lot cannot be cancelled. Return refuses while any receipt
+    is live, so the run itself also still holds its materials: the extra lot alone is proven
+    on the guard, read from the run's real receipt."""
     seed, oil, cake = await press(client, auth)
     order = await start(client, auth, oil, 10)
     assert (await complete(client, auth, order, key="c")).status_code == 200
     assert (await reopen(client, auth, order, key="r")).status_code == 200
     oil_lot = (await lots_of(session, auth, order))[oil][0]["lot"]
     assert (await undo_receipt(client, auth, order, oil_lot, key="u")).status_code == 200
-    assert (await give_back(client, auth, order, key="g")).status_code == 200
+    refusal(await give_back(client, auth, order, key="g"), 409, "return_after_receipt")
     refusal(await cancel(client, auth, order, key="x"), 409, "cancel_moved")
+    from celerp_manufacturing.movements import _holds_anything
+    receipts = (await _state(session, auth, order))["receipts"]
+    assert [r["output_item_id"] for r in receipts] == [cake]
+    assert _holds_anything({"receipts": receipts})
+    assert not _holds_anything({"receipts": []})
 
 
 async def test_untracked_ignores_extras(client, session, auth):
@@ -561,8 +568,9 @@ async def test_search_extra_sku(client, session, auth):
 
 
 async def test_extras_survive_disable(client, session, auth):
-    """Turning manufacturing off keeps extra lots, values and history; a cake lot sold while
-    off blocks Reopen until the sale is reversed."""
+    """Turning manufacturing off keeps extra lots, values and history. A cake lot sold while
+    off blocks Reopen; reversing the sale puts the lot back at its value, but its history is
+    no longer the run's alone, so Reopen stays refused as for any lot the run produced."""
     seed, oil, cake = await press(client, auth)
     order = await start(client, auth, oil, 10)
     assert (await complete(client, auth, order, key="c")).status_code == 200
@@ -573,10 +581,14 @@ async def test_extras_survive_disable(client, session, auth):
     cake_lot = before[cake][0]["lot"]
     doc = await _sell(client, session, auth, cake_lot)
     assert (await client.post(f"/companies/me/modules/{name}/enable", headers=auth["headers"])).status_code == 200
-    r = await reopen(client, auth, order, key="r")
-    assert r.status_code == 409, r.text
-    assert (await client.post(f"/docs/{doc}/void", headers=auth["headers"], json={})).status_code == 200
-    assert (await reopen(client, auth, order, key="r2")).status_code == 200
+    refusal(await reopen(client, auth, order, key="r"), 409, "output_changed")
+    r = await client.post(f"/docs/{doc}/revert-lines", headers=auth["headers"], json={"line_entity_ids": [cake_lot]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{doc}/void", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    assert await lots_of(session, auth, order) == before
+    refusal(await reopen(client, auth, order, key="r2"), 409, "output_changed")
 
 
 # ---------------------------------------------------------------------------
