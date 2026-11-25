@@ -29,9 +29,9 @@ from decimal import Decimal
 from celerp.accounting_roles import catalog_refusal, refusal, refused
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services.money import books_currency, round_money, to_decimal
+from celerp.services.money import books_currency, money_text, round_money, to_decimal
 from celerp_fixed_assets import setup, sources
-from celerp_fixed_assets.projections import BUCKETS, money, said
+from celerp_fixed_assets.projections import BUCKETS, said
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state, recorded
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -156,7 +156,7 @@ def _lines(debit_account: str, credit_account: str, amount: Decimal, roles: tupl
 
 
 def _journal_view(lines, currency: str) -> dict:
-    return {"lines": [{"account": ln.account, "debit": money(ln.debit, currency), "credit": money(ln.credit, currency)}
+    return {"lines": [{"account": ln.account, "debit": money_text(ln.debit, currency), "credit": money_text(ln.credit, currency)}
                       for ln in lines]}
 
 
@@ -508,7 +508,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
         context.update(cls=cls, name=name, available=available, each=each, numbers=numbers, journals=journals,
                        policy=setup.policy_of(cls, fa))
         return {"journals": [_journal_view(j, currency) for j in journals],
-                "assets": [{"number": n, "name": name, "cost": money(c, currency)} for n, (c, _) in zip(numbers, each)],
+                "assets": [{"number": n, "name": name, "cost": money_text(c, currency)} for n, (c, _) in zip(numbers, each)],
                 "registers": _registers(cls, available, context["policy"])}, context
 
     async def apply(context, op_key):
@@ -619,7 +619,7 @@ async def link_depreciation(session, company_id, user_id, body: dict) -> dict:
         total = sum((s for _, _, s in shares), Decimal(0))
         if total != round_money(to_decimal(line["amount"]), currency):
             raise setup.refuse("fixed_assets.err_amounts_add_up_said_not_said2", said=said(total, currency), said2=said(line['amount'], currency))
-        return ({"journals": [], "assets": [{"number": n, "accumulated_depreciation": money(s, currency)} for _, n, s in shares]},
+        return ({"journals": [], "assets": [{"number": n, "accumulated_depreciation": money_text(s, currency)} for _, n, s in shares]},
                 {"line": line, "shares": shares, "generation": line["generation"]})
 
     async def apply(context, op_key):
@@ -733,7 +733,7 @@ async def create_asset(session, company_id, user_id, body: dict) -> dict:
                 "name": name, "number": number}
         details = await _financials(session, company_id, fa, body)
         _, shown = _financials_shown(details)
-        return ({"journals": shown, "assets": [{"number": number, "name": name, "cost": money(details["cost"], details["currency"])}],
+        return ({"journals": shown, "assets": [{"number": number, "name": name, "cost": money_text(details["cost"], details["currency"])}],
                  "registers": _registers(details["cls"], details["available"], details["policy"])},
                 {"name": name, "number": number, "details": details})
 
@@ -770,7 +770,7 @@ async def add_financial_details(session, company_id, user_id, asset_id: str, bod
         details = await _financials(session, company_id, fa, body)
         _, shown = _financials_shown(details)
         return ({"journals": shown, "assets": [{"number": row.state["number"], "name": row.state["name"],
-                                                "cost": money(details["cost"], details["currency"])}],
+                                                "cost": money_text(details["cost"], details["currency"])}],
                  "registers": _registers(details["cls"], details["available"], details["policy"])},
                 {"asset": row.state, "details": details})
 
@@ -866,7 +866,7 @@ async def update_asset(session, company_id, user_id, asset_id: str, body: dict) 
 
 
 def _reversed_lines(je: dict, currency: str) -> dict:
-    return {"lines": [{"account": e.get("account"), "debit": money(e.get("credit"), currency), "credit": money(e.get("debit"), currency)}
+    return {"lines": [{"account": e.get("account"), "debit": money_text(e.get("credit"), currency), "credit": money_text(e.get("debit"), currency)}
                       for e in je.get("entries") or []]}
 
 

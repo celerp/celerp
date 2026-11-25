@@ -39,16 +39,16 @@ async def _acquisition(fa: FA, asset_id: str) -> dict:
 
 
 def test_money_text_keeps_currency_precision():
-    from celerp_fixed_assets.projections import money
+    from celerp.services.money import money_text
 
-    assert money(D("100.125"), "KWD") == "100.125"
-    assert money("1000003", "JPY") == "1000003"
-    assert money(D("100.12345"), "CLF") == "100.1235"
-    assert money(D("100.005"), "USD") == "100.01"
-    assert money(None, "USD") == "0.00"
+    assert money_text(D("100.125"), "KWD") == "100.125"
+    assert money_text("1000003", "JPY") == "1000003"
+    assert money_text(D("100.12345"), "CLF") == "100.1235"
+    assert money_text(D("100.005"), "USD") == "100.01"
+    assert money_text(None, "USD") == "0.00"
     # What is stored reads back as the same amount.
     for value, currency in (("100.125", "KWD"), ("1000003", "JPY"), ("100.1235", "CLF"), ("0.10", "USD")):
-        assert D(json.loads(json.dumps({"v": money(value, currency)}))["v"]) == D(value)
+        assert D(json.loads(json.dumps({"v": money_text(value, currency)}))["v"]) == D(value)
 
 
 @pytest.mark.parametrize("currency", ["KWD", "JPY"])

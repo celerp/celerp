@@ -40,11 +40,11 @@ from decimal import Decimal
 
 from celerp.accounting_roles import refusal, refused
 from celerp.services.business_time import company_today
-from celerp.services.money import to_decimal
+from celerp.services.money import money_text, to_decimal
 
 from celerp_fixed_assets import fixaccount, runs, setup, sources
 from celerp_fixed_assets.operations import MODULE
-from celerp_fixed_assets.projections import fold_movements, money
+from celerp_fixed_assets.projections import fold_movements
 from celerp_fixed_assets.store import _emit, _entities
 
 RECON_STATES = ("open", "noted", "accepted")
@@ -266,9 +266,9 @@ async def report(session, company_id, at: str | None = None) -> dict:
         if account not in clearings and registered != standing.get(account, Decimal(0)):
             # The assets' own balances against the Register column, read from their journals.
             errors.append({"account": account, "name": names.get(account) or account, "label": labels[account],
-                           "held": money(standing.get(account, 0), currency), "registered": money(registered, currency)})
-        out.append({"account": account, "name": names.get(account) or account, "label": labels[account], "ledger": money(ledger, currency),
-                    "registered": money(registered, currency), "status": _status(ledger, registered, differences),
+                           "held": money_text(standing.get(account, 0), currency), "registered": money_text(registered, currency)})
+        out.append({"account": account, "name": names.get(account) or account, "label": labels[account], "ledger": money_text(ledger, currency),
+                    "registered": money_text(registered, currency), "status": _status(ledger, registered, differences),
                     "differences": differences})
     statuses = {a["status"] for a in out}
     status = next(s for s in reversed(STATUSES) if s in statuses) if statuses else STATUSES[0]
@@ -301,12 +301,12 @@ def _difference(key: str, rule, cause: str, amount: Decimal, day: str, units: li
     else:
         state, reason, effect = "open", None, None
     currency = fixing["currency"]
-    return {"key": key, "rule": rule, "cause": cause, "amount": money(amount, currency), "date": day, "state": state,
+    return {"key": key, "rule": rule, "cause": cause, "amount": money_text(amount, currency), "date": day, "state": state,
             "reason": reason, "effect": effect, "action": _action(rule),
             "asset_id": fixing["owners"].get(units[0].get("source")) if rule == 3 else None,
             "fix_from": _fix_from(fixing["lock"], day),
             "lines": [{"journal_id": u["journal_id"], "source": u.get("source"), "description": u["description"],
-                       "date": u["date"], "amount": money(u["amount"], currency)} for u in units]}
+                       "date": u["date"], "amount": money_text(u["amount"], currency)} for u in units]}
 
 
 def _action(rule) -> str | None:

@@ -31,7 +31,7 @@ from celerp.services.business_time import business_today, company_today
 from celerp_fixed_assets import recon, remeasure, runs, setup, taxbooks
 from celerp_fixed_assets.calc import rules
 from celerp.services.periods import month_index, period_label
-from celerp_fixed_assets.projections import money
+from celerp.services.money import money_text
 from celerp_fixed_assets.operations import conflict
 from celerp_fixed_assets.store import _emit, _entities, _state
 from ui.i18n import t
@@ -64,7 +64,7 @@ async def _runs(session, company_id, start: date, end: date) -> list[dict]:
     for k in range(first, through + 1):
         amount = sum((c.owed.get(k, Decimal(0)) for c in charges), Decimal(0))
         if amount:
-            out.append({"key": f"run:{period_label(k)}", "kind": "run", "date": None, "amount": money(amount, books.currency),
+            out.append({"key": f"run:{period_label(k)}", "kind": "run", "date": None, "amount": money_text(amount, books.currency),
                         "label": ("fixed_assets.ye_run", {"month": runs._long(k)}), "href": "/fixed-assets/runs"})
     return out
 
@@ -73,7 +73,7 @@ async def _exceptions(session, company_id) -> list[dict]:
     currency = await setup.currency(session, company_id)
     return [{"key": f"exception:{a['asset_id']}", "kind": "exception", "date": f"{a['exception']['first_month']}-01",
              "amount": None if a["exception"].get("amount") is None
-             else money(Decimal(a["exception"]["amount"]), currency),
+             else money_text(Decimal(a["exception"]["amount"]), currency),
              "label": ("fixed_assets.ye_exception", {"asset": a["number"], "month": a["exception"]["first_month"]}),
              "href": f"/fixed-assets/assets/{a['asset_id']}"} for a in await runs.attention(session, company_id)]
 

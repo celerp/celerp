@@ -19,10 +19,9 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from celerp.accounting_roles import refused
-from celerp.services.money import books_currency, to_decimal
+from celerp.services.money import books_currency, money_text, to_decimal
 from celerp_fixed_assets import disposal, projections, runs, setup, taxbooks
 from celerp.services.periods import month_index
-from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
     MODULE,
     _create_asset,
@@ -208,9 +207,9 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         (number,) = await _next_numbers(session, theirs, 1)
         values = await taxbooks.transfer_values(session, company_id, books.settings, asset_id,
                                                 date.fromisoformat(day))
-        shown = {**item["shown"], "date": day, "company": their_name, "price": money(price, ours_in),
+        shown = {**item["shown"], "date": day, "company": their_name, "price": money_text(price, ours_in),
                  "rate": str(rate) if rate != 1 else None, "their_number": number,
-                 "their_cost": money(cost, theirs_in), "their_class": their_cls["name"], "their_currency": theirs_in,
+                 "their_cost": money_text(cost, theirs_in), "their_class": their_cls["name"], "their_currency": theirs_in,
                  "journals": [_journal_view(item["lines"], ours_in), _journal_view(their_lines, theirs_in)]}
         # Their lines name accounts in their chart, not ours.
         labels = await setup.account_labels(session, theirs, [ln.account for ln in their_lines])
@@ -220,7 +219,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
             "item": item, "day": day, "price": price, "cost": cost, "their_cls": their_cls,
             "their_lines": their_lines, "number": number, "currency": ours_in, "our_name": our_name, "their_name": their_name,
             "policy": _life_left(asset, setup.policy_of(their_cls, their_fa), day),
-            "tax_values": values, "their_tax_values": {k: money(to_decimal(v) * rate, theirs_in)
+            "tax_values": values, "their_tax_values": {k: money_text(to_decimal(v) * rate, theirs_in)
                                                        for k, v in values.items()},
             "history": [{k: m.get(k) for k in _HISTORY} for m in projections.live(movements)],
             "basis": [asset.get("version"), asset.get("movement_count"),
@@ -244,7 +243,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         je_id, movement_id = await disposal.record(
             session, company_id, user_id, item, day, "transferred", None, op_key, key="ict",
             operation="transfer_out", memo=f"transferred to {context['their_name']}", target=target,
-            price=money(context["price"], context["currency"]), tax_values=context["tax_values"])
+            price=money_text(context["price"], context["currency"]), tax_values=context["tax_values"])
         their_journals, contributions = [], []
         if context["their_lines"]:
             their_journals.append(await _post(

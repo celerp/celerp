@@ -20,9 +20,8 @@ from decimal import Decimal
 from fastapi import HTTPException
 
 from celerp.accounting_roles import refused
-from celerp.services.money import to_decimal
+from celerp.services.money import money_text, to_decimal
 from celerp_fixed_assets import opening, recon, setup
-from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
     WRITTEN_OFF_OVER_COST, _create_asset, _date, _effects, _money_in, _move, _next_numbers,
     _run, _undo, after_cutover, tag_taken)
@@ -348,8 +347,8 @@ async def _plan(session, company_id, books: _Books, numbered, excluded: set[int]
         rows = sorted({e["row"] for e in errors})
         raise setup.refuse("fixed_assets.err_import_rows_with_problems", rows=", ".join(str(n) for n in rows))
     importing = _balances(books, creating)
-    accounts = [{**a, "importing": money(importing.get(a["account"]), books.currency),
-                 "difference": money(to_decimal(a["ledger"]) - to_decimal(a["registered"]) - importing.get(a["account"], 0),
+    accounts = [{**a, "importing": money_text(importing.get(a["account"]), books.currency),
+                 "difference": money_text(to_decimal(a["ledger"]) - to_decimal(a["registered"]) - importing.get(a["account"], 0),
                                      books.currency)}
                 for a in (await opening.view(session, company_id))["accounts"]]
     shown = {
@@ -359,7 +358,7 @@ async def _plan(session, company_id, books: _Books, numbered, excluded: set[int]
                    "history": sum(1 for r in checked if r.history and not r.errors and not r.excluded)},
         "errors": errors,
         "duplicates": _duplicates(books, checked),
-        "assets": [{"row": r.row, "number": r.number, "name": r.values["name"], "cost": money(r.figures["cost"], books.currency)}
+        "assets": [{"row": r.row, "number": r.number, "name": r.values["name"], "cost": money_text(r.figures["cost"], books.currency)}
                    for r in creating],
         "accounts": accounts,
     }

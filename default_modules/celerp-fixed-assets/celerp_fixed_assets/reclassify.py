@@ -19,8 +19,7 @@ from fastapi import HTTPException
 from celerp_fixed_assets import disposal, projections, runs, setup
 from celerp.accounting_roles import refused
 from celerp.services.periods import month_index, period_label
-from celerp.services.money import to_decimal
-from celerp_fixed_assets.projections import money
+from celerp.services.money import money_text, to_decimal
 from celerp_fixed_assets.operations import (
     _date, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, in_use)
 from celerp_fixed_assets.store import _emit
@@ -76,7 +75,7 @@ async def reclassify(session, company_id, user_id, asset_id: str, body: dict) ->
         for moved, _ in balance_moves(asset["number"], old, new, cost, ad + caught_up + imp):
             lines += moved
         shown = {"number": asset["number"], "date": day, "from_class": old["name"], "to_class": new["name"],
-                 "depreciation": money(caught_up, books.currency),
+                 "depreciation": money_text(caught_up, books.currency),
                  "journals": [_journal_view(lines, books.currency)] if lines else []}
         return shown, {"asset": asset, "old": old, "new": new, "day": day, "lines": lines,
                        "periods": {period_label(k): str(v) for k, v in owed.items()},

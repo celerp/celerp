@@ -35,7 +35,7 @@ from celerp.importers.results import keyed_reason
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.payments import lock_recorded_unmatched
-from celerp.services.money import round_money, to_decimal
+from celerp.services.money import money_text, round_money, to_decimal
 from celerp.services.permissions import require_permission
 from celerp_accounting import statement_lines as SL
 from celerp_accounting.models import (Account, BankAccount, BankStatementLine, ReconciliationRule,
@@ -146,10 +146,6 @@ async def _bank(db: AsyncSession, company_id: uuid.UUID, bank_id) -> BankAccount
     return (await SL.scoped(db, company_id, "bank", [bank_id]))[0]
 
 
-def _money_text(value, currency: str) -> str:
-    return str(round_money(to_decimal(value), currency))
-
-
 # ── Read ────────────────────────────────────────────────────────────────────
 
 class ReadStatement(BaseModel):
@@ -235,7 +231,7 @@ async def _known(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | No
     for e in await _je_entries_for_account(db, company_id, bank):
         if e["je_id"] in held or e["amount"] is None:
             continue
-        bucket = (str(e["ts"])[:10], _money_text(e["amount"], bank.currency))
+        bucket = (str(e["ts"])[:10], money_text(e["amount"], bank.currency))
         counts[bucket] = counts.get(bucket, 0) + 1
     return known, counts
 
@@ -609,10 +605,10 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
 
 def _line_dict(line: BankStatementLine, currency: str) -> dict:
     return {"id": str(line.id), "statement_id": str(line.reconciliation_id), "line_date": line.line_date,
-            "description": line.description, "amount": _money_text(line.amount, currency), "status": line.status,
+            "description": line.description, "amount": money_text(line.amount, currency), "status": line.status,
             "reference": line.reference, "fitid": line.fitid, "counterparty_key": line.counterparty_key,
             "counterparty_account": line.counterparty_account,
-            "raw_balance": None if line.raw_balance is None else _money_text(line.raw_balance, currency),
+            "raw_balance": None if line.raw_balance is None else money_text(line.raw_balance, currency),
             "matched_je_ids": list(line.matched_je_ids or []), "suggestion": line.suggestion,
             "suggestion_version": suggestion_version(line.suggestion), "client_query": line.client_query, "attachments": _attachments(line)}
 
@@ -687,7 +683,7 @@ def _counted_entries(recon: ReconciliationSession | None, rows: list[BankStateme
     held = {je for line in rows for je in line.matched_je_ids or []}
     counted = set(recon.reconciled_je_ids or []) - held
     return [{"je_id": e["je_id"], "ts": e.get("ts"), "memo": e.get("memo"),
-             "amount": None if e["amount"] is None else _money_text(e["amount"], currency)}
+             "amount": None if e["amount"] is None else money_text(e["amount"], currency)}
             for e in entries if e["je_id"] in counted]
 
 
@@ -739,7 +735,7 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^(
         g["suggestion"] = g["lines"][0]["suggestion"] if len({str(l["suggestion"]) for l in g["lines"]}) == 1 else None
     ordered = sorted(groups.values(), key=lambda g: (-abs(g["total"]), g["key"]))
     for g in ordered:
-        g["total"] = _money_text(g["total"], bank.currency)
+        g["total"] = money_text(g["total"], bank.currency)
     first_open = next((s for s in sessions if s.status == "open"), None)
     if first_open is not None:
         await read_counted(db, company_id, bank, first_open)
@@ -747,14 +743,14 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^(
     waiting = [l for l in rows if _in_view(l, "open", open_ids)]
     return {"bank_id": str(bank.id), "view": view, "q": q, "groups": ordered,
             "statements": [{"id": str(s.id), "period_start": s.period_start, "statement_date": s.statement_date,
-                            "opening_balance": _money_text(s.opening_balance or 0, bank.currency),
-                            "closing_balance": _money_text(s.statement_balance, bank.currency),
+                            "opening_balance": money_text(s.opening_balance or 0, bank.currency),
+                            "closing_balance": money_text(s.statement_balance, bank.currency),
                             "status": s.status, "needs_review": _needs_review(s, bank, entries)}
                            for s in reversed(sessions)],
             "summary": {"lines": len(rows), "open": len(waiting),
                         "questions": sum(1 for l in waiting if SL.asked(l)),
                         "posted": sum(1 for l in rows if l.status != "unmatched")},
-            "difference": {"amount": None if balance is None else _money_text(balance[1], bank.currency),
+            "difference": {"amount": None if balance is None else money_text(balance[1], bank.currency),
                            "statement_id": None if first_open is None else str(first_open.id),
                            "statement_date": None if first_open is None else first_open.statement_date,
                            "notes": await _difference_notes(db, company_id, bank, sessions),
@@ -1536,7 +1532,7 @@ async def _open_docs(db: AsyncSession, company_id: uuid.UUID, currency: str, bas
         if (state.get("currency") or base) != currency:
             continue
         out.append({"doc_id": doc_id, "doc_type": state["doc_type"], "contact_id": state.get("contact_id"),
-                    "open_balance": _money_text(state["amount_outstanding"], currency), "ref": state.get("ref_id"),
+                    "open_balance": money_text(state["amount_outstanding"], currency), "ref": state.get("ref_id"),
                     "identifier": suggest.normalised(state.get("ref_id") or state.get("doc_number"))})
     once = await _carried_once(db, company_id, {d["identifier"] for d in out if d["identifier"]})
     return [{**d, "identifier": d["identifier"] if d["identifier"] in once else None} for d in out]
@@ -1662,7 +1658,7 @@ async def _suggest_input(db: AsyncSession, company_id: uuid.UUID, bank_id) -> tu
     bank = await _bank(db, company_id, bank_id)
     rows = await _open_lines(db, company_id, BankStatementLine.bank_account_id == bank.id)
     lines = [{"id": str(l.id), "line_date": l.line_date, "description": l.description,
-              "amount": _money_text(l.amount, bank.currency), "counterparty_key": l.counterparty_key,
+              "amount": money_text(l.amount, bank.currency), "counterparty_key": l.counterparty_key,
               "counterparty_account": l.counterparty_account, "reference": l.reference,
               "client": l.client_query if SL.asked(l) and l.client_query.get("answered") else None} for l in rows]
     ctx = await _ladder_context(db, company_id, bank, rows)
@@ -1990,7 +1986,7 @@ async def withdraw_question(bank_id: uuid.UUID, payload: LineIds,
 def _question(line: BankStatementLine, bank: BankAccount) -> dict:
     q = line.client_query or {}
     return {"line_id": str(line.id), "bank_name": bank.bank_name, "line_date": line.line_date,
-            "description": line.description, "amount": _money_text(line.amount, bank.currency),
+            "description": line.description, "amount": money_text(line.amount, bank.currency),
             "currency": bank.currency, "status": line.status, "note": q.get("note"), "asked": q.get("asked"),
             "asks": q.get("asks"), "answer": q.get("answer"), "contact_text": q.get("contact_text"),
             "answered": q.get("answered"), "attachments": _attachments(line)}

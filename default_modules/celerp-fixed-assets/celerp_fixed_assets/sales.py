@@ -26,9 +26,9 @@ from decimal import Decimal
 from celerp.accounting_roles import catalog_refusal, refused
 from celerp.models.projections import Projection
 from celerp.services.account_roles import line_has_role, line_roles
-from celerp.services.money import currency_dp, round_money, to_decimal
+from celerp.services.money import currency_dp, money_text, round_money, to_decimal
 from celerp_fixed_assets import disposal, runs, setup
-from celerp_fixed_assets.projections import money, said
+from celerp_fixed_assets.projections import said
 from celerp_fixed_assets.operations import (
     MODULE,
     _continued,
@@ -304,7 +304,7 @@ async def sell(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         buyer = await _buyer(session, company_id, body.get("contact_id"))
         await refuse_waiting(session, company_id, asset_id, asset)
         item = await _plan(session, company_id, books, asset_id, asset, day, price)
-        shown = {"number": asset["number"], "name": asset["name"], "date": day, "price": money(price, currency),
+        shown = {"number": asset["number"], "name": asset["name"], "date": day, "price": money_text(price, currency),
                  "contact_name": buyer["contact_name"],
                  **{k: item["shown"][k] for k in disposal.LEAVING},
                  "journals": [_journal_view(item["lines"], currency)]}
@@ -317,7 +317,7 @@ async def sell(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         invoice_id = await _draft_invoice(
             session, company_id, user_id, asset_id, asset, day=context["day"],
             line={"name": f"{asset['number']} {asset['name']}", "unit_price": float(context["price"])},
-            header=dict(context["buyer"]), sale={"price": money(context["price"], context["currency"]), **context["buyer"]})
+            header=dict(context["buyer"]), sale={"price": money_text(context["price"], context["currency"]), **context["buyer"]})
         return {"invoice_id": invoice_id, "assets": [{"id": asset_id, "number": asset["number"]}]}, _effects()
 
     return await _run(session, company_id, user_id, body, op_type="sale", keys=_WRITE_KEYS, plan=plan, apply=apply)
@@ -415,8 +415,8 @@ async def credit(session, company_id, user_id, asset_id: str, body: dict) -> dic
                 raise refuse("fixed_assets.err_credit_over", amount=said(remaining, base), number=asset["number"])
         else:
             amount = round_money(remaining / rate, in_doc)
-        shown = {"number": asset["number"], "kind": kind, "date": day, "amount": money(amount, in_doc),
-                 "invoice": doc_number(invoice, sale["invoice_id"]), "remaining": money(remaining, base),
+        shown = {"number": asset["number"], "kind": kind, "date": day, "amount": money_text(amount, in_doc),
+                 "invoice": doc_number(invoice, sale["invoice_id"]), "remaining": money_text(remaining, base),
                  "currency": in_doc}
         return shown, {"invoice": invoice, "sale": sale, "source": source, "kind": kind, "day": day, "amount": amount,
                        "basis": [asset.get("version"), asset.get("movement_count"), sale.get("credits")]}
@@ -475,8 +475,8 @@ async def view(session, company_id, asset_id: str) -> dict:
         out["draft_deleted"] = line is None and not out["invoice_void"]
         out["actions"] = ["cancel"] + (["reissue"] if line is None or invoice.get("status") == "void" else [])
         currency = books.currency
-        out.update(proceeds=money(proceeds, currency), credited=money(0, currency),
-                   remaining=money(proceeds, currency))
+        out.update(proceeds=money_text(proceeds, currency), credited=money_text(0, currency),
+                   remaining=money_text(proceeds, currency))
         try:
             item = await _plan(session, company_id, books, asset_id, asset, (invoice or {}).get("issue_date")
                                or sale["date"], proceeds)
@@ -490,20 +490,20 @@ async def view(session, company_id, asset_id: str) -> dict:
     currency = await setup.currency(session, company_id)
     if sale["state"] == "returned":
         # A return credits what was left, and the sale's result went back with the asset.
-        out.update(proceeds=money(to_decimal(sale["proceeds"]), currency), credited=money(to_decimal(sale["proceeds"]), currency),
-                   remaining=money(0, currency), carrying_amount=None, gain_or_loss=None, actions=[],
+        out.update(proceeds=money_text(to_decimal(sale["proceeds"]), currency), credited=money_text(to_decimal(sale["proceeds"]), currency),
+                   remaining=money_text(0, currency), carrying_amount=None, gain_or_loss=None, actions=[],
                    draft_credit_notes=[])
         return out
     credited = _credited(sale)
     drafts = await _draft_credit_notes(session, company_id, sale["invoice_id"], asset_id)
     je = await _journal(session, company_id, sale["journal_id"]) if sale.get("journal_id") else None
-    out.update(proceeds=money(to_decimal(sale["proceeds"]), currency), credited=money(credited, currency),
-               remaining=money(to_decimal(sale["proceeds"]) - credited, currency),
+    out.update(proceeds=money_text(to_decimal(sale["proceeds"]), currency), credited=money_text(credited, currency),
+               remaining=money_text(to_decimal(sale["proceeds"]) - credited, currency),
                carrying_amount=sale.get("carrying_amount"),
                gain_or_loss=(asset.get("disposal") or {}).get("gain_or_loss"),
                draft_credit_notes=drafts, actions=["credit"] if sale["state"] == "sold" and not drafts else [],
-               journal={"lines": [{"account": e["account"], "debit": money(e.get("debit"), currency),
-                                   "credit": money(e.get("credit"), currency)}
+               journal={"lines": [{"account": e["account"], "debit": money_text(e.get("debit"), currency),
+                                   "credit": money_text(e.get("credit"), currency)}
                                   for e in (je or {}).get("entries") or []]})
     await label_lines(session, company_id, out)
     return out
@@ -526,7 +526,7 @@ async def _dispose(session, company_id, user_id, asset_id: str, asset: dict, sal
                         lines=await _continued(session, company_id, item["lines"]), source_id=asset_id,
                         href=asset_href(asset_id), label=asset["number"], op_key=op_key)
     currency = books.currency
-    gain = money(_total(held) + item["gain"], currency)
+    gain = money_text(_total(held) + item["gain"], currency)
     caught = await catch_up(session, company_id, user_id, asset_id, day=day, periods=item["periods"], op_key=op_key,
                             journal_id=je_id)
     movement_id = await _move(session, company_id, user_id, asset_id, kind="posted", operation="disposal",
@@ -541,7 +541,7 @@ async def _dispose(session, company_id, user_id, asset_id: str, asset: dict, sal
         # still settles through its invoice's.
         "journals": [*(sale.get("journals") or ()), je_id],
         "clearing": clearing if sale_proceeds is None else sale.get("clearing"),
-        "proceeds": money(proceeds if sale_proceeds is None else sale_proceeds, currency),
+        "proceeds": money_text(proceeds if sale_proceeds is None else sale_proceeds, currency),
         "carrying_amount": item["shown"]["carrying_amount"]})
 
 
@@ -609,9 +609,9 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
                             lines=await _continued(session, company_id, restated + _through(clearing, added)),
                             source_id=asset_id, href=asset_href(asset_id), label=number, op_key=op_key)
         credits = {**(sale.get("credits") or {}), doc_id: {
-            "kind": "adjust", "amount": money(amount, books.currency), "journal_id": je_id, "live": True, "date": day}}
+            "kind": "adjust", "amount": money_text(amount, books.currency), "journal_id": je_id, "live": True, "date": day}}
         await _set(session, company_id, user_id, asset_id, asset["status"],
-                   disposal={**(asset.get("disposal") or {}), "gain_or_loss": money(gain - amount, books.currency)},
+                   disposal={**(asset.get("disposal") or {}), "gain_or_loss": money_text(gain - amount, books.currency)},
                    sale={**sale, "credits": credits, "journals": [*sale["journals"], je_id]})
         return
     # A foreign credit note converts to the base currency within one of its smallest units.
@@ -644,7 +644,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     await _move(session, company_id, user_id, asset_id, kind="reversal", operation="sale_return",
                 effective=mv["effective_date"], posting=day, amounts={k: -v for k, v in moved.items()},
                 op_key=op_key, quantity=str(-to_decimal(mv.get("quantity"))), reverses=sale["movement_id"])
-    credits = {**(sale.get("credits") or {}), doc_id: {"kind": "returned", "amount": money(amount, books.currency),
+    credits = {**(sale.get("credits") or {}), doc_id: {"kind": "returned", "amount": money_text(amount, books.currency),
                                                        "journal_id": je_id, "live": True, "date": day,
                                                        "clearing": clearing}}
     await _set(session, company_id, user_id, asset_id, "active", disposal=None,
@@ -683,7 +683,7 @@ async def _credit_reversed(session, company_id, user_id, asset_id: str, asset: d
                                     lines=await _continued(session, company_id, restated), source_id=asset_id,
                                     href=asset_href(asset_id), label=asset["number"], op_key=op_key))
     await _set(session, company_id, user_id, asset_id, asset["status"],
-               disposal={**(asset.get("disposal") or {}), "gain_or_loss": money(gain, books.currency)},
+               disposal={**(asset.get("disposal") or {}), "gain_or_loss": money_text(gain, books.currency)},
                sale={**sale, "credits": credits, "journals": journals})
 
 

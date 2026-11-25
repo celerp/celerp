@@ -23,9 +23,9 @@ from __future__ import annotations
 from decimal import Decimal
 
 from celerp.accounting_roles import refused
-from celerp.services.money import to_decimal
+from celerp.services.money import money_text, to_decimal
 from celerp_fixed_assets import disposal, operations, projections, runs, setup, transfer
-from celerp_fixed_assets.projections import money, said
+from celerp_fixed_assets.projections import said
 from celerp_fixed_assets.operations import (
     _claim,
     _create_asset,
@@ -113,7 +113,7 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         movements = await asset_movements(session, company_id, asset_id)
         disposal.check_date(books, asset, projections.live(movements), day, what="addition")
         life = _life(body.get("life_months"))
-        shown = {"kind": kind, "date": day, "number": asset["number"], "amount": money(funding["amount"], currency),
+        shown = {"kind": kind, "date": day, "number": asset["number"], "amount": money_text(funding["amount"], currency),
                  "life_months": life}
         context = {"kind": kind, "asset": asset, "cls": cls, "day": day, "funding": funding, "life": life,
                    "generation": funding["generation"],
@@ -267,9 +267,9 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
         lines = [JournalLine(account=k, debit=v) for k, v in debits.items()]
         lines.append(JournalLine(account=cls["asset_account"], credit=total))
         numbers = await _next_numbers(session, company_id, len(allocations))
-        shown = {"date": day, "number": site["number"], "balance": money(balance, currency),
-                 "remainder": money(balance - total, currency), "journals": [_journal_view(lines, currency)],
-                 "assets": [{"number": n, "name": a["name"], "class": a["cls"]["name"], "cost": money(a["amount"], currency)}
+        shown = {"date": day, "number": site["number"], "balance": money_text(balance, currency),
+                 "remainder": money_text(balance - total, currency), "journals": [_journal_view(lines, currency)],
+                 "assets": [{"number": n, "name": a["name"], "class": a["cls"]["name"], "cost": money_text(a["amount"], currency)}
                             for n, a in zip(numbers, allocations)]}
         return shown, {"site": site, "day": day, "allocations": allocations, "numbers": numbers, "lines": lines,
                        "total": total, "full": total == balance,

@@ -21,8 +21,7 @@ from celerp_fixed_assets import projections, runs, setup
 from celerp.accounting_roles import refused
 from celerp.services.units import plain_number
 from celerp.services.periods import month_index, parse_period, period_label
-from celerp.services.money import to_decimal
-from celerp_fixed_assets.projections import money
+from celerp.services.money import money_text, to_decimal
 from celerp_fixed_assets.operations import (
     MODULE,
     _date,
@@ -204,10 +203,10 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
         lines.append(JournalLine(account=accounts["gain"](), credit=gain, role="disposal_gain"))
     elif gain < 0:
         lines.append(JournalLine(account=accounts["loss"](), debit=-gain, role="disposal_loss"))
-    shown = {"number": asset["number"], "name": asset["name"], "share": str(share), "cost": money(gone_cost, currency),
-             "depreciation": money(depreciation, currency), "accumulated_depreciation": money(gone_ad, currency),
-             "accumulated_impairment": money(gone_imp, currency),
-             "carrying_amount": money(carrying, currency), "gain_or_loss": money(gain, currency)}
+    shown = {"number": asset["number"], "name": asset["name"], "share": str(share), "cost": money_text(gone_cost, currency),
+             "depreciation": money_text(depreciation, currency), "accumulated_depreciation": money_text(gone_ad, currency),
+             "accumulated_impairment": money_text(gone_imp, currency),
+             "carrying_amount": money_text(carrying, currency), "gain_or_loss": money_text(gain, currency)}
     return {"asset_id": asset_id, "asset": asset, "shown": shown, "lines": lines, "full": share == 1,
             "quantity": quantity, "gain": gain,
             "amounts": {"cost": -gone_cost, _AD: -gone_ad, _IMP: -gone_imp, _SURPLUS: -gone_surplus},
@@ -249,12 +248,12 @@ async def record(session, company_id, user_id, item: dict, day: str, reason: str
                               effective=day, posting=day, amounts=item["amounts"], op_key=op_key,
                               quantity=str(-item["quantity"]), **caught,
                               share=str(item["share"]), reason=reason, note=note, journal_id=je_id,
-                              gain_or_loss=money(item["gain"], item["currency"]), **extra)
+                              gain_or_loss=money_text(item["gain"], item["currency"]), **extra)
     if item["full"]:
         await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.status", {
             "status": "disposed", "exception": None,
             "disposal": {"date": day, "reason": reason, "note": note, "op_key": op_key,
-                         "movement_id": movement_id, "journal_id": je_id, "gain_or_loss": money(item["gain"], item["currency"]),
+                         "movement_id": movement_id, "journal_id": je_id, "gain_or_loss": money_text(item["gain"], item["currency"]),
                          **extra}})
     return je_id, movement_id
 
@@ -298,7 +297,7 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
                                      await asset_movements(session, company_id, asset_id), day, share, quantity,
                                      accounts(books)))
         currency = books.currency
-        totals = {k: money(sum((to_decimal(i["shown"][k]) for i in items), Decimal(0)), currency) for k in LEAVING}
+        totals = {k: money_text(sum((to_decimal(i["shown"][k]) for i in items), Decimal(0)), currency) for k in LEAVING}
         shown = {"date": day, "reason": reason, "note": note, **totals, "assets": [i["shown"] for i in items],
                  "journals": [_journal_view(i["lines"], currency) for i in items]}
         basis = [[(i["asset"].get("version"), i["asset"].get("movement_count")) for i in items],

@@ -8,7 +8,7 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
-from celerp.services.money import round_money, to_decimal
+from celerp.services.money import money_text, to_decimal
 
 # The money buckets a movement carries, as signed amounts.
 BUCKETS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus")
@@ -16,16 +16,12 @@ BUCKETS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revalu
 REMEASUREMENTS = ("revaluation", "impairment", "impairment_reversal")
 
 
-def money(value, currency: str) -> str:
-    """An amount as stored and shown: rounded once to ``currency``'s precision."""
-    return str(round_money(to_decimal(value), currency))
-
 
 def said(value, currency: str) -> str:
     """An amount in a message, as the pages show it: symbol, thousands grouped, currency precision."""
     from celerp.output.doc_print import fmt_money
 
-    return fmt_money(money(value, currency), currency)
+    return fmt_money(money_text(value, currency), currency)
 
 
 def live(movements: list[dict]) -> list[dict]:

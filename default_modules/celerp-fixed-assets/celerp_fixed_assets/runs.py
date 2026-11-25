@@ -30,7 +30,7 @@ from decimal import Decimal
 from celerp.accounting_roles import catalog_refusal, refused
 from celerp.models.projections import Projection
 from celerp.services.business_time import business_today, company_today
-from celerp.services.money import books_currency, round_money, to_decimal
+from celerp.services.money import books_currency, money_text, round_money, to_decimal
 from celerp_fixed_assets import notices, operations, setup, sources
 from celerp_fixed_assets.calc import rules
 from celerp_fixed_assets.calc.engine import (
@@ -46,7 +46,7 @@ from celerp_fixed_assets.calc.engine import (
 )
 from celerp.services.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.operations import MODULE, _move
-from celerp_fixed_assets.projections import REMEASUREMENTS, live, money
+from celerp_fixed_assets.projections import REMEASUREMENTS, live
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state, movements_by_asset
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -397,7 +397,7 @@ async def next_charge(session, company_id, asset_id: str, asset: dict) -> dict |
         return {"month": period_label(month), "held": True, "amount": None, "catches_up": []}
     postable = charge.postable()
     return {"month": period_label(month), "held": False,
-            "amount": money(sum((a for _, a in postable), Decimal(0)), books.currency),
+            "amount": money_text(sum((a for _, a in postable), Decimal(0)), books.currency),
             "catches_up": [period_label(k) for k, _ in postable if k < month]}
 
 
@@ -477,7 +477,7 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
         for into, months in by_month.items():
             amount = c.held_amount(months)
             held[into][c.asset_id] = {"asset_id": c.asset_id, "number": c.asset["number"], "name": c.asset.get("name"),
-                                   "amount": None if amount is None else money(amount, currency), "action": c.action,
+                                   "amount": None if amount is None else money_text(amount, currency), "action": c.action,
                                    "reason": c.reason if c.action == "method_unavailable" else None}
         exceptions[c.asset_id] = (c.asset.get("exception"), c.exception(month, user_id))
     months, total = [], Decimal(0)
@@ -485,11 +485,11 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
         lines = _lines(items[k])
         month_total = sum((it["amount"] for it in items[k]), Decimal(0))
         total += month_total
-        months.append({"month": period_label(k), "total": money(month_total, currency),
+        months.append({"month": period_label(k), "total": money_text(month_total, currency),
                        "lines": operations._journal_view(lines, currency)["lines"], "assets": _by_asset(items[k], currency),
                        "exceptions": list(held[k].values())})
     attention = sum(1 for _, new in exceptions.values() if new)
-    shown = {"empty": not charges, "months": months, "total": money(total, currency),
+    shown = {"empty": not charges, "months": months, "total": money_text(total, currency),
              "ready": len(charges) - attention, "attention": attention}
     context = {"books": books, "month": month, "months": open_months, "items": items, "held": held,
                "exceptions": exceptions, "basis": await _ledger_basis(session, company_id, books)}
@@ -507,12 +507,12 @@ def _by_asset(items: list[dict], currency: str) -> list[dict]:
                                                "months": [], "amount": Decimal(0)})
         row["months"].append(period_label(it["month"]))
         row["amount"] += it["amount"]
-    return [{**row, "months": sorted(row["months"]), "amount": money(row["amount"], currency)} for row in rows.values()]
+    return [{**row, "months": sorted(row["months"]), "amount": money_text(row["amount"], currency)} for row in rows.values()]
 
 
 def _record(k: int, status: str, items: list[dict], held: dict, currency: str, **extra) -> dict:
     total = sum((it["amount"] for it in items), Decimal(0))
-    return {"month": period_label(k), "status": status, "total": money(total, currency),
+    return {"month": period_label(k), "status": status, "total": money_text(total, currency),
             "assets": _by_asset(items, currency), "exceptions": list(held.values()), **extra}
 
 

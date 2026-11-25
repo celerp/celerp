@@ -72,6 +72,11 @@ def round_money(v: _MoneyInput, currency: str) -> Decimal:
     return to_decimal(v).quantize(quant, rounding=ROUND_HALF_UP)
 
 
+def money_text(v: _MoneyInput, currency: str) -> str:
+    """An amount as stored and shown: rounded once to ``currency``'s precision."""
+    return str(round_money(v, currency))
+
+
 def to_stored_float(v: Decimal) -> float:
     """Convert a rounded Decimal to float for JSON storage.
 

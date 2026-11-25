@@ -28,12 +28,12 @@ from celerp.services.business_time import business_today
 
 from celerp_fixed_assets import notices, projections, reclassify, runs, setup, sources
 from celerp.services.periods import fiscal_year_start_index, month_index, parse_period, period_label
-from celerp.services.money import to_decimal
+from celerp.services.money import money_text, to_decimal
 from celerp_fixed_assets.operations import (
     MODULE, _claim, _date, _intent_hash, _journal_view, _lines, _money_in, _move, _op_key, _open_line, _post,
     _reversed_lines, _run, _same_intent, asset_movements, in_use, same_fund)
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state
-from celerp_fixed_assets.projections import BUCKETS, money, said
+from celerp_fixed_assets.projections import BUCKETS, said
 from ui.i18n import t
 
 ESTIMATE_FIELDS = setup.POLICY_FIELDS
@@ -407,8 +407,8 @@ def _depreciation(d: Draft, treatment: str) -> None:
     prior = sorted({y for y in years.values() if y < current})
     for year in prior:
         in_year = [k for k in months if _fiscal_year(books.settings, k) == year]
-        d.prior_detail.append({"year": year, "reported": money(_sum(reported.get(k) for k in in_year), books.currency),
-                               "restated": money(_sum(restated.get(k) for k in in_year), books.currency)})
+        d.prior_detail.append({"year": year, "reported": money_text(_sum(reported.get(k) for k in in_year), books.currency),
+                               "restated": money_text(_sum(restated.get(k) for k in in_year), books.currency)})
     d.prior_years.update(prior)
     groups: dict[bool, dict[int, Decimal]] = {}
     for k, amount in diff.items():
@@ -433,7 +433,7 @@ def _future(d: Draft, start: int, months: int = 12) -> list[dict]:
     if hyp.get("status") != "active" or hyp["policy"]["method"] == "none":
         return []
     periods = runs.asset_schedule(hyp, moves, d.books.settings, start + months - 1)
-    return [{"month": p.period, "amount": money(p.amount, d.books.currency)} for p in periods if parse_period(p.period) >= start]
+    return [{"month": p.period, "amount": money_text(p.amount, d.books.currency)} for p in periods if parse_period(p.period) >= start]
 
 
 # ── Planning ─────────────────────────────────────────────────────────────────
@@ -858,7 +858,7 @@ async def prior_period_report(session, company_id, year: int) -> dict:
     keep = ("id", "asset_id", "number", "prior_years", "posting_date", "journals", "applied_at")
     return {"year": year,
             "items": [{**{k: r.get(k) for k in keep}, "years": r.get("prior_years")} for r in items],
-            "years": [{"year": year, "reported": money(reported, currency), "restated": money(restated, currency)}] if items else [],
+            "years": [{"year": year, "reported": money_text(reported, currency), "restated": money_text(restated, currency)}] if items else [],
             "immaterial": [{**{k: r.get(k) for k in keep}, "years": r.get("prior_years"),
                             "reason": r.get("immaterial_reason")}
                            for r in applied if r.get("treatment") == "profit_and_loss"]}

@@ -28,10 +28,10 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
-from celerp.services.money import books_currency, to_decimal
+from celerp.services.money import books_currency, money_text, to_decimal
 from celerp_fixed_assets import disposal, notices, projections, runs, setup
 from celerp.services.periods import month_index, parse_period, period_label
-from celerp_fixed_assets.projections import money, said
+from celerp_fixed_assets.projections import said
 from celerp_fixed_assets.operations import (
     _continued,
     _date,
@@ -182,7 +182,7 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
         amounts = {"cost": _ZERO, _IMP: -reversal, _SURPLUS: to_surplus}
         new_carrying = carrying + reversal
         accumulated_after = _ZERO
-        extra = {"reversal": money(reversal, currency), "limit": money(at["shadow"], currency)}
+        extra = {"reversal": money_text(reversal, currency), "limit": money_text(at["shadow"], currency)}
     to_pnl, to_surplus = to_pnl + 0, to_surplus + 0  # no negative zero
     diff = _depreciation(books, asset, movements, day, operation, new_carrying, at["month"], at["charged"])
     depreciation = sum(diff.values(), _ZERO)
@@ -190,10 +190,10 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
         expense = asset.get("depreciation_account") or cls["depreciation_account"]
         lines = _lines(expense, accumulated_account, depreciation) + lines
     amounts[_AD] = accumulated_after
-    shown = {"number": asset["number"], "name": asset["name"], "depreciation": money(depreciation, currency),
-             "carrying_amount": money(carrying, currency), "measured": money(value, currency),
-             "new_carrying_amount": money(new_carrying, currency), "surplus": money(to_surplus, currency),
-             "profit_or_loss": money(-to_pnl, currency), **extra}
+    shown = {"number": asset["number"], "name": asset["name"], "depreciation": money_text(depreciation, currency),
+             "carrying_amount": money_text(carrying, currency), "measured": money_text(value, currency),
+             "new_carrying_amount": money_text(new_carrying, currency), "surplus": money_text(to_surplus, currency),
+             "profit_or_loss": money_text(-to_pnl, currency), **extra}
     return {"asset_id": asset_id, "asset": asset, "shown": shown, "lines": lines, "amounts": amounts,
             "periods": {period_label(k): str(v) for k, v in diff.items()}, "pnl": to_pnl,
             "carrying_amount": new_carrying, "value": value, "basis": basis}
@@ -322,7 +322,7 @@ async def revalue_class(session, company_id, user_id, class_id: str, body: dict)
             items.append(_plan(books, asset_id, locked[asset_id].state, cls,
                                await asset_movements(session, company_id, asset_id), day, "revaluation", value,
                                _basis(row)))
-        totals = {k: money(sum((to_decimal(i["shown"][field]) for i in items), _ZERO), currency)
+        totals = {k: money_text(sum((to_decimal(i["shown"][field]) for i in items), _ZERO), currency)
                   for k, field in (("carrying_amount", "carrying_amount"), ("fair_value", "measured"),
                                    ("surplus", "surplus"), ("profit_or_loss", "profit_or_loss"))}
         shown = {"date": day, "class": cls["name"], "missing": missing, "totals": totals,
@@ -462,7 +462,7 @@ async def record_review(session, company_id, user_id, asset_id: str, body: dict)
     await _emit(session, company_id, user_id, review_id, "fa_review", "fa.review.recorded", data)
     await session.flush()
     carrying = to_decimal(asset.get("cost")) - to_decimal(asset.get(_AD)) - to_decimal(asset.get(_IMP))
-    impairment = ({"date": day, "recoverable_amount": money(recoverable, currency), "basis": basis}
+    impairment = ({"date": day, "recoverable_amount": money_text(recoverable, currency), "basis": basis}
                   if recoverable is not None and recoverable < carrying else None)
     found = await reviews(session, company_id, asset_id)
     return {"id": review_id, **data, "review_due": _due(asset, found), "impairment": impairment}
