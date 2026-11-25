@@ -122,5 +122,5 @@ async def test_handover_confirm_says_the_new_owner_holds_the_rights_and_can_hand
     html = await _users_tab(ui_client, install_owner=True)
     confirm = html.split('hx-confirm="', 1)[1].split('"', 1)[0]
     assert confirm == ("Make Heir the installation owner? Heir will hold the owner rights: installing modules, "
-                       "managing backups and Celerp Cloud, and handing ownership on to another user. You keep your "
+                       "managing backups and Celerp Connect, and handing ownership on to another user. You keep your "
                        "role in the company, but not these rights.")

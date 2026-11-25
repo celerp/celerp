@@ -11,7 +11,7 @@ Adds two sub-accounts under 1130 (Inventory):
   1130-P  Inventory - Purchased    (for PO/bill JEs going forward)
   1130-OB Inventory - Opening Balance  (for one-time opening balance JE)
 
-New companies already get these via THAI_CHART_OF_ACCOUNTS on creation.
+New companies already get these via DEFAULT_CHART_OF_ACCOUNTS on creation.
 This migration backfills existing companies.
 """
 

@@ -9,6 +9,7 @@ include default_modules/celerp-manufacturing/LICENSE
 include default_modules/celerp-labels/LICENSE
 
 recursive-include celerp *.py *.mako *.cfg *.ini *.md
+recursive-include celerp/localization *.json
 recursive-include ui *.py *.css *.js *.png *.json *.html
 recursive-include default_modules *.py *.json *.md
 

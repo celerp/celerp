@@ -30,7 +30,7 @@ from celerp.connectors.execution import record_rerun
 from celerp.connectors.ownership import lock_connector_key
 from celerp.credentials import issue_token_pair
 from celerp.events.engine import emit_event
-from celerp.models.auth import SessionRegistry
+from celerp.models.auth import SessionRegistry, SystemRuntimeState
 from celerp.models.company import Company, Location, User
 from celerp.models.migration import MigrationCleanupTask, MigrationRun
 from celerp.models.projections import Projection
@@ -38,6 +38,7 @@ from celerp.services.company_lock import (
     hold_company, judge_without_company_lock, lock_company, lock_company_for_deletion)
 from celerp.services.migrations import request_cancel, run_cleanup_task
 from celerp.services.permissions import authorize_request
+from celerp.services.runtime_state import dismiss_star_prompt, lock_runtime_state
 from celerp.services.session_tracker import invalidate_sessions, lock_auth_state, register_token
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.observer_control]
@@ -163,6 +164,40 @@ async def test_every_http_request_the_apps_make_names_the_request_it_is_made_for
     async with httpx.AsyncClient(transport=transport) as c:
         await c.get("http://api/outside")
     assert mutation_observer.OUTER_HEADER in sent[0] and mutation_observer.OUTER_HEADER not in sent[1]
+
+
+
+def _refresh_answer(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={"access_token": "a", "refresh_token": "r"})
+
+
+async def test_the_ui_session_refresh_is_not_made_for_the_request_it_rides_on(monkeypatch, session, auth):
+    """The UI renews a session on whichever request comes once the access cookie is past
+    half its life, a time no test controls: the API request it sends is made for no other
+    request, in process or over HTTP, so its write never counts for the route it rode on."""
+    from ui import api_client
+
+    outer, sent = {}, []
+
+    async def api_app(scope, receive, send):
+        outer["in process"] = mutation_observer._REQUEST.get()["outer"]
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body", "body": b'{"access_token": "a", "refresh_token": "r"}'})
+
+    transports = iter([httpx.ASGITransport(app=mutation_observer.observed(api_app, "api")),
+                       httpx.MockTransport(lambda request: sent.append(request.headers) or _refresh_answer(request))])
+    monkeypatch.setattr(api_client, "_anon_client",
+                        lambda timeout=10.0: httpx.AsyncClient(transport=next(transports), base_url="http://api"))
+
+    async def ui(scope, receive, send):
+        await api_client._refresh_upstream("in process")
+        await api_client._refresh_upstream("over http")
+
+    await mutation_observer.observed(ui, "ui")({"type": "http", "method": "POST", "path": "/api/items/merge/preview"},
+                                                None, None)
+    assert outer == {"in process": None}
+    assert mutation_observer.OUTER_HEADER not in sent[0]
 
 
 async def test_a_read_request_that_writes_nothing_durable_is_not_reported(session, auth):
@@ -711,6 +746,24 @@ async def test_a_read_requests_token_refresh_slides_or_registers_its_session(ses
     added = first + next(n for n, line in enumerate(lines) if "session.add(" in line)
     site = f"celerp/services/session_tracker.py:{added} register_token@{first}"
     assert (site in mutation_observer.CENSUS.sites) == (slot == "gone")
+
+
+@pytest.mark.parametrize("row", ["missing", "present"])
+async def test_a_request_write_that_changes_an_infrastructure_row_credits_its_site(session, row):
+    """A write to an INFRASTRUCTURE table is not judged against the company lock, and the
+    line that made it counts for site coverage only when it changed a row: creating the
+    runtime-state row does, an insert that meets the row already there does not."""
+    await session.execute(delete(SystemRuntimeState))
+    if row == "present":
+        session.add(SystemRuntimeState(id=1, value={}))
+    await session.commit()
+    with serving("POST", "/observed"):
+        await dismiss_star_prompt(session)
+    assert _kinds() == []
+    lines, first = inspect.getsourcelines(lock_runtime_state)
+    inserted = first + next(n for n, line in enumerate(lines) if "pg_insert(" in line)
+    site = f"celerp/services/runtime_state.py:{inserted} lock_runtime_state@{first}"
+    assert (site in mutation_observer.CENSUS.sites) == (row == "missing")
 
 
 async def test_a_token_refresh_does_not_show_the_route_it_rides_on_writes(session, auth, monkeypatch):

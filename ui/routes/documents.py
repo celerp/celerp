@@ -6478,7 +6478,7 @@ def _submitted_fund_allocation(form) -> dict:
 
 
 def _collection_status(collection: dict | None, tz: str | None) -> FT | str:
-    """How the invoice's automatic collection through Celerp Cloud stands; nothing for an
+    """How the invoice's automatic collection through Celerp Connect stands; nothing for an
     invoice that is not collected."""
     from celerp.services.business_time import business_date_of
     from celerp.services.collection import IN_FLIGHT, STOP_REASONS
@@ -10541,6 +10541,9 @@ async function _celerpRefreshHeldBadges() {
         // Advance the cached version to the one this save produced, so the tab's next
         // autosave/reprice pins the state it just wrote.
         let savedNotice = '';
+        // Rows added or typed in while the request was in flight (they save when the field is
+        // left) are not in the server's money, so the page's estimate for them stays.
+        const rowsAsSent = _celerpRowsAsSent(savedRows, sentAs);
         try {
             const data = await resp.json();
             if (data && data.fund_notice) savedNotice = data.fund_notice;
@@ -10549,8 +10552,12 @@ async function _celerpRefreshHeldBadges() {
                 savedRows.forEach((row, i) => _celerpSetRowLineId(row, data.line_ids[i]));
             savedRows.forEach((row, i) => { row.dataset.storedAs = sentAs[i]; });
             // The server's money for what was just saved, unless a newer edit is already pending
-            // (its own save brings fresher figures).
-            if (data && data.money && revision === window._celerpLineRevision) _celerpShowStoredMoney(data.money);
+            // (its own save brings fresher figures). Rows changed since the request keep the
+            // estimate, with the stored money kept to put back if that change is abandoned.
+            if (data && data.money && revision === window._celerpLineRevision) {
+                if (rowsAsSent) _celerpShowStoredMoney(data.money);
+                else window._celerpStoredMoney = data.money;
+            }
         } catch (_e) {}
         // The rows just written become this page's stored window, so a follow-up save
         // in the same view replaces the new window length, not the original one.
@@ -10613,6 +10620,12 @@ function _celerpRowSignature(row) {
     return JSON.stringify(Array.from(row.querySelectorAll('input, select, textarea, [data-name]'))
         .filter(el => !el.matches('[data-carry]'))
         .map(el => 'value' in el ? el.value : el.textContent));
+}
+function _celerpRowsAsSent(savedRows, sentAs) {
+    // The rows a save sent are still the page's rows with content, each holding what it sent.
+    const rows = Array.from(document.querySelectorAll('#' + _CELERP_CFG.lineBodyId + ' tr')).filter(_celerpRowHasContent);
+    return rows.length === savedRows.length
+        && rows.every((row, i) => row === savedRows[i] && _celerpRowSignature(row) === sentAs[i]);
 }
 function _celerpRowUnchanged(row) {
     return row.dataset.storedAs != null && row.dataset.storedAs === _celerpRowSignature(row);

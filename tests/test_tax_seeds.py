@@ -11,15 +11,17 @@ import inspect
 import pytest
 
 from celerp import tax_regimes
-from celerp.tax_regimes import TAX_REGIMES, default_line_taxes
+from celerp.localization import packs
+from celerp.tax_regimes import default_line_taxes, get_regime
 
 
 def _rows(country: str) -> dict[str, dict]:
-    return {t["name"]: t for t in TAX_REGIMES[country]["taxes"]}
+    return {t["name"]: t for t in get_regime(country)["taxes"]}
 
 
+@pytest.mark.real_packs
 def test_every_regime_has_exactly_one_default():
-    for country, regime in TAX_REGIMES.items():
+    for country, regime in packs().items():
         defaults = [t["name"] for t in regime["taxes"] if t.get("is_default")]
         assert len(defaults) == 1, (country, defaults)
 
@@ -55,32 +57,37 @@ _IN_FORCE = {
 _NEW_COUNTRY_CURRENCY = {"ES": "EUR", "IT": "EUR", "PT": "EUR", "MX": "MXN", "AE": "AED", "SA": "SAR"}
 
 
+@pytest.mark.real_packs
 @pytest.mark.parametrize("country", sorted(_IN_FORCE))
 def test_the_catalog_carries_the_rates_in_force(country):
-    rows = _rows(country) if country in TAX_REGIMES else {}
+    rows = _rows(country) if country in packs() else {}
     assert {name: (rows[name]["rate"], rows[name]["tax_type"], rows[name]["is_default"])
             for name in _IN_FORCE[country] if name in rows} == _IN_FORCE[country]
     if country in _NEW_COUNTRY_CURRENCY:
-        assert TAX_REGIMES[country]["currency"] == _NEW_COUNTRY_CURRENCY[country]
-        assert [x["name"] for x in TAX_REGIMES[country]["taxes"]] == list(_IN_FORCE[country])
+        assert get_regime(country)["currency"] == _NEW_COUNTRY_CURRENCY[country]
+        assert [x["name"] for x in get_regime(country)["taxes"]] == list(_IN_FORCE[country])
 
 
+@pytest.mark.real_packs
 def test_canada_seeds_each_province_rate_not_a_placeholder():
     """British Columbia, Manitoba and Saskatchewan have their own rows, not a "PST" at 0% to fill in."""
     assert "PST" not in _rows("CA")
 
 
+@pytest.mark.real_packs
 def test_rates_with_an_end_date_say_when_it_ends():
     assert "30 Sep 2027" in _rows("TH")["VAT 7%"]["description"]
     assert "31 Dec 2026" in _rows("MX")["IVA 8% (border region)"]["description"]
 
 
+@pytest.mark.real_packs
 def test_india_reduced_rate_follows_the_2025_slabs():
     assert "GST 5%" not in _rows("IN")
 
 
+@pytest.mark.real_packs
 def test_india_default_is_igst():
-    taxes = TAX_REGIMES["IN"]["taxes"]
+    taxes = get_regime("IN")["taxes"]
     assert [t["code"] for t in default_line_taxes(taxes, "invoice", doc=None)] == ["IGST 18%"]
     assert [t["code"] for t in default_line_taxes(taxes, "bill", doc=None)] == ["IGST 18%"]
     rows = _rows("IN")
@@ -88,6 +95,7 @@ def test_india_default_is_igst():
     assert "CGST 9%" in rows["IGST 18%"]["description"] and "SGST 9%" in rows["IGST 18%"]["description"]
 
 
+@pytest.mark.real_packs
 def test_ethiopia_seeds_current_law():
     rows = _rows("ET")
     assert not [n for n in rows if n.startswith("TOT")]
@@ -97,6 +105,7 @@ def test_ethiopia_seeds_current_law():
     assert "20,000" in wht["description"] and "10,000" in wht["description"] and "30%" in wht["description"]
 
 
+@pytest.mark.real_packs
 def test_quebec_qst_is_not_compound_and_charges_on_the_price():
     from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 
@@ -109,10 +118,11 @@ def test_quebec_qst_is_not_compound_and_charges_on_the_price():
     assert 1000.0 + sum(a.amount for a in amounts) == pytest.approx(1149.75)
 
 
+@pytest.mark.real_packs
 def test_malaysia_seeds_codes_in_force():
     rows = _rows("MY")
     assert "SST 6%" not in rows
-    assert [t["code"] for t in default_line_taxes(TAX_REGIMES["MY"]["taxes"], "invoice", doc=None)] == [
+    assert [t["code"] for t in default_line_taxes(get_regime("MY")["taxes"], "invoice", doc=None)] == [
         "Sales Tax 10%"]
     assert rows["Sales Tax 10%"]["rate"] == 10.0 and rows["Sales Tax 10%"]["tax_type"] == "sales"
     assert rows["Sales Tax 5%"]["rate"] == 5.0 and not rows["Sales Tax 5%"]["is_default"]
@@ -121,6 +131,7 @@ def test_malaysia_seeds_codes_in_force():
     assert "Exempt" in rows
 
 
+@pytest.mark.real_packs
 def test_vietnam_reduced_rate_is_not_default():
     rows = _rows("VN")
     assert rows["VAT 8%"]["rate"] == 8.0 and rows["VAT 8%"]["tax_type"] == "both"
@@ -128,6 +139,7 @@ def test_vietnam_reduced_rate_is_not_default():
     assert "2026" in rows["VAT 8%"]["description"]
 
 
+@pytest.mark.real_packs
 def test_indonesia_ppn_rows():
     rows = _rows("ID")
     assert "11/12" in rows["PPN 11%"]["description"] and rows["PPN 11%"]["is_default"]
@@ -138,10 +150,14 @@ def test_indonesia_ppn_rows():
 _EM_DASH = "\u2014"
 
 
+@pytest.mark.real_packs
 def test_no_seed_text_has_an_em_dash():
-    for country, regime in TAX_REGIMES.items():
+    for country, regime in packs().items():
         for tax in regime["taxes"]:
             assert _EM_DASH not in tax["name"] + tax.get("description", ""), (country, tax["name"])
+
+
+def test_the_tax_regimes_docstring_has_no_em_dash():
     assert _EM_DASH not in (tax_regimes.__doc__ or "")
 
 
@@ -150,13 +166,13 @@ def test_default_line_taxes_matches_the_scan_line():
     tax from one helper, so a line looks the same whichever way it was added."""
     from celerp_docs import routes
 
-    th = TAX_REGIMES["TH"]["taxes"]
+    th = get_regime("TH")["taxes"]
     assert default_line_taxes(th, "invoice", doc=None) == [
         {"code": "VAT 7%", "rate": 7.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]
-    assert default_line_taxes(TAX_REGIMES["IN"]["taxes"], "bill", doc=None)[0]["code"] == "IGST 18%"
-    assert default_line_taxes(TAX_REGIMES["US"]["taxes"], "invoice", doc=None) == []
-    assert default_line_taxes(TAX_REGIMES["MY"]["taxes"], "bill", doc=None) == []
-    assert default_line_taxes(TAX_REGIMES["TH"]["taxes"], None, doc={"doc_taxes": []})[0]["code"] == "VAT 7%"
+    assert default_line_taxes(get_regime("IN")["taxes"], "bill", doc=None)[0]["code"] == "IGST 18%"
+    assert default_line_taxes(get_regime("ZZ")["taxes"], "invoice", doc=None) == []
+    assert default_line_taxes(get_regime("MY")["taxes"], "bill", doc=None) == []
+    assert default_line_taxes(get_regime("TH")["taxes"], None, doc={"doc_taxes": []})[0]["code"] == "VAT 7%"
     assert "line_taxes" in inspect.signature(routes._scan_doc_line).parameters
     assert '"is_compound": bool(' not in inspect.getsource(routes._scan_doc_line)
 
@@ -196,7 +212,7 @@ def test_a_document_taxed_as_a_whole_keeps_its_taxation_on_a_new_line():
     """While a draft charges a tax as a whole, a new line takes the taxes its lines all carry,
     copied whole with no amount, never a company default; None (the user sets it) when its lines
     differ or it has none. A stored value of another shape is no document tax."""
-    th = TAX_REGIMES["TH"]["taxes"]
+    th = get_regime("TH")["taxes"]
     compound = {**_LEVY, "order": 1, "is_compound": True, "amount": 5.25}
     assert default_line_taxes(th, "invoice", doc=_draft([_VAT], [], [])) == []
     assert default_line_taxes(th, "invoice", doc=_draft([_VAT], [compound], [compound])) == [{**compound, "amount": 0}]
@@ -211,7 +227,7 @@ def test_a_document_taxed_as_a_whole_keeps_its_taxation_on_a_new_line():
 def test_a_line_left_for_the_user_leaves_the_next_line_to_the_user():
     """A line stored with its tax still to be set (None) has decided nothing: on a draft taxed as a
     whole, a new line next to it is left for the user too, never given no tax as if decided."""
-    th = TAX_REGIMES["TH"]["taxes"]
+    th = get_regime("TH")["taxes"]
     assert default_line_taxes(th, "invoice", doc=_draft([_LEVY], None)) is None
     assert default_line_taxes(th, "invoice", doc=_draft([_LEVY], None, None)) is None
     assert default_line_taxes(th, "invoice", doc=_draft([_LEVY], None, [])) is None
@@ -220,7 +236,7 @@ def test_a_line_left_for_the_user_leaves_the_next_line_to_the_user():
 def test_a_document_wide_levy_leaves_vat_on_a_line_added_next_to_it():
     """A draft with a $100 line taxed VAT 7% and a document-wide 5% levy: a $100 line added to it
     still takes VAT 7%, so VAT is $14, the levy $10 and the total $224 (not $217)."""
-    th = TAX_REGIMES["TH"]["taxes"]
+    th = get_regime("TH")["taxes"]
     added = default_line_taxes(th, "invoice", doc=_draft([_LEVY], [_VAT]))
     assert [t["code"] for t in added] == ["VAT 7%"]
     lines = [{"quantity": 1, "unit_price": 100.0, "taxes": [_VAT]}, {"quantity": 1, "unit_price": 100.0, "taxes": added}]
@@ -233,7 +249,7 @@ def test_a_tax_changed_in_settings_is_never_added_to_a_draft_taxed_as_a_whole(ch
     """A draft with a $100 line and VAT 7% charged as a whole; the company then changes VAT 7% to
     8% (or to compound, or replaces it with VAT 8%). A $100 line added to the draft takes no VAT of
     its own: the document's VAT 7% covers it, $14, total $214 (not $222)."""
-    th = [{**tax, **change} if tax["name"] == "VAT 7%" else tax for tax in TAX_REGIMES["TH"]["taxes"]]
+    th = [{**tax, **change} if tax["name"] == "VAT 7%" else tax for tax in get_regime("TH")["taxes"]]
     whole = [{**_VAT, "amount": 0}]
     added = default_line_taxes(th, "invoice", doc=_draft(whole, []))
     lines = [{"quantity": 1, "unit_price": 100.0, "taxes": []}, {"quantity": 1, "unit_price": 100.0, "taxes": added}]
@@ -277,7 +293,44 @@ _OLD_IN = [
 ]
 
 
-def test_retired_seed_rows_matches_old_seeds():
+# The retired rows core listed before the country packs carried them, as they stood then. The
+# packs must keep telling the same companies the same things (golden), and a company is told,
+# never changed.
+OLD_CORE_RETIRED = {
+    "IN": [{"id": "in-default-2025", "match": "all",
+            "rows": [{"name": "CGST 9%", "is_default": True}, {"name": "SGST 9%", "is_default": True}]}],
+    "ET": [{"id": "et-wht-2025", "match": "any", "currency": "ETB", "rows": [{"name": "WHT 2%", "rate": -2.0}]},
+           {"id": "et-tot-2025", "match": "any", "rows": [{"name": "TOT 2%"}, {"name": "TOT 10%"}]}],
+    "CA": [{"id": "ca-qst-compound", "match": "any", "rows": [{"name": "QST 9.975%", "is_compound": True}]}],
+    "MY": [{"id": "my-sst-6", "match": "any", "rows": [{"name": "SST 6%", "rate": 6.0}]}],
+}
+
+
+def with_retired(monkeypatch, retired: dict[str, list[dict]]) -> None:
+    """Read the loaded packs with ``retired`` as their retired lists (a country not loaded is added
+    with no taxes of its own), the way the app reads them."""
+    loaded = copy.deepcopy(tax_regimes.packs())
+    for code, entries in retired.items():
+        loaded.setdefault(code, {"currency": "", "taxes": [], "retired": []})["retired"] = copy.deepcopy(entries)
+    monkeypatch.setattr(tax_regimes, "packs", lambda: loaded)
+
+
+@pytest.fixture()
+def old_retired(monkeypatch):
+    with_retired(monkeypatch, OLD_CORE_RETIRED)
+
+
+def test_fixture_packs_carry_the_retired_rows_of_their_country():
+    assert {code: pack["retired"] for code, pack in packs().items() if pack["retired"]} == {
+        code: OLD_CORE_RETIRED[code] for code in ("IN", "MY")}
+
+
+@pytest.mark.real_packs
+def test_real_packs_retire_exactly_what_core_retired():
+    assert {code: pack["retired"] for code, pack in packs().items() if pack["retired"]} == OLD_CORE_RETIRED
+
+
+def test_retired_seed_rows_matches_old_seeds(old_retired):
     from celerp.tax_regimes import retired_seed_rows
 
     found = {m["id"]: m["lists"] for m in retired_seed_rows(_settings(_OLD_ET))}
@@ -313,16 +366,17 @@ def test_retired_seed_rows_reads_bad_shapes_as_empty(bad):
     assert retired_seed_rows(bad) == []
 
 
+@pytest.mark.real_packs
 def test_retired_seed_rows_finds_no_match_on_any_fresh_seed():
     from celerp.tax_regimes import retired_seed_rows
 
-    for country, regime in TAX_REGIMES.items():
+    for country, regime in packs().items():
         taxes = regime["taxes"]
         seeded = {**_settings(taxes, taxes), "currency": regime["currency"]}
         assert retired_seed_rows(seeded) == [], country
 
 
-def test_a_retired_row_of_one_country_is_not_read_in_the_books_of_another():
+def test_a_retired_row_of_one_country_is_not_read_in_the_books_of_another(old_retired):
     from celerp.tax_regimes import retired_seed_rows
 
     old = _settings(_OLD_ET)

@@ -64,18 +64,19 @@ from celerp.importers.tabular import ZIP_ERRORS, open_zip_member, zip_directory_
 from celerp.migrations.compatibility import is_newer_than_running, running_version
 from celerp.services.dev_release_guard import PROJECTION_SEMANTICS
 from celerp.models.accounting import UserCompany
-from celerp.models.company import Company, User
+from celerp.models.company import Company, Location, User
 from celerp.modules.importer import TABLE_NAME, InstalledModules, installed_modules
 from celerp.modules import requirements
 from celerp.modules.boundary import take_company_locks
 from celerp.modules.loader import module_label, modules_holding_events, unidentified_events
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
-from celerp.services import attachments, bootstrap, company_lifecycle, payments
+from celerp.services import attachments, bootstrap, company_lifecycle, location_default_notice, payments
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, password_attempts
 from celerp.services.company_settings import SET_BY_KEYS
 from celerp.services import company_backup_files as files
 from celerp.services.company_backup_files import private_file
 from celerp.services.company_lock import hold_company, lock_company, lock_company_for_deletion, locked_company
+from celerp.services.locations import make_default_location
 from celerp.services.lot_origin import place_company_stock
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
 from celerp.services.permissions import act_for
@@ -1695,10 +1696,15 @@ def _row_batches(lines, limit: int):
 
 
 async def _insert(session: AsyncSession, zf: zipfile.ZipFile, manifest: dict, table: str,
-                  id_map: dict[str, str], schema: db_catalog.Table, company_id) -> None:
+                  id_map: dict[str, str], schema: db_catalog.Table, company_id) -> set[str]:
     """Insert the backup's rows of ``table``. Its company column is the restored company,
     bound once for the whole statement: the source company every row was checked to name
-    maps to it, so no restored row can name another company."""
+    maps to it, so no restored row can name another company.
+
+    A copy from an earlier version can mark more than one location default. Its locations are
+    written undefaulted, then the oldest it marked becomes the default (make_default_location)
+    and the company is told which it kept and which it cleared (location_default_notice); the ids
+    of the others are returned, for _verify to read them as the copy holds them."""
     columns = manifest["tables"][table]["columns"]
     cols = ", ".join(db_catalog.ident(c) for c in columns)
     company = f"CAST(CAST(:company AS text) AS {db_catalog.ident(schema.columns['company_id'].udt)})" \
@@ -1709,20 +1715,41 @@ async def _insert(session: AsyncSession, zf: zipfile.ZipFile, manifest: dict, ta
         f"FROM jsonb_array_elements(CAST(:rows AS jsonb)) WITH ORDINALITY AS e(v, n), "
         f"jsonb_populate_record(NULL::{db_catalog.ident(table)}, e.v) AS r ORDER BY e.n")
     batches = _row_batches(_table_lines(zf, manifest, table), BATCH_ROWS)
+    defaults: list[str] = []
     while rows := await asyncio.to_thread(next, batches, None):
-        await session.execute(statement, {"rows": _dump_rows(remap(rows, id_map)), "company": str(company_id)})
+        rows = remap(rows, id_map)
+        if table == "locations":
+            for row in rows:
+                if row.get("is_default") is True:
+                    defaults.append(str(row["id"]))
+                    row["is_default"] = False
+        await session.execute(statement, {"rows": _dump_rows(rows), "company": str(company_id)})
+    if not defaults:
+        return set()
+    kept = (await session.execute(
+        select(Location).where(Location.company_id == company_id, Location.id.in_([uuid.UUID(d) for d in defaults]))
+        .order_by(Location.created_at, Location.id).limit(1))).scalar_one()
+    await make_default_location(session, company_id, kept)
+    cleared = [d for d in defaults if d != str(kept.id)]
+    if cleared:
+        await location_default_notice.tell(session, company_id, {"kept": str(kept.id), "cleared": cleared})
+    return set(cleared)
 
 
 async def _verify(session: AsyncSession, checked: _Checked, manifest: dict, company_id,
-                  back: dict[str, str]) -> None:
-    """Read every restored table back, map the ids back and compare it with the backup."""
+                  back: dict[str, str], cleared: set[str]) -> None:
+    """Read every restored table back, map the ids back and compare it with the backup. The
+    locations _insert cleared as extra defaults are read as the backup holds them."""
     for name in checked.order:
         table, meta = checked.plan.schema[name], manifest["tables"][name]
         expr = _without([c for c in table.columns if c not in set(meta["columns"])])
         total, rows = 0, 0
         async for batch in _batches(session, table, company_id, expr):
             for line in batch:
-                total += _row_digest(remap(_parse_row(line), back))
+                row = _parse_row(line)
+                if name == "locations" and str(row.get("id")) in cleared:
+                    row["is_default"] = True
+                total += _row_digest(remap(row, back))
             rows += len(batch)
         if rows != meta["rows"] or total % (1 << 256) != checked.digests[name]:
             logger.warning("Company restore refused: %s did not read back as the backup holds it", name)
@@ -1991,13 +2018,14 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                                                                company_id=new_id, settings=settings)
                 # Its rows are written as the new company's, whose owner the caller now is.
                 act_for(session, new_id, user.id, "owner", LIFECYCLE)
+                cleared: set[str] = set()
                 try:
                     for name in checked.order:
-                        await _insert(session, zf, m, name, id_map,
-                                      checked.plan.schema[name], new_id)
+                        cleared |= await _insert(session, zf, m, name, id_map,
+                                                 checked.plan.schema[name], new_id)
                 except DBAPIError:
                     raise BackupError(422, t(UNSAVABLE)) from None
-            await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
+            await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()}, cleared)
             await _as_replayed(session, new_id)
             await _check_replay(session, new_id,
                                 rebuild=m.get("projection_semantics", 0) < PROJECTION_SEMANTICS)

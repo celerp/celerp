@@ -332,6 +332,30 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
             "Tax seed notice failed (non-fatal); companies are told at a later boot"
         )
 
+    # Tell each company when this installation lacks country tax rates; non-fatal like the above.
+    try:
+        from celerp.db import LifecycleSessionLocal as _PackNoticeSession
+        from celerp.localization.notice import sync_pack_notice
+        async with _PackNoticeSession() as _pack_sess:
+            await sync_pack_notice(_pack_sess)
+            await _pack_sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Country pack notice failed (non-fatal); companies are told at a later boot"
+        )
+
+    # Tell each company whose extra default locations an upgrade cleared; non-fatal like the above.
+    try:
+        from celerp.db import LifecycleSessionLocal as _LocationSession
+        from celerp.services.location_default_notice import run_location_default_notice
+        async with _LocationSession() as _loc_sess:
+            await run_location_default_notice(_loc_sess)
+            await _loc_sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Default location notice failed (non-fatal); companies are told at a later boot"
+        )
+
     app.state.data_current, app.state.held_back = True, None
     try:
         from celerp.db import LifecycleSessionLocal as _NoticeSession
@@ -550,7 +574,7 @@ async def _serve(_app: FastAPI, held):
         logging.getLogger(__name__).exception("Cleaning up after unfinished company restores failed (non-fatal)")
 
     # In the background, and again every few minutes: a System Recovery restore Celerp
-    # Cloud has not confirmed is reported, and a company reset that stopped after Cloud
+    # Connect has not confirmed is reported, and a company reset that stopped after Cloud
     # began closing the company's online payments is settled (a deleted company's
     # payments close for good, a kept one's reopen). Until then they stay closed.
     from celerp.services.payments import reconcile_payments_loop

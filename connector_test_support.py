@@ -140,7 +140,7 @@ CONNECTOR_SESSION_TOKEN = "test-session-token-abc123"
 
 @pytest.fixture
 def connector_routes(connector_session, monkeypatch):
-    """The /connectors routes as on an install signed in to Celerp Cloud: they need the
+    """The /connectors routes as on an install signed in to Celerp Connect: they need the
     X-Session-Token this yields, the relay gives a store context, and the connector
     services' own sessions are the test session."""
     from unittest.mock import AsyncMock

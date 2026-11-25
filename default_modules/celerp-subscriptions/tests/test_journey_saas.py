@@ -3,7 +3,7 @@
 """A SaaS subscriber collected from a card on file, through the pages and API the app uses.
 
 Initial conditions: a newly registered company signed in to the UI (owner_ui), its API calls
-answered in process, and a payer contact with an email address. Celerp Cloud is the in-process
+answered in process, and a payer contact with an email address. Celerp Connect is the in-process
 stand-in of test_collection: it records each request the app sends and answers what the test
 sets, and its deliveries (collection.binding, collection.attempt, invoice.payment,
 invoice.dispute) are handed to the app's delivery handlers, whose sessions join the test's

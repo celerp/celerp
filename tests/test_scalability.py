@@ -260,12 +260,12 @@ class TestRuntimeState:
     async def test_drain_state_preserves_other_keys(self, session):
         """set_draining merges into existing dict, not replacing all keys."""
         from celerp.services.runtime_state import (
-            get_runtime_state, set_draining, _get_or_create, _SINGLETON_ID
+            get_runtime_state, set_draining, lock_runtime_state, _SINGLETON_ID
         )
         from celerp.models.auth import SystemRuntimeState
 
         # Manually seed an extra key
-        row = await _get_or_create(session)
+        row = await lock_runtime_state(session)
         row.value = {**row.value, "extra_key": "preserved"}
         await session.commit()
 
@@ -313,19 +313,19 @@ class TestDrainMiddleware:
         Each test runs inside one uncommitted outer transaction on a single
         connection (the `session` fixture). DrainMiddleware runs is_draining on
         every write; if it opens its own session on a *separate* connection, its
-        _get_or_create INSERT of the singleton blocks forever on the request
+        locked insert of the singleton blocks forever on the request
         session's uncommitted insert of the same row - a self-deadlock that hangs
         to the per-test timeout. It only surfaces on CI because the 1s in-process
         drain cache usually skips the DB. Middleware must share the request
         transaction so this completes.
         """
         from celerp.services.runtime_state import (
-            _get_or_create, _drain_cache_bust, _SINGLETON_ID)
+            lock_runtime_state, _drain_cache_bust, _SINGLETON_ID)
         from celerp.models.auth import SystemRuntimeState
 
         # Request session (connection A) creates + holds the singleton uncommitted, as a
         # drain change does before it commits.
-        await _get_or_create(session)
+        await lock_runtime_state(session)
         assert await session.get(SystemRuntimeState, _SINGLETON_ID) is not None
         # Force the next write's is_draining to hit the DB rather than the 1s cache
         # - the exact window the CI flake needs.

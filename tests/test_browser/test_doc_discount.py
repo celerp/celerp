@@ -88,6 +88,38 @@ def test_percent_discount_recomputes_when_line_added(page, ui_server, api):
         "percent discount did not re-apply to the new $200 subtotal"
 
 
+def test_a_save_answered_after_a_line_is_added_keeps_the_new_line_in_the_totals(page, ui_server, api):
+    """The discount's save is answered only after a line has been added and priced (held with a
+    route): its stored money (no new line, discount -10) must not replace the page's figures for
+    the new line (discount -20), which save when the price field is left."""
+    doc_id = _simple_doc(api, price=100.0)
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    page.wait_for_selector("#doc-total", timeout=8000)
+    held = []
+
+    def _hold_first_save(route):
+        if route.request.method == "POST" and not held:
+            held.append(route)
+        else:
+            route.continue_()
+
+    page.route("**/lines", _hold_first_save)
+    _apply_disc(page, 10, "percentage")
+    for _ in range(80):
+        if held:
+            break
+        page.wait_for_timeout(50)
+    assert held, "the discount's save was not sent"
+    page.evaluate("celerpAddLine()")
+    last_price = page.locator("table.doc-lines tbody tr").last.locator('[data-name="unit_price"]')
+    last_price.fill("100")
+    with page.expect_response(lambda r: r.url.endswith("/lines") and r.request.method == "POST"):
+        held[0].continue_()
+    page.wait_for_function("() => document.getElementById('save-status').textContent === '\u2713'", timeout=5000)
+    disc = page.locator("#doc-header-discount").text_content().replace(",", "")
+    assert "20" in disc, f"the late save's stored discount replaced the new line's: {disc}"
+
+
 def test_percent_header_discount_stacks_with_line_discount(page, ui_server, api):
     """Header % applies on the NET subtotal (after a per-line discount), not the gross."""
     doc_id = _simple_doc(api, price=100.0)

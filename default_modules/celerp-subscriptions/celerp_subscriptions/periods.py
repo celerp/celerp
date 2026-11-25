@@ -17,7 +17,7 @@ from datetime import date, timedelta
 FREQUENCIES = frozenset({"weekly", "biweekly", "monthly", "quarterly", "annually", "custom"})
 TIMINGS = frozenset({"advance", "arrears"})
 # Bill and collect automatically: bills as automatic invoicing does and charges the payer's card
-# on file for each invoice through Celerp Cloud (celerp_subscriptions.collect).
+# on file for each invoice through Celerp Connect (celerp_subscriptions.collect).
 COLLECT_MODE = "auto_invoice_collect"
 AUTO_MODES = frozenset({"auto_invoice", COLLECT_MODE})
 GENERATION_MODES = frozenset({"manual_due"}) | AUTO_MODES

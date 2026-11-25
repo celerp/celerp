@@ -369,7 +369,11 @@ def test_every_action_a_workflow_uses_is_one_read_for_release_downloads():
             used.update(s["uses"] for s in job.get("steps", []) if "uses" in s)
     third_party = {u.split("@", 1)[0] for u in used if not u.startswith("./")}
     assert third_party - _ACTIONS == set()
-    assert {u for u in used if u.startswith("./")} == {"./.github/workflows/packaged-upgrade-smoke.yml"}
+    assert {u for u in used if u.startswith("./")} == {
+        "./.github/workflows/packaged-upgrade-smoke.yml",
+        "./.github/workflows/l10n-golden.yml",
+        "./.github/actions/l10n-packs",
+    }
 
 
 def _obtains_binaries(step: dict) -> bool:

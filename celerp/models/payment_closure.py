@@ -13,7 +13,7 @@ from celerp.models.base import Base
 
 
 class PaymentClosure(Base):
-    """A request to Celerp Cloud to close one company's online payments that has not
+    """A request to Celerp Connect to close one company's online payments that has not
     been settled yet.
 
     Saved in its own transaction before Cloud is asked to prepare the closing, so it
@@ -35,10 +35,10 @@ class PaymentClosure(Base):
 
 
 class PaymentRecovery(Base):
-    """A System Recovery restore of this installation, as Celerp Cloud must learn of it.
+    """A System Recovery restore of this installation, as Celerp Connect must learn of it.
 
     Written in the restore's own transaction, naming every company the restore brought
-    back. Celerp Cloud answers with the installation's new payment generation: closing
+    back. Celerp Connect answers with the installation's new payment generation: closing
     requests from before the restore can no longer close payments for good, and the
     restored companies take payments again. Until Cloud has answered (``generation``
     is None) no company's payments can be closed. Rows restored from an older backup
@@ -56,7 +56,7 @@ class PaymentRecovery(Base):
 
 
 class UnmatchedPayment(Base):
-    """An online payment Celerp Cloud delivered that could not be recorded on its
+    """An online payment Celerp Connect delivered that could not be recorded on its
     invoice: the company or the invoice no longer exists, or the invoice refused it.
 
     Kept so the money received is never lost from view; recorded before Cloud is told
@@ -85,7 +85,7 @@ class UnmatchedPayment(Base):
 
 
 class UnmatchedRefund(Base):
-    """A change to a Stripe refund of an online payment, delivered by Celerp Cloud, that
+    """A change to a Stripe refund of an online payment, delivered by Celerp Connect, that
     could not be applied to the payment yet: the payment is among the unmatched
     payments or has not arrived, its company or invoice no longer exists, or the
     payment cannot take it. Kept with the unmatched payments under the payment's

@@ -9,7 +9,7 @@ Coverage gap closers for routers/accounting.py:
   - GET /pnl — revenue/cogs/expense sections (_section helper + _build_balances)
   - GET /balance-sheet — asset/liability/equity + retained earnings derived path
 
-NOTE: Company registration seeds the full Thai chart of accounts.
+NOTE: Company registration seeds the full default chart of accounts.
       We use pre-seeded codes (1110, 4100, 5100, 6100, etc.) rather than creating accounts,
       except when testing PATCH (need a code to patch).
 """

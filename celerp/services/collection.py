@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Automatic card collection through Celerp Cloud (collection protocol 2).
+"""Automatic card collection through Celerp Connect (collection protocol 2).
 
 Cloud holds the payer's card and charges it only when the app asks: the app decides
 every attempt (its number, its amount, when a retry is due) and Cloud reports what

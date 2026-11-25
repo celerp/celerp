@@ -636,7 +636,7 @@ class CrmContactAddressRemoved(BaseModel):
 
 
 class CrmContactCollectionBinding(BaseModel):
-    """The contact's card on file for automatic collection, as Celerp Cloud last reported it."""
+    """The contact's card on file for automatic collection, as Celerp Connect last reported it."""
     state: str
     card_brand: str | None = None
     card_last4: str | None = None

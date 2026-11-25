@@ -76,7 +76,8 @@ class PasswordResetNotice(Base):
 class SystemRuntimeState(Base):
     """Singleton row: cluster-wide runtime flags (draining, worker count, etc.).
 
-    Accessed via ``get_runtime_state()`` / ``set_draining()`` helpers.
+    Accessed via the helpers in ``celerp.services.runtime_state``: read with
+    ``get_runtime_state()``; write only on the row ``lock_runtime_state()`` returns.
     Single row, id=1.  ``value`` is a JSON dict - always replace the full dict
     when updating to avoid mutation-tracking issues.
     """

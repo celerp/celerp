@@ -30,7 +30,8 @@ Writes are judged only inside a request (``observed`` wraps the app) and only fo
 that hold company data: companies itself, a table with a company_id column, or one whose
 rows belong to company data through a foreign key or as a partition (for a table the tests
 make while running, as its CREATE TABLE says). A write to any other table is either in
-INFRASTRUCTURE or flagged as an unowned table."""
+INFRASTRUCTURE or flagged as an unowned table; a durable write that changed an INFRASTRUCTURE
+row is not judged, and the census credits the app line that made it, as for company data."""
 
 from __future__ import annotations
 
@@ -117,8 +118,8 @@ INFRASTRUCTURE: dict[str, str] = {
     "migration_templates": "a user's remembered migration answers: services/migration_templates.py",
     "migration_batch_files": "a user's migration files staged before any company exists: services/migration_batches.py",
     "supporter_badges": "a user's supporter badge: services/supporter_badge.py",
-    "payment_closures": "a request to Celerp Cloud to close a company's payments, kept past the company: services/payments.py",
-    "payment_recoveries": "a System Recovery restore of the install, for Celerp Cloud: services/payments.py",
+    "payment_closures": "a request to Celerp Connect to close a company's payments, kept past the company: services/payments.py",
+    "payment_recoveries": "a System Recovery restore of the install, for Celerp Connect: services/payments.py",
     "unmatched_payments": "payments received for no company the install holds: services/payments.py",
     "unmatched_refunds": "refunds received for no company the install holds: services/payments.py",
 }
@@ -210,6 +211,10 @@ READ_METHODS = ("GET", "HEAD")
 # token refresh, once a token is past half its life. Their writes are judged like any other,
 # and do not show that the request they ride on, or one it is made for, writes.
 ANY_REQUEST_WRITERS = ("celerp/middleware.py _refresh_bearer_validated",)
+# The UI's twin of that refresh: its auth middleware renews the session on whichever request
+# comes once the access cookie is past half its life. The API request it sends is made for no
+# other request, so its write never shows that the UI route it rode on writes.
+ANY_REQUEST_CALLERS = ("ui/api_client.py _refresh_upstream",)
 # The header a request from the UI to the API names the UI request it is made for by, when
 # the two talk over HTTP (the browser suite's servers): outgoing_headers.
 OUTER_HEADER = "x-observed-request"
@@ -225,6 +230,7 @@ _WRITE, _LOCK, _FENCE, _ROW = "observed-write", "observed-lock", "observed-fence
 _READ = "observed-read-route-write"  # writes made for a read request, reported when they commit
 _CREATED = "observed-created"  # companies this transaction inserted: no other can see them before it commits
 _CALLS = "observed-write-calls"  # session.info: the app lines that added, deleted or merged in a request
+_INFRA = "observed-infrastructure-write"  # the app lines of a request write that changed an INFRASTRUCTURE row
 
 
 @dataclass
@@ -304,7 +310,10 @@ def observed(app, label: str):
 
 def _outer(scope) -> dict | None:
     """The request a request is made for: the one served in the same task (a test's
-    in-process transport), or the one the UI names when it calls the API over HTTP."""
+    in-process transport), or the one the UI names when it calls the API over HTTP. A call
+    ANY_REQUEST_CALLERS make is made for none."""
+    if _made_by(ANY_REQUEST_CALLERS):
+        return None
     enclosing = _REQUEST.get()
     if enclosing is not None:
         return enclosing
@@ -315,7 +324,9 @@ def _outer(scope) -> dict | None:
 def outgoing_headers() -> dict[str, str]:
     """The header a request to the API sends to name the request it is made for."""
     request = _REQUEST.get()
-    return {OUTER_HEADER: str(id(request))} if request is not None and id(request) in _SERVING else {}
+    if request is None or id(request) not in _SERVING or _made_by(ANY_REQUEST_CALLERS):
+        return {}
+    return {OUTER_HEADER: str(id(request))}
 
 
 class serving:
@@ -952,7 +963,13 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
         note(session, _READ, Finding("read-route-write", read_route, company, op.table, statement[:300], op.detail,
                                      where=_where(), test=CENSUS.test, fingerprint=op.fingerprint))
     if not _owned(op.table):
-        return None if op.table in INFRASTRUCTURE else found("unowned-table")
+        if op.table not in INFRASTRUCTURE:
+            return found("unowned-table")
+        if getattr(cursor, "rowcount", -1) != 0:
+            # Not company data, so not judged against the company lock; the census still
+            # credits the app line that changed the row once its transaction commits.
+            note(session, _INFRA, tuple(_app_frames(first_line=True)))
+        return None
     # The statement names the companies it writes (an insert's company_id, a WHERE on it),
     # or the write is taken as the request's company and says so: an update by primary
     # key or raw SQL names no company, and the company lock never proves which company
@@ -1030,7 +1047,11 @@ def _committed(session) -> None:
             CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
         if finding.kind != "protected":
             CENSUS.findings.append(finding)
-    if noted(session, _WRITE):
+    infrastructure = noted(session, _INFRA)
+    for frames in infrastructure:
+        for site in set(frames):
+            CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
+    if noted(session, _WRITE) or infrastructure:
         for site in session.info.pop(_CALLS, ()):
             CENSUS.sites[site] = CENSUS.sites.get(site, 0) + 1
     CENSUS.findings.extend(noted(session, _READ))

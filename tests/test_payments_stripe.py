@@ -4,7 +4,7 @@
 
 The instance holds no Stripe credentials - checkout creation and Connect onboarding
 are cloud calls, mocked here at the payments-service boundary. A payment is recorded
-only when Celerp Cloud delivers it, on the books its payment page opened with.
+only when Celerp Connect delivers it, on the books its payment page opened with.
 The "payments enabled" gate is the gateway feature flag delivered on the handshake.
 """
 
@@ -284,7 +284,7 @@ async def test_checkout_sends_balance_due_and_reconcile_metadata(client, payment
 
 @pytest.mark.asyncio
 async def test_checkout_request_to_cloud_carries_generation_and_books(client, payments_on, monkeypatch):
-    """Celerp Cloud opens a payment page only for a request that names the
+    """Celerp Connect opens a payment page only for a request that names the
     installation's payment generation and the books the payment will be recorded on."""
     import httpx
     sent = []
@@ -611,7 +611,7 @@ async def test_full_online_payment_journey(client, session, payments_on, monkeyp
     Chains every hop of the real flow: send email (Pay leads with the amount
     due) -> share page carries the pay bar -> /pay creates the checkout with
     the exact balance in minor units and the books it is recorded on -> the
-    return from Stripe records nothing -> Celerp Cloud's delivery records the payment ->
+    return from Stripe records nothing -> Celerp Connect's delivery records the payment ->
     status paid, journal entry posted, pay bar gone, /pay refuses further
     charges -> a repeated return or delivery records nothing."""
     import asyncio as _asyncio
@@ -657,7 +657,7 @@ async def test_full_online_payment_journey(client, session, payments_on, monkeyp
     r = await client.get(f"/pay/{token}/return?session_id=cs_j", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/share/{token}"
     assert not (await _doc_state(client, tok, eid)).get("payments")
-    # Celerp Cloud delivers the payment Stripe reported paid.
+    # Celerp Connect delivers the payment Stripe reported paid.
     from celerp.services.payments import receive_payment
     delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_journey",
                 "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),

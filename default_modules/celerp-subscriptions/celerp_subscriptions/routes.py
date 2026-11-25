@@ -590,7 +590,7 @@ def _build_router() -> APIRouter:
         _: None = require_permission("view_subscriptions"),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Whether Celerp Cloud offers automatic collection, and the payer's card on file."""
+        """Whether Celerp Connect offers automatic collection, and the payer's card on file."""
         return await collect.view(session, company_id, entity_id)
 
     @router.post("/{entity_id}/collection/setup-link", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/subscriptions"}, summary="Get the link where an agreement's payer puts a card on file for automatic collection.")

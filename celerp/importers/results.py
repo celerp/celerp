@@ -144,6 +144,12 @@ def kept_refusal(message: str | dict, entity_id: str) -> dict:
     return catalog_refusal("error.refusal_as_written", text=message_text(message).removeprefix(f"{entity_id}: "))
 
 
+def row_flag(raw: object) -> bool:
+    """A spreadsheet cell as a boolean: a real bool as given, else a string read for
+    one of the ways a sheet writes "yes"."""
+    return raw if isinstance(raw, bool) else str(raw).strip().lower() in {"true", "1", "yes"}
+
+
 def message_text(message: str | dict) -> str:
     """An outcome message as English text: a refusal's own message, else the text."""
     return str(message["message"]) if isinstance(message, dict) else str(message)

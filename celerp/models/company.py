@@ -30,7 +30,11 @@ class Company(Base):
 
 class Location(Base):
     __tablename__ = "locations"
-    __table_args__ = (UniqueConstraint("company_id", "name", name="uq_location_company_name"),)
+    __table_args__ = (
+        UniqueConstraint("company_id", "name", name="uq_location_company_name"),
+        # At most one default location per company; make_default_location moves it.
+        sa.Index("uq_location_one_default", "company_id", unique=True, postgresql_where=sa.text("is_default")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id"), nullable=False)

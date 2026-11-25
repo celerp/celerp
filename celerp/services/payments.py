@@ -4,7 +4,7 @@
 
 The instance stores no Stripe credentials: it asks Celerp Connect to create a Checkout
 Session on the merchant's connected account. Payment surfaces are gated on a
-"payments enabled" flag; Celerp Cloud delivers each confirmed payment, which records
+"payments enabled" flag; Celerp Connect delivers each confirmed payment, which records
 through the same path as a manual payment.
 
 A delivery (payment, fees, refund, release) is recorded on invoices, so while the
@@ -136,7 +136,7 @@ def from_stripe_amount(api_amount: int, currency: str) -> Decimal:
 # ── Payment (customer-facing, via the hosted invoice view) ───────────────────
 
 class CheckoutPaused(Exception):
-    """New online payments wait for a System Recovery restore Celerp Cloud has not
+    """New online payments wait for a System Recovery restore Celerp Connect has not
     confirmed: until it has, a payment the restore lost may not be recorded again yet,
     so an invoice it paid could look unpaid."""
 
@@ -183,7 +183,7 @@ async def create_checkout(*, amount_minor: int, currency: str, description: str,
 
 
 class PaymentsNotClosed(Exception):
-    """Celerp Cloud did not confirm that a company's online payments are closing.
+    """Celerp Connect did not confirm that a company's online payments are closing.
 
     ``reason`` is "disconnected", "payment_settling", "payment_unrecorded",
     "reconnect_required" (a payment can be checked only once the merchant reconnects
@@ -203,7 +203,7 @@ _PREPARED = ("prepared", "retired")
 _REFUSED = ("payment_settling", "payment_unrecorded", "reconnect_required", "update_required",
             "fees_settling")
 # Answers after which a step can never succeed: the request is forgotten, and Celerp
-# Cloud keeps the company's payments closed.
+# Connect keeps the company's payments closed.
 _FINAL = {"finalize": ("generation_stale", "cancelled", "not_prepared"),
           "cancel": ("retired",)}
 RECONCILE_INTERVAL_S = 300
@@ -216,14 +216,14 @@ def _own_session():
 
 
 async def _cloud_answer(path: str, payload: dict) -> tuple[int, dict] | None:
-    """Celerp Cloud's status and answer to one payment lifecycle request, or None when
+    """Celerp Connect's status and answer to one payment lifecycle request, or None when
     there is no readable answer."""
     from celerp.services import cloud_entitlement
     try:
         response = await cloud_entitlement.authenticated_request("POST", path, total_s=30.0, json=payload)
         data = response.json() if response is not None else None
     except Exception as exc:
-        log.warning("Celerp Cloud payment request %s failed: %s", path, type(exc).__name__)
+        log.warning("Celerp Connect payment request %s failed: %s", path, type(exc).__name__)
         return None
     return (response.status_code, data) if isinstance(data, dict) else None
 
@@ -242,7 +242,7 @@ def _reached(answer: tuple[int, dict] | None, closure: PaymentClosure, states: t
 
 @_on_invoices
 async def receive_payment(payload: dict) -> bool:
-    """Record an online payment delivered by Celerp Cloud: on its invoice, on the
+    """Record an online payment delivered by Celerp Connect: on its invoice, on the
     books its payment page opened with and the day it was paid (``managed``: Stripe
     manages it; one paid on a page opened before pages carried their books is the
     company's, see ``record_stripe_payment``), when the invoice can
@@ -475,7 +475,7 @@ async def _fee_recorded(session, cid, doc_id: str, document: str, fees: dict, ac
 
 async def _fee_not_recorded(cid, doc_id: str | None, document: str, fees: dict, problem: str,
                             roles=(), reference: str = "") -> bool:
-    """Tell the company, unmissably and once per fee and cause, that a fee Celerp Cloud
+    """Tell the company, unmissably and once per fee and cause, that a fee Celerp Connect
     delivered could not be recorded and why; whether the notice was recorded. A fee whose
     cause is in _FEE_UNRECORDABLE is acknowledged once told (retrying cannot help, and
     *doc_id* is None when the document is gone); any other cause is not, so the fee is
@@ -507,7 +507,7 @@ async def _fee_not_recorded(cid, doc_id: str | None, document: str, fees: dict, 
     return True
 
 
-# The steps of a card dispute Celerp Cloud delivers, in order, and the decisions a closed
+# The steps of a card dispute Celerp Connect delivers, in order, and the decisions a closed
 # one carries.
 DISPUTE_STATES = ("created", "funds_withdrawn", "funds_reinstated", "closed")
 DISPUTE_OUTCOMES = ("won", "lost", "warning_closed")
@@ -754,7 +754,7 @@ async def _apply_parked_refunds(session, cid, entity_id: str, reference: str, *,
 
 @_on_invoices
 async def receive_refund(payload: dict) -> bool:
-    """Apply a change to a refund of an online payment delivered by Celerp Cloud
+    """Apply a change to a refund of an online payment delivered by Celerp Connect
     (``record_stripe_refund``), or keep it with the unmatched payments, whole, when it
     cannot be applied yet: the company, invoice or payment is not there, or the
     invoice refuses it. A kept refund applies when its payment is recorded on its
@@ -827,7 +827,7 @@ async def _apply_release(session, cid, entity_id: str, reference: str, released_
 
 @_on_invoices
 async def receive_release(payload: dict) -> bool:
-    """Record that an online payment delivered by Celerp Cloud is no longer linked to
+    """Record that an online payment delivered by Celerp Connect is no longer linked to
     Stripe (Stripe was disconnected): on its invoice (``record_stripe_release``), or on
     the payment among the unmatched payments, applied when it is recorded on its
     invoice (``receive_payment``). True once recorded either way (Cloud is then told
@@ -1005,7 +1005,7 @@ async def unrecord_company(session, company_id) -> None:
 
 
 async def report_recoveries(session) -> int | None:
-    """Tell Celerp Cloud of every System Recovery restore it has not confirmed, oldest
+    """Tell Celerp Connect of every System Recovery restore it has not confirmed, oldest
     first, and return the installation's current payment generation. None while a
     restore is still unconfirmed: no company's payments can be closed until it is.
     Raises PaymentsNotClosed when Cloud holds a restore back for a payment in flight."""
@@ -1030,13 +1030,13 @@ async def report_recoveries(session) -> int | None:
 
 def record_recovery(session, company_ids: list) -> None:
     """Record, in the restore's own transaction, that a System Recovery restore brought
-    back *company_ids*; ``report_recoveries`` tells Celerp Cloud, which delivers again
+    back *company_ids*; ``report_recoveries`` tells Celerp Connect, which delivers again
     every payment the installation ever recorded."""
     session.add(PaymentRecovery(recovery_id=uuid.uuid4(), company_ids=sorted(str(c) for c in company_ids)))
 
 
 async def _settle(session, closure: PaymentClosure, company_exists: bool) -> bool:
-    """Tell Celerp Cloud how *closure* ended: a company still here reopens its payments,
+    """Tell Celerp Connect how *closure* ended: a company still here reopens its payments,
     a deleted one closes them for good. Forgets the closure once Cloud confirms, or
     once Cloud answers that the step can never succeed; the company's payments then
     stay closed at Cloud."""
@@ -1048,7 +1048,7 @@ async def _settle(session, closure: PaymentClosure, company_exists: bool) -> boo
     if not _reached(answer, closure, (state,)):
         if answer is None or answer[0] != 409 or answer[1].get("detail") not in _FINAL[step]:
             return False
-        log.error("Celerp Cloud refused to %s closing the online payments of company %s (%s); "
+        log.error("Celerp Connect refused to %s closing the online payments of company %s (%s); "
                   "they stay closed", step, closure.target_company, answer[1]["detail"])
     await session.delete(closure)
     await session.commit()
@@ -1056,7 +1056,7 @@ async def _settle(session, closure: PaymentClosure, company_exists: bool) -> boo
 
 
 async def prepare_company_closure(company_id: uuid.UUID) -> uuid.UUID | None:
-    """Close a company's online invoice payments at Celerp Cloud before it is deleted:
+    """Close a company's online invoice payments at Celerp Connect before it is deleted:
     its open payment pages are closed and no new one can start. A payment already
     made still reaches the installation, and the closing becomes final only once it
     is recorded (``receive_payment``).
@@ -1064,7 +1064,7 @@ async def prepare_company_closure(company_id: uuid.UUID) -> uuid.UUID | None:
     committed or rolled back passes the returned id to ``settle_company_closure``,
     which closes the payments for good or reopens them.
 
-    An installation without a Celerp Cloud credential never took online payments and
+    An installation without a Celerp Connect credential never took online payments and
     returns None at once. Otherwise returns only when Cloud confirms, and raises
     PaymentsNotClosed for anything else, after asking Cloud to drop the request. A
     System Recovery restore Cloud has not confirmed, or an earlier request for the
@@ -1124,7 +1124,7 @@ async def settle_company_closure(operation_id: uuid.UUID | None) -> bool:
 
 
 async def reconcile_payments() -> None:
-    """Tell Celerp Cloud of any System Recovery restore it has not confirmed, then
+    """Tell Celerp Connect of any System Recovery restore it has not confirmed, then
     settle every closing request left over, e.g. by a restart part way through a
     reset. Whatever cannot be done now is tried again by the next call; meanwhile
     the companies concerned keep their payments closed."""
@@ -1136,7 +1136,7 @@ async def reconcile_payments() -> None:
                 pass  # reported again next time; leftover closings settle meanwhile
             pending = (await session.scalars(select(PaymentClosure.operation_id))).all()
     except Exception:
-        log.warning("Reconciling online payments with Celerp Cloud failed", exc_info=True)
+        log.warning("Reconciling online payments with Celerp Connect failed", exc_info=True)
         return
     for operation_id in pending:
         await settle_company_closure(operation_id)

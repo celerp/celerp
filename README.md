@@ -83,7 +83,7 @@ card in the notifications panel.
 
 ## How it works
 
-Celerp runs on your machine and keeps its primary database local. Optional Connect features can relay remote access or send selected data to Celerp cloud services.
+Celerp runs on your machine and keeps its primary database local. Optional Connect features can relay remote access or send selected data to Celerp Connect services.
 
 - **No setup** - the desktop app bundles Postgres, runs migrations on launch, opens in your browser
 - **No lock-in** - your data stays in a standard Postgres database you control
@@ -145,6 +145,9 @@ celerp init   # creates DB, runs migrations, starts servers
 `celerp init` boots a bundled PostgreSQL when no server is running, so no `sudo` and no
 system Postgres are required. To develop against your own server instead, pass
 `--db-url postgresql+asyncpg://…`.
+
+A source checkout has no country packs, so setup offers only "Other country". A build with read
+access to the pack repositories fetches them with `python scripts/l10n_packs.py fetch`.
 
 Open **http://localhost:8080**. Run tests with `pytest tests/ -n auto`. The tests start a throwaway
 Postgres in Docker. To use a server of your own instead, create a database with "test" in its
