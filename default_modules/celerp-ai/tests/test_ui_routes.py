@@ -237,6 +237,47 @@ async def test_chat_returns_user_and_assistant_bubbles(ui_client):
     assert r.headers["HX-Push-Url"] == "/ai?conversation=conv-1"
 
 
+_MARKDOWN_REPLY = (
+    "**Totals** by month:\n\n"
+    "| Month | Amount |\n|---|---:|\n| Oct | 1,200.00 |\n\n"
+    "<script>alert(1)</script> [open](javascript:alert(1)) [help](/help/items)"
+)
+
+
+async def _ask(ui_client, answer: str, query: str = "summarize") -> str:
+    result = {"answer": answer, "model_used": "m", "tools_called": [], "pending_actions": []}
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_conversation_query", AsyncMock(return_value=result)):
+        r = await ui_client.post("/ai/chat", data={"query": query, "conversation_id": "conv-1"})
+    assert r.status_code == 200
+    return r.text
+
+
+@pytest.mark.asyncio
+async def test_reply_markdown_renders_tables_and_emphasis_with_raw_html_and_scripts_inert(ui_client):
+    """A reply's Markdown table and bold render as a table and bold; raw HTML in the
+    reply shows as text and a javascript: link is not a link."""
+    page = await _ask(ui_client, _MARKDOWN_REPLY)
+    reply = page[page.index("ai-msg--ai"):]
+    assert "<table" in reply and "<th>Month</th>" in reply
+    assert '<td style="text-align:right">1,200.00</td>' in reply
+    assert "<strong>Totals</strong>" in reply
+    assert "<script>" not in reply and "&lt;script&gt;" in reply
+    assert 'href="javascript' not in reply
+    assert 'href="/help/items"' in reply
+    assert "| Month |" not in reply and "**Totals**" not in reply
+
+
+@pytest.mark.asyncio
+async def test_user_question_shows_as_typed_not_as_markdown(ui_client):
+    """Only the assistant's reply is Markdown: the question bubble shows the user's
+    characters as typed."""
+    page = await _ask(ui_client, "ok", query="**why** <b>this</b>")
+    question = page[page.index("ai-msg--user"):page.index("ai-msg--ai")]
+    assert "**why** &lt;b&gt;this&lt;/b&gt;" in question
+    assert "<strong>" not in question
+
+
 @pytest.mark.asyncio
 async def test_chat_renders_agent_error_instead_of_blank_bubble(ui_client):
     message = (

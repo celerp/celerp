@@ -106,8 +106,12 @@ limits==5.8.0
     # via slowapi
 mako==1.4.3
     # via alembic
+markdown-it-py==4.3.0
+    # via celerp (pyproject.toml)
 markupsafe==3.0.4
     # via mako
+mdurl==0.1.2
+    # via markdown-it-py
 numpy==2.2.6 ; python_full_version < '3.11'
     # via celerp (pyproject.toml)
 numpy==2.4.6 ; python_full_version == '3.11.*'

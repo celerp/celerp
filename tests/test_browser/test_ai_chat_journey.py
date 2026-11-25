@@ -316,6 +316,29 @@ def test_no_horizontal_overflow_at_1440_and_390(page: Page, ui_server, item_crea
     assert overflow <= 0, f"horizontal overflow of {overflow}px at {width}x{height}"
 
 
+@pytest.mark.parametrize("width,height", _VIEWPORTS)
+def test_reply_table_renders_inside_its_bubble(page: Page, ui_server, width, height):
+    """A reply's Markdown table is a table that stays inside its bubble (a wide one
+    scrolls inside it), with its bold text bold, at desktop and phone widths."""
+    page.set_viewport_size({"width": width, "height": height})
+    rows = "\n".join(f"| Item {i} with a long descriptive name | Warehouse {i} | {i * 1000}.00 |"
+                     for i in range(1, 5))
+    _SCRIPT.append(_answer("**Stock** by location:\n\n| Item | Location | Value |\n|---|---|---:|\n"
+                           + rows + "\n\nThat is all of it."))
+    _open_chat(page, ui_server)
+    _send(page, "stock by location")
+
+    reply = page.locator(".ai-msg--ai").last
+    expect(reply.locator("table tbody tr")).to_have_count(4)
+    expect(reply.locator("strong")).to_have_text("Stock")
+    expect(reply).not_to_contain_text("|---")
+    table_box, reply_box = reply.locator("table").bounding_box(), reply.bounding_box()
+    assert table_box["x"] + table_box["width"] <= reply_box["x"] + reply_box["width"] + 1
+    overflow = page.evaluate(
+        "() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
+    assert overflow <= 0, f"horizontal overflow of {overflow}px at {width}x{height}"
+
+
 def test_action_card_within_message_column(page: Page, ui_server, item_create_cap):
     _SCRIPT.append(_mutation(
         item_create_cap, {"name": "Column Widget", "sell_by": "piece"},
