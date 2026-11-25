@@ -62,9 +62,10 @@ async def start(client, auth, product: str, qty: float, **body) -> str:
     return r.json()["id"]
 
 
-async def create(client, auth, product: str, qty: float, **extra):
+async def create(client, auth, product: str, qty: float, inputs: list[tuple[str, float]], **extra):
     return await client.post(MFG, headers=auth["headers"], json={
-        "description": "press", "output_item_id": product, "quantity": qty, **extra})
+        "description": "press", "output_item_id": product, "quantity": qty,
+        "inputs": [{"item_id": i, "quantity": q} for i, q in inputs], **extra})
 
 
 async def lots_of(session, auth, order: str) -> dict[str, list[dict]]:
@@ -217,19 +218,19 @@ async def test_run_scales_extras(client, session, auth):
     """A run snapshots the recipe's extras scaled to its size; a request may list its own,
     [] for none; bad lines are refused; import takes them, never expected_outputs."""
     seed, oil, cake = await press(client, auth, cake_qty=0.3333333)
-    r = await create(client, auth, oil, 10)
+    r = await create(client, auth, oil, 10, [(seed, 30)])
     assert r.status_code == 200, r.text
     run = await _state(session, auth, r.json()["id"])
     [line] = run["also_produces"]
     assert line["item_id"] == cake and line["cost_share"] == 20
-    assert line["quantity"] == pytest.approx(3.333333)
+    assert line["quantity"] == 3.0  # 3.333333 rounded to the item's unit, whole pieces
     assert {"sku", "name", "unit"} <= set(line)
 
-    r = await create(client, auth, oil, 10, also_produces=[])
+    r = await create(client, auth, oil, 10, [(seed, 30)], also_produces=[])
     assert r.status_code == 200, r.text
     assert "also_produces" not in await _state(session, auth, r.json()["id"])
 
-    r = await create(client, auth, oil, 4, also_produces=[{"item_id": cake, "quantity": 7, "cost_share": 10}])
+    r = await create(client, auth, oil, 4, [(seed, 12)], also_produces=[{"item_id": cake, "quantity": 7, "cost_share": 10}])
     assert r.status_code == 200, r.text
     assert (await _state(session, auth, r.json()["id"]))["also_produces"][0]["quantity"] == 7
 
@@ -238,11 +239,11 @@ async def test_run_scales_extras(client, session, auth):
                 ["cake"], [{"item_id": cake, "quantity": 0, "cost_share": 1}],
                 [{"item_id": cake, "quantity": 1, "cost_share": 1, "colour": "brown"}],
                 [{"item_id": seed, "quantity": 1, "cost_share": 1}]):
-        assert (await create(client, auth, oil, 1, also_produces=bad)).status_code == 422, bad
+        assert (await create(client, auth, oil, 1, [(seed, 3)], also_produces=bad)).status_code == 422, bad
 
     def rec(data):
         return {"records": [{"entity_id": f"mfg:{uuid.uuid4()}", "event_type": "mfg.order.created",
-                             "data": data, "idempotency_key": uuid.uuid4().hex}]}
+                             "data": data, "source": "test", "idempotency_key": uuid.uuid4().hex}]}
     base = {"description": "imported", "output_item_id": oil, "quantity": 2}
     r = await client.post(f"{MFG}/import/batch", headers=auth["headers"], json=rec(
         {**base, "also_produces": [{"item_id": cake, "quantity": 5, "cost_share": 20}]}))
@@ -253,22 +254,25 @@ async def test_run_scales_extras(client, session, auth):
 
 
 async def test_outputs_count_extras(client, session, auth):
-    """An open run's extras still to come are supply for planning, and changing the unit of an
-    item an open run will receive is refused, extras included."""
-    seed, oil, cake = await press(client, auth)
+    """An open run's extras still to come are supply for planning, and lowering the decimal
+    places of a unit an open run will still receive an extra in is refused."""
+    seed, oil, cake = await press(client, auth, cake_qty=0.25)
+    r = await client.patch(f"/items/{cake}", headers=auth["headers"],
+                           json={"fields_changed": {"sell_by": {"old": "piece", "new": "carat"}}})
+    assert r.status_code == 200, r.text
     await start(client, auth, oil, 10)
     from celerp.services.record_quantities import outputs_to_receive  # new helper
     from celerp.models.projections import Projection
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == auth["company_id"], Projection.entity_type == "mfg_order"))).scalars().all()
     [run] = [r.state for r in rows if r.state.get("output_item_id") == oil]
-    assert dict(outputs_to_receive(run)) == {oil: 10.0, cake: 20.0}
-    r = await client.patch(f"/items/{cake}", headers=auth["headers"],
-                           json={"fields_changed": {"sell_by": {"old": "piece", "new": "kg"}}})
-    assert r.status_code == 409, r.text
+    assert dict(outputs_to_receive(run)) == {oil: 10.0, cake: 2.5}
     from celerp_manufacturing.routes import _in_progress_by_item
-    supply = await _in_progress_by_item(session, auth["company_id"])
-    assert supply.get(cake) == pytest.approx(20.0)
+    assert _in_progress_by_item(rows).get(cake) == pytest.approx(2.5)
+    units = (await client.get("/companies/me/units", headers=auth["headers"])).json()
+    r = await client.put("/companies/me/units", headers=auth["headers"], json={
+        "units": [{**u, "decimals": 0} if u["name"] == "carat" else u for u in units]})
+    assert r.status_code == 422, r.text
 
 
 # ---------------------------------------------------------------------------
