@@ -265,11 +265,14 @@ def _shared_session_kept(request):
 
 
 @pytest.fixture
-def page(browser_context, request):
+def page(browser_context, ui_server, request):
     """Fresh page per test, from cold server- and client-side state. On setup, drop the UI's
-    per-token metadata snapshot; on teardown, clear per-origin localStorage/sessionStorage so
-    client state (column prefs, Excel-funnel filters, etc.) can't leak to the next test - both are
-    what made the suite order- and shard-sensitive (e.g. the inventory attribute funnel).
+    per-token metadata snapshot and clear the app origin's localStorage, so client state (column
+    prefs, Excel-funnel filters, etc.) can't leak in from an earlier test - both are what made the
+    suite order- and shard-sensitive (e.g. the inventory attribute funnel). The storage is cleared
+    through the browser, not a page's script, so it holds however the earlier test left its page
+    (closed, or on about:blank where a script can no longer reach the app's storage); a new page
+    has its own sessionStorage.
 
     A Playwright trace is recorded and, on failure, saved to /tmp/playwright_failures so CI-only
     browser flakes (which never reproduce locally) can be diagnosed from the uploaded artifact -
@@ -284,6 +287,8 @@ def page(browser_context, request):
     api_client._reset_metadata_cache_for_tests()
 
     p = browser_context.new_page()
+    browser_context.new_cdp_session(p).send(
+        "Storage.clearDataForOrigin", {"origin": ui_server, "storageTypes": "local_storage"})
     browser_context.tracing.start(snapshots=True, screenshots=True, sources=True)
     yield p
     if getattr(request.node, "_failed", False):
@@ -299,10 +304,6 @@ def page(browser_context, request):
             browser_context.tracing.stop()
         except Exception:
             pass
-    try:
-        p.evaluate("try{localStorage.clear();sessionStorage.clear();}catch(e){}")
-    except Exception:
-        pass
     if not p.is_closed():
         p.close()
 
