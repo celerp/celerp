@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -24,6 +25,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.events.schemas import (
     _WORKFLOW_TIME_UNITS,
+    CoProductSpec,
     RecipeSpec,
     WorkflowSpec,
     workflow_step_minutes,
@@ -39,8 +41,9 @@ from celerp.services.fulfill import outstanding_physical_lines
 from celerp.services.journal_accounts import UnbalancedJournalEntry
 from celerp.services.lot_origin import refuse_deleted, refuse_draft
 from celerp.services.goods_cost import lot_label, negative_cost_error
-from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES, outstanding_output
+from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES, outputs_to_receive
 from celerp.services.permissions import locked_authority, require_permission
+from celerp.services.units import build_unit_map, get_company_units, unit_decimals
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import t
 from celerp_inventory.projections import is_manufacturable
@@ -79,7 +82,9 @@ class MfgInput(BaseModel):
 
 class MfgOrderCreate(BaseModel):
     # A run makes `quantity` of one product, `output_item_id`; what it expects to make is taken
-    # from that product. Fields it does not know, such as a list of outputs, are refused.
+    # from that product. `also_produces` lists what else it yields ([] for nothing); left out,
+    # the product recipe's extras are scaled to the run. Fields it does not know, such as a
+    # list of outputs, are refused.
     model_config = ConfigDict(extra="forbid")
 
     description: str
@@ -92,7 +97,15 @@ class MfgOrderCreate(BaseModel):
     due_date: str | None = None
     estimated_cost: FiniteFloat | None = None
     notes: str | None = None
+    also_produces: list[CoProductSpec] | None = None
     idempotency_key: str | None = None
+
+
+def _request_of(payload: MfgOrderCreate) -> dict:
+    """What a creation request asked for, as its key remembers it. A request that leaves out
+    ``also_produces`` reads as it did before runs had extras, so its key still matches."""
+    return payload.model_dump(exclude={"idempotency_key", *(() if payload.also_produces is not None
+                                                            else ("also_produces",))})
 
 
 class ScheduleBody(BaseModel):
@@ -138,12 +151,22 @@ class WasteItem(BaseModel):
     quantity: FiniteFloat = Field(gt=0)
 
 
-class CompleteBody(BaseModel):
-    # What a run made is what was received from it; a declared yield is refused, not ignored.
-    # Waste names each component and how much of it was wasted; waste_quantity (in waste_unit)
-    # is the shorthand for a run with one component.
+class ExtraYield(MfgInput):
+    # How much of one of the run's extras Complete receives. 0 finishes without it; a negative
+    # quantity, or an item the run does not yield, is refused by complete (movements), which
+    # names the item.
     model_config = ConfigDict(extra="forbid")
 
+
+class CompleteBody(BaseModel):
+    # What a run made is what was received from it; a declared yield of the product is refused,
+    # not ignored.
+    # Waste names each component and how much of it was wasted; waste_quantity (in waste_unit)
+    # is the shorthand for a run with one component. also_produces says how much of each extra
+    # is received now; left out, each extra still to come is received.
+    model_config = ConfigDict(extra="forbid")
+
+    also_produces: list[ExtraYield] | None = None
     waste_items: list[WasteItem] | None = None
     waste_quantity: FiniteFloat | None = Field(default=None, ge=0)
     waste_unit: str | None = None
@@ -205,7 +228,8 @@ async def _get_order(session: AsyncSession, company_id, order_id: str) -> Projec
 
 
 def _order_item_ids(data: dict) -> list[str]:
-    """Every item a new run names: its components and the product it makes."""
+    """Every item a new run names: its components, the product it makes and the extras the
+    request lists (the lines themselves are checked when the run is written)."""
     inputs = data.get("inputs", [])
     if not isinstance(inputs, list):
         raise HTTPException(status_code=422, detail=catalog_refusal("manufacturing.err_inputs_not_list"))
@@ -218,7 +242,39 @@ def _order_item_ids(data: dict) -> list[str]:
     output = data.get("output_item_id")
     if not isinstance(output, str) or not output:
         raise HTTPException(status_code=422, detail=catalog_refusal("manufacturing.err_output_required"))
-    return [*ids, output]
+    extras = [line.get("item_id") for line in data.get("also_produces") or [] if isinstance(line, dict)]
+    return [*ids, output, *(i for i in extras if isinstance(i, str) and i)]
+
+
+async def _run_extras(session: AsyncSession, company_id, data: dict, quantity: float,
+                      rows: dict[str, Projection]) -> list[dict]:
+    """What else a new run yields beside its product: the lines the request lists ([] for
+    nothing), else the product recipe's extras scaled to the run and rounded to each item's
+    unit (a line that rounds to nothing is left out). Every line is checked as a recipe's is,
+    and its item locked, so it names a live stocked item that is neither the product nor a
+    component."""
+    product = rows[data["output_item_id"]].state or {}
+    sent = data.get("also_produces")
+    recipe = product.get("recipe") or {}
+    lines = [{"item_id": x["item_id"], "quantity": float(x["quantity"]), "cost_share": float(x.get("cost_share") or 0)}
+             for x in (sent if sent is not None else recipe.get("also_produces") or [])]
+    if not lines:
+        return []
+    rows = {**rows, **await lock_projections(session, company_id, [x["item_id"] for x in lines if x["item_id"] not in rows])}
+    if sent is None:
+        unit_map = build_unit_map(await get_company_units(session, company_id))
+        per_batch = Decimal(str(quantity)) / Decimal(str(float(recipe.get("output_qty") or 1)))
+        for x in lines:
+            decimals = unit_decimals((getattr(rows.get(x["item_id"]), "state", None) or {}).get("sell_by"), unit_map)
+            x["quantity"] = float((Decimal(str(x["quantity"])) * per_batch).quantize(
+                Decimal(10) ** -(6 if decimals is None else decimals), rounding=ROUND_HALF_UP))
+        lines = [x for x in lines if x["quantity"] > 0]
+    await movements.require_valid_extras(session, company_id, lines, data["output_item_id"],
+                                         [i["item_id"] for i in data.get("inputs") or []])
+    await movements.require_unit_precision(session, company_id, [
+        (rows[x["item_id"]].state or {}, x["quantity"]) for x in lines])
+    return [{"item_id": x["item_id"], "sku": x["sku"], "name": (rows[x["item_id"]].state or {}).get("name", ""),
+             "unit": x["unit"], "quantity": x["quantity"], "cost_share": x["cost_share"]} for x in lines]
 
 
 async def _created_before(session: AsyncSession, company_id, key: str, fingerprint: str):
@@ -250,8 +306,8 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
                               locked: dict[str, Projection] | None = None):
     """The one way a new run is written, by every door that creates one.
 
-    A run makes ``quantity`` of one product, ``data["output_item_id"]``, from the components
-    in ``data["inputs"]``; what it expects to make is taken from the product. Every item it
+    A run makes ``quantity`` of one product, ``data["output_item_id"]``, and the extras in
+    ``data["also_produces"]`` beside it, from the components in ``data["inputs"]``; what it expects to make is taken from the product. Every item it
     names must be a stocked item or component of this company, so a run never stores an item
     that does not exist or one production cannot move. The items are locked first
     (``locked`` when the caller already locked them), so a Delete of one either finishes
@@ -285,7 +341,10 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
     await movements.require_unit_precision(session, company_id, [
         (rows[data["output_item_id"]].state or {}, quantity),
         *((rows[i["item_id"]].state or {}, float(i["quantity"])) for i in data.get("inputs") or [])])
-    data = {**data, "expected_outputs": [output_line(rows[data["output_item_id"]].state or {}, quantity)]}
+    extras = await _run_extras(session, company_id, data, quantity, rows)
+    data = {k: v for k, v in data.items() if k != "also_produces"}
+    data = {**data, "expected_outputs": [output_line(rows[data["output_item_id"]].state or {}, quantity)],
+            **({"also_produces": extras} if extras else {})}
     return await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
         event_type="mfg.order.created", data=data, actor_id=actor_id, location_id=location_id,
@@ -341,16 +400,21 @@ async def set_item_recipe(
 
     Validates components, rolls the standard cost up from current component costs,
     and emits ``item.recipe.set``. Hard errors (422) on self-reference, unknown
-    component SKUs, items that are not stock, deleted items, items merged into another, and recipe cycles. Per GDR, validation lives
+    component SKUs, items that are not stock, deleted items, items merged into another, recipe cycles,
+    and extras (also_produces) that are the product or a component, listed twice, or whose
+    cost shares do not leave the product some of the value. Per GDR, validation lives
     at the function level. The company lock is taken before anything is read, so the items
     the recipe names are checked and saved in one step that a Delete cannot come between.
     """
-    item = (await lock_projections(session, company_id, [item_id])).get(item_id)
+    extra_ids = [line.item_id for line in payload.also_produces]
+    item = (await lock_projections(session, company_id, [item_id, *extra_ids])).get(item_id)
     if item is None or item.entity_type != "item":
         raise HTTPException(status_code=404, detail=t("manufacturing.err_item_not_found"))
     movements.require_stock(item.state or {}, item_id)
 
     recipe = payload.model_dump()
+    if not recipe["also_produces"]:
+        del recipe["also_produces"]  # a recipe with no extras is stored as before they existed
     if any(c.get("item_id") == item_id for c in recipe["components"]):
         raise HTTPException(status_code=422, detail=t("manufacturing.err_component_is_self"))
 
@@ -371,6 +435,8 @@ async def set_item_recipe(
         await movements.require_not_merged(session, company_id, cstate, comp.get("item_id"))
         comp["unit"] = cstate.get("sell_by") or cstate.get("unit") or comp.get("unit")
         comp["sku"] = cstate.get("sku") or comp.get("sku")
+    await movements.require_valid_extras(session, company_id, recipe.get("also_produces", []), item_id,
+                                         [c.get("item_id") for c in recipe["components"]])
 
     try:
         breakdown = roll_up_cost(recipe, graph.get, _path=frozenset({item_id}))
@@ -693,17 +759,16 @@ def _peg(row: dict) -> None:
 
 
 def _in_progress_by_item(runs: list) -> dict[str, float]:
-    """Output open production runs (planned/in_progress/on_hold) still have to receive, summed
-    per product. What a run already received is a lot on hand, so only the rest is supply to come."""
+    """Output open production runs (planned/in_progress/on_hold) still have to receive, the
+    product and each extra, summed per item. What a run already received is a lot on hand, so only the rest is supply to come."""
     out: dict[str, float] = {}
     for r in runs:
         rs = r.state or {}
         if (rs.get("status") or "").lower() not in INCOMPLETE_RUN_STATUSES:
             continue
-        item_id = rs.get("output_item_id")
-        if not item_id:
-            continue
-        out[item_id] = out.get(item_id, 0.0) + outstanding_output(rs)
+        for item_id, left in outputs_to_receive(rs):
+            if item_id:
+                out[item_id] = out.get(item_id, 0.0) + left
     return out
 
 
@@ -1228,7 +1293,8 @@ async def import_manufacturing_template():
 # fields. Progress, status and value come only from the run's own movements.
 _IMPORTED_FIELDS = ("planned_start", "priority", "source_doc_id", "source_doc_number",
                     "source_doc_type", "source_contact_name", "source_due")
-# Listing outputs is refused on import as on every other door: a run's output is its product.
+# Listing outputs is refused on import as on every other door: a run makes its product, and
+# its extras come only from also_produces.
 _REFUSED_ON_IMPORT = ("expected_outputs", "outputs")
 
 
@@ -1677,7 +1743,7 @@ async def create_order(
         raise HTTPException(status_code=422, detail=t("manufacturing.err_description_required"))
     if len(payload.inputs) == 0:
         raise HTTPException(status_code=409, detail=t("manufacturing.err_no_components"))
-    request = payload.model_dump(exclude={"idempotency_key"})
+    request = _request_of(payload)
     entry = await _emit_order_created(
         session, company_id, f"mfg:{uuid.uuid4()}",
         {**payload.model_dump(exclude_none=True, exclude={"idempotency_key", "quantity"}),
@@ -1852,7 +1918,8 @@ async def receive_order(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Receive finished goods from a run as a discrete lot under the product. Omitting
-    `quantity` receives everything still outstanding; once fully received the run completes."""
+    `quantity` receives everything still outstanding; a run without extras completes once fully
+    received, and a run with extras stays open until Complete receives them."""
     result = await movements.receive(session, company_id, user.id, order_id,
                                      payload.quantity if payload else None,
                                      payload.idempotency_key if payload else None,
@@ -1861,7 +1928,7 @@ async def receive_order(
     return result
 
 
-@router.post("/{order_id}/complete", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Complete a production run, issuing any remaining materials and receiving the output.")
+@router.post("/{order_id}/complete", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Complete a production run, issuing any remaining materials and receiving the product and any extra outputs.")
 async def complete_order(
     order_id: str,
     payload: CompleteBody | None = None,
@@ -1870,10 +1937,11 @@ async def complete_order(
     _: None = require_permission("manage_manufacturing"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Finish a run now: issue any outstanding components, receive all outstanding output, and close.
+    """Finish a run now: issue any outstanding components, receive the product and each extra
+    still to come, and close.
 
-    This is the one-tap close used by the product hub's Complete action; the output lands as a
-    discrete lot under the product, never a nameless throwaway item.
+    This is the one-tap close used by the product hub's Complete action; each output lands as a
+    discrete lot under its own item, never a nameless throwaway item.
     """
     details = payload.model_dump(exclude={"idempotency_key"}) if payload else {}
     result = await movements.complete(session, company_id, user.id, order_id, details,

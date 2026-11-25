@@ -37,6 +37,7 @@ from celerp.accounting_roles import (
     SCHEMA_KEY,
     VALUED_FROM_KEY,
     AccountRole,
+    catalog_refusal,
 )
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company
@@ -72,7 +73,8 @@ from celerp.services.lot_origin import (
     value_moved,
 )
 from celerp.services.money import allocate_pro_rata, round_money
-from celerp.services.record_quantities import EPS, outstanding_inputs, outstanding_output, run_name
+from celerp.services.record_quantities import (EPS, extra_to_receive, main_receipts, outstanding_inputs, outstanding_output,
+                                               run_name, run_outputs)
 from celerp.services.units import build_unit_map, get_company_units, require_moving_fits_units, validate_line_quantity
 
 from . import run_events  # noqa: F401  (registers the run's own event types)
@@ -135,6 +137,48 @@ async def require_not_merged(session: AsyncSession, company_id, state: dict, ite
     raise refuse(http_status, "component_merged",
                  f"{sku} was merged into {into}, so it holds no stock of its own. Name {into} in the recipe "
                  "instead.", sku=sku, merged_into=into)
+
+
+async def require_valid_extras(session: AsyncSession, company_id, lines: list[dict], product_id: str,
+                               component_ids, http_status: int = 422) -> None:
+    """The extras a recipe or run yields beside its product: each a live stocked item that
+    is neither the product nor one of its components, listed once, with a cost share of 0
+    or more; the shares together stay under 100, so the product always carries some of the
+    value. Each line's sku and unit are set from the item. Raises http_status: 422 when
+    the lines are sent, 409 when a run that holds them is completed."""
+    excluded = {product_id, *component_ids}
+    seen: set[str] = set()
+    states: dict[str, dict] = {}
+    missing: list[str] = []
+    for line in lines:
+        item_id = line["item_id"]
+        if item_id in excluded:
+            raise HTTPException(status_code=http_status, detail=catalog_refusal(
+                "manufacturing.err_coproduct_in_recipe", item=line.get("sku") or item_id))
+        if item_id in seen:
+            raise HTTPException(status_code=http_status, detail=catalog_refusal(
+                "manufacturing.err_coproduct_duplicate", item=line.get("sku") or item_id))
+        seen.add(item_id)
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+        if row is None or row.entity_type != "item":
+            missing.append(item_id)
+            continue
+        states[item_id] = row.state or {}
+    if missing:
+        raise HTTPException(status_code=http_status, detail=catalog_refusal(
+            "manufacturing.err_components_missing", items=", ".join(sorted(missing))))
+    shares = [Decimal(str(line.get("cost_share") or 0)) for line in lines]
+    total = sum(shares, Decimal(0))
+    if any(s < 0 or s >= 100 for s in shares) or total >= 100:
+        raise HTTPException(status_code=http_status, detail=catalog_refusal(
+            "manufacturing.err_cost_shares", total=f"{total.normalize():f}"))
+    for line in lines:
+        state = states[line["item_id"]]
+        require_stock(state, line["item_id"], http_status)
+        require_not_deleted(state, line["item_id"], http_status)
+        await require_not_merged(session, company_id, state, line["item_id"], http_status)
+        line["sku"] = state.get("sku") or line.get("sku")
+        line["unit"] = state.get("sell_by") or state.get("unit") or line.get("unit")
 
 
 async def mfg_settings(session: AsyncSession, company_id) -> dict:
@@ -559,7 +603,7 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
 async def receive(session: AsyncSession, company_id, user_id, order_id: str, quantity: float | None,
                   key: str | None, *, at: str) -> dict:
     """Receive finished goods as a new lot: ``quantity``, or everything still outstanding. A run
-    whose output is fully received completes."""
+    without extras whose output is fully received completes."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
     request = _fingerprint({"quantity": quantity})
@@ -573,32 +617,40 @@ async def receive(session: AsyncSession, company_id, user_id, order_id: str, qua
     qty = outstanding_output(run.state) if quantity is None else float(quantity)
     lot_id = await _receive(op, run, qty, rk, request)
     run = await _run(op)
-    if outstanding_output(run.state) <= EPS:
+    # A run with extras stays open: Complete says how much of each it made.
+    if outstanding_output(run.state) <= EPS and not run_outputs(run.state):
         await _close(op, run, {}, request, f"receive:{rk}")
     return {"received": qty, "lot_item_id": lot_id}
 
 
-async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) -> str:
+async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str,
+                   extra_id: str | None = None) -> str:
     """Restock ``qty`` of the run's output as a new lot carrying its share of the run's work in
     progress: the share of the quantity still to come, so receiving 3 then 2 moves what
-    receiving 5 would, and the last receipt takes everything left."""
+    receiving 5 would, and the last receipt takes everything left. ``extra_id`` receives one
+    of the run's extras instead: any quantity, at no value until the run closes and shares
+    its value out (_close)."""
     state = run.state
-    outstanding = outstanding_output(state)
     if qty <= 0:
         raise refuse(422, "receive_quantity", "The quantity received must be greater than zero.")
-    if qty > outstanding + EPS:
-        raise refuse(409, "over_receipt",
-                     f"Only {outstanding:g} is still to be received from this run; {qty:g} cannot be received.",
-                     remaining=outstanding, quantity=qty)
-    if outstanding_inputs(state):
-        raise refuse(409, "issue_first", "Issue every component to this run before receiving its output.")
-    out_id = state["output_item_id"]  # a stocked item (_require_executable_shape)
+    if extra_id is None:
+        outstanding = outstanding_output(state)
+        if qty > outstanding + EPS:
+            raise refuse(409, "over_receipt",
+                         f"Only {outstanding:g} is still to be received from this run; {qty:g} cannot be received.",
+                         remaining=outstanding, quantity=qty)
+        if outstanding_inputs(state):
+            raise refuse(409, "issue_first", "Issue every component to this run before receiving its output.")
+    out_id = extra_id or state["output_item_id"]  # a stocked item (_require_executable_shape, require_valid_extras)
     p = (await lock_projections(op.session, op.company_id, [out_id]))[out_id].state or {}
     refuse_draft(p, out_id)
     await require_unit_precision(op.session, op.company_id, [(p, qty)])
 
     wip = _wip(state)
-    amount = wip if qty >= outstanding - EPS else op.round(wip * _money(qty) / _money(outstanding))
+    if extra_id is not None:
+        amount = _ZERO
+    else:
+        amount = wip if qty >= outstanding - EPS else op.round(wip * _money(qty) / _money(outstanding))
     wip_code = state.get("wip_account_code")
     if op.books:
         code = await resolve(op.session, op.company_id, AccountRole.INVENTORY_PURCHASED)
@@ -630,6 +682,7 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
                   {code: amount} if code else {})
     await op.emit_run("mfg.order.received", {
         "quantity": qty, "lot_item_id": lot_id, "received_by": str(op.user_id), "value": str(amount),
+        **({"output_item_id": extra_id, "sku": p.get("sku")} if extra_id is not None else {}),
         "request": request}, f"mfg:{op.order_id}:receive:{rk}:received")
     return lot_id
 
@@ -640,9 +693,10 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
 
 async def complete(session: AsyncSession, company_id, user_id, order_id: str, payload: dict,
                    key: str | None, *, at: str, quantity: float | None = None) -> dict:
-    """Finish a run: issue what is outstanding, receive the output still to come (``quantity``
-    of it when given, else all of it, or none when every component issued was wasted) and close. ``payload`` holds the closing details
-    (waste_items, or the waste_quantity shorthand with waste_unit; waste_reason, labor_hours).
+    """Finish a run: issue what is outstanding, receive the product still to come (``quantity``
+    of it when given, else all of it, or none when every component issued was wasted) and each
+    extra (_extras_request), and close. ``payload`` holds the closing details (waste_items, or
+    the waste_quantity shorthand with waste_unit; waste_reason, labor_hours; also_produces).
     What it made is what it received."""
     rk = key or uuid.uuid4().hex
     op = await _begin(session, company_id, user_id, order_id, at)
@@ -654,10 +708,13 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
     await _require_executable_shape(op, run.state)
     _require_settled(op, run.state)
     wasted, names = await _waste_request(op, run.state, payload)
-    # Completing issues what is outstanding, so the waste is checked against that before anything moves.
-    check_waste({**run.state, "inputs": [{**i, "issued_qty": max(float(i.get("issued_qty") or 0),
-                                                                  float(i.get("quantity") or 0))}
-                                         for i in run.state.get("inputs", [])]}, wasted, names)
+    # Completing issues what is outstanding, so the waste and the extras are checked against
+    # that before anything moves.
+    issued = {**run.state, "inputs": [{**i, "issued_qty": max(float(i.get("issued_qty") or 0),
+                                                              float(i.get("quantity") or 0))}
+                                      for i in run.state.get("inputs", [])]}
+    check_waste(issued, wasted, names)
+    extras = await _extras_request(op, run.state, payload.get("also_produces"), _all_wasted(issued, wasted))
     outstanding = outstanding_inputs(run.state)
     if outstanding:
         if (await mfg_settings(session, company_id)).get("require_issued_before_complete"):
@@ -673,6 +730,9 @@ async def complete(session: AsyncSession, company_id, user_id, order_id: str, pa
     if qty > EPS:
         await _receive(op, run, qty, f"{rk}:receive", request)
         run = await _run(op)
+    for extra_id, extra_qty in extras:
+        await _receive(op, run, extra_qty, f"{rk}:extra:{extra_id}", request, extra_id)
+        run = await _run(op)
     await _close(op, run, payload, request, rk, wasted, names)
     return {"status": "completed"}
 
@@ -684,8 +744,33 @@ def _all_wasted(state: dict, wasted: list[dict]) -> bool:
     return bool(wasted) and all(lost.get(item_id, _ZERO) >= qty for item_id, qty in issued.items())
 
 
-def merge_waste(items: list[dict] | None) -> list[dict]:
-    """Each wasted component once, its quantities summed, in component order."""
+async def _extras_request(op: _Op, state: dict, sent: list[dict] | None, all_wasted: bool) -> list[tuple[str, float]]:
+    """How much of each extra a completion receives, as (item id, quantity) with quantity above
+    0: the quantity entered, else what is still to come of it (none when everything issued
+    was wasted). Each extra received must still be one the run can yield."""
+    planned = {x["item_id"]: x for x in run_outputs(state)}
+    for line in sent or []:
+        if line["item_id"] not in planned:
+            row = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": line["item_id"]})
+            sku = ((row.state or {}) if row is not None else {}).get("sku") or line["item_id"]
+            raise refuse(422, "not_an_extra", f"{sku} is not an extra output of this run.", sku=sku)
+        if float(line["quantity"]) < 0:
+            sku = planned[line["item_id"]].get("sku") or line["item_id"]
+            raise refuse(422, "extra_quantity", f"The quantity of {sku} received cannot be below zero.", sku=sku)
+    entered = {line["item_id"]: line["quantity"] for line in merge_item_lines(sent)} if sent is not None else {}
+    out = [(item_id, float(entered[item_id]) if item_id in entered
+            else 0.0 if all_wasted else extra_to_receive(state, item_id)) for item_id in planned]
+    out = [(item_id, qty) for item_id, qty in out if qty > EPS]
+    received = [dict(planned[item_id]) for item_id, _ in out]
+    if received:
+        await lock_projections(op.session, op.company_id, [item_id for item_id, _ in out])
+        await require_valid_extras(op.session, op.company_id, received, state.get("output_item_id"),
+                                   [i.get("item_id") for i in state.get("inputs", [])], http_status=409)
+    return out
+
+
+def merge_item_lines(items: list[dict] | None) -> list[dict]:
+    """Each item once, its quantities summed, in item order: wasted components, or extras received."""
     merged: dict[str, Decimal] = {}
     for line in items or []:
         merged[line["item_id"]] = merged.get(line["item_id"], _ZERO) + _money(line["quantity"])
@@ -695,9 +780,10 @@ def merge_waste(items: list[dict] | None) -> list[dict]:
 def _closing_request(payload: dict) -> dict:
     """The closing details as one request: the same waste listed in another order, or split over
     repeated lines, is the same request."""
-    out = {k: v for k, v in payload.items() if k != "waste_items"}
-    if payload.get("waste_items"):
-        out["waste_items"] = merge_waste(payload["waste_items"])
+    out = {k: v for k, v in payload.items() if k not in ("waste_items", "also_produces")}
+    for k in ("waste_items", "also_produces"):
+        if payload.get(k):
+            out[k] = merge_item_lines(payload[k])
     return out
 
 
@@ -716,7 +802,7 @@ async def _waste_request(op: _Op, state: dict, payload: dict) -> tuple[list[dict
     if items and qty is not None:
         raise refuse(422, "waste_twice", "Give the waste either per component or as one quantity, not both.")
     if items:
-        return merge_waste(items), names
+        return merge_item_lines(items), names
     if not qty:
         return [], names
     if len(names) != 1:
@@ -737,7 +823,7 @@ def check_waste(run_state: dict, waste_items: list[dict], names: dict[str, str] 
     of the run's and none is wasted beyond what was issued to it."""
     inputs = {i.get("item_id"): i for i in run_state.get("inputs", [])}
     names = names or {}
-    wasted = merge_waste(waste_items)
+    wasted = merge_item_lines(waste_items)
     for line in wasted:
         item_id = line["item_id"]
         if item_id not in inputs:
@@ -772,8 +858,8 @@ def value_waste(run_state: dict, waste_items: list[dict], currency: str,
 async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
                  wasted: list[dict] | None = None, names: dict[str, str] | None = None) -> None:
     """Close a run, leaving it holding nothing: waste to cost of goods sold, and the rest
-    shared over its lots by quantity, each lot restated by the difference from what it took
-    when it was received. ``ck`` keys this completion, so a reopened run completes afresh.
+    shared over its lots (by cost share between outputs, then by quantity, _output_shares),
+    each lot restated by the difference from what it took when it was received. ``ck`` keys this completion, so a reopened run completes afresh.
     The completion records what it moved, so reopening reverses exactly that."""
     state = run.state
     issued, held = _money(state.get("wip_issued")), _wip(state)
@@ -797,7 +883,7 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
         raise refuse(409, "unaccounted_value",
                      "Nothing was received from this run, so the materials issued to it must be recorded "
                      "as waste before it can be completed.")
-    shares = allocate_pro_rata(finished - kept, [_money(r["quantity"]) for r in live], op.currency) if live else []
+    shares = _output_shares(state, live, finished - kept, op.currency)
 
     debits: dict[str, Decimal] = {}
     restated = []
@@ -818,6 +904,10 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
 
     expected = (state.get("expected_outputs") or [{}])[0]
     actual_outputs = [{**expected, "quantity": float(state.get("received_qty") or 0)}] if expected else []
+    for extra in run_outputs(state):
+        made = sum(float(r.get("quantity") or 0) for r in receipts if r.get("output_item_id") == extra["item_id"])
+        actual_outputs.append({"item_id": extra["item_id"], "sku": extra.get("sku"), "unit": extra.get("unit"),
+                               "quantity": round(made, 6)})
     await op.emit_run("mfg.order.completed", {
         "completed_by": str(op.user_id), "actual_outputs": actual_outputs,
         "waste": ({"items": waste_lines, "unit": payload.get("waste_unit"),
@@ -826,6 +916,32 @@ async def _close(op: _Op, run: Projection, payload: dict, request: str, ck: str,
         "transferred": str(finished), "wasted": str(waste), "request": request,
         "closing": {"held": str(held), "wasted": str(waste), "lots": restated, "booked": op.books},
     }, f"mfg:{op.order_id}:complete:{ck}")
+
+
+def _output_shares(state: dict, live: list[dict], amount: Decimal, currency: str) -> list[Decimal]:
+    """What each live receipt takes of ``amount``, the run's finished value: each output with
+    live receipts takes its cost share (the product 100 less every extra's share), then each
+    of its lots by quantity. When every output received has a share of 0, there is no value
+    left to place, or the run is refused."""
+    if not live:
+        return []
+    extras = {x["item_id"]: _money(x.get("cost_share")) for x in run_outputs(state)}
+    groups: dict[str | None, list[int]] = {}
+    for i, r in enumerate(live):
+        groups.setdefault(r.get("output_item_id"), []).append(i)
+    weights = [extras.get(g, _ZERO) if g else Decimal(100) - sum(extras.values(), _ZERO) for g in groups]
+    if not any(weights):
+        if amount:
+            raise refuse(409, "no_cost_share",
+                         "Only outputs with no cost share were received from this run, so the value it holds has "
+                         "nowhere to go. Receive some of the product, or record the materials as waste.")
+        return [_ZERO] * len(live)
+    shares = [_ZERO] * len(live)
+    for group_amount, members in zip(allocate_pro_rata(amount, weights, currency), groups.values()):
+        split = allocate_pro_rata(group_amount, [_money(live[i]["quantity"]) for i in members], currency)
+        for i, share in zip(members, split):
+            shares[i] = share
+    return shares
 
 
 async def _restate(op: _Op, lot_id: str, delta: Decimal, key: str, action: str) -> str | None:
@@ -1041,7 +1157,8 @@ async def undo_receipt(session: AsyncSession, company_id, user_id, order_id: str
                   f"mfg:{order_id}:unreceive:{rk}:archived", location_id=loc, metadata=mark)
     await op.post(f"unreceive:{rk}", f"Output receipt undone on production run {op.ref}", wip_code, value,
                   {code: -value} if code else {})
-    data = {"lot_item_id": lot_id, "quantity": qty, "value": str(value)}
+    data = {"lot_item_id": lot_id, "quantity": qty, "value": str(value),
+            **({"output_item_id": receipt["output_item_id"]} if receipt.get("output_item_id") else {})}
     await op.emit_run("mfg.order.receipt_undone", {**data, "undone_by": str(op.user_id), "request": request},
                       f"mfg:{order_id}:unreceive:{rk}")
     return data
@@ -1132,6 +1249,13 @@ async def transition(session: AsyncSession, company_id, user_id, order_id: str, 
     return await op.emit_run(event_type, {**data, "request": request}, f"mfg:{order_id}:{action}:{rk}")
 
 
+def _holds_anything(state: dict) -> bool:
+    """Whether a run still holds materials, value or output: any lot it received, the
+    product's or an extra's, keeps it from being cancelled."""
+    return bool(float(state.get("received_qty") or 0) > EPS or state.get("receipts") or _wip(state) or any(
+        float(i.get("issued_qty") or 0) > EPS for i in state.get("inputs", [])))
+
+
 async def cancel(session: AsyncSession, company_id, user_id, order_id: str, reason: str | None,
                  key: str | None, *, at: str):
     """Cancel a run that holds nothing. A run still holding issued materials or received output
@@ -1146,8 +1270,7 @@ async def cancel(session: AsyncSession, company_id, user_id, order_id: str, reas
     _require_open(run.state, "cancelled")
     # Its materials cannot be returned until it is reconciled, so that comes first.
     _require_settled(op, run.state)
-    if float(run.state.get("received_qty") or 0) > EPS or _wip(run.state) or any(
-            float(i.get("issued_qty") or 0) > EPS for i in run.state.get("inputs", [])):
+    if _holds_anything(run.state):
         raise refuse(409, "cancel_moved",
                      "This run still holds materials or output, so it cannot be cancelled. Return its "
                      "materials and undo its receipts first.")
@@ -1360,9 +1483,10 @@ async def still_held(session: AsyncSession, company_id, order_id: str,
 
 
 def _untracked_qty(state: dict) -> float:
-    """What a run received before value was tracked: everything received but its valued receipts."""
+    """What a run received before value was tracked: its product received but not in a valued
+    receipt. Extras never count in received_qty, so their receipts are left out too."""
     return float(state.get("received_qty") or 0) - sum(float(r.get("quantity") or 0)
-                                                       for r in state.get("receipts") or [])
+                                                       for r in main_receipts(state))
 
 
 async def _untracked_lots(session: AsyncSession, company_id, order_id: str, state: dict) -> list[dict] | None:

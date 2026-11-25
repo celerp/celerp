@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.projections import Projection
-from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES
+from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES, output_skus
 
 
 def _haystack(order: dict) -> str:
@@ -20,7 +20,7 @@ def _haystack(order: dict) -> str:
         str(order.get("id", "")),
         str(order.get("description", "")),
         str(order.get("source_doc_id", "")),
-        " ".join(str(x.get("sku", "")) for x in order.get("expected_outputs", [])),
+        " ".join(output_skus(order)),
     ]).lower()
 
 

@@ -138,7 +138,9 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
                     inp.pop(GOODS_COST_UNKNOWN, None)
         _add(current, "wip_issued", -Decimal(str(data["value"])))
     elif event_type == "mfg.order.received":
-        current["received_qty"] = float(current.get("received_qty") or 0) + float(data.get("quantity") or 0)
+        # An extra's receipt names its item; received_qty counts the product only.
+        if not data.get("output_item_id"):
+            current["received_qty"] = float(current.get("received_qty") or 0) + float(data.get("quantity") or 0)
         lot_id = data.get("lot_item_id")
         if lot_id:
             lots = list(current.get("received_lots") or [])
@@ -148,7 +150,8 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         if "value" in data:
             _add(current, "wip_transferred", data["value"])
             current["receipts"] = [*(current.get("receipts") or []), {
-                "lot_item_id": lot_id, "quantity": float(data.get("quantity") or 0), "value": _money(data["value"])}]
+                "lot_item_id": lot_id, "quantity": float(data.get("quantity") or 0), "value": _money(data["value"]),
+                **({"output_item_id": data["output_item_id"]} if data.get("output_item_id") else {})}]
         else:
             current["wip_untracked"] = True
     elif event_type == "mfg.order.scheduled":
@@ -158,7 +161,9 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
                 current[key] = data[key] or None
     elif event_type == "mfg.order.receipt_undone":
         lot_id = data.get("lot_item_id")
-        current["received_qty"] = max(0.0, round(float(current.get("received_qty") or 0) - float(data["quantity"]), 9))
+        if not data.get("output_item_id"):
+            current["received_qty"] = max(0.0, round(float(current.get("received_qty") or 0)
+                                                   - float(data["quantity"]), 9))
         current["received_lots"] = [lot for lot in current.get("received_lots") or [] if lot != lot_id]
         current["receipts"] = [r for r in current.get("receipts") or [] if r.get("lot_item_id") != lot_id]
         _add(current, "wip_transferred", -Decimal(str(data["value"])))
@@ -169,6 +174,10 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
             current["closing"] = {**data["closing"], "before": {k: current[k] for k in _CLOSED if k in current}}
         current["status"] = "completed"
         current["is_in_production"] = False
+        # From the first completion on, what was not received of an extra was not made; a
+        # reopen keeps this, so Completing again receives only what is entered.
+        if current.get("also_produces"):
+            current["extras_completed"] = True
         if data.get("actual_outputs") is not None:
             current["actual_outputs"] = data["actual_outputs"]
         if data.get("waste") is not None:

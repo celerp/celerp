@@ -2262,6 +2262,9 @@
   "manufacturing.err_run_not_found": "Celerp tidak menemukan proses produksi ini. Proses mungkin sudah dihapus. Kembali ke daftar.",
   "manufacturing.err_item_not_found": "Celerp tidak menemukan barang ini. Barang mungkin sudah dihapus. Pilih Coba lagi, lalu pilih item lain.",
   "manufacturing.err_component_no_item": "Setiap baris komponen memerlukan barang. Pilih barang atau hapus baris kosong.",
+  "manufacturing.err_coproduct_in_recipe": "{item} sudah menjadi produk atau salah satu komponennya, jadi tidak bisa juga dicantumkan di Juga menghasilkan. Hapus dari daftar itu.",
+  "manufacturing.err_coproduct_duplicate": "{item} tercantum dua kali di Juga menghasilkan. Simpan satu baris saja.",
+  "manufacturing.err_cost_shares": "Setiap porsi biaya di Juga menghasilkan harus 0 atau lebih, dan totalnya harus di bawah 100% agar produk utama tetap menanggung sebagian biaya. Totalnya {total}%.",
   "manufacturing.err_product_no_item": "Pilih barang yang dihasilkan proses produksi ini.",
   "manufacturing.err_item_unknown": "Salah satu barang yang dipilih tidak ada. Barang mungkin sudah dihapus. Pilih lagi dari daftar.",
   "manufacturing.err_component_is_self": "Barang tidak dapat menjadi komponennya sendiri. Hapus dari daftar komponen.",
@@ -5699,6 +5702,9 @@
   "mfg.reconciliation_required": "Nilai bahan dalam proses produksi ini belum dicatat di pembukuan atau tidak dapat dihitung dari riwayatnya. Rekonsiliasi dulu sebelum mengubah bahan atau hasilnya.",
   "mfg.insufficient_stock": "Hanya {available:g} {sku} yang ada di stok dan tidak dipesan; dibutuhkan {needed:g}.",
   "mfg.over_receipt": "Hanya {remaining:g} yang masih harus diterima dari proses produksi ini; {quantity:g} tidak dapat diterima.",
+  "mfg.not_an_extra": "{sku} bukan hasil tambahan dari proses produksi ini.",
+  "mfg.extra_quantity": "Jumlah {sku} yang diterima tidak boleh kurang dari nol.",
+  "mfg.no_cost_share": "Dari proses produksi ini hanya diterima hasil tanpa porsi biaya, sehingga nilainya tidak punya tujuan. Terima sebagian produk, atau catat bahan sebagai limbah.",
   "mfg.cancel_moved": "Proses produksi ini masih memegang bahan atau hasil, sehingga tidak dapat dibatalkan. Kembalikan bahannya dan batalkan penerimaannya terlebih dahulu.",
   "mfg.run_not_found": "Perintah produksi {order} tidak ditemukan.",
   "mfg.wip_location_unknown": "Lokasi {value} bukan salah satu lokasi perusahaan ini. Pilih lokasi dari Pengaturan > Lokasi, atau biarkan kosong.",
@@ -8896,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Tarik kembali barang jadi yang telah diterima dari proses produksi selama belum berubah.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Buka kembali proses produksi yang selesai dan batalkan akibat dari penyelesaiannya.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Terima barang jadi dari proses produksi ke stok.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Selesaikan proses produksi dengan mengeluarkan bahan yang tersisa dan menerima hasilnya.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Selesaikan proses produksi dengan mengeluarkan bahan yang tersisa dan menerima produk beserta hasil tambahannya.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Catat nilai bahan dalam proses produksi yang tidak dapat dibuktikan oleh riwayatnya.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Perbaiki data hasil proses produksi yang dicatat oleh versi sebelumnya.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Batalkan proses produksi yang tidak lagi menyimpan bahan atau hasil produksi.",
@@ -9325,5 +9331,8 @@
   "enum.scopes.journals": "Jurnal",
   "enum.scopes.products": "Produk",
   "ai.card_name_unavailable": "Nama tidak tersedia",
-  "error.fix_ask_roles": "Peran Anda tidak dapat melakukan langkah ini di halaman {place}. Minta bantuan seseorang dengan salah satu peran berikut: {roles}."
+  "error.fix_ask_roles": "Peran Anda tidak dapat melakukan langkah ini di halaman {place}. Minta bantuan seseorang dengan salah satu peran berikut: {roles}.",
+  "inventory.also_produces": "Juga menghasilkan",
+  "inventory.cost_share": "Porsi biaya (%)",
+  "inventory.main_share": "Produk utama: {share}%"
 }

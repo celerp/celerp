@@ -9,6 +9,7 @@ import io
 import hashlib
 import json
 import logging
+import math
 import re
 import uuid
 from urllib.parse import quote, urlencode, urlsplit
@@ -46,6 +47,7 @@ from ui.components.table import fmt_money, data_table, search_bar, pagination, p
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
 from celerp.services.ledger_display import run_reference
+from celerp.services.record_quantities import extra_to_receive, run_outputs
 from ui.security import not_permitted_redirect
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from celerp.accounting_roles import INCOME_ACCOUNT_FIELD, RECOGNIZE_FIELD
@@ -2218,6 +2220,11 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
     _RUN_ACTION_DONE = {"return": "inventory.wo_returned", "undo": "inventory.wo_receipt_undone",
                         "reopen": "inventory.wo_reopened"}
 
+    async def _extra_refusal(token: str, item_id: str, negative: bool) -> str:
+        """Why an extra's quantity was not sent: below zero, or not a number."""
+        sku = (await api.get_item(token, item_id)).get("sku") or item_id
+        return t("mfg.extra_quantity", sku=sku) if negative else f"{sku}: {t('inventory.invalid_numeric_input')}"
+
     @app.post("/api/items/{entity_id}/runs/{run_id}/act")
     async def run_action(request: Request, entity_id: str, run_id: str):
         """Advance a work order via its Action dropdown (action in the form body); refresh the block."""
@@ -2233,8 +2240,15 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             # The run's action list carries the key it was rendered with, so a choice sent
             # again after a lost answer is recorded once; the refreshed block brings new keys.
             key = required_operation_key(form, str(form.get("action")))
-            await (fn(token, run_id, lot, idempotency_key=key) if action == "undo"
-                   else fn(token, run_id, idempotency_key=key))
+            if action == "complete":
+                extras, bad = _extras_entered(form)
+                if bad is not None:
+                    return await _production_block_response(token, entity_id, flash_kind="error",
+                                                            flash_msg=await _extra_refusal(token, *bad))
+                await fn(token, run_id, {"also_produces": extras}, idempotency_key=key)
+            else:
+                await (fn(token, run_id, lot, idempotency_key=key) if action == "undo"
+                       else fn(token, run_id, idempotency_key=key))
             done = _RUN_ACTION_DONE.get(action)
             return await _production_block_response(token, entity_id, flash_msg=t(done) if done else None)
         except APIError as e:
@@ -2295,6 +2309,14 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
                 changed = bool(new_desc)
                 if changed:
                     recipe["overhead"].append({"description": new_desc, "amount": _num_field(form.get("oh_new_amount"))})
+            elif action == "add_also":
+                # The share starts at 0 (the product keeps all the value) until it is entered.
+                new_id = str(form.get("also_new", "")).strip()
+                changed = bool(new_id)
+                if changed:
+                    recipe.setdefault("also_produces", []).append({"item_id": new_id, "quantity": 1, "cost_share": 0})
+            elif action == "remove_also" and 0 <= index < len(recipe.get("also_produces", [])):
+                recipe["also_produces"].pop(index)
             elif action == "remove_component" and 0 <= index < len(recipe.get("components", [])):
                 recipe["components"].pop(index)
             elif action == "remove_labor" and 0 <= index < len(recipe.get("labor", [])):
@@ -6555,6 +6577,7 @@ _RECIPE_CELLS: dict[str, dict[str, str]] = {
     "components": {"quantity": "number"},
     "labor": {"operation": "text", "kind": "select", "hours": "number", "rate": "number", "amount": "number"},
     "overhead": {"description": "text", "amount": "number"},
+    "also_produces": {"quantity": "number", "cost_share": "number"},
 }
 # Hourly and Daily are both rate-based (qty x rate); Fixed is a flat total. Order = dropdown order.
 _LABOR_KINDS: tuple[str, ...] = ("hourly", "daily", "fixed")
@@ -6573,6 +6596,29 @@ def _num_field(v) -> float:
         return float(str(v).strip() or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+_EXTRA_FIELD = "also:"
+
+
+def _extras_entered(form) -> tuple[list[dict], tuple[str, bool] | None]:
+    """The extras a run's row sends with Complete, as API lines, or the first one that cannot be
+    sent as (item id, below zero): blank or text, or a quantity below zero."""
+    lines = []
+    for name, raw in form.multi_items():
+        if not name.startswith(_EXTRA_FIELD):
+            continue
+        item_id = name[len(_EXTRA_FIELD):]
+        try:
+            qty = float(str(raw).strip())
+        except ValueError:
+            return [], (item_id, False)
+        if not math.isfinite(qty):
+            return [], (item_id, False)
+        if qty < 0:
+            return [], (item_id, True)
+        lines.append({"item_id": item_id, "quantity": qty})
+    return lines, None
 
 
 def _recipe_api_payload(recipe: dict) -> dict:
@@ -6599,6 +6645,12 @@ def _recipe_api_payload(recipe: dict) -> dict:
             {"description": o.get("description", ""), "amount": _num(o.get("amount"))}
             for o in recipe.get("overhead", [])
         ],
+        # Extras go back as stored, so an edit elsewhere keeps them; their unit cost is derived.
+        **({"also_produces": [
+            {"item_id": x.get("item_id"), "sku": x.get("sku"), "unit": x.get("unit"),
+             "quantity": _num(x.get("quantity")), "cost_share": _num(x.get("cost_share"))}
+            for x in recipe["also_produces"] if x.get("item_id")
+        ]} if "also_produces" in recipe else {}),
     }
 
 
@@ -7162,6 +7214,22 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             cls="data-row",
         )
 
+    def _also_row(i, x):
+        xid = x.get("item_id", "")
+        it = by_id.get(xid) or (hidden or {}).get(xid)
+        label = deleted_label(it.get("sku") or xid) if is_deleted(it) else (x.get("sku") or xid)
+        return Tr(
+            Td(A(label, href=f"/inventory/{xid}", cls="table-link") if it else Span(label)),
+            _recipe_cell(entity_id, "also_produces", i, "quantity", x.get("quantity")),
+            Td(display_unit(x.get("unit")) or EMPTY, cls="comp-unit-cell"),
+            _recipe_cell(entity_id, "also_produces", i, "cost_share", x.get("cost_share")),
+            # The standard cost the share gives it, derived by the roll-up.
+            Td(_recipe_money(x.get("unit_cost"), currency), cls="recipe-amount"),
+            Td(Button("×", type="button", title=t("btn.remove"), cls="btn btn--xs btn--ghost",
+                      hx_post=f"{sec}?action=remove_also&index={i}", **_htmx), cls="cell--actions"),
+            cls="data-row",
+        )
+
     cur_label = f" ({currency_symbol(currency).strip()})" if currency else ""
 
     # Permanent "add" row at the bottom of each table: committing on first input creates a real,
@@ -7227,6 +7295,24 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
                   hx_post=f"{sec}?action=add_overhead", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
+    also_rows = recipe.get("also_produces") or []
+    also_add_row = Tr(
+        Td(searchable_select("also_new", item_opts, value="", placeholder=t("inventory.scope_all_items"),
+                             hx_post=f"{sec}?action=add_also", hx_trigger="change",
+                             hx_include="#recipe-form", hx_target="#recipe-section", hx_swap="outerHTML")),
+        Td("", cls="cell--number"), Td(""), Td("", cls="cell--number"), Td("", cls="recipe-amount"),
+        Td("", cls="cell--actions"),
+        cls="recipe-add-row",
+    )
+    also_produces = Table(
+        Thead(Tr(Th(t("th.sku")), Th(t("th.quantity"), cls="cell--number"), Th(t("th.unit")),
+                 Th(t("inventory.cost_share"), cls="cell--number"),
+                 Th(f"{t('inventory.unit_cost')}{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
+        Tbody(*[_also_row(i, x) for i, x in enumerate(also_rows)], also_add_row),
+        cls="data-table",
+    )
+    main_share = 100 - sum(float(x.get("cost_share") or 0) for x in also_rows)
+
     materials = Table(
         Thead(Tr(Th(t("inventory.th_component_sku")), Th(t("th.quantity"), cls="cell--number"), Th(t("th.unit")),
                  Th(f"{t('inventory.unit_cost')}{cur_label}", cls="cell--number"), Th(f"{t('th.cost')}{cur_label}", cls="cell--number"),
@@ -7301,6 +7387,9 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             ),
             section_card(t("inventory.materials"), materials, header_extra=Span(_recipe_money(recipe.get("materials_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
             section_card(t("inventory.labor"), labor, header_extra=Span(_recipe_money(recipe.get("labor_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
+            section_card(t("inventory.also_produces"), also_produces,
+                         P(t("inventory.main_share", share=f"{main_share:g}"), cls="hint"),
+                         body_cls="recipe-block"),
             section_card(t("inventory.overhead"), overhead, header_extra=Span(_recipe_money(recipe.get("overhead_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
             # Cost summary as a right-aligned totals block under the recipe (like a document's totals).
             Div(_recipe_cost_card(entity_id, item, currency), cls="recipe-totals-wrap"),
@@ -7390,7 +7479,24 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         return Select(*opts, name="action", cls="wo-action-select", hx_trigger="change",
                       hx_post=f"/api/items/{entity_id}/runs/{rid}/act",
                       hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this",
-                      hx_vals=operation_key_vals((kept_keys or {}).get(rid, "")))
+                      hx_vals=operation_key_vals((kept_keys or {}).get(rid, "")),
+                      # The row's extra quantities go with its own choice, never another row's.
+                      **({"hx_include": "closest tr"} if status == "in_progress" and run_outputs(run) else {}))
+
+    def _wo_extras(run: dict) -> list:
+        """An in-progress run's extras as quantity inputs (prefilled with what is still to come),
+        sent with its own row's Complete; a completed run's extras as received."""
+        rid, status = run.get("id"), run.get("status")
+        if status == "in_progress":
+            return [Label(x.get("sku") or x["item_id"],
+                          Input(type="number", name=f"{_EXTRA_FIELD}{x['item_id']}", min="0", step="any",
+                                value=f"{extra_to_receive(run, x['item_id']):g}", cls="form-input cell--number wo-extra-qty"),
+                          cls="wo-extra")
+                    for x in run_outputs(run)]
+        if status == "completed":
+            return [Span(f"{o.get('sku') or o['item_id']} {float(o.get('quantity') or 0):g}", cls="wo-extra hint")
+                    for o in run.get("actual_outputs") or [] if o.get("item_id")]
+        return []
 
     def _wo_source_cell(run: dict) -> FT:
         src_id, src_no = run.get("source_doc_id"), run.get("source_doc_number")
@@ -7411,7 +7517,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
                # A run whose materials' value its history cannot prove moves nothing until reconciled.
                A(t("inventory.wo_needs_reconciling"), href=f"/manufacturing/runs/{rid}/reconcile",
                  cls="table-link ml-sm") if run.get("wip_unresolved") else ""),
-            Td(_wo_action_select(run), cls="cell--actions"),
+            Td(*_wo_extras(run), _wo_action_select(run), cls="cell--actions"),
             cls="data-row" + (" data-row--inactive" if status == "cancelled" else ""),
         )
 

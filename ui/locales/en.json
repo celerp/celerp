@@ -2511,6 +2511,9 @@
   "manufacturing.err_run_not_found": "Celerp couldn't find this production run. It may have been deleted. Go back to the list.",
   "manufacturing.err_item_not_found": "Celerp couldn't find this item. It may have been deleted. Select Try again, then choose another item.",
   "manufacturing.err_component_no_item": "Every component line needs an item. Choose an item or remove the empty line.",
+  "manufacturing.err_coproduct_in_recipe": "{item} is already the product or one of its components, so it cannot also be listed under Also produces. Remove it from that list.",
+  "manufacturing.err_coproduct_duplicate": "{item} is listed twice under Also produces. Keep one line for it.",
+  "manufacturing.err_cost_shares": "Each cost share under Also produces must be 0 or more, and together they must stay under 100% so the main product keeps part of the cost. They add up to {total}%.",
   "manufacturing.err_product_no_item": "Choose the item this run produces.",
   "manufacturing.err_item_unknown": "One of the chosen items doesn't exist. It may have been deleted. Choose it again from the list.",
   "manufacturing.err_component_is_self": "An item can't be one of its own components. Remove it from the component list.",
@@ -5786,6 +5789,9 @@
   "mfg.reconciliation_required": "The value of the materials in this run is not recorded in the books yet, or cannot be worked out from its history. Reconcile it before changing its materials or output.",
   "mfg.insufficient_stock": "Only {available:g} of {sku} is in stock and not reserved; {needed:g} is needed.",
   "mfg.over_receipt": "Only {remaining:g} is still to be received from this run; {quantity:g} cannot be received.",
+  "mfg.not_an_extra": "{sku} is not an extra output of this run.",
+  "mfg.extra_quantity": "The quantity of {sku} received cannot be below zero.",
+  "mfg.no_cost_share": "Only outputs with no cost share were received from this run, so the value it holds has nowhere to go. Receive some of the product, or record the materials as waste.",
   "mfg.cancel_moved": "This run still holds materials or output, so it cannot be cancelled. Return its materials and undo its receipts first.",
   "mfg.run_not_found": "Production run {order} was not found.",
   "mfg.wip_location_unknown": "Location {value} is not one of this company's locations. Choose a location from Settings > Locations, or leave it empty.",
@@ -8897,7 +8903,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Take back finished goods a production run received while they are unchanged.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Reopen a completed production run, reversing what completing it did.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Receive finished goods from a production run into stock.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Complete a production run, issuing any remaining materials and receiving the output.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Complete a production run, issuing any remaining materials and receiving the product and any extra outputs.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Record the value of the materials in a production run whose history cannot prove it.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Repair what an older version recorded about a production run's output.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Cancel a production run that holds no materials or output.",
@@ -9325,5 +9331,8 @@
   "enum.scopes.inventory": "Inventory",
   "enum.scopes.journals": "Journals",
   "enum.scopes.products": "Products",
-  "error.fix_ask_roles": "Your role cannot take this step on the {place} page. Ask someone with one of these roles: {roles}."
+  "error.fix_ask_roles": "Your role cannot take this step on the {place} page. Ask someone with one of these roles: {roles}.",
+  "inventory.also_produces": "Also produces",
+  "inventory.cost_share": "Cost share (%)",
+  "inventory.main_share": "Main product: {share}%"
 }

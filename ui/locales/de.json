@@ -2263,6 +2263,9 @@
   "manufacturing.err_run_not_found": "Celerp konnte diesen Produktionslauf nicht finden. Er wurde möglicherweise gelöscht. Gehen Sie zurück zur Liste.",
   "manufacturing.err_item_not_found": "Celerp konnte diesen Artikel nicht finden. Er wurde möglicherweise gelöscht. Wählen Sie „Erneut versuchen“ und dann einen anderen Artikel.",
   "manufacturing.err_component_no_item": "Jede Komponentenzeile braucht einen Artikel. Wählen Sie einen Artikel oder entfernen Sie die leere Zeile.",
+  "manufacturing.err_coproduct_in_recipe": "{item} ist bereits das Produkt oder eine seiner Komponenten und kann daher nicht auch unter Erzeugt außerdem stehen. Entfernen Sie es aus dieser Liste.",
+  "manufacturing.err_coproduct_duplicate": "{item} steht zweimal unter Erzeugt außerdem. Behalten Sie eine Zeile dafür.",
+  "manufacturing.err_cost_shares": "Jeder Kostenanteil unter Erzeugt außerdem muss 0 oder mehr betragen, und zusammen müssen sie unter 100 % bleiben, damit das Hauptprodukt einen Teil der Kosten trägt. Sie ergeben zusammen {total} %.",
   "manufacturing.err_product_no_item": "Wählen Sie den Artikel, den dieser Produktionslauf herstellt.",
   "manufacturing.err_item_unknown": "Einer der gewählten Artikel existiert nicht. Er wurde möglicherweise gelöscht. Wählen Sie ihn erneut aus der Liste.",
   "manufacturing.err_component_is_self": "Ein Artikel kann keine Komponente seiner selbst sein. Entfernen Sie ihn aus der Komponentenliste.",
@@ -5699,6 +5702,9 @@
   "mfg.reconciliation_required": "Der Wert des Materials in diesem Produktionslauf ist noch nicht verbucht oder lässt sich aus seiner Historie nicht ermitteln. Stimmen Sie ihn ab, bevor Sie Material oder Ausbringung ändern.",
   "mfg.insufficient_stock": "Nur {available:g} von {sku} sind auf Lager und nicht reserviert; benötigt werden {needed:g}.",
   "mfg.over_receipt": "Aus diesem Produktionslauf sind nur noch {remaining:g} entgegenzunehmen; {quantity:g} können nicht entgegengenommen werden.",
+  "mfg.not_an_extra": "{sku} ist kein weiteres Erzeugnis dieses Produktionslaufs.",
+  "mfg.extra_quantity": "Die entgegengenommene Menge von {sku} darf nicht unter null liegen.",
+  "mfg.no_cost_share": "Aus diesem Produktionslauf wurden nur Erzeugnisse ohne Kostenanteil entgegengenommen, daher kann sein Wert nirgends hin. Nehmen Sie etwas vom Produkt entgegen oder erfassen Sie die Materialien als Ausschuss.",
   "mfg.cancel_moved": "Dieser Produktionslauf enthält noch Material oder Ware und kann daher nicht storniert werden. Geben Sie zuerst das Material zurück und machen Sie die Eingänge rückgängig.",
   "mfg.run_not_found": "Der Produktionslauf {order} wurde nicht gefunden.",
   "mfg.wip_location_unknown": "Der Standort {value} gehört nicht zu diesem Unternehmen. Wählen Sie einen Standort unter Einstellungen > Standorte oder lassen Sie das Feld leer.",
@@ -8896,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Fertigerzeugnisse aus einem Fertigungsauftrag zurücknehmen, solange sie unverändert sind.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Einen abgeschlossenen Fertigungsauftrag wieder öffnen und die durch den Abschluss vorgenommenen Vorgänge rückgängig machen.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Fertigerzeugnisse eines Fertigungsauftrags als Wareneingang ins Lager übernehmen.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Einen Fertigungsauftrag abschließen, dabei verbleibendes Material entnehmen und die gefertigten Artikel einlagern.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Einen Fertigungsauftrag abschließen, dabei verbleibendes Material entnehmen und das Produkt sowie etwaige Nebenprodukte einlagern.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Den Materialwert eines Fertigungsauftrags erfassen, wenn er anhand der bisherigen Buchungshistorie nicht nachweisbar ist.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Die in einer älteren Version erfassten Angaben zum Produktionsergebnis eines Fertigungsauftrags berichtigen.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Einen Fertigungsauftrag ohne gebundenes Material oder Fertigerzeugnisse abbrechen.",
@@ -9325,5 +9331,8 @@
   "enum.scopes.journals": "Buchungssätze",
   "enum.scopes.products": "Produkte",
   "ai.card_name_unavailable": "Name nicht verfügbar",
-  "error.fix_ask_roles": "Ihre Rolle kann diesen Schritt auf der Seite {place} nicht ausführen. Bitten Sie jemanden mit einer dieser Rollen: {roles}."
+  "error.fix_ask_roles": "Ihre Rolle kann diesen Schritt auf der Seite {place} nicht ausführen. Bitten Sie jemanden mit einer dieser Rollen: {roles}.",
+  "inventory.also_produces": "Erzeugt außerdem",
+  "inventory.cost_share": "Kostenanteil (%)",
+  "inventory.main_share": "Hauptprodukt: {share}%"
 }

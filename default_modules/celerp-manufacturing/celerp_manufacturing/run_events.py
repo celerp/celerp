@@ -25,6 +25,8 @@ class MfgOrderReceiptUndone(BaseModel):
     quantity: float
     value: str
     undone_by: str | None = None
+    # Set only when the lot undone is of one of the run's extras.
+    output_item_id: str | None = None
 
 
 class MfgOrderReopened(BaseModel):

@@ -115,15 +115,46 @@ def outstanding_output(run_state: dict) -> float:
     return max(0.0, round(expected - float(run_state.get("received_qty") or 0), 6))
 
 
+def run_outputs(run_state: dict) -> list[dict]:
+    """The extras a run yields beside its product, as planned when it was created."""
+    return list(run_state.get("also_produces") or [])
+
+
+def output_skus(run_state: dict) -> list[str]:
+    """Every sku a run makes: its products, then its extras. Search over runs reads this."""
+    return [str(x.get("sku", "")) for x in [*(run_state.get("expected_outputs") or []), *run_outputs(run_state)]]
+
+
+def main_receipts(run_state: dict) -> list[dict]:
+    """The run's live receipts of its product; a receipt naming an output item is an extra's."""
+    return [r for r in run_state.get("receipts") or [] if not r.get("output_item_id")]
+
+
+def extra_to_receive(run_state: dict, item_id: str) -> float:
+    """How much of one extra the run still yields: planned minus received, until the run is
+    first completed; from then on what was not received was not made."""
+    if run_state.get("extras_completed"):
+        return 0.0
+    planned = sum(float(x.get("quantity") or 0) for x in run_outputs(run_state) if x.get("item_id") == item_id)
+    received = sum(float(r.get("quantity") or 0) for r in run_state.get("receipts") or []
+                   if r.get("output_item_id") == item_id)
+    return max(0.0, round(planned - received, 6))
+
+
+def outputs_to_receive(run_state: dict) -> list[tuple[str, float]]:
+    """Every output a run still has to receive, as (item id, quantity): the product, then each extra."""
+    return [(run_state.get("output_item_id"), outstanding_output(run_state)),
+            *((x["item_id"], extra_to_receive(run_state, x["item_id"])) for x in run_outputs(run_state))]
+
+
 def run_still_moving(run_state: dict) -> list[tuple[dict, float]]:
     """What an open run can still move, as (line naming its item, quantity): each component's
-    quantity still to issue and the output still to receive. A completed or cancelled run
+    quantity still to issue and each output still to receive. A completed or cancelled run
     moves nothing more."""
     if run_state.get("status") not in INCOMPLETE_RUN_STATUSES:
         return []
     lines = [({"item_id": i["item_id"]}, i["quantity"]) for i in outstanding_inputs(run_state)]
-    if (left := outstanding_output(run_state)) > EPS:
-        lines.append(({"item_id": run_state.get("output_item_id")}, left))
+    lines += [({"item_id": item_id}, left) for item_id, left in outputs_to_receive(run_state) if left > EPS]
     return lines
 
 

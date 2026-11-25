@@ -2262,6 +2262,9 @@
   "manufacturing.err_run_not_found": "O Celerp não encontrou este ciclo de produção. Ele pode ter sido excluído. Volte à lista.",
   "manufacturing.err_item_not_found": "O Celerp não encontrou este item. Ele pode ter sido excluído. Selecione Tentar novamente e depois escolha outro item.",
   "manufacturing.err_component_no_item": "Cada linha de componente precisa de um item. Escolha um item ou remova a linha vazia.",
+  "manufacturing.err_coproduct_in_recipe": "{item} já é o produto ou um de seus componentes, então não pode aparecer também em Também produz. Remova-o dessa lista.",
+  "manufacturing.err_coproduct_duplicate": "{item} aparece duas vezes em Também produz. Mantenha uma linha para ele.",
+  "manufacturing.err_cost_shares": "Cada parcela de custo em Também produz deve ser 0 ou mais, e juntas devem ficar abaixo de 100% para que o produto principal mantenha parte do custo. Elas somam {total}%.",
   "manufacturing.err_product_no_item": "Escolha o item que este ciclo de produção produz.",
   "manufacturing.err_item_unknown": "Um dos itens escolhidos não existe. Ele pode ter sido excluído. Escolha-o novamente na lista.",
   "manufacturing.err_component_is_self": "Um item não pode ser um dos próprios componentes. Remova-o da lista de componentes.",
@@ -5699,6 +5702,9 @@
   "mfg.reconciliation_required": "O valor dos materiais deste ciclo ainda não está registrado na contabilidade ou não pode ser apurado a partir do seu histórico. Concilie-o antes de alterar os seus materiais ou a sua produção.",
   "mfg.insufficient_stock": "Há apenas {available:g} de {sku} em estoque e não reservados; são necessários {needed:g}.",
   "mfg.over_receipt": "Restam apenas {remaining:g} a receber deste ciclo; não é possível receber {quantity:g}.",
+  "mfg.not_an_extra": "{sku} não é uma produção adicional deste ciclo.",
+  "mfg.extra_quantity": "A quantidade recebida de {sku} não pode ser menor que zero.",
+  "mfg.no_cost_share": "Deste ciclo só foram recebidas produções sem participação no custo, por isso o seu valor não tem para onde ir. Receba parte do produto ou registe os materiais como perda.",
   "mfg.cancel_moved": "Este ciclo ainda contém materiais ou produção, por isso não pode ser cancelado. Primeiro devolva os materiais e desfaça os recebimentos.",
   "mfg.run_not_found": "A ordem de produção {order} não foi encontrada.",
   "mfg.wip_location_unknown": "O local {value} não é um dos locais desta empresa. Escolha um local em Configurações > Locais ou deixe o campo vazio.",
@@ -8896,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Recolha os produtos acabados recebidos de um lote de produção enquanto permanecerem inalterados.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Reabra um lote de produção concluído, revertendo os efeitos de sua conclusão.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Receba no estoque os produtos acabados de um lote de produção.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Conclua um lote de produção, baixando os materiais restantes e recebendo a produção.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Conclua um lote de produção, baixando os materiais restantes e recebendo o produto e eventuais produtos adicionais.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Registre o valor dos materiais de um lote de produção que não pode ser comprovado pelo histórico.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Repare o que uma versão antiga registrou sobre a produção concluída de um lote.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Cancele um lote de produção que não possui materiais nem produtos acabados.",
@@ -9325,5 +9331,8 @@
   "enum.scopes.journals": "Lançamentos contábeis",
   "enum.scopes.products": "Produtos",
   "ai.card_name_unavailable": "Nome não disponível",
-  "error.fix_ask_roles": "Sua função não pode realizar esta etapa na página {place}. Peça a alguém com uma destas funções: {roles}."
+  "error.fix_ask_roles": "Sua função não pode realizar esta etapa na página {place}. Peça a alguém com uma destas funções: {roles}.",
+  "inventory.also_produces": "Também produz",
+  "inventory.cost_share": "Participação no custo (%)",
+  "inventory.main_share": "Produto principal: {share}%"
 }

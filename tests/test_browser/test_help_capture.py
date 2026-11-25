@@ -541,7 +541,8 @@ async def seed_documents(client: httpx.AsyncClient, auth: dict, contacts: list[d
 async def seed_manufacturing(client: httpx.AsyncClient, auth: dict) -> None:
     """A product with a recipe, a production order for more of it than its runs cover, and
     its work orders at every stage of the queue: planned, in progress with its components
-    issued, on hold, and completed."""
+    issued, on hold, and completed; and a product whose recipe yields an extra, with a run of
+    it in progress."""
     stock = {i["sku"]: i["id"] for i in (await _ok(await client.get(
         "/items", headers=auth, params={"limit": 500})))["items"]}
     product = (await _ok(await client.post("/items", headers=auth, json={
@@ -561,6 +562,19 @@ async def seed_manufacturing(client: httpx.AsyncClient, auth: dict) -> None:
     for run, steps in ((issued, ("start", "issue")), (held, ("start", "hold")), (done, ("complete",))):
         for step in steps:
             await _ok(await client.post(f"/manufacturing/{run}/{step}", headers=auth, json={}))
+    # Pressed oil, whose recipe yields oil cake beside it, and a run of it in progress.
+    made = {}
+    for sku, name, qty in (("SEED-001", "Rapeseed", 500), ("OIL-001", "Pressed Rapeseed Oil", 0), ("CAKE-001", "Oil Cake", 0)):
+        made[sku] = (await _ok(await client.post("/items", headers=auth, json={
+            "sku": sku, "name": name, "category": "Food & Bev", "quantity": qty, "cost_price": 1.2,
+            "status": "available", "sell_by": "kg"})))["id"]
+    await _ok(await client.put(f"/manufacturing/items/{made['OIL-001']}/recipe", headers=auth, json={
+        "output_qty": 1, "labor": [], "overhead": [], "components": [{"item_id": made["SEED-001"], "quantity": 3}],
+        "also_produces": [{"item_id": made["CAKE-001"], "quantity": 2, "cost_share": 20}]}))
+    oil_run = (await _ok(await client.post(f"/manufacturing/items/{made['OIL-001']}/build", headers=auth, json={
+        "quantity": 10, "idempotency_key": "capture-run-oil"})))["id"]
+    for step in ("start", "issue"):
+        await _ok(await client.post(f"/manufacturing/{oil_run}/{step}", headers=auth, json={}))
 
 
 async def seed_company_details(client: httpx.AsyncClient, auth: dict, today: date) -> None:
@@ -1210,7 +1224,7 @@ _SAME_VISUAL = {
     frozenset({"docs.received#1", "docs.received#2"}): _LIST_INTRO,
     frozenset({"fixed-assets.year-end#1", "fixed-assets.year-end#2"}): "the year-end page holds the checklist and its run button",
     frozenset({"fixed-assets.register#1", "fixed-assets.register#2"}): _LIST_INTRO,
-    frozenset({"inventory.add-item#1", "inventory.add-item#2", "inventory.import-export#1", "manufacturing.make-from-recipe#6"}):
+    frozenset({"inventory.add-item#1", "inventory.add-item#2", "inventory.import-export#1"}):
         "the inventory list holds Add item, Export and Import",
     frozenset({"labels.print-labels#1", "labels.print-labels#2"}): "the print page holds the item picker and the template choice",
     frozenset({"labels.settings#1", "labels.settings#2"}): "the label settings hold the template list and its New button",

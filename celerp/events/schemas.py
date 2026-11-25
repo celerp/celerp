@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from celerp.schemas.numbers import PositiveFloat
+from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 
 # The SKU/barcode write-time predicates live in celerp.inventory_codes so the event
 # boundary, the interactive routes, the allocation service, and the scanner share one
@@ -420,6 +420,20 @@ class ComponentSpec(BaseModel):
     unit: str | None = None
 
 
+class CoProductSpec(BaseModel):
+    """Something else a batch yields beside the product, such as the press cake left after
+    pressing oil. ``cost_share`` is the percentage of the batch's value it carries; the
+    product carries the rest. The same line is used by a recipe and by a run's creation."""
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str                       # entity_id of the extra inventory item
+    sku: str | None = None             # denormalized for display; resolved server-side
+    unit: str | None = None            # the item's own sell unit; resolved server-side
+    quantity: PositiveFloat            # qty yielded per recipe batch (output_qty), or per run
+    cost_share: FiniteFloat = 0        # percent of the batch value, 0 <= share < 100
+    unit_cost: float | None = None     # derived by the cost roll-up, never trusted from the client
+
+
 class LaborLine(BaseModel):
     operation: str
     kind: str = "hourly"               # "hourly" (hours × rate) | "fixed" (flat amount)
@@ -439,6 +453,7 @@ class RecipeSpec(BaseModel):
     components: list[ComponentSpec] = Field(default_factory=list)
     labor: list[LaborLine] = Field(default_factory=list)
     overhead: list[OverheadLine] = Field(default_factory=list)
+    also_produces: list[CoProductSpec] = Field(default_factory=list)
     # Derived, written server-side by the cost roll-up — never trusted from the client:
     unit_cost: float | None = None
     materials_cost: float | None = None
@@ -1142,6 +1157,9 @@ class MfgOrderReceived(BaseModel):
     received_by: str | None = None
     # The work in progress value the received lot carries.
     value: str | None = None
+    # Set only when the lot is of one of the run's extras, not its product.
+    output_item_id: str | None = None
+    sku: str | None = None
 
 
 class MfgOrderWipOpened(BaseModel):

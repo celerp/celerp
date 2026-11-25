@@ -2262,6 +2262,9 @@
   "manufacturing.err_run_not_found": "لم يعثر Celerp على دورة الإنتاج هذه. ربما تم حذفها. ارجع إلى القائمة.",
   "manufacturing.err_item_not_found": "لم يعثر Celerp على هذا الصنف. ربما تم حذفه. اختر إعادة المحاولة ثم اختر عنصرًا آخر.",
   "manufacturing.err_component_no_item": "يحتاج كل سطر مكون إلى صنف. اختر صنفًا أو احذف السطر الفارغ.",
+  "manufacturing.err_coproduct_in_recipe": "{item} هو المنتج نفسه أو أحد مكوناته، فلا يمكن إدراجه أيضًا ضمن ينتج أيضًا. احذفه من تلك القائمة.",
+  "manufacturing.err_coproduct_duplicate": "{item} مدرج مرتين ضمن ينتج أيضًا. أبقِ سطرًا واحدًا له.",
+  "manufacturing.err_cost_shares": "يجب أن تكون كل حصة تكلفة ضمن ينتج أيضًا 0 أو أكثر، وأن يبقى مجموعها أقل من 100% حتى يحمل المنتج الرئيسي جزءًا من التكلفة. مجموعها الآن {total}%.",
   "manufacturing.err_product_no_item": "اختر الصنف الذي تنتجه دورة الإنتاج هذه.",
   "manufacturing.err_item_unknown": "أحد الأصناف المختارة غير موجود. ربما تم حذفه. اختره مرة أخرى من القائمة.",
   "manufacturing.err_component_is_self": "لا يمكن أن يكون الصنف أحد مكوناته. أزله من قائمة المكونات.",
@@ -5699,6 +5702,9 @@
   "mfg.reconciliation_required": "قيمة المواد في دورة الإنتاج هذه غير مسجلة في الدفاتر بعد، أو لا يمكن حسابها من سجلها. قم بتسويتها قبل تغيير موادها أو مخرجاتها.",
   "mfg.insufficient_stock": "المتوفر من {sku} في المخزون وغير المحجوز {available:g} فقط؛ والمطلوب {needed:g}.",
   "mfg.over_receipt": "المتبقي للاستلام من دورة الإنتاج هذه {remaining:g} فقط؛ لا يمكن استلام {quantity:g}.",
+  "mfg.not_an_extra": "{sku} ليس ناتجًا إضافيًا لدورة الإنتاج هذه.",
+  "mfg.extra_quantity": "لا يمكن أن تكون الكمية المستلمة من {sku} أقل من صفر.",
+  "mfg.no_cost_share": "لم يُستلم من دورة الإنتاج هذه سوى نواتج بلا حصة من التكلفة، لذا لا مكان لقيمتها. استلم جزءًا من المنتج، أو سجّل المواد كهالك.",
   "mfg.cancel_moved": "ما زالت دورة الإنتاج هذه تحتفظ بمواد أو مخرجات، لذا لا يمكن إلغاؤها. أعد موادها وتراجع عن استلاماتها أولاً.",
   "mfg.run_not_found": "لم يتم العثور على أمر الإنتاج {order}.",
   "mfg.wip_location_unknown": "الموقع {value} ليس من مواقع هذه الشركة. اختر موقعًا من الإعدادات > المواقع، أو اتركه فارغًا.",
@@ -8896,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "تراجع عن استلام المنتجات التامة من دورة إنتاج ما دامت دون تغيير.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "أعد فتح دورة إنتاج مكتملة، مع عكس الآثار التي أحدثها إكمالها.",
   "tool.receive_order_manufacturing__order_id__receive_post": "استلم المنتجات التامة من دورة إنتاج وأدخلها المخزون.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "أكمل دورة إنتاج بصرف المواد المتبقية واستلام المنتجات الناتجة.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "أكمل دورة إنتاج بصرف المواد المتبقية واستلام المنتج وأي منتجات إضافية.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "سجّل قيمة المواد في دورة إنتاج يتعذر إثبات قيمتها من سجلها التاريخي.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "أصلح ما سجّله إصدار أقدم عن مخرجات دورة إنتاج.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "ألغِ دورة إنتاج لا تحتجز مواد أو نواتج.",
@@ -9325,5 +9331,8 @@
   "enum.scopes.journals": "قيود اليومية",
   "enum.scopes.products": "المنتجات",
   "ai.card_name_unavailable": "الاسم غير متاح",
-  "error.fix_ask_roles": "لا يمكن لدورك تنفيذ هذه الخطوة في صفحة {place}. اطلب ذلك من شخص لديه أحد هذه الأدوار: {roles}."
+  "error.fix_ask_roles": "لا يمكن لدورك تنفيذ هذه الخطوة في صفحة {place}. اطلب ذلك من شخص لديه أحد هذه الأدوار: {roles}.",
+  "inventory.also_produces": "ينتج أيضًا",
+  "inventory.cost_share": "حصة من التكلفة (%)",
+  "inventory.main_share": "المنتج الرئيسي: {share}%"
 }

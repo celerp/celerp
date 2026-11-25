@@ -1,0 +1,2198 @@
+{
+ "products": {
+  "item:5ec94106-ad2b-422e-881a-fd5633412f62": {
+   "block": "<div id=\"production-block\">\n  <div class=\"doc-section recipe-block\">\n    <div class=\"section-header\">\n<span class=\"section-icon\"><svg width=\"1em\" height=\"1em\" xmlns=\"http://www.w3.org/2000/svg\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" viewBox=\"0 0 24 24\"><rect width=\"8\" height=\"4\" x=\"8\" y=\"2\" rx=\"1\" ry=\"1\"/><path d=\"M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2\"/><path d=\"M12 11h4\"/><path d=\"M12 16h4\"/><path d=\"M8 11h.01\"/><path d=\"M8 16h.01\"/></svg></span>      <h3 class=\"section-title\">Open demand</h3>\n    </div>\n    <p class=\"hint\">Orders that have this item on order, with how well current supply covers each.</p>\n    <div>\n      <table data-page-size=\"25\" id=\"wo-demand-table\" class=\"data-table js-table\">\n        <thead>\n          <tr>\n            <th data-sort=\"0\" class=\"sortable-th\">\n<span>Document</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"1\" class=\"colfilter-th sortable-th\">\n<span>Type</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"1\" aria-label=\"Filter by Type\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Type\">\u25be</button>            </th>\n            <th data-sort=\"2\" class=\"colfilter-th sortable-th\">\n<span>Customer</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"2\" aria-label=\"Filter by Customer\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Customer\">\u25be</button>            </th>\n            <th data-sort=\"3\" class=\"sortable-th cell--number\">\n<span>Qty</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"4\" class=\"sortable-th cell--center\">\n<span>Due</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"5\" class=\"colfilter-th sortable-th cell--center\">\n<span>Coverage</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"5\" aria-label=\"Filter by Coverage\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Coverage\">\u25be</button>            </th>\n          </tr>\n        </thead>\n        <tbody>\n          <tr>\n            <td colspan=\"6\" class=\"empty-row\">No open demand.</td>\n          </tr>\n        </tbody>\n      </table>\n      <div data-pager-for=\"wo-demand-table\" class=\"pagination\" style=\"display:none\">\n<button type=\"button\" data-page-nav=\"prev\" data-page-for=\"wo-demand-table\" class=\"page-btn\">Prev</button><span class=\"page-count enh-page-info\"></span><button type=\"button\" data-page-nav=\"next\" data-page-for=\"wo-demand-table\" class=\"page-btn\">Next</button>      </div>\n    </div>\n  </div>\n  <div class=\"doc-section recipe-block\">\n    <div class=\"section-header\">\n<span class=\"section-icon\"><svg width=\"1em\" height=\"1em\" xmlns=\"http://www.w3.org/2000/svg\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" viewBox=\"0 0 24 24\"><path d=\"M12 16h.01\"/><path d=\"M16 16h.01\"/><path d=\"M3 19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5a.5.5 0 0 0-.769-.422l-4.462 2.844A.5.5 0 0 1 15 10.5v-2a.5.5 0 0 0-.769-.422L9.77 10.922A.5.5 0 0 1 9 10.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2z\"/><path d=\"M8 16h.01\"/></svg></span>      <h3 class=\"section-title\">Work orders</h3>\n    </div>\n    <p class=\"hint\">Production tasks for this item, each shown with the order it fulfils. Completed and cancelled work orders are hidden by default - re-check them in the Status filter to show them. Advance one with its Action menu.</p>\n    <div>\n<span data-daterange-table=\"wo-orders-table\" data-daterange-col=\"4\" class=\"daterange\"><span class=\"daterange-label\">Due date:</span>        <input type=\"date\" aria-label=\"Due date from\" data-bound=\"from\" class=\"daterange-input\">\n<span class=\"daterange-sep\">to</span>        <input type=\"date\" aria-label=\"Due date to\" data-bound=\"to\" class=\"daterange-input\">\n</span>      <table data-page-size=\"25\" id=\"wo-orders-table\" class=\"data-table js-table\">\n        <thead>\n          <tr>\n            <th data-sort=\"0\" class=\"sortable-th\">\n<span>Work order</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"1\" class=\"colfilter-th sortable-th\">\n<span>Source order</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"1\" aria-label=\"Filter by Source order\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Source order\">\u25be</button>            </th>\n            <th data-sort=\"2\" class=\"colfilter-th sortable-th\">\n<span>Customer</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"2\" aria-label=\"Filter by Customer\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Customer\">\u25be</button>            </th>\n            <th data-sort=\"3\" class=\"sortable-th cell--number\">\n<span>Qty</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"4\" class=\"sortable-th cell--center\">\n<span>Due</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"5\" class=\"colfilter-th sortable-th\">\n<span>Status</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"5\" aria-label=\"Filter by Status\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" data-filter-exclude=\"Completed\u241fCancelled\" class=\"colfilter\" title=\"Filter by Status\">\u25be</button>            </th>\n            <th class=\"cell--actions\"></th>\n          </tr>\n        </thead>\n        <tbody>\n          <tr class=\"data-row\">\n            <td class=\"wo-ref\">WO-05b1577f</td>\n            <td>\n<span class=\"hint\">To stock</span>            </td>\n            <td>--</td>\n            <td class=\"cell--number\">4</td>\n            <td class=\"cell--center\"><date></td>\n            <td>\n<span class=\"badge badge--completed\" title=\"manufacturing.help_status_completed\">Completed</span>            </td>\n            <td class=\"cell--actions\">\n<select name=\"action\" hx-trigger=\"change\" hx-post=\"/api/items/item:5ec94106-ad2b-422e-881a-fd5633412f62/runs/mfg:05b1577f-4465-506a-8180-9941788f34e3/act\" hx-swap=\"outerHTML\" hx-disabled-elt=\"this\" hx-vals='{\"idempotency_key\": \"5d3d6a9b-ee34-43fd-b46a-5c6c07e571b5\"}' hx-target=\"#production-block\" class=\"wo-action-select\"><option value=\"\" disabled selected>Action\u2026</option><option value=\"reopen\">Reopen</option></select>            </td>\n          </tr>\n          <tr class=\"data-row data-row--inactive\">\n            <td class=\"wo-ref\">WO-a7c0c15a</td>\n            <td>\n<span class=\"hint\">To stock</span>            </td>\n            <td>--</td>\n            <td class=\"cell--number\">2</td>\n            <td class=\"cell--center\"><date></td>\n            <td>\n<span class=\"badge badge--cancelled\" title=\"manufacturing.help_status_cancelled\">Cancelled</span>            </td>\n            <td class=\"cell--actions\">\n<span class=\"cell-empty\">--</span>            </td>\n          </tr>\n        </tbody>\n      </table>\n      <div data-pager-for=\"wo-orders-table\" class=\"pagination\" style=\"display:none\">\n<button type=\"button\" data-page-nav=\"prev\" data-page-for=\"wo-orders-table\" class=\"page-btn\">Prev</button><span class=\"page-count enh-page-info\"></span><button type=\"button\" data-page-nav=\"next\" data-page-for=\"wo-orders-table\" class=\"page-btn\">Next</button>      </div>\n    </div>\n  </div>\n<script>\n(function(){\n  if(window.__celerpColFilter)return;window.__celerpColFilter=true;\n  function placeFilterPop(pop,btn){var br=btn.getBoundingClientRect();\n    pop.style.top=(br.bottom+2)+'px';pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';}\n  function openFilterPop(pop,btn){pop.style.position='fixed';document.body.appendChild(pop);\n    placeFilterPop(pop,btn);followAnchor(pop,btn,function(){placeFilterPop(pop,btn);});}\n\n  var state=new WeakMap();\n  function active(t){if(!state.has(t))state.set(t,new Map());return state.get(t);}\n  function rows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}\n  function cellText(r,col){var c=r.children[col];if(!c)return '';var dv=c.getAttribute('data-filter-value');return (dv!==null?dv:c.textContent).trim();}\n  function distinct(t,col){var out=[],seen={};rows(t).forEach(function(r){var v=cellText(r,col);if(!(v in seen)){seen[v]=1;out.push(v);}});out.sort();return out;}\n  function apply(t){\n    var a=active(t);\n    rows(t).forEach(function(r){\n      var show=true;\n      for(var [key,s] of a){\n        if(key.indexOf('_range_')===0){\n          // Date-range filter: cell must be an ISO date within [from, to].\n          var rc=+key.slice(7), cv=cellText(r,rc), ok=/^\\d{4}-\\d{2}-\\d{2}/.test(cv);\n          if(!ok){show=false;break;}\n          if(s.from&&cv<s.from){show=false;break;}\n          if(s.to&&cv>s.to){show=false;break;}\n        } else if(key==='_search_'){\n          // Free-text search box (table_search): match the row's whole text.\n          if(s&&r.textContent.toLowerCase().indexOf(s)<0){show=false;break;}\n        } else if(s&&!s.has(cellText(r,+key))){show=false;break;}\n      }\n      r.classList.toggle('dp-row-hidden',!show);\n      if(!show){var cb=r.querySelector('.bulk-select');if(cb&&cb.checked)cb.checked=false;}\n    });\n    t.querySelectorAll('thead .colfilter').forEach(function(b){b.classList.toggle('colfilter--active',a.has(b.getAttribute('data-col')));});\n    if(window.celerpBulkRefresh)window.celerpBulkRefresh();\n    if(window.celerpTableEnhance)window.celerpTableEnhance(t);\n  }\n  // Seed a column's default-excluded values (e.g. Status hides Completed/Cancelled) once per table.\n  function seedDefaults(t){\n    var a=active(t);\n    t.querySelectorAll('thead .colfilter[data-filter-exclude]').forEach(function(b){\n      var col=b.getAttribute('data-col'); if(a.has(col)) return;\n      var ex=b.getAttribute('data-filter-exclude').split('\\u241f');\n      var keep=distinct(t,+col).filter(function(v){return ex.indexOf(v)<0;});\n      a.set(col,new Set(keep));\n    });\n  }\n  function refresh(t){ if(t){seedDefaults(t);apply(t);} }\n  // Seed default filters for tables under `root` (called by sections after an htmx swap, since\n  // htmx:afterSwap's target is unreliable for outerHTML swaps). A freshly swapped table is a new\n  // element with empty state, so this seeds it without wiping user filters elsewhere.\n  window.celerpRefreshFilters=function(root){(root||document).querySelectorAll('table.js-table,table.data-table').forEach(refresh);};\n  function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}\n  function open(btn){\n    var t=btn.closest('table');if(!t)return;\n    var col=btn.getAttribute('data-col');\n    var a=active(t),values=distinct(t,+col);\n    var i18nSearch=btn.getAttribute('data-i18n-search')||'Search\\u2026';\n    var i18nSelectAll=btn.getAttribute('data-i18n-select-all')||'(Select all)';\n    var i18nBlank=btn.getAttribute('data-i18n-blank')||'(blank)';\n    var i18nClearFilter=btn.getAttribute('data-i18n-clear-filter')||'Clear filter';\n    var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-col',col);\n    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder=i18nSearch;\n    var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';\n    var selAllCb=document.createElement('input');selAllCb.type='checkbox';\n    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' '+i18nSelectAll));\n    var list=document.createElement('div');list.className='colfilter-list';\n    function commit(){\n      var checked=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)checked.push(c.value);});\n      if(checked.length===values.length){a.delete(col);}else{a.set(col,new Set(checked));}\n      selAllCb.checked=(checked.length===values.length);\n      selAllCb.indeterminate=(checked.length>0&&checked.length<values.length);\n      apply(t);\n    }\n    values.forEach(function(v){\n      var lbl=document.createElement('label');lbl.className='colfilter-item';\n      var cb=document.createElement('input');cb.type='checkbox';cb.value=v;\n      cb.checked=!a.has(col)||a.get(col).has(v);\n      cb.addEventListener('change',commit);\n      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||i18nBlank)));\n      list.appendChild(lbl);\n    });\n    selAllCb.checked=!a.has(col);selAllCb.indeterminate=a.has(col);\n    selAllCb.addEventListener('change',function(){\n      list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});commit();});\n    search.addEventListener('input',function(){var q=search.value.toLowerCase();\n      list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});\n    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent=i18nClearFilter;\n    clear.addEventListener('click',function(){a.delete(col);closeAll();apply(t);});\n    pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);\n    openFilterPop(pop,btn);\n    search.focus();\n  }\n  document.addEventListener('click',function(e){\n    var btn=e.target.closest&&e.target.closest('.colfilter');\n    if(btn){e.preventDefault();e.stopPropagation();\n      var wasOpen=!!document.querySelector('.colfilter-pop[data-col=\"'+btn.getAttribute('data-col')+'\"]');\n      closeAll();if(!wasOpen)open(btn);return;}\n    if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();\n  });\n  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});\n  // Free-text search box (table_search): filters its table's rows in place, ANDing\n  // with any active column funnels since both funnel state and search live in the\n  // same per-table state object.\n  document.addEventListener('input',function(e){\n    var inp=e.target;\n    if(!(inp.classList&&inp.classList.contains('js-table-search')))return;\n    var t=document.getElementById(inp.getAttribute('data-search-for'));if(!t)return;\n    var a=active(t),q=inp.value.trim().toLowerCase();\n    if(q)a.set('_search_',q);else a.delete('_search_');\n    apply(t);\n  });\n  // Date-range inputs (date_range_filter): bound to a table column via .daterange wrapper.\n  document.addEventListener('change',function(e){\n    var inp=e.target;\n    if(!(inp.classList&&inp.classList.contains('daterange-input')))return;\n    var wrap=inp.closest('.daterange');if(!wrap)return;\n    var t=document.getElementById(wrap.getAttribute('data-daterange-table'));if(!t)return;\n    var col=wrap.getAttribute('data-daterange-col'),a=active(t);\n    var from=(wrap.querySelector('[data-bound=from]')||{}).value||'';\n    var to=(wrap.querySelector('[data-bound=to]')||{}).value||'';\n    if(from||to)a.set('_range_'+col,{from:from,to:to});else a.delete('_range_'+col);\n    apply(t);\n  });\n  document.addEventListener('htmx:afterSwap',function(e){\n    var tg=e.detail&&e.detail.target;if(!tg)return;\n    var tables=tg.tagName==='TABLE'?[tg]:(tg.querySelectorAll?tg.querySelectorAll('table'):[]);\n    if(tables.length){closeAll();Array.prototype.forEach.call(tables,function(t){state.delete(t);refresh(t);});}\n  });\n  if(document.readyState!=='loading')document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);\n  else document.addEventListener('DOMContentLoaded',function(){document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);});\n})();\n</script><script>\n(function(){\n  if(window.__celerpEnhTable)return;window.__celerpEnhTable=true;\n  function dataRows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}\n  function visible(t){return dataRows(t).filter(function(r){return !r.classList.contains('dp-row-hidden');});}\n  function num(s){var n=parseFloat(String(s).replace(/[^0-9.\\-]/g,''));return (s!==''&&!isNaN(n))?n:null;}\n  function cmp(a,b,col,dir){\n    var av=a.children[col]?a.children[col].textContent.trim():'';\n    var bv=b.children[col]?b.children[col].textContent.trim():'';\n    var an=num(av),bn=num(bv),r;\n    if(an!==null&&bn!==null)r=an-bn; else r=av.toLowerCase().localeCompare(bv.toLowerCase());\n    return dir==='asc'?r:-r;\n  }\n  function paginate(t){\n    var size=parseInt(t.getAttribute('data-page-size')||'0',10);\n    var vis=visible(t),pager=document.querySelector('[data-pager-for=\"'+t.id+'\"]');\n    if(!size){return;}\n    var pages=Math.max(1,Math.ceil(vis.length/size));\n    var page=Math.min(pages,Math.max(1,parseInt(t.getAttribute('data-page')||'1',10)));\n    t.setAttribute('data-page',page);\n    vis.forEach(function(r,i){r.classList.toggle('enh-page-hidden',!(i>=(page-1)*size&&i<page*size));});\n    if(pager){\n      pager.style.display=pages>1?'':'none';\n      var info=pager.querySelector('.enh-page-info');if(info)info.textContent=page+' / '+pages+' ('+vis.length+')';\n      var prev=pager.querySelector('[data-page-nav=prev]'),next=pager.querySelector('[data-page-nav=next]');\n      if(prev)prev.disabled=page<=1; if(next)next.disabled=page>=pages;\n    }\n  }\n  function sortBy(t,col){\n    var cur=t.getAttribute('data-sort-col');\n    var dir=(cur===String(col)&&t.getAttribute('data-sort-dir')==='asc')?'desc':'asc';\n    t.setAttribute('data-sort-col',col);t.setAttribute('data-sort-dir',dir);t.setAttribute('data-page','1');\n    var tb=t.querySelector('tbody');\n    dataRows(t).sort(function(a,b){return cmp(a,b,col,dir);}).forEach(function(r){tb.appendChild(r);});\n    t.querySelectorAll('thead th[data-sort]').forEach(function(th){th.classList.remove('sort-asc','sort-desc');});\n    var th=t.querySelector('thead th[data-sort=\"'+col+'\"]');if(th)th.classList.add(dir==='asc'?'sort-asc':'sort-desc');\n    paginate(t);\n  }\n  window.celerpTableEnhance=function(t){ if(t){paginate(t);return;} document.querySelectorAll('table.js-table').forEach(paginate); };\n  document.addEventListener('click',function(e){\n    if(e.target.closest&&e.target.closest('.colfilter'))return;  // funnel handles its own clicks\n    var th=e.target.closest&&e.target.closest('th[data-sort]');\n    if(th){var t=th.closest('table');if(t&&t.classList.contains('js-table'))sortBy(t,parseInt(th.getAttribute('data-sort'),10));return;}\n    var nav=e.target.closest&&e.target.closest('[data-page-nav]');\n    if(nav){var t=document.getElementById(nav.getAttribute('data-page-for'));if(!t)return;\n      var p=parseInt(t.getAttribute('data-page')||'1',10);\n      t.setAttribute('data-page',nav.getAttribute('data-page-nav')==='next'?p+1:p-1);paginate(t);}\n  });\n  document.addEventListener('htmx:afterSwap',function(){document.querySelectorAll('table.js-table').forEach(paginate);});\n  document.querySelectorAll('table.js-table').forEach(paginate);\n})();\n</script><script>window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('production-block'));</script></div>\n",
+   "hub": {
+    "demand": [],
+    "runs": [
+     {
+      "actual_outputs": [],
+      "cancel_reason": "not needed",
+      "created_at": "<date>",
+      "description": "Build 2 x GOLD-CHAIN",
+      "entity_type": "mfg_order",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-CHAIN",
+        "quantity": 2.0,
+        "sku": "GOLD-CHAIN"
+       }
+      ],
+      "id": "mfg:a7c0c15a-37bb-543a-ac2b-261e26a87cc7",
+      "inputs": [
+       {
+        "issued_qty": 0.0,
+        "issued_value": "0",
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "name": "Aluminum Sheet 1mm",
+        "quantity": 3.0,
+        "sku": "RAW-001"
+       }
+      ],
+      "is_in_production": false,
+      "order_type": "assembly",
+      "output_item_id": "item:5ec94106-ad2b-422e-881a-fd5633412f62",
+      "receipts": [],
+      "received_lots": [],
+      "received_qty": 0.0,
+      "status": "cancelled",
+      "wip_account_code": "1130-WIP",
+      "wip_issued": "0"
+     },
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-CHAIN",
+        "quantity": 4.0,
+        "sku": "GOLD-CHAIN"
+       }
+      ],
+      "closing": {
+       "before": {
+        "actual_outputs": [],
+        "is_in_production": true,
+        "status": "in_progress",
+        "wip_transferred": "12.00"
+       },
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "created_at": "<date>",
+      "description": "Build 4 x GOLD-CHAIN",
+      "entity_type": "mfg_order",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-CHAIN",
+        "quantity": 4.0,
+        "sku": "GOLD-CHAIN"
+       }
+      ],
+      "id": "mfg:05b1577f-4465-506a-8180-9941788f34e3",
+      "inputs": [
+       {
+        "issued_qty": 6.0,
+        "issued_value": "12.00",
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "name": "Aluminum Sheet 1mm",
+        "quantity": 6.0,
+        "sku": "RAW-001"
+       }
+      ],
+      "is_in_production": false,
+      "order_type": "assembly",
+      "output_item_id": "item:5ec94106-ad2b-422e-881a-fd5633412f62",
+      "receipts": [
+       {
+        "lot_item_id": "item:7254cd61-bd52-581b-9f35-2f63292687c1",
+        "quantity": 4.0,
+        "sku": "GOLD-CHAIN",
+        "value": "12.00"
+       }
+      ],
+      "received_lots": [
+       "item:7254cd61-bd52-581b-9f35-2f63292687c1"
+      ],
+      "received_qty": 4.0,
+      "status": "completed",
+      "wip_account_code": "1130-WIP",
+      "wip_issued": "12.00",
+      "wip_transferred": "12.00",
+      "wip_wasted": "0"
+     }
+    ]
+   },
+   "recipe_events": [
+    [
+     "item.recipe.set",
+     {
+      "recipe": {
+       "components": [
+        {
+         "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+         "line_cost": 6.0,
+         "quantity": 3.0,
+         "sku": "RAW-001",
+         "unit": "piece",
+         "unit_cost": 2.0
+        }
+       ],
+       "labor": [],
+       "labor_cost": 0.0,
+       "materials_cost": 6.0,
+       "output_qty": 2.0,
+       "overhead": [],
+       "overhead_cost": 0.0,
+       "unit_cost": 3.0
+      }
+     }
+    ]
+   ]
+  },
+  "item:b1bf2902-bb39-4014-a47a-2979bf49dd30": {
+   "block": "<div id=\"production-block\">\n  <div class=\"doc-section recipe-block\">\n    <div class=\"section-header\">\n<span class=\"section-icon\"><svg width=\"1em\" height=\"1em\" xmlns=\"http://www.w3.org/2000/svg\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" viewBox=\"0 0 24 24\"><rect width=\"8\" height=\"4\" x=\"8\" y=\"2\" rx=\"1\" ry=\"1\"/><path d=\"M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2\"/><path d=\"M12 11h4\"/><path d=\"M12 16h4\"/><path d=\"M8 11h.01\"/><path d=\"M8 16h.01\"/></svg></span>      <h3 class=\"section-title\">Open demand</h3>\n    </div>\n    <p class=\"hint\">Orders that have this item on order, with how well current supply covers each.</p>\n    <div>\n      <table data-page-size=\"25\" id=\"wo-demand-table\" class=\"data-table js-table\">\n        <thead>\n          <tr>\n            <th data-sort=\"0\" class=\"sortable-th\">\n<span>Document</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"1\" class=\"colfilter-th sortable-th\">\n<span>Type</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"1\" aria-label=\"Filter by Type\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Type\">\u25be</button>            </th>\n            <th data-sort=\"2\" class=\"colfilter-th sortable-th\">\n<span>Customer</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"2\" aria-label=\"Filter by Customer\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Customer\">\u25be</button>            </th>\n            <th data-sort=\"3\" class=\"sortable-th cell--number\">\n<span>Qty</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"4\" class=\"sortable-th cell--center\">\n<span>Due</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"5\" class=\"colfilter-th sortable-th cell--center\">\n<span>Coverage</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"5\" aria-label=\"Filter by Coverage\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Coverage\">\u25be</button>            </th>\n          </tr>\n        </thead>\n        <tbody>\n          <tr>\n            <td colspan=\"6\" class=\"empty-row\">No open demand.</td>\n          </tr>\n        </tbody>\n      </table>\n      <div data-pager-for=\"wo-demand-table\" class=\"pagination\" style=\"display:none\">\n<button type=\"button\" data-page-nav=\"prev\" data-page-for=\"wo-demand-table\" class=\"page-btn\">Prev</button><span class=\"page-count enh-page-info\"></span><button type=\"button\" data-page-nav=\"next\" data-page-for=\"wo-demand-table\" class=\"page-btn\">Next</button>      </div>\n    </div>\n  </div>\n  <div class=\"doc-section recipe-block\">\n    <div class=\"section-header\">\n<span class=\"section-icon\"><svg width=\"1em\" height=\"1em\" xmlns=\"http://www.w3.org/2000/svg\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" viewBox=\"0 0 24 24\"><path d=\"M12 16h.01\"/><path d=\"M16 16h.01\"/><path d=\"M3 19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5a.5.5 0 0 0-.769-.422l-4.462 2.844A.5.5 0 0 1 15 10.5v-2a.5.5 0 0 0-.769-.422L9.77 10.922A.5.5 0 0 1 9 10.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2z\"/><path d=\"M8 16h.01\"/></svg></span>      <h3 class=\"section-title\">Work orders</h3>\n    </div>\n    <p class=\"hint\">Production tasks for this item, each shown with the order it fulfils. Completed and cancelled work orders are hidden by default - re-check them in the Status filter to show them. Advance one with its Action menu.</p>\n    <div>\n<span data-daterange-table=\"wo-orders-table\" data-daterange-col=\"4\" class=\"daterange\"><span class=\"daterange-label\">Due date:</span>        <input type=\"date\" aria-label=\"Due date from\" data-bound=\"from\" class=\"daterange-input\">\n<span class=\"daterange-sep\">to</span>        <input type=\"date\" aria-label=\"Due date to\" data-bound=\"to\" class=\"daterange-input\">\n</span>      <table data-page-size=\"25\" id=\"wo-orders-table\" class=\"data-table js-table\">\n        <thead>\n          <tr>\n            <th data-sort=\"0\" class=\"sortable-th\">\n<span>Work order</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"1\" class=\"colfilter-th sortable-th\">\n<span>Source order</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"1\" aria-label=\"Filter by Source order\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Source order\">\u25be</button>            </th>\n            <th data-sort=\"2\" class=\"colfilter-th sortable-th\">\n<span>Customer</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"2\" aria-label=\"Filter by Customer\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Customer\">\u25be</button>            </th>\n            <th data-sort=\"3\" class=\"sortable-th cell--number\">\n<span>Qty</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"4\" class=\"sortable-th cell--center\">\n<span>Due</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"5\" class=\"colfilter-th sortable-th\">\n<span>Status</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"5\" aria-label=\"Filter by Status\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" data-filter-exclude=\"Completed\u241fCancelled\" class=\"colfilter\" title=\"Filter by Status\">\u25be</button>            </th>\n            <th class=\"cell--actions\"></th>\n          </tr>\n        </thead>\n        <tbody>\n          <tr class=\"data-row\">\n            <td class=\"wo-ref\">WO-c1311629</td>\n            <td>\n<a href=\"/docs/doc:PF-2611-0002\" class=\"table-link\">INV-2611-0002</a>            </td>\n            <td>--</td>\n            <td class=\"cell--number\">3</td>\n            <td class=\"cell--center\"><date></td>\n            <td>\n<span class=\"badge badge--completed\" title=\"manufacturing.help_status_completed\">Completed</span>            </td>\n            <td class=\"cell--actions\">\n<select name=\"action\" hx-trigger=\"change\" hx-post=\"/api/items/item:b1bf2902-bb39-4014-a47a-2979bf49dd30/runs/mfg:c1311629-bd04-55ce-ac47-620553c0e586/act\" hx-swap=\"outerHTML\" hx-disabled-elt=\"this\" hx-vals='{\"idempotency_key\": \"46f4a367-ecfb-4084-868a-9bb8d1c52c5a\"}' hx-target=\"#production-block\" class=\"wo-action-select\"><option value=\"\" disabled selected>Action\u2026</option><option value=\"reopen\">Reopen</option></select>            </td>\n          </tr>\n        </tbody>\n      </table>\n      <div data-pager-for=\"wo-orders-table\" class=\"pagination\" style=\"display:none\">\n<button type=\"button\" data-page-nav=\"prev\" data-page-for=\"wo-orders-table\" class=\"page-btn\">Prev</button><span class=\"page-count enh-page-info\"></span><button type=\"button\" data-page-nav=\"next\" data-page-for=\"wo-orders-table\" class=\"page-btn\">Next</button>      </div>\n    </div>\n  </div>\n<script>\n(function(){\n  if(window.__celerpColFilter)return;window.__celerpColFilter=true;\n  function placeFilterPop(pop,btn){var br=btn.getBoundingClientRect();\n    pop.style.top=(br.bottom+2)+'px';pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';}\n  function openFilterPop(pop,btn){pop.style.position='fixed';document.body.appendChild(pop);\n    placeFilterPop(pop,btn);followAnchor(pop,btn,function(){placeFilterPop(pop,btn);});}\n\n  var state=new WeakMap();\n  function active(t){if(!state.has(t))state.set(t,new Map());return state.get(t);}\n  function rows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}\n  function cellText(r,col){var c=r.children[col];if(!c)return '';var dv=c.getAttribute('data-filter-value');return (dv!==null?dv:c.textContent).trim();}\n  function distinct(t,col){var out=[],seen={};rows(t).forEach(function(r){var v=cellText(r,col);if(!(v in seen)){seen[v]=1;out.push(v);}});out.sort();return out;}\n  function apply(t){\n    var a=active(t);\n    rows(t).forEach(function(r){\n      var show=true;\n      for(var [key,s] of a){\n        if(key.indexOf('_range_')===0){\n          // Date-range filter: cell must be an ISO date within [from, to].\n          var rc=+key.slice(7), cv=cellText(r,rc), ok=/^\\d{4}-\\d{2}-\\d{2}/.test(cv);\n          if(!ok){show=false;break;}\n          if(s.from&&cv<s.from){show=false;break;}\n          if(s.to&&cv>s.to){show=false;break;}\n        } else if(key==='_search_'){\n          // Free-text search box (table_search): match the row's whole text.\n          if(s&&r.textContent.toLowerCase().indexOf(s)<0){show=false;break;}\n        } else if(s&&!s.has(cellText(r,+key))){show=false;break;}\n      }\n      r.classList.toggle('dp-row-hidden',!show);\n      if(!show){var cb=r.querySelector('.bulk-select');if(cb&&cb.checked)cb.checked=false;}\n    });\n    t.querySelectorAll('thead .colfilter').forEach(function(b){b.classList.toggle('colfilter--active',a.has(b.getAttribute('data-col')));});\n    if(window.celerpBulkRefresh)window.celerpBulkRefresh();\n    if(window.celerpTableEnhance)window.celerpTableEnhance(t);\n  }\n  // Seed a column's default-excluded values (e.g. Status hides Completed/Cancelled) once per table.\n  function seedDefaults(t){\n    var a=active(t);\n    t.querySelectorAll('thead .colfilter[data-filter-exclude]').forEach(function(b){\n      var col=b.getAttribute('data-col'); if(a.has(col)) return;\n      var ex=b.getAttribute('data-filter-exclude').split('\\u241f');\n      var keep=distinct(t,+col).filter(function(v){return ex.indexOf(v)<0;});\n      a.set(col,new Set(keep));\n    });\n  }\n  function refresh(t){ if(t){seedDefaults(t);apply(t);} }\n  // Seed default filters for tables under `root` (called by sections after an htmx swap, since\n  // htmx:afterSwap's target is unreliable for outerHTML swaps). A freshly swapped table is a new\n  // element with empty state, so this seeds it without wiping user filters elsewhere.\n  window.celerpRefreshFilters=function(root){(root||document).querySelectorAll('table.js-table,table.data-table').forEach(refresh);};\n  function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}\n  function open(btn){\n    var t=btn.closest('table');if(!t)return;\n    var col=btn.getAttribute('data-col');\n    var a=active(t),values=distinct(t,+col);\n    var i18nSearch=btn.getAttribute('data-i18n-search')||'Search\\u2026';\n    var i18nSelectAll=btn.getAttribute('data-i18n-select-all')||'(Select all)';\n    var i18nBlank=btn.getAttribute('data-i18n-blank')||'(blank)';\n    var i18nClearFilter=btn.getAttribute('data-i18n-clear-filter')||'Clear filter';\n    var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-col',col);\n    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder=i18nSearch;\n    var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';\n    var selAllCb=document.createElement('input');selAllCb.type='checkbox';\n    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' '+i18nSelectAll));\n    var list=document.createElement('div');list.className='colfilter-list';\n    function commit(){\n      var checked=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)checked.push(c.value);});\n      if(checked.length===values.length){a.delete(col);}else{a.set(col,new Set(checked));}\n      selAllCb.checked=(checked.length===values.length);\n      selAllCb.indeterminate=(checked.length>0&&checked.length<values.length);\n      apply(t);\n    }\n    values.forEach(function(v){\n      var lbl=document.createElement('label');lbl.className='colfilter-item';\n      var cb=document.createElement('input');cb.type='checkbox';cb.value=v;\n      cb.checked=!a.has(col)||a.get(col).has(v);\n      cb.addEventListener('change',commit);\n      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||i18nBlank)));\n      list.appendChild(lbl);\n    });\n    selAllCb.checked=!a.has(col);selAllCb.indeterminate=a.has(col);\n    selAllCb.addEventListener('change',function(){\n      list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});commit();});\n    search.addEventListener('input',function(){var q=search.value.toLowerCase();\n      list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});\n    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent=i18nClearFilter;\n    clear.addEventListener('click',function(){a.delete(col);closeAll();apply(t);});\n    pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);\n    openFilterPop(pop,btn);\n    search.focus();\n  }\n  document.addEventListener('click',function(e){\n    var btn=e.target.closest&&e.target.closest('.colfilter');\n    if(btn){e.preventDefault();e.stopPropagation();\n      var wasOpen=!!document.querySelector('.colfilter-pop[data-col=\"'+btn.getAttribute('data-col')+'\"]');\n      closeAll();if(!wasOpen)open(btn);return;}\n    if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();\n  });\n  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});\n  // Free-text search box (table_search): filters its table's rows in place, ANDing\n  // with any active column funnels since both funnel state and search live in the\n  // same per-table state object.\n  document.addEventListener('input',function(e){\n    var inp=e.target;\n    if(!(inp.classList&&inp.classList.contains('js-table-search')))return;\n    var t=document.getElementById(inp.getAttribute('data-search-for'));if(!t)return;\n    var a=active(t),q=inp.value.trim().toLowerCase();\n    if(q)a.set('_search_',q);else a.delete('_search_');\n    apply(t);\n  });\n  // Date-range inputs (date_range_filter): bound to a table column via .daterange wrapper.\n  document.addEventListener('change',function(e){\n    var inp=e.target;\n    if(!(inp.classList&&inp.classList.contains('daterange-input')))return;\n    var wrap=inp.closest('.daterange');if(!wrap)return;\n    var t=document.getElementById(wrap.getAttribute('data-daterange-table'));if(!t)return;\n    var col=wrap.getAttribute('data-daterange-col'),a=active(t);\n    var from=(wrap.querySelector('[data-bound=from]')||{}).value||'';\n    var to=(wrap.querySelector('[data-bound=to]')||{}).value||'';\n    if(from||to)a.set('_range_'+col,{from:from,to:to});else a.delete('_range_'+col);\n    apply(t);\n  });\n  document.addEventListener('htmx:afterSwap',function(e){\n    var tg=e.detail&&e.detail.target;if(!tg)return;\n    var tables=tg.tagName==='TABLE'?[tg]:(tg.querySelectorAll?tg.querySelectorAll('table'):[]);\n    if(tables.length){closeAll();Array.prototype.forEach.call(tables,function(t){state.delete(t);refresh(t);});}\n  });\n  if(document.readyState!=='loading')document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);\n  else document.addEventListener('DOMContentLoaded',function(){document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);});\n})();\n</script><script>\n(function(){\n  if(window.__celerpEnhTable)return;window.__celerpEnhTable=true;\n  function dataRows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}\n  function visible(t){return dataRows(t).filter(function(r){return !r.classList.contains('dp-row-hidden');});}\n  function num(s){var n=parseFloat(String(s).replace(/[^0-9.\\-]/g,''));return (s!==''&&!isNaN(n))?n:null;}\n  function cmp(a,b,col,dir){\n    var av=a.children[col]?a.children[col].textContent.trim():'';\n    var bv=b.children[col]?b.children[col].textContent.trim():'';\n    var an=num(av),bn=num(bv),r;\n    if(an!==null&&bn!==null)r=an-bn; else r=av.toLowerCase().localeCompare(bv.toLowerCase());\n    return dir==='asc'?r:-r;\n  }\n  function paginate(t){\n    var size=parseInt(t.getAttribute('data-page-size')||'0',10);\n    var vis=visible(t),pager=document.querySelector('[data-pager-for=\"'+t.id+'\"]');\n    if(!size){return;}\n    var pages=Math.max(1,Math.ceil(vis.length/size));\n    var page=Math.min(pages,Math.max(1,parseInt(t.getAttribute('data-page')||'1',10)));\n    t.setAttribute('data-page',page);\n    vis.forEach(function(r,i){r.classList.toggle('enh-page-hidden',!(i>=(page-1)*size&&i<page*size));});\n    if(pager){\n      pager.style.display=pages>1?'':'none';\n      var info=pager.querySelector('.enh-page-info');if(info)info.textContent=page+' / '+pages+' ('+vis.length+')';\n      var prev=pager.querySelector('[data-page-nav=prev]'),next=pager.querySelector('[data-page-nav=next]');\n      if(prev)prev.disabled=page<=1; if(next)next.disabled=page>=pages;\n    }\n  }\n  function sortBy(t,col){\n    var cur=t.getAttribute('data-sort-col');\n    var dir=(cur===String(col)&&t.getAttribute('data-sort-dir')==='asc')?'desc':'asc';\n    t.setAttribute('data-sort-col',col);t.setAttribute('data-sort-dir',dir);t.setAttribute('data-page','1');\n    var tb=t.querySelector('tbody');\n    dataRows(t).sort(function(a,b){return cmp(a,b,col,dir);}).forEach(function(r){tb.appendChild(r);});\n    t.querySelectorAll('thead th[data-sort]').forEach(function(th){th.classList.remove('sort-asc','sort-desc');});\n    var th=t.querySelector('thead th[data-sort=\"'+col+'\"]');if(th)th.classList.add(dir==='asc'?'sort-asc':'sort-desc');\n    paginate(t);\n  }\n  window.celerpTableEnhance=function(t){ if(t){paginate(t);return;} document.querySelectorAll('table.js-table').forEach(paginate); };\n  document.addEventListener('click',function(e){\n    if(e.target.closest&&e.target.closest('.colfilter'))return;  // funnel handles its own clicks\n    var th=e.target.closest&&e.target.closest('th[data-sort]');\n    if(th){var t=th.closest('table');if(t&&t.classList.contains('js-table'))sortBy(t,parseInt(th.getAttribute('data-sort'),10));return;}\n    var nav=e.target.closest&&e.target.closest('[data-page-nav]');\n    if(nav){var t=document.getElementById(nav.getAttribute('data-page-for'));if(!t)return;\n      var p=parseInt(t.getAttribute('data-page')||'1',10);\n      t.setAttribute('data-page',nav.getAttribute('data-page-nav')==='next'?p+1:p-1);paginate(t);}\n  });\n  document.addEventListener('htmx:afterSwap',function(){document.querySelectorAll('table.js-table').forEach(paginate);});\n  document.querySelectorAll('table.js-table').forEach(paginate);\n})();\n</script><script>window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('production-block'));</script></div>\n",
+   "hub": {
+    "demand": [
+     {
+      "contact_name": "",
+      "coverage": "covered",
+      "doc_id": "doc:PF-2611-0002",
+      "doc_number": "INV-2611-0002",
+      "doc_type": "invoice",
+      "due": null,
+      "quantity": 3.0
+     }
+    ],
+    "runs": [
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-AUTO",
+        "quantity": 3.0,
+        "sku": "GOLD-AUTO"
+       }
+      ],
+      "closing": {
+       "before": {
+        "actual_outputs": [],
+        "is_in_production": true,
+        "status": "in_progress",
+        "wip_transferred": "6.00"
+       },
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "created_at": "<date>",
+      "description": "Build 3 x GOLD-AUTO",
+      "entity_type": "mfg_order",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-AUTO",
+        "quantity": 3.0,
+        "sku": "GOLD-AUTO"
+       }
+      ],
+      "id": "mfg:c1311629-bd04-55ce-ac47-620553c0e586",
+      "inputs": [
+       {
+        "issued_qty": 3.0,
+        "issued_value": "6.00",
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "name": "Aluminum Sheet 1mm",
+        "quantity": 3.0,
+        "sku": "RAW-001"
+       }
+      ],
+      "is_in_production": false,
+      "order_type": "assembly",
+      "output_item_id": "item:b1bf2902-bb39-4014-a47a-2979bf49dd30",
+      "receipts": [
+       {
+        "lot_item_id": "item:4c0f3ed3-56bd-50be-871b-b874546c7021",
+        "quantity": 3.0,
+        "sku": "GOLD-AUTO",
+        "value": "6.00"
+       }
+      ],
+      "received_lots": [
+       "item:4c0f3ed3-56bd-50be-871b-b874546c7021"
+      ],
+      "received_qty": 3.0,
+      "source_doc_id": "doc:PF-2611-0002",
+      "source_doc_number": "INV-2611-0002",
+      "source_doc_type": "invoice",
+      "status": "completed",
+      "wip_account_code": "1130-WIP",
+      "wip_issued": "6.00",
+      "wip_transferred": "6.00",
+      "wip_wasted": "0"
+     }
+    ]
+   },
+   "recipe_events": [
+    [
+     "item.recipe.set",
+     {
+      "recipe": {
+       "components": [
+        {
+         "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+         "line_cost": 2.0,
+         "quantity": 1.0,
+         "sku": "RAW-001",
+         "unit": "piece",
+         "unit_cost": 2.0
+        }
+       ],
+       "labor": [],
+       "labor_cost": 0.0,
+       "materials_cost": 2.0,
+       "output_qty": 1.0,
+       "overhead": [],
+       "overhead_cost": 0.0,
+       "unit_cost": 2.0
+      }
+     }
+    ]
+   ]
+  },
+  "item:f64c7195-4a9c-4ebd-a145-165b05d06114": {
+   "block": "<div id=\"production-block\">\n  <div class=\"doc-section recipe-block\">\n    <div class=\"section-header\">\n<span class=\"section-icon\"><svg width=\"1em\" height=\"1em\" xmlns=\"http://www.w3.org/2000/svg\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" viewBox=\"0 0 24 24\"><rect width=\"8\" height=\"4\" x=\"8\" y=\"2\" rx=\"1\" ry=\"1\"/><path d=\"M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2\"/><path d=\"M12 11h4\"/><path d=\"M12 16h4\"/><path d=\"M8 11h.01\"/><path d=\"M8 16h.01\"/></svg></span>      <h3 class=\"section-title\">Open demand</h3>\n    </div>\n    <p class=\"hint\">Orders that have this item on order, with how well current supply covers each.</p>\n    <div>\n      <table data-page-size=\"25\" id=\"wo-demand-table\" class=\"data-table js-table\">\n        <thead>\n          <tr>\n            <th data-sort=\"0\" class=\"sortable-th\">\n<span>Document</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"1\" class=\"colfilter-th sortable-th\">\n<span>Type</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"1\" aria-label=\"Filter by Type\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Type\">\u25be</button>            </th>\n            <th data-sort=\"2\" class=\"colfilter-th sortable-th\">\n<span>Customer</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"2\" aria-label=\"Filter by Customer\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Customer\">\u25be</button>            </th>\n            <th data-sort=\"3\" class=\"sortable-th cell--number\">\n<span>Qty</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"4\" class=\"sortable-th cell--center\">\n<span>Due</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"5\" class=\"colfilter-th sortable-th cell--center\">\n<span>Coverage</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"5\" aria-label=\"Filter by Coverage\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Coverage\">\u25be</button>            </th>\n          </tr>\n        </thead>\n        <tbody>\n          <tr>\n            <td colspan=\"6\" class=\"empty-row\">No open demand.</td>\n          </tr>\n        </tbody>\n      </table>\n      <div data-pager-for=\"wo-demand-table\" class=\"pagination\" style=\"display:none\">\n<button type=\"button\" data-page-nav=\"prev\" data-page-for=\"wo-demand-table\" class=\"page-btn\">Prev</button><span class=\"page-count enh-page-info\"></span><button type=\"button\" data-page-nav=\"next\" data-page-for=\"wo-demand-table\" class=\"page-btn\">Next</button>      </div>\n    </div>\n  </div>\n  <div class=\"doc-section recipe-block\">\n    <div class=\"section-header\">\n<span class=\"section-icon\"><svg width=\"1em\" height=\"1em\" xmlns=\"http://www.w3.org/2000/svg\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" viewBox=\"0 0 24 24\"><path d=\"M12 16h.01\"/><path d=\"M16 16h.01\"/><path d=\"M3 19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5a.5.5 0 0 0-.769-.422l-4.462 2.844A.5.5 0 0 1 15 10.5v-2a.5.5 0 0 0-.769-.422L9.77 10.922A.5.5 0 0 1 9 10.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2z\"/><path d=\"M8 16h.01\"/></svg></span>      <h3 class=\"section-title\">Work orders</h3>\n    </div>\n    <p class=\"hint\">Production tasks for this item, each shown with the order it fulfils. Completed and cancelled work orders are hidden by default - re-check them in the Status filter to show them. Advance one with its Action menu.</p>\n    <div>\n<span data-daterange-table=\"wo-orders-table\" data-daterange-col=\"4\" class=\"daterange\"><span class=\"daterange-label\">Due date:</span>        <input type=\"date\" aria-label=\"Due date from\" data-bound=\"from\" class=\"daterange-input\">\n<span class=\"daterange-sep\">to</span>        <input type=\"date\" aria-label=\"Due date to\" data-bound=\"to\" class=\"daterange-input\">\n</span>      <table data-page-size=\"25\" id=\"wo-orders-table\" class=\"data-table js-table\">\n        <thead>\n          <tr>\n            <th data-sort=\"0\" class=\"sortable-th\">\n<span>Work order</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"1\" class=\"colfilter-th sortable-th\">\n<span>Source order</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"1\" aria-label=\"Filter by Source order\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Source order\">\u25be</button>            </th>\n            <th data-sort=\"2\" class=\"colfilter-th sortable-th\">\n<span>Customer</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"2\" aria-label=\"Filter by Customer\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Customer\">\u25be</button>            </th>\n            <th data-sort=\"3\" class=\"sortable-th cell--number\">\n<span>Qty</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"4\" class=\"sortable-th cell--center\">\n<span>Due</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"5\" class=\"colfilter-th sortable-th\">\n<span>Status</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"5\" aria-label=\"Filter by Status\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" data-filter-exclude=\"Completed\u241fCancelled\" class=\"colfilter\" title=\"Filter by Status\">\u25be</button>            </th>\n            <th class=\"cell--actions\"></th>\n          </tr>\n        </thead>\n        <tbody>\n          <tr class=\"data-row\">\n            <td class=\"wo-ref\">WO-22888e68</td>\n            <td>\n<span class=\"hint\">To stock</span>            </td>\n            <td>--</td>\n            <td class=\"cell--number\">1</td>\n            <td class=\"cell--center\"><date></td>\n            <td>\n<span class=\"badge badge--completed\" title=\"manufacturing.help_status_completed\">Completed</span>            </td>\n            <td class=\"cell--actions\">\n<select name=\"action\" hx-trigger=\"change\" hx-post=\"/api/items/item:f64c7195-4a9c-4ebd-a145-165b05d06114/runs/mfg:22888e68-c865-5d9b-b574-17dc952ddb46/act\" hx-swap=\"outerHTML\" hx-disabled-elt=\"this\" hx-vals='{\"idempotency_key\": \"a24b437c-746f-4228-9265-cfb37187bf4b\"}' hx-target=\"#production-block\" class=\"wo-action-select\"><option value=\"\" disabled selected>Action\u2026</option><option value=\"reopen\">Reopen</option></select>            </td>\n          </tr>\n          <tr class=\"data-row\">\n            <td class=\"wo-ref\">WO-a716f3d0</td>\n            <td>\n<span class=\"hint\">To stock</span>            </td>\n            <td>--</td>\n            <td class=\"cell--number\">2</td>\n            <td class=\"cell--center\"><date></td>\n            <td>\n<span class=\"badge badge--completed\" title=\"manufacturing.help_status_completed\">Completed</span>            </td>\n            <td class=\"cell--actions\">\n<select name=\"action\" hx-trigger=\"change\" hx-post=\"/api/items/item:f64c7195-4a9c-4ebd-a145-165b05d06114/runs/mfg:a716f3d0-a45b-480a-a491-e64ba24d476c/act\" hx-swap=\"outerHTML\" hx-disabled-elt=\"this\" hx-vals='{\"idempotency_key\": \"ff379209-81c0-470e-b3bb-4932f074e5b5\"}' hx-target=\"#production-block\" class=\"wo-action-select\"><option value=\"\" disabled selected>Action\u2026</option><option value=\"reopen\">Reopen</option></select>            </td>\n          </tr>\n          <tr class=\"data-row\">\n            <td class=\"wo-ref\">WO-golden-i</td>\n            <td>\n<span class=\"hint\">To stock</span>            </td>\n            <td>--</td>\n            <td class=\"cell--number\">1</td>\n            <td class=\"cell--center\"><date></td>\n            <td>\n<span class=\"badge badge--completed\" title=\"manufacturing.help_status_completed\">Completed</span>            </td>\n            <td class=\"cell--actions\">\n<select name=\"action\" hx-trigger=\"change\" hx-post=\"/api/items/item:f64c7195-4a9c-4ebd-a145-165b05d06114/runs/mfg:golden-import/act\" hx-swap=\"outerHTML\" hx-disabled-elt=\"this\" hx-vals='{\"idempotency_key\": \"6aad99be-ab7b-45ac-a082-ea87836cd8c5\"}' hx-target=\"#production-block\" class=\"wo-action-select\"><option value=\"\" disabled selected>Action\u2026</option><option value=\"reopen\">Reopen</option></select>            </td>\n          </tr>\n        </tbody>\n      </table>\n      <div data-pager-for=\"wo-orders-table\" class=\"pagination\" style=\"display:none\">\n<button type=\"button\" data-page-nav=\"prev\" data-page-for=\"wo-orders-table\" class=\"page-btn\">Prev</button><span class=\"page-count enh-page-info\"></span><button type=\"button\" data-page-nav=\"next\" data-page-for=\"wo-orders-table\" class=\"page-btn\">Next</button>      </div>\n    </div>\n  </div>\n<script>\n(function(){\n  if(window.__celerpColFilter)return;window.__celerpColFilter=true;\n  function placeFilterPop(pop,btn){var br=btn.getBoundingClientRect();\n    pop.style.top=(br.bottom+2)+'px';pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';}\n  function openFilterPop(pop,btn){pop.style.position='fixed';document.body.appendChild(pop);\n    placeFilterPop(pop,btn);followAnchor(pop,btn,function(){placeFilterPop(pop,btn);});}\n\n  var state=new WeakMap();\n  function active(t){if(!state.has(t))state.set(t,new Map());return state.get(t);}\n  function rows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}\n  function cellText(r,col){var c=r.children[col];if(!c)return '';var dv=c.getAttribute('data-filter-value');return (dv!==null?dv:c.textContent).trim();}\n  function distinct(t,col){var out=[],seen={};rows(t).forEach(function(r){var v=cellText(r,col);if(!(v in seen)){seen[v]=1;out.push(v);}});out.sort();return out;}\n  function apply(t){\n    var a=active(t);\n    rows(t).forEach(function(r){\n      var show=true;\n      for(var [key,s] of a){\n        if(key.indexOf('_range_')===0){\n          // Date-range filter: cell must be an ISO date within [from, to].\n          var rc=+key.slice(7), cv=cellText(r,rc), ok=/^\\d{4}-\\d{2}-\\d{2}/.test(cv);\n          if(!ok){show=false;break;}\n          if(s.from&&cv<s.from){show=false;break;}\n          if(s.to&&cv>s.to){show=false;break;}\n        } else if(key==='_search_'){\n          // Free-text search box (table_search): match the row's whole text.\n          if(s&&r.textContent.toLowerCase().indexOf(s)<0){show=false;break;}\n        } else if(s&&!s.has(cellText(r,+key))){show=false;break;}\n      }\n      r.classList.toggle('dp-row-hidden',!show);\n      if(!show){var cb=r.querySelector('.bulk-select');if(cb&&cb.checked)cb.checked=false;}\n    });\n    t.querySelectorAll('thead .colfilter').forEach(function(b){b.classList.toggle('colfilter--active',a.has(b.getAttribute('data-col')));});\n    if(window.celerpBulkRefresh)window.celerpBulkRefresh();\n    if(window.celerpTableEnhance)window.celerpTableEnhance(t);\n  }\n  // Seed a column's default-excluded values (e.g. Status hides Completed/Cancelled) once per table.\n  function seedDefaults(t){\n    var a=active(t);\n    t.querySelectorAll('thead .colfilter[data-filter-exclude]').forEach(function(b){\n      var col=b.getAttribute('data-col'); if(a.has(col)) return;\n      var ex=b.getAttribute('data-filter-exclude').split('\\u241f');\n      var keep=distinct(t,+col).filter(function(v){return ex.indexOf(v)<0;});\n      a.set(col,new Set(keep));\n    });\n  }\n  function refresh(t){ if(t){seedDefaults(t);apply(t);} }\n  // Seed default filters for tables under `root` (called by sections after an htmx swap, since\n  // htmx:afterSwap's target is unreliable for outerHTML swaps). A freshly swapped table is a new\n  // element with empty state, so this seeds it without wiping user filters elsewhere.\n  window.celerpRefreshFilters=function(root){(root||document).querySelectorAll('table.js-table,table.data-table').forEach(refresh);};\n  function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}\n  function open(btn){\n    var t=btn.closest('table');if(!t)return;\n    var col=btn.getAttribute('data-col');\n    var a=active(t),values=distinct(t,+col);\n    var i18nSearch=btn.getAttribute('data-i18n-search')||'Search\\u2026';\n    var i18nSelectAll=btn.getAttribute('data-i18n-select-all')||'(Select all)';\n    var i18nBlank=btn.getAttribute('data-i18n-blank')||'(blank)';\n    var i18nClearFilter=btn.getAttribute('data-i18n-clear-filter')||'Clear filter';\n    var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-col',col);\n    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder=i18nSearch;\n    var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';\n    var selAllCb=document.createElement('input');selAllCb.type='checkbox';\n    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' '+i18nSelectAll));\n    var list=document.createElement('div');list.className='colfilter-list';\n    function commit(){\n      var checked=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)checked.push(c.value);});\n      if(checked.length===values.length){a.delete(col);}else{a.set(col,new Set(checked));}\n      selAllCb.checked=(checked.length===values.length);\n      selAllCb.indeterminate=(checked.length>0&&checked.length<values.length);\n      apply(t);\n    }\n    values.forEach(function(v){\n      var lbl=document.createElement('label');lbl.className='colfilter-item';\n      var cb=document.createElement('input');cb.type='checkbox';cb.value=v;\n      cb.checked=!a.has(col)||a.get(col).has(v);\n      cb.addEventListener('change',commit);\n      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||i18nBlank)));\n      list.appendChild(lbl);\n    });\n    selAllCb.checked=!a.has(col);selAllCb.indeterminate=a.has(col);\n    selAllCb.addEventListener('change',function(){\n      list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});commit();});\n    search.addEventListener('input',function(){var q=search.value.toLowerCase();\n      list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});\n    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent=i18nClearFilter;\n    clear.addEventListener('click',function(){a.delete(col);closeAll();apply(t);});\n    pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);\n    openFilterPop(pop,btn);\n    search.focus();\n  }\n  document.addEventListener('click',function(e){\n    var btn=e.target.closest&&e.target.closest('.colfilter');\n    if(btn){e.preventDefault();e.stopPropagation();\n      var wasOpen=!!document.querySelector('.colfilter-pop[data-col=\"'+btn.getAttribute('data-col')+'\"]');\n      closeAll();if(!wasOpen)open(btn);return;}\n    if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();\n  });\n  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});\n  // Free-text search box (table_search): filters its table's rows in place, ANDing\n  // with any active column funnels since both funnel state and search live in the\n  // same per-table state object.\n  document.addEventListener('input',function(e){\n    var inp=e.target;\n    if(!(inp.classList&&inp.classList.contains('js-table-search')))return;\n    var t=document.getElementById(inp.getAttribute('data-search-for'));if(!t)return;\n    var a=active(t),q=inp.value.trim().toLowerCase();\n    if(q)a.set('_search_',q);else a.delete('_search_');\n    apply(t);\n  });\n  // Date-range inputs (date_range_filter): bound to a table column via .daterange wrapper.\n  document.addEventListener('change',function(e){\n    var inp=e.target;\n    if(!(inp.classList&&inp.classList.contains('daterange-input')))return;\n    var wrap=inp.closest('.daterange');if(!wrap)return;\n    var t=document.getElementById(wrap.getAttribute('data-daterange-table'));if(!t)return;\n    var col=wrap.getAttribute('data-daterange-col'),a=active(t);\n    var from=(wrap.querySelector('[data-bound=from]')||{}).value||'';\n    var to=(wrap.querySelector('[data-bound=to]')||{}).value||'';\n    if(from||to)a.set('_range_'+col,{from:from,to:to});else a.delete('_range_'+col);\n    apply(t);\n  });\n  document.addEventListener('htmx:afterSwap',function(e){\n    var tg=e.detail&&e.detail.target;if(!tg)return;\n    var tables=tg.tagName==='TABLE'?[tg]:(tg.querySelectorAll?tg.querySelectorAll('table'):[]);\n    if(tables.length){closeAll();Array.prototype.forEach.call(tables,function(t){state.delete(t);refresh(t);});}\n  });\n  if(document.readyState!=='loading')document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);\n  else document.addEventListener('DOMContentLoaded',function(){document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);});\n})();\n</script><script>\n(function(){\n  if(window.__celerpEnhTable)return;window.__celerpEnhTable=true;\n  function dataRows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}\n  function visible(t){return dataRows(t).filter(function(r){return !r.classList.contains('dp-row-hidden');});}\n  function num(s){var n=parseFloat(String(s).replace(/[^0-9.\\-]/g,''));return (s!==''&&!isNaN(n))?n:null;}\n  function cmp(a,b,col,dir){\n    var av=a.children[col]?a.children[col].textContent.trim():'';\n    var bv=b.children[col]?b.children[col].textContent.trim():'';\n    var an=num(av),bn=num(bv),r;\n    if(an!==null&&bn!==null)r=an-bn; else r=av.toLowerCase().localeCompare(bv.toLowerCase());\n    return dir==='asc'?r:-r;\n  }\n  function paginate(t){\n    var size=parseInt(t.getAttribute('data-page-size')||'0',10);\n    var vis=visible(t),pager=document.querySelector('[data-pager-for=\"'+t.id+'\"]');\n    if(!size){return;}\n    var pages=Math.max(1,Math.ceil(vis.length/size));\n    var page=Math.min(pages,Math.max(1,parseInt(t.getAttribute('data-page')||'1',10)));\n    t.setAttribute('data-page',page);\n    vis.forEach(function(r,i){r.classList.toggle('enh-page-hidden',!(i>=(page-1)*size&&i<page*size));});\n    if(pager){\n      pager.style.display=pages>1?'':'none';\n      var info=pager.querySelector('.enh-page-info');if(info)info.textContent=page+' / '+pages+' ('+vis.length+')';\n      var prev=pager.querySelector('[data-page-nav=prev]'),next=pager.querySelector('[data-page-nav=next]');\n      if(prev)prev.disabled=page<=1; if(next)next.disabled=page>=pages;\n    }\n  }\n  function sortBy(t,col){\n    var cur=t.getAttribute('data-sort-col');\n    var dir=(cur===String(col)&&t.getAttribute('data-sort-dir')==='asc')?'desc':'asc';\n    t.setAttribute('data-sort-col',col);t.setAttribute('data-sort-dir',dir);t.setAttribute('data-page','1');\n    var tb=t.querySelector('tbody');\n    dataRows(t).sort(function(a,b){return cmp(a,b,col,dir);}).forEach(function(r){tb.appendChild(r);});\n    t.querySelectorAll('thead th[data-sort]').forEach(function(th){th.classList.remove('sort-asc','sort-desc');});\n    var th=t.querySelector('thead th[data-sort=\"'+col+'\"]');if(th)th.classList.add(dir==='asc'?'sort-asc':'sort-desc');\n    paginate(t);\n  }\n  window.celerpTableEnhance=function(t){ if(t){paginate(t);return;} document.querySelectorAll('table.js-table').forEach(paginate); };\n  document.addEventListener('click',function(e){\n    if(e.target.closest&&e.target.closest('.colfilter'))return;  // funnel handles its own clicks\n    var th=e.target.closest&&e.target.closest('th[data-sort]');\n    if(th){var t=th.closest('table');if(t&&t.classList.contains('js-table'))sortBy(t,parseInt(th.getAttribute('data-sort'),10));return;}\n    var nav=e.target.closest&&e.target.closest('[data-page-nav]');\n    if(nav){var t=document.getElementById(nav.getAttribute('data-page-for'));if(!t)return;\n      var p=parseInt(t.getAttribute('data-page')||'1',10);\n      t.setAttribute('data-page',nav.getAttribute('data-page-nav')==='next'?p+1:p-1);paginate(t);}\n  });\n  document.addEventListener('htmx:afterSwap',function(){document.querySelectorAll('table.js-table').forEach(paginate);});\n  document.querySelectorAll('table.js-table').forEach(paginate);\n})();\n</script><script>window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('production-block'));</script></div>\n",
+   "hub": {
+    "demand": [],
+    "runs": [
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 1.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "closing": {
+       "before": {
+        "actual_outputs": [],
+        "is_in_production": true,
+        "status": "in_progress",
+        "wip_transferred": "7.00"
+       },
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "created_at": "<date>",
+      "description": "Imported rings",
+      "entity_type": "mfg_order",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 1.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "id": "mfg:golden-import",
+      "inputs": [
+       {
+        "issued_qty": 2.0,
+        "issued_value": "4.00",
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "name": "Aluminum Sheet 1mm",
+        "quantity": 2.0,
+        "sku": "RAW-001"
+       },
+       {
+        "issued_qty": 1.0,
+        "issued_value": "3.00",
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "name": "Steel Rod 10mm",
+        "quantity": 1.0,
+        "sku": "RAW-002"
+       }
+      ],
+      "is_in_production": false,
+      "order_type": "assembly",
+      "output_item_id": "item:f64c7195-4a9c-4ebd-a145-165b05d06114",
+      "receipts": [
+       {
+        "lot_item_id": "item:2ad5d8fe-9a26-531e-b540-e07402e55784",
+        "quantity": 1.0,
+        "sku": "GOLD-RING",
+        "value": "7.00"
+       }
+      ],
+      "received_lots": [
+       "item:2ad5d8fe-9a26-531e-b540-e07402e55784"
+      ],
+      "received_qty": 1.0,
+      "status": "completed",
+      "wip_account_code": "1130-WIP",
+      "wip_issued": "7.00",
+      "wip_transferred": "7.00",
+      "wip_wasted": "0"
+     },
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 1.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "closing": {
+       "before": {
+        "actual_outputs": [],
+        "is_in_production": true,
+        "status": "in_progress",
+        "wip_transferred": "7.00"
+       },
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "created_at": "<date>",
+      "description": "Build 1 x GOLD-RING",
+      "entity_type": "mfg_order",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 1.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "id": "mfg:22888e68-c865-5d9b-b574-17dc952ddb46",
+      "inputs": [
+       {
+        "issued_qty": 2.0,
+        "issued_value": "4.00",
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "name": "Aluminum Sheet 1mm",
+        "quantity": 2.0,
+        "sku": "RAW-001"
+       },
+       {
+        "issued_qty": 1.0,
+        "issued_value": "3.00",
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "name": "Steel Rod 10mm",
+        "quantity": 1.0,
+        "sku": "RAW-002"
+       }
+      ],
+      "is_in_production": false,
+      "order_type": "assembly",
+      "output_item_id": "item:f64c7195-4a9c-4ebd-a145-165b05d06114",
+      "receipts": [
+       {
+        "lot_item_id": "item:3fde9876-c83d-501a-90bc-60fca4775def",
+        "quantity": 1.0,
+        "sku": "GOLD-RING",
+        "value": "7.00"
+       }
+      ],
+      "received_lots": [
+       "item:3fde9876-c83d-501a-90bc-60fca4775def"
+      ],
+      "received_qty": 1.0,
+      "status": "completed",
+      "wip_account_code": "1130-WIP",
+      "wip_issued": "7.00",
+      "wip_transferred": "7.00",
+      "wip_wasted": "0"
+     },
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 2.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "closing": {
+       "before": {
+        "actual_outputs": [],
+        "is_in_production": true,
+        "status": "in_progress",
+        "wip_transferred": "14.00"
+       },
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "created_at": "<date>",
+      "description": "Rings",
+      "entity_type": "mfg_order",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 2.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "id": "mfg:a716f3d0-a45b-480a-a491-e64ba24d476c",
+      "inputs": [
+       {
+        "issued_qty": 4.0,
+        "issued_value": "8.00",
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "name": "Aluminum Sheet 1mm",
+        "quantity": 4.0,
+        "sku": "RAW-001"
+       },
+       {
+        "issued_qty": 2.0,
+        "issued_value": "6.00",
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "name": "Steel Rod 10mm",
+        "quantity": 2.0,
+        "sku": "RAW-002"
+       }
+      ],
+      "is_in_production": false,
+      "order_type": "assembly",
+      "output_item_id": "item:f64c7195-4a9c-4ebd-a145-165b05d06114",
+      "receipts": [
+       {
+        "lot_item_id": "item:ae0b493e-f6ef-5297-9bd0-f636a9010a04",
+        "quantity": 1.0,
+        "sku": "GOLD-RING",
+        "value": "7.00"
+       },
+       {
+        "lot_item_id": "item:f44e849e-59aa-5400-becf-00a5cacbe91e",
+        "quantity": 1.0,
+        "sku": "GOLD-RING",
+        "value": "7.00"
+       }
+      ],
+      "received_lots": [
+       "item:ae0b493e-f6ef-5297-9bd0-f636a9010a04",
+       "item:f44e849e-59aa-5400-becf-00a5cacbe91e"
+      ],
+      "received_qty": 2.0,
+      "status": "completed",
+      "wip_account_code": "1130-WIP",
+      "wip_issued": "14.00",
+      "wip_transferred": "14.00",
+      "wip_wasted": "0"
+     }
+    ]
+   },
+   "recipe_events": [
+    [
+     "item.recipe.set",
+     {
+      "recipe": {
+       "components": [
+        {
+         "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+         "line_cost": 4.0,
+         "quantity": 2.0,
+         "sku": "RAW-001",
+         "unit": "piece",
+         "unit_cost": 2.0
+        },
+        {
+         "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+         "line_cost": 3.0,
+         "quantity": 1.0,
+         "sku": "RAW-002",
+         "unit": "piece",
+         "unit_cost": 3.0
+        }
+       ],
+       "labor": [],
+       "labor_cost": 0.0,
+       "materials_cost": 7.0,
+       "output_qty": 1.0,
+       "overhead": [],
+       "overhead_cost": 0.0,
+       "unit_cost": 7.0
+      }
+     }
+    ]
+   ]
+  },
+  "item:fea8820a-b61c-4d67-838d-3630f8487f9b": {
+   "block": "<div id=\"production-block\">\n  <div class=\"doc-section recipe-block\">\n    <div class=\"section-header\">\n<span class=\"section-icon\"><svg width=\"1em\" height=\"1em\" xmlns=\"http://www.w3.org/2000/svg\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" viewBox=\"0 0 24 24\"><rect width=\"8\" height=\"4\" x=\"8\" y=\"2\" rx=\"1\" ry=\"1\"/><path d=\"M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2\"/><path d=\"M12 11h4\"/><path d=\"M12 16h4\"/><path d=\"M8 11h.01\"/><path d=\"M8 16h.01\"/></svg></span>      <h3 class=\"section-title\">Open demand</h3>\n    </div>\n    <p class=\"hint\">Orders that have this item on order, with how well current supply covers each.</p>\n    <div>\n      <table data-page-size=\"25\" id=\"wo-demand-table\" class=\"data-table js-table\">\n        <thead>\n          <tr>\n            <th data-sort=\"0\" class=\"sortable-th\">\n<span>Document</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"1\" class=\"colfilter-th sortable-th\">\n<span>Type</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"1\" aria-label=\"Filter by Type\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Type\">\u25be</button>            </th>\n            <th data-sort=\"2\" class=\"colfilter-th sortable-th\">\n<span>Customer</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"2\" aria-label=\"Filter by Customer\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Customer\">\u25be</button>            </th>\n            <th data-sort=\"3\" class=\"sortable-th cell--number\">\n<span>Qty</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"4\" class=\"sortable-th cell--center\">\n<span>Due</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"5\" class=\"colfilter-th sortable-th cell--center\">\n<span>Coverage</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"5\" aria-label=\"Filter by Coverage\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Coverage\">\u25be</button>            </th>\n          </tr>\n        </thead>\n        <tbody>\n          <tr>\n            <td colspan=\"6\" class=\"empty-row\">No open demand.</td>\n          </tr>\n        </tbody>\n      </table>\n      <div data-pager-for=\"wo-demand-table\" class=\"pagination\" style=\"display:none\">\n<button type=\"button\" data-page-nav=\"prev\" data-page-for=\"wo-demand-table\" class=\"page-btn\">Prev</button><span class=\"page-count enh-page-info\"></span><button type=\"button\" data-page-nav=\"next\" data-page-for=\"wo-demand-table\" class=\"page-btn\">Next</button>      </div>\n    </div>\n  </div>\n  <div class=\"doc-section recipe-block\">\n    <div class=\"section-header\">\n<span class=\"section-icon\"><svg width=\"1em\" height=\"1em\" xmlns=\"http://www.w3.org/2000/svg\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" viewBox=\"0 0 24 24\"><path d=\"M12 16h.01\"/><path d=\"M16 16h.01\"/><path d=\"M3 19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5a.5.5 0 0 0-.769-.422l-4.462 2.844A.5.5 0 0 1 15 10.5v-2a.5.5 0 0 0-.769-.422L9.77 10.922A.5.5 0 0 1 9 10.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2z\"/><path d=\"M8 16h.01\"/></svg></span>      <h3 class=\"section-title\">Work orders</h3>\n    </div>\n    <p class=\"hint\">Production tasks for this item, each shown with the order it fulfils. Completed and cancelled work orders are hidden by default - re-check them in the Status filter to show them. Advance one with its Action menu.</p>\n    <div>\n<span data-daterange-table=\"wo-orders-table\" data-daterange-col=\"4\" class=\"daterange\"><span class=\"daterange-label\">Due date:</span>        <input type=\"date\" aria-label=\"Due date from\" data-bound=\"from\" class=\"daterange-input\">\n<span class=\"daterange-sep\">to</span>        <input type=\"date\" aria-label=\"Due date to\" data-bound=\"to\" class=\"daterange-input\">\n</span>      <table data-page-size=\"25\" id=\"wo-orders-table\" class=\"data-table js-table\">\n        <thead>\n          <tr>\n            <th data-sort=\"0\" class=\"sortable-th\">\n<span>Work order</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"1\" class=\"colfilter-th sortable-th\">\n<span>Source order</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"1\" aria-label=\"Filter by Source order\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Source order\">\u25be</button>            </th>\n            <th data-sort=\"2\" class=\"colfilter-th sortable-th\">\n<span>Customer</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"2\" aria-label=\"Filter by Customer\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" class=\"colfilter\" title=\"Filter by Customer\">\u25be</button>            </th>\n            <th data-sort=\"3\" class=\"sortable-th cell--number\">\n<span>Qty</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"4\" class=\"sortable-th cell--center\">\n<span>Due</span><span class=\"sort-ind\"></span>            </th>\n            <th data-sort=\"5\" class=\"colfilter-th sortable-th\">\n<span>Status</span><span class=\"sort-ind\"></span><button type=\"button\" data-col=\"5\" aria-label=\"Filter by Status\" data-i18n-select-all=\"(Select all)\" data-i18n-clear-filter=\"Clear filter\" data-i18n-blank=\"(blank)\" data-i18n-search=\"Search\u2026\" data-filter-exclude=\"Completed\u241fCancelled\" class=\"colfilter\" title=\"Filter by Status\">\u25be</button>            </th>\n            <th class=\"cell--actions\"></th>\n          </tr>\n        </thead>\n        <tbody>\n          <tr class=\"data-row\">\n            <td class=\"wo-ref\">WO-80cf1a29</td>\n            <td>\n<a href=\"/docs/doc:PF-2611-0001\" class=\"table-link\">INV-2611-0001</a>            </td>\n            <td>--</td>\n            <td class=\"cell--number\">2</td>\n            <td class=\"cell--center\"><date></td>\n            <td>\n<span class=\"badge badge--completed\" title=\"manufacturing.help_status_completed\">Completed</span>            </td>\n            <td class=\"cell--actions\">\n<select name=\"action\" hx-trigger=\"change\" hx-post=\"/api/items/item:fea8820a-b61c-4d67-838d-3630f8487f9b/runs/mfg:80cf1a29-dc47-5bef-96c3-02151f670895/act\" hx-swap=\"outerHTML\" hx-disabled-elt=\"this\" hx-vals='{\"idempotency_key\": \"d8c2b1d9-2666-4a62-af48-7a651bed6c07\"}' hx-target=\"#production-block\" class=\"wo-action-select\"><option value=\"\" disabled selected>Action\u2026</option><option value=\"reopen\">Reopen</option></select>            </td>\n          </tr>\n        </tbody>\n      </table>\n      <div data-pager-for=\"wo-orders-table\" class=\"pagination\" style=\"display:none\">\n<button type=\"button\" data-page-nav=\"prev\" data-page-for=\"wo-orders-table\" class=\"page-btn\">Prev</button><span class=\"page-count enh-page-info\"></span><button type=\"button\" data-page-nav=\"next\" data-page-for=\"wo-orders-table\" class=\"page-btn\">Next</button>      </div>\n    </div>\n  </div>\n<script>\n(function(){\n  if(window.__celerpColFilter)return;window.__celerpColFilter=true;\n  function placeFilterPop(pop,btn){var br=btn.getBoundingClientRect();\n    pop.style.top=(br.bottom+2)+'px';pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';}\n  function openFilterPop(pop,btn){pop.style.position='fixed';document.body.appendChild(pop);\n    placeFilterPop(pop,btn);followAnchor(pop,btn,function(){placeFilterPop(pop,btn);});}\n\n  var state=new WeakMap();\n  function active(t){if(!state.has(t))state.set(t,new Map());return state.get(t);}\n  function rows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}\n  function cellText(r,col){var c=r.children[col];if(!c)return '';var dv=c.getAttribute('data-filter-value');return (dv!==null?dv:c.textContent).trim();}\n  function distinct(t,col){var out=[],seen={};rows(t).forEach(function(r){var v=cellText(r,col);if(!(v in seen)){seen[v]=1;out.push(v);}});out.sort();return out;}\n  function apply(t){\n    var a=active(t);\n    rows(t).forEach(function(r){\n      var show=true;\n      for(var [key,s] of a){\n        if(key.indexOf('_range_')===0){\n          // Date-range filter: cell must be an ISO date within [from, to].\n          var rc=+key.slice(7), cv=cellText(r,rc), ok=/^\\d{4}-\\d{2}-\\d{2}/.test(cv);\n          if(!ok){show=false;break;}\n          if(s.from&&cv<s.from){show=false;break;}\n          if(s.to&&cv>s.to){show=false;break;}\n        } else if(key==='_search_'){\n          // Free-text search box (table_search): match the row's whole text.\n          if(s&&r.textContent.toLowerCase().indexOf(s)<0){show=false;break;}\n        } else if(s&&!s.has(cellText(r,+key))){show=false;break;}\n      }\n      r.classList.toggle('dp-row-hidden',!show);\n      if(!show){var cb=r.querySelector('.bulk-select');if(cb&&cb.checked)cb.checked=false;}\n    });\n    t.querySelectorAll('thead .colfilter').forEach(function(b){b.classList.toggle('colfilter--active',a.has(b.getAttribute('data-col')));});\n    if(window.celerpBulkRefresh)window.celerpBulkRefresh();\n    if(window.celerpTableEnhance)window.celerpTableEnhance(t);\n  }\n  // Seed a column's default-excluded values (e.g. Status hides Completed/Cancelled) once per table.\n  function seedDefaults(t){\n    var a=active(t);\n    t.querySelectorAll('thead .colfilter[data-filter-exclude]').forEach(function(b){\n      var col=b.getAttribute('data-col'); if(a.has(col)) return;\n      var ex=b.getAttribute('data-filter-exclude').split('\\u241f');\n      var keep=distinct(t,+col).filter(function(v){return ex.indexOf(v)<0;});\n      a.set(col,new Set(keep));\n    });\n  }\n  function refresh(t){ if(t){seedDefaults(t);apply(t);} }\n  // Seed default filters for tables under `root` (called by sections after an htmx swap, since\n  // htmx:afterSwap's target is unreliable for outerHTML swaps). A freshly swapped table is a new\n  // element with empty state, so this seeds it without wiping user filters elsewhere.\n  window.celerpRefreshFilters=function(root){(root||document).querySelectorAll('table.js-table,table.data-table').forEach(refresh);};\n  function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}\n  function open(btn){\n    var t=btn.closest('table');if(!t)return;\n    var col=btn.getAttribute('data-col');\n    var a=active(t),values=distinct(t,+col);\n    var i18nSearch=btn.getAttribute('data-i18n-search')||'Search\\u2026';\n    var i18nSelectAll=btn.getAttribute('data-i18n-select-all')||'(Select all)';\n    var i18nBlank=btn.getAttribute('data-i18n-blank')||'(blank)';\n    var i18nClearFilter=btn.getAttribute('data-i18n-clear-filter')||'Clear filter';\n    var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-col',col);\n    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder=i18nSearch;\n    var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';\n    var selAllCb=document.createElement('input');selAllCb.type='checkbox';\n    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' '+i18nSelectAll));\n    var list=document.createElement('div');list.className='colfilter-list';\n    function commit(){\n      var checked=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)checked.push(c.value);});\n      if(checked.length===values.length){a.delete(col);}else{a.set(col,new Set(checked));}\n      selAllCb.checked=(checked.length===values.length);\n      selAllCb.indeterminate=(checked.length>0&&checked.length<values.length);\n      apply(t);\n    }\n    values.forEach(function(v){\n      var lbl=document.createElement('label');lbl.className='colfilter-item';\n      var cb=document.createElement('input');cb.type='checkbox';cb.value=v;\n      cb.checked=!a.has(col)||a.get(col).has(v);\n      cb.addEventListener('change',commit);\n      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||i18nBlank)));\n      list.appendChild(lbl);\n    });\n    selAllCb.checked=!a.has(col);selAllCb.indeterminate=a.has(col);\n    selAllCb.addEventListener('change',function(){\n      list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});commit();});\n    search.addEventListener('input',function(){var q=search.value.toLowerCase();\n      list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});\n    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent=i18nClearFilter;\n    clear.addEventListener('click',function(){a.delete(col);closeAll();apply(t);});\n    pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);\n    openFilterPop(pop,btn);\n    search.focus();\n  }\n  document.addEventListener('click',function(e){\n    var btn=e.target.closest&&e.target.closest('.colfilter');\n    if(btn){e.preventDefault();e.stopPropagation();\n      var wasOpen=!!document.querySelector('.colfilter-pop[data-col=\"'+btn.getAttribute('data-col')+'\"]');\n      closeAll();if(!wasOpen)open(btn);return;}\n    if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();\n  });\n  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});\n  // Free-text search box (table_search): filters its table's rows in place, ANDing\n  // with any active column funnels since both funnel state and search live in the\n  // same per-table state object.\n  document.addEventListener('input',function(e){\n    var inp=e.target;\n    if(!(inp.classList&&inp.classList.contains('js-table-search')))return;\n    var t=document.getElementById(inp.getAttribute('data-search-for'));if(!t)return;\n    var a=active(t),q=inp.value.trim().toLowerCase();\n    if(q)a.set('_search_',q);else a.delete('_search_');\n    apply(t);\n  });\n  // Date-range inputs (date_range_filter): bound to a table column via .daterange wrapper.\n  document.addEventListener('change',function(e){\n    var inp=e.target;\n    if(!(inp.classList&&inp.classList.contains('daterange-input')))return;\n    var wrap=inp.closest('.daterange');if(!wrap)return;\n    var t=document.getElementById(wrap.getAttribute('data-daterange-table'));if(!t)return;\n    var col=wrap.getAttribute('data-daterange-col'),a=active(t);\n    var from=(wrap.querySelector('[data-bound=from]')||{}).value||'';\n    var to=(wrap.querySelector('[data-bound=to]')||{}).value||'';\n    if(from||to)a.set('_range_'+col,{from:from,to:to});else a.delete('_range_'+col);\n    apply(t);\n  });\n  document.addEventListener('htmx:afterSwap',function(e){\n    var tg=e.detail&&e.detail.target;if(!tg)return;\n    var tables=tg.tagName==='TABLE'?[tg]:(tg.querySelectorAll?tg.querySelectorAll('table'):[]);\n    if(tables.length){closeAll();Array.prototype.forEach.call(tables,function(t){state.delete(t);refresh(t);});}\n  });\n  if(document.readyState!=='loading')document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);\n  else document.addEventListener('DOMContentLoaded',function(){document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);});\n})();\n</script><script>\n(function(){\n  if(window.__celerpEnhTable)return;window.__celerpEnhTable=true;\n  function dataRows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}\n  function visible(t){return dataRows(t).filter(function(r){return !r.classList.contains('dp-row-hidden');});}\n  function num(s){var n=parseFloat(String(s).replace(/[^0-9.\\-]/g,''));return (s!==''&&!isNaN(n))?n:null;}\n  function cmp(a,b,col,dir){\n    var av=a.children[col]?a.children[col].textContent.trim():'';\n    var bv=b.children[col]?b.children[col].textContent.trim():'';\n    var an=num(av),bn=num(bv),r;\n    if(an!==null&&bn!==null)r=an-bn; else r=av.toLowerCase().localeCompare(bv.toLowerCase());\n    return dir==='asc'?r:-r;\n  }\n  function paginate(t){\n    var size=parseInt(t.getAttribute('data-page-size')||'0',10);\n    var vis=visible(t),pager=document.querySelector('[data-pager-for=\"'+t.id+'\"]');\n    if(!size){return;}\n    var pages=Math.max(1,Math.ceil(vis.length/size));\n    var page=Math.min(pages,Math.max(1,parseInt(t.getAttribute('data-page')||'1',10)));\n    t.setAttribute('data-page',page);\n    vis.forEach(function(r,i){r.classList.toggle('enh-page-hidden',!(i>=(page-1)*size&&i<page*size));});\n    if(pager){\n      pager.style.display=pages>1?'':'none';\n      var info=pager.querySelector('.enh-page-info');if(info)info.textContent=page+' / '+pages+' ('+vis.length+')';\n      var prev=pager.querySelector('[data-page-nav=prev]'),next=pager.querySelector('[data-page-nav=next]');\n      if(prev)prev.disabled=page<=1; if(next)next.disabled=page>=pages;\n    }\n  }\n  function sortBy(t,col){\n    var cur=t.getAttribute('data-sort-col');\n    var dir=(cur===String(col)&&t.getAttribute('data-sort-dir')==='asc')?'desc':'asc';\n    t.setAttribute('data-sort-col',col);t.setAttribute('data-sort-dir',dir);t.setAttribute('data-page','1');\n    var tb=t.querySelector('tbody');\n    dataRows(t).sort(function(a,b){return cmp(a,b,col,dir);}).forEach(function(r){tb.appendChild(r);});\n    t.querySelectorAll('thead th[data-sort]').forEach(function(th){th.classList.remove('sort-asc','sort-desc');});\n    var th=t.querySelector('thead th[data-sort=\"'+col+'\"]');if(th)th.classList.add(dir==='asc'?'sort-asc':'sort-desc');\n    paginate(t);\n  }\n  window.celerpTableEnhance=function(t){ if(t){paginate(t);return;} document.querySelectorAll('table.js-table').forEach(paginate); };\n  document.addEventListener('click',function(e){\n    if(e.target.closest&&e.target.closest('.colfilter'))return;  // funnel handles its own clicks\n    var th=e.target.closest&&e.target.closest('th[data-sort]');\n    if(th){var t=th.closest('table');if(t&&t.classList.contains('js-table'))sortBy(t,parseInt(th.getAttribute('data-sort'),10));return;}\n    var nav=e.target.closest&&e.target.closest('[data-page-nav]');\n    if(nav){var t=document.getElementById(nav.getAttribute('data-page-for'));if(!t)return;\n      var p=parseInt(t.getAttribute('data-page')||'1',10);\n      t.setAttribute('data-page',nav.getAttribute('data-page-nav')==='next'?p+1:p-1);paginate(t);}\n  });\n  document.addEventListener('htmx:afterSwap',function(){document.querySelectorAll('table.js-table').forEach(paginate);});\n  document.querySelectorAll('table.js-table').forEach(paginate);\n})();\n</script><script>window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('production-block'));</script></div>\n",
+   "hub": {
+    "demand": [
+     {
+      "contact_name": "",
+      "coverage": "covered",
+      "doc_id": "doc:PF-2611-0001",
+      "doc_number": "INV-2611-0001",
+      "doc_type": "invoice",
+      "due": null,
+      "quantity": 2.0
+     }
+    ],
+    "runs": [
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-MADE",
+        "quantity": 2.0,
+        "sku": "GOLD-MADE"
+       }
+      ],
+      "closing": {
+       "before": {
+        "actual_outputs": [],
+        "is_in_production": true,
+        "status": "in_progress",
+        "wip_transferred": "12.00"
+       },
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "created_at": "<date>",
+      "description": "Build 2 x GOLD-MADE",
+      "entity_type": "mfg_order",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-MADE",
+        "quantity": 2.0,
+        "sku": "GOLD-MADE"
+       }
+      ],
+      "id": "mfg:80cf1a29-dc47-5bef-96c3-02151f670895",
+      "inputs": [
+       {
+        "issued_qty": 4.0,
+        "issued_value": "12.00",
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "name": "Steel Rod 10mm",
+        "quantity": 4.0,
+        "sku": "RAW-002"
+       }
+      ],
+      "is_in_production": false,
+      "order_type": "assembly",
+      "output_item_id": "item:fea8820a-b61c-4d67-838d-3630f8487f9b",
+      "receipts": [
+       {
+        "lot_item_id": "item:b99502e3-1ce2-5b56-a8b3-26257a0df18e",
+        "quantity": 2.0,
+        "sku": "GOLD-MADE",
+        "value": "12.00"
+       }
+      ],
+      "received_lots": [
+       "item:b99502e3-1ce2-5b56-a8b3-26257a0df18e"
+      ],
+      "received_qty": 2.0,
+      "source_doc_id": "doc:PF-2611-0001",
+      "source_doc_number": "INV-2611-0001",
+      "source_doc_type": "invoice",
+      "status": "completed",
+      "wip_account_code": "1130-WIP",
+      "wip_issued": "12.00",
+      "wip_transferred": "12.00",
+      "wip_wasted": "0"
+     }
+    ]
+   },
+   "recipe_events": [
+    [
+     "item.recipe.set",
+     {
+      "recipe": {
+       "components": [
+        {
+         "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+         "line_cost": 6.0,
+         "quantity": 2.0,
+         "sku": "RAW-002",
+         "unit": "piece",
+         "unit_cost": 3.0
+        }
+       ],
+       "labor": [],
+       "labor_cost": 0.0,
+       "materials_cost": 6.0,
+       "output_qty": 1.0,
+       "overhead": [],
+       "overhead_cost": 0.0,
+       "unit_cost": 6.0
+      }
+     }
+    ]
+   ]
+  }
+ },
+ "runs": {
+  "mfg:05b1577f-4465-506a-8180-9941788f34e3": {
+   "events": [
+    [
+     "mfg.order.created",
+     {
+      "description": "Build 4 x GOLD-CHAIN",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-CHAIN",
+        "quantity": 4.0,
+        "sku": "GOLD-CHAIN"
+       }
+      ],
+      "inputs": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 6.0
+       }
+      ],
+      "order_type": "assembly",
+      "output_item_id": "item:5ec94106-ad2b-422e-881a-fd5633412f62"
+     },
+     "8082a4b3fba2f988210987e361f99289"
+    ],
+    [
+     "mfg.order.issued",
+     {
+      "issued_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "items": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 6.0,
+        "value": "12.00"
+       }
+      ],
+      "request": "af334994e24c4e32506422636e26262f",
+      "ts": "<date>",
+      "value": "12.00",
+      "wip_account_code": "1130-WIP"
+     },
+     null
+    ],
+    [
+     "mfg.order.received",
+     {
+      "lot_item_id": "item:7254cd61-bd52-581b-9f35-2f63292687c1",
+      "quantity": 4.0,
+      "received_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "request": "af334994e24c4e32506422636e26262f",
+      "ts": "<date>",
+      "value": "12.00"
+     },
+     null
+    ],
+    [
+     "mfg.order.completed",
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-CHAIN",
+        "quantity": 4.0,
+        "sku": "GOLD-CHAIN"
+       }
+      ],
+      "closing": {
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "completed_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "labor_hours": null,
+      "request": "af334994e24c4e32506422636e26262f",
+      "transferred": "12.00",
+      "ts": "<date>",
+      "waste": null,
+      "wasted": "0"
+     },
+     null
+    ]
+   ],
+   "journal": {
+    "je:auto:mfg:05b1577f-4465-506a-8180-9941788f34e3:issue:build:g:build-now:issue": [
+     "posted",
+     [
+      [
+       "1130-OB",
+       0.0,
+       12.0,
+       [
+        "inventory_opening"
+       ]
+      ],
+      [
+       "1130-WIP",
+       12.0,
+       0.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:05b1577f-4465-506a-8180-9941788f34e3:receive:build:g:build-now:receive": [
+     "posted",
+     [
+      [
+       "1130-P",
+       12.0,
+       0.0,
+       [
+        "inventory_purchased"
+       ]
+      ],
+      [
+       "1130-WIP",
+       0.0,
+       12.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ]
+   },
+   "read": {
+    "actual_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-CHAIN",
+      "quantity": 4.0,
+      "sku": "GOLD-CHAIN"
+     }
+    ],
+    "closing": {
+     "before": {
+      "actual_outputs": [],
+      "is_in_production": true,
+      "status": "in_progress",
+      "wip_transferred": "12.00"
+     },
+     "booked": true,
+     "held": "0.00",
+     "lots": [],
+     "wasted": "0"
+    },
+    "description": "Build 4 x GOLD-CHAIN",
+    "entity_type": "mfg_order",
+    "expected_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-CHAIN",
+      "quantity": 4.0,
+      "sku": "GOLD-CHAIN"
+     }
+    ],
+    "id": "mfg:05b1577f-4465-506a-8180-9941788f34e3",
+    "inputs": [
+     {
+      "issued_qty": 6.0,
+      "issued_value": "12.00",
+      "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+      "quantity": 6.0
+     }
+    ],
+    "is_in_production": false,
+    "order_type": "assembly",
+    "output_item_id": "item:5ec94106-ad2b-422e-881a-fd5633412f62",
+    "receipts": [
+     {
+      "lot_item_id": "item:7254cd61-bd52-581b-9f35-2f63292687c1",
+      "quantity": 4.0,
+      "value": "12.00"
+     }
+    ],
+    "received_lots": [
+     "item:7254cd61-bd52-581b-9f35-2f63292687c1"
+    ],
+    "received_qty": 4.0,
+    "status": "completed",
+    "wip_account_code": "1130-WIP",
+    "wip_issued": "12.00",
+    "wip_transferred": "12.00",
+    "wip_wasted": "0"
+   }
+  },
+  "mfg:22888e68-c865-5d9b-b574-17dc952ddb46": {
+   "events": [
+    [
+     "mfg.order.created",
+     {
+      "description": "Build 1 x GOLD-RING",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 1.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "inputs": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 2.0
+       },
+       {
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "quantity": 1.0
+       }
+      ],
+      "order_type": "assembly",
+      "output_item_id": "item:f64c7195-4a9c-4ebd-a145-165b05d06114"
+     },
+     "0230bc76a196f47f09c009b7acb0e838"
+    ],
+    [
+     "mfg.order.issued",
+     {
+      "issued_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "items": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 2.0,
+        "value": "4.00"
+       },
+       {
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "quantity": 1.0,
+        "value": "3.00"
+       }
+      ],
+      "request": "779cf75107db3a1bae582639162813d3",
+      "ts": "<date>",
+      "value": "7.00",
+      "wip_account_code": "1130-WIP"
+     },
+     null
+    ],
+    [
+     "mfg.order.received",
+     {
+      "lot_item_id": "item:3fde9876-c83d-501a-90bc-60fca4775def",
+      "quantity": 1.0,
+      "received_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "request": "779cf75107db3a1bae582639162813d3",
+      "ts": "<date>",
+      "value": "7.00"
+     },
+     null
+    ],
+    [
+     "mfg.order.completed",
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 1.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "closing": {
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "completed_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "labor_hours": null,
+      "request": "779cf75107db3a1bae582639162813d3",
+      "transferred": "7.00",
+      "ts": "<date>",
+      "waste": null,
+      "wasted": "0"
+     },
+     null
+    ]
+   ],
+   "journal": {
+    "je:auto:mfg:22888e68-c865-5d9b-b574-17dc952ddb46:issue:g:bulk:issue": [
+     "posted",
+     [
+      [
+       "1130-OB",
+       0.0,
+       7.0,
+       [
+        "inventory_opening"
+       ]
+      ],
+      [
+       "1130-WIP",
+       7.0,
+       0.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:22888e68-c865-5d9b-b574-17dc952ddb46:receive:g:bulk:receive": [
+     "posted",
+     [
+      [
+       "1130-P",
+       7.0,
+       0.0,
+       [
+        "inventory_purchased"
+       ]
+      ],
+      [
+       "1130-WIP",
+       0.0,
+       7.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ]
+   },
+   "read": {
+    "actual_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-RING",
+      "quantity": 1.0,
+      "sku": "GOLD-RING"
+     }
+    ],
+    "closing": {
+     "before": {
+      "actual_outputs": [],
+      "is_in_production": true,
+      "status": "in_progress",
+      "wip_transferred": "7.00"
+     },
+     "booked": true,
+     "held": "0.00",
+     "lots": [],
+     "wasted": "0"
+    },
+    "description": "Build 1 x GOLD-RING",
+    "entity_type": "mfg_order",
+    "expected_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-RING",
+      "quantity": 1.0,
+      "sku": "GOLD-RING"
+     }
+    ],
+    "id": "mfg:22888e68-c865-5d9b-b574-17dc952ddb46",
+    "inputs": [
+     {
+      "issued_qty": 2.0,
+      "issued_value": "4.00",
+      "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+      "quantity": 2.0
+     },
+     {
+      "issued_qty": 1.0,
+      "issued_value": "3.00",
+      "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+      "quantity": 1.0
+     }
+    ],
+    "is_in_production": false,
+    "order_type": "assembly",
+    "output_item_id": "item:f64c7195-4a9c-4ebd-a145-165b05d06114",
+    "receipts": [
+     {
+      "lot_item_id": "item:3fde9876-c83d-501a-90bc-60fca4775def",
+      "quantity": 1.0,
+      "value": "7.00"
+     }
+    ],
+    "received_lots": [
+     "item:3fde9876-c83d-501a-90bc-60fca4775def"
+    ],
+    "received_qty": 1.0,
+    "status": "completed",
+    "wip_account_code": "1130-WIP",
+    "wip_issued": "7.00",
+    "wip_transferred": "7.00",
+    "wip_wasted": "0"
+   }
+  },
+  "mfg:80cf1a29-dc47-5bef-96c3-02151f670895": {
+   "events": [
+    [
+     "mfg.order.created",
+     {
+      "description": "Build 2 x GOLD-MADE",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-MADE",
+        "quantity": 2.0,
+        "sku": "GOLD-MADE"
+       }
+      ],
+      "inputs": [
+       {
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "quantity": 4.0
+       }
+      ],
+      "order_type": "assembly",
+      "output_item_id": "item:fea8820a-b61c-4d67-838d-3630f8487f9b",
+      "source_doc_id": "doc:PF-2611-0001",
+      "source_doc_number": "INV-2611-0001",
+      "source_doc_type": "invoice"
+     },
+     "6121c3fc0033362b1ae41901a5a15e66"
+    ],
+    [
+     "mfg.order.issued",
+     {
+      "issued_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "items": [
+       {
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "quantity": 4.0,
+        "value": "12.00"
+       }
+      ],
+      "request": "a12ff4b26d3e347cb7bca425b0e36254",
+      "ts": "<date>",
+      "value": "12.00",
+      "wip_account_code": "1130-WIP"
+     },
+     null
+    ],
+    [
+     "mfg.order.received",
+     {
+      "lot_item_id": "item:b99502e3-1ce2-5b56-a8b3-26257a0df18e",
+      "quantity": 2.0,
+      "received_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "request": "a12ff4b26d3e347cb7bca425b0e36254",
+      "ts": "<date>",
+      "value": "12.00"
+     },
+     null
+    ],
+    [
+     "mfg.order.completed",
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-MADE",
+        "quantity": 2.0,
+        "sku": "GOLD-MADE"
+       }
+      ],
+      "closing": {
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "completed_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "labor_hours": null,
+      "request": "a12ff4b26d3e347cb7bca425b0e36254",
+      "transferred": "12.00",
+      "ts": "<date>",
+      "waste": null,
+      "wasted": "0"
+     },
+     null
+    ]
+   ],
+   "journal": {
+    "je:auto:mfg:80cf1a29-dc47-5bef-96c3-02151f670895:issue:mfg-from-doc:doc:PF-2611-0001:item:fea8820a-b61c-4d67-838d-3630f8487f9b:g:make:issue": [
+     "posted",
+     [
+      [
+       "1130-OB",
+       0.0,
+       12.0,
+       [
+        "inventory_opening"
+       ]
+      ],
+      [
+       "1130-WIP",
+       12.0,
+       0.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:80cf1a29-dc47-5bef-96c3-02151f670895:receive:mfg-from-doc:doc:PF-2611-0001:item:fea8820a-b61c-4d67-838d-3630f8487f9b:g:make:receive": [
+     "posted",
+     [
+      [
+       "1130-P",
+       12.0,
+       0.0,
+       [
+        "inventory_purchased"
+       ]
+      ],
+      [
+       "1130-WIP",
+       0.0,
+       12.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ]
+   },
+   "read": {
+    "actual_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-MADE",
+      "quantity": 2.0,
+      "sku": "GOLD-MADE"
+     }
+    ],
+    "closing": {
+     "before": {
+      "actual_outputs": [],
+      "is_in_production": true,
+      "status": "in_progress",
+      "wip_transferred": "12.00"
+     },
+     "booked": true,
+     "held": "0.00",
+     "lots": [],
+     "wasted": "0"
+    },
+    "description": "Build 2 x GOLD-MADE",
+    "entity_type": "mfg_order",
+    "expected_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-MADE",
+      "quantity": 2.0,
+      "sku": "GOLD-MADE"
+     }
+    ],
+    "id": "mfg:80cf1a29-dc47-5bef-96c3-02151f670895",
+    "inputs": [
+     {
+      "issued_qty": 4.0,
+      "issued_value": "12.00",
+      "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+      "quantity": 4.0
+     }
+    ],
+    "is_in_production": false,
+    "order_type": "assembly",
+    "output_item_id": "item:fea8820a-b61c-4d67-838d-3630f8487f9b",
+    "receipts": [
+     {
+      "lot_item_id": "item:b99502e3-1ce2-5b56-a8b3-26257a0df18e",
+      "quantity": 2.0,
+      "value": "12.00"
+     }
+    ],
+    "received_lots": [
+     "item:b99502e3-1ce2-5b56-a8b3-26257a0df18e"
+    ],
+    "received_qty": 2.0,
+    "source_doc_id": "doc:PF-2611-0001",
+    "source_doc_number": "INV-2611-0001",
+    "source_doc_type": "invoice",
+    "status": "completed",
+    "wip_account_code": "1130-WIP",
+    "wip_issued": "12.00",
+    "wip_transferred": "12.00",
+    "wip_wasted": "0"
+   }
+  },
+  "mfg:a716f3d0-a45b-480a-a491-e64ba24d476c": {
+   "events": [
+    [
+     "mfg.order.created",
+     {
+      "description": "Rings",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 2.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "inputs": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 4.0
+       },
+       {
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "quantity": 2.0
+       }
+      ],
+      "order_type": "assembly",
+      "output_item_id": "item:f64c7195-4a9c-4ebd-a145-165b05d06114"
+     },
+     "2b43f6498426a81fd06988af2ab33707"
+    ],
+    [
+     "mfg.order.issued",
+     {
+      "issued_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "items": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 2.0,
+        "value": "4.00"
+       }
+      ],
+      "request": "d08f449fb426c1e13a8074dcd7b8892c",
+      "ts": "<date>",
+      "value": "4.00",
+      "wip_account_code": "1130-WIP"
+     },
+     null
+    ],
+    [
+     "mfg.order.issued",
+     {
+      "issued_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "items": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 2.0,
+        "value": "4.00"
+       },
+       {
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "quantity": 2.0,
+        "value": "6.00"
+       }
+      ],
+      "request": "39bc6b8e69472751b4606d2db9003713",
+      "ts": "<date>",
+      "value": "10.00",
+      "wip_account_code": "1130-WIP"
+     },
+     null
+    ],
+    [
+     "mfg.order.received",
+     {
+      "lot_item_id": "item:ae0b493e-f6ef-5297-9bd0-f636a9010a04",
+      "quantity": 1.0,
+      "received_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "request": "32a0f6585900072087bf8eda9199e018",
+      "ts": "<date>",
+      "value": "7.00"
+     },
+     null
+    ],
+    [
+     "mfg.order.received",
+     {
+      "lot_item_id": "item:61b5edf5-ba11-5d47-82bc-68efce1269b0",
+      "quantity": 1.0,
+      "received_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "request": "80f0c65c4471b2f52cc9bafab8b362e0",
+      "ts": "<date>",
+      "value": "7.00"
+     },
+     null
+    ],
+    [
+     "mfg.order.completed",
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 2.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "closing": {
+       "booked": true,
+       "held": "0.00",
+       "lots": [
+        {
+         "delta": "-0.75",
+         "lot_item_id": "item:ae0b493e-f6ef-5297-9bd0-f636a9010a04"
+        },
+        {
+         "delta": "-0.75",
+         "lot_item_id": "item:61b5edf5-ba11-5d47-82bc-68efce1269b0"
+        }
+       ],
+       "wasted": "1.50"
+      },
+      "completed_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "labor_hours": null,
+      "request": "80f0c65c4471b2f52cc9bafab8b362e0",
+      "transferred": "12.50",
+      "ts": "<date>",
+      "waste": {
+       "items": [
+        {
+         "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+         "quantity": 0.5,
+         "value": "1.50"
+        }
+       ],
+       "reason": "spilled",
+       "unit": null
+      },
+      "wasted": "1.50"
+     },
+     null
+    ],
+    [
+     "mfg.order.reopened",
+     {
+      "reopened_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "request": "44136fa355b3678a1146ad16f7e8649e",
+      "ts": "<date>"
+     },
+     null
+    ],
+    [
+     "mfg.order.receipt_undone",
+     {
+      "lot_item_id": "item:61b5edf5-ba11-5d47-82bc-68efce1269b0",
+      "quantity": 1.0,
+      "request": "0f9afa4b3f0ce1a050f6da8f3302c3e3",
+      "ts": "<date>",
+      "undone_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "value": "7.00"
+     },
+     null
+    ],
+    [
+     "mfg.order.received",
+     {
+      "lot_item_id": "item:f44e849e-59aa-5400-becf-00a5cacbe91e",
+      "quantity": 1.0,
+      "received_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "request": "60cb2f07fc307122fca30c3495e41f1e",
+      "ts": "<date>",
+      "value": "7.00"
+     },
+     null
+    ],
+    [
+     "mfg.order.completed",
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 2.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "closing": {
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "completed_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "labor_hours": null,
+      "request": "60cb2f07fc307122fca30c3495e41f1e",
+      "transferred": "14.00",
+      "ts": "<date>",
+      "waste": null,
+      "wasted": "0"
+     },
+     null
+    ]
+   ],
+   "journal": {
+    "je:auto:mfg:a716f3d0-a45b-480a-a491-e64ba24d476c:complete:g:complete": [
+     "posted",
+     [
+      [
+       "1130-P",
+       0.0,
+       1.5,
+       [
+        "inventory_purchased"
+       ]
+      ],
+      [
+       "5100",
+       1.5,
+       0.0,
+       [
+        "cogs"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:a716f3d0-a45b-480a-a491-e64ba24d476c:issue:g:issue": [
+     "posted",
+     [
+      [
+       "1130-OB",
+       0.0,
+       4.0,
+       [
+        "inventory_opening"
+       ]
+      ],
+      [
+       "1130-WIP",
+       4.0,
+       0.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:a716f3d0-a45b-480a-a491-e64ba24d476c:issue:g:issue-rest": [
+     "posted",
+     [
+      [
+       "1130-OB",
+       0.0,
+       10.0,
+       [
+        "inventory_opening"
+       ]
+      ],
+      [
+       "1130-WIP",
+       10.0,
+       0.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:a716f3d0-a45b-480a-a491-e64ba24d476c:receive:g:complete2:receive": [
+     "posted",
+     [
+      [
+       "1130-P",
+       7.0,
+       0.0,
+       [
+        "inventory_purchased"
+       ]
+      ],
+      [
+       "1130-WIP",
+       0.0,
+       7.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:a716f3d0-a45b-480a-a491-e64ba24d476c:receive:g:complete:receive": [
+     "posted",
+     [
+      [
+       "1130-P",
+       7.0,
+       0.0,
+       [
+        "inventory_purchased"
+       ]
+      ],
+      [
+       "1130-WIP",
+       0.0,
+       7.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:a716f3d0-a45b-480a-a491-e64ba24d476c:receive:g:receive": [
+     "posted",
+     [
+      [
+       "1130-P",
+       7.0,
+       0.0,
+       [
+        "inventory_purchased"
+       ]
+      ],
+      [
+       "1130-WIP",
+       0.0,
+       7.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:a716f3d0-a45b-480a-a491-e64ba24d476c:reopen:g:reopen": [
+     "posted",
+     [
+      [
+       "1130-P",
+       1.5,
+       0.0,
+       [
+        "inventory_purchased"
+       ]
+      ],
+      [
+       "5100",
+       0.0,
+       1.5,
+       [
+        "cogs"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:a716f3d0-a45b-480a-a491-e64ba24d476c:unreceive:g:undo": [
+     "posted",
+     [
+      [
+       "1130-P",
+       0.0,
+       7.0,
+       [
+        "inventory_purchased"
+       ]
+      ],
+      [
+       "1130-WIP",
+       7.0,
+       0.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ]
+   },
+   "read": {
+    "actual_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-RING",
+      "quantity": 2.0,
+      "sku": "GOLD-RING"
+     }
+    ],
+    "closing": {
+     "before": {
+      "actual_outputs": [],
+      "is_in_production": true,
+      "status": "in_progress",
+      "wip_transferred": "14.00"
+     },
+     "booked": true,
+     "held": "0.00",
+     "lots": [],
+     "wasted": "0"
+    },
+    "description": "Rings",
+    "entity_type": "mfg_order",
+    "expected_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-RING",
+      "quantity": 2.0,
+      "sku": "GOLD-RING"
+     }
+    ],
+    "id": "mfg:a716f3d0-a45b-480a-a491-e64ba24d476c",
+    "inputs": [
+     {
+      "issued_qty": 4.0,
+      "issued_value": "8.00",
+      "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+      "quantity": 4.0
+     },
+     {
+      "issued_qty": 2.0,
+      "issued_value": "6.00",
+      "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+      "quantity": 2.0
+     }
+    ],
+    "is_in_production": false,
+    "order_type": "assembly",
+    "output_item_id": "item:f64c7195-4a9c-4ebd-a145-165b05d06114",
+    "receipts": [
+     {
+      "lot_item_id": "item:ae0b493e-f6ef-5297-9bd0-f636a9010a04",
+      "quantity": 1.0,
+      "value": "7.00"
+     },
+     {
+      "lot_item_id": "item:f44e849e-59aa-5400-becf-00a5cacbe91e",
+      "quantity": 1.0,
+      "value": "7.00"
+     }
+    ],
+    "received_lots": [
+     "item:ae0b493e-f6ef-5297-9bd0-f636a9010a04",
+     "item:f44e849e-59aa-5400-becf-00a5cacbe91e"
+    ],
+    "received_qty": 2.0,
+    "status": "completed",
+    "wip_account_code": "1130-WIP",
+    "wip_issued": "14.00",
+    "wip_transferred": "14.00",
+    "wip_wasted": "0"
+   }
+  },
+  "mfg:a7c0c15a-37bb-543a-ac2b-261e26a87cc7": {
+   "events": [
+    [
+     "mfg.order.created",
+     {
+      "description": "Build 2 x GOLD-CHAIN",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-CHAIN",
+        "quantity": 2.0,
+        "sku": "GOLD-CHAIN"
+       }
+      ],
+      "inputs": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 3.0
+       }
+      ],
+      "order_type": "assembly",
+      "output_item_id": "item:5ec94106-ad2b-422e-881a-fd5633412f62"
+     },
+     "1036c2be817f072a0fdeab5c410dd2ff"
+    ],
+    [
+     "mfg.order.issued",
+     {
+      "issued_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "items": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 3.0,
+        "value": "6.00"
+       }
+      ],
+      "request": "39bc6b8e69472751b4606d2db9003713",
+      "ts": "<date>",
+      "value": "6.00",
+      "wip_account_code": "1130-WIP"
+     },
+     null
+    ],
+    [
+     "mfg.order.returned",
+     {
+      "items": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 3.0,
+        "value": "6.00"
+       }
+      ],
+      "request": "39bc6b8e69472751b4606d2db9003713",
+      "returned_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "ts": "<date>",
+      "value": "6.00"
+     },
+     null
+    ],
+    [
+     "mfg.order.cancelled",
+     {
+      "reason": "not needed",
+      "request": "fb9738a40f375777be8654a469b68b04",
+      "ts": "<date>"
+     },
+     null
+    ]
+   ],
+   "journal": {
+    "je:auto:mfg:a7c0c15a-37bb-543a-ac2b-261e26a87cc7:issue:g:issue-cancel": [
+     "posted",
+     [
+      [
+       "1130-OB",
+       0.0,
+       6.0,
+       [
+        "inventory_opening"
+       ]
+      ],
+      [
+       "1130-WIP",
+       6.0,
+       0.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:a7c0c15a-37bb-543a-ac2b-261e26a87cc7:return:g:return-cancel": [
+     "posted",
+     [
+      [
+       "1130-OB",
+       6.0,
+       0.0,
+       [
+        "inventory_opening"
+       ]
+      ],
+      [
+       "1130-WIP",
+       0.0,
+       6.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ]
+   },
+   "read": {
+    "actual_outputs": [],
+    "cancel_reason": "not needed",
+    "description": "Build 2 x GOLD-CHAIN",
+    "entity_type": "mfg_order",
+    "expected_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-CHAIN",
+      "quantity": 2.0,
+      "sku": "GOLD-CHAIN"
+     }
+    ],
+    "id": "mfg:a7c0c15a-37bb-543a-ac2b-261e26a87cc7",
+    "inputs": [
+     {
+      "issued_qty": 0.0,
+      "issued_value": "0",
+      "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+      "quantity": 3.0
+     }
+    ],
+    "is_in_production": false,
+    "order_type": "assembly",
+    "output_item_id": "item:5ec94106-ad2b-422e-881a-fd5633412f62",
+    "received_lots": [],
+    "received_qty": 0.0,
+    "status": "cancelled",
+    "wip_account_code": "1130-WIP",
+    "wip_issued": "0"
+   }
+  },
+  "mfg:c1311629-bd04-55ce-ac47-620553c0e586": {
+   "events": [
+    [
+     "mfg.order.created",
+     {
+      "description": "Build 3 x GOLD-AUTO",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-AUTO",
+        "quantity": 3.0,
+        "sku": "GOLD-AUTO"
+       }
+      ],
+      "inputs": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 3.0
+       }
+      ],
+      "order_type": "assembly",
+      "output_item_id": "item:b1bf2902-bb39-4014-a47a-2979bf49dd30",
+      "source_doc_id": "doc:PF-2611-0002",
+      "source_doc_number": "INV-2611-0002",
+      "source_doc_type": "invoice"
+     },
+     "70d415223559a986bd1a778b421002df"
+    ],
+    [
+     "mfg.order.issued",
+     {
+      "issued_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "items": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 3.0,
+        "value": "6.00"
+       }
+      ],
+      "request": "322516021ac99f3fd12815b751e1dd32",
+      "ts": "<date>",
+      "value": "6.00",
+      "wip_account_code": "1130-WIP"
+     },
+     null
+    ],
+    [
+     "mfg.order.received",
+     {
+      "lot_item_id": "item:4c0f3ed3-56bd-50be-871b-b874546c7021",
+      "quantity": 3.0,
+      "received_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "request": "322516021ac99f3fd12815b751e1dd32",
+      "ts": "<date>",
+      "value": "6.00"
+     },
+     null
+    ],
+    [
+     "mfg.order.completed",
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-AUTO",
+        "quantity": 3.0,
+        "sku": "GOLD-AUTO"
+       }
+      ],
+      "closing": {
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "completed_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "labor_hours": null,
+      "request": "322516021ac99f3fd12815b751e1dd32",
+      "transferred": "6.00",
+      "ts": "<date>",
+      "waste": null,
+      "wasted": "0"
+     },
+     null
+    ]
+   ],
+   "journal": {
+    "je:auto:mfg:c1311629-bd04-55ce-ac47-620553c0e586:issue:finalize:issue": [
+     "posted",
+     [
+      [
+       "1130-OB",
+       0.0,
+       6.0,
+       [
+        "inventory_opening"
+       ]
+      ],
+      [
+       "1130-WIP",
+       6.0,
+       0.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:c1311629-bd04-55ce-ac47-620553c0e586:receive:finalize:receive": [
+     "posted",
+     [
+      [
+       "1130-P",
+       6.0,
+       0.0,
+       [
+        "inventory_purchased"
+       ]
+      ],
+      [
+       "1130-WIP",
+       0.0,
+       6.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ]
+   },
+   "read": {
+    "actual_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-AUTO",
+      "quantity": 3.0,
+      "sku": "GOLD-AUTO"
+     }
+    ],
+    "closing": {
+     "before": {
+      "actual_outputs": [],
+      "is_in_production": true,
+      "status": "in_progress",
+      "wip_transferred": "6.00"
+     },
+     "booked": true,
+     "held": "0.00",
+     "lots": [],
+     "wasted": "0"
+    },
+    "description": "Build 3 x GOLD-AUTO",
+    "entity_type": "mfg_order",
+    "expected_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-AUTO",
+      "quantity": 3.0,
+      "sku": "GOLD-AUTO"
+     }
+    ],
+    "id": "mfg:c1311629-bd04-55ce-ac47-620553c0e586",
+    "inputs": [
+     {
+      "issued_qty": 3.0,
+      "issued_value": "6.00",
+      "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+      "quantity": 3.0
+     }
+    ],
+    "is_in_production": false,
+    "order_type": "assembly",
+    "output_item_id": "item:b1bf2902-bb39-4014-a47a-2979bf49dd30",
+    "receipts": [
+     {
+      "lot_item_id": "item:4c0f3ed3-56bd-50be-871b-b874546c7021",
+      "quantity": 3.0,
+      "value": "6.00"
+     }
+    ],
+    "received_lots": [
+     "item:4c0f3ed3-56bd-50be-871b-b874546c7021"
+    ],
+    "received_qty": 3.0,
+    "source_doc_id": "doc:PF-2611-0002",
+    "source_doc_number": "INV-2611-0002",
+    "source_doc_type": "invoice",
+    "status": "completed",
+    "wip_account_code": "1130-WIP",
+    "wip_issued": "6.00",
+    "wip_transferred": "6.00",
+    "wip_wasted": "0"
+   }
+  },
+  "mfg:golden-import": {
+   "events": [
+    [
+     "mfg.order.created",
+     {
+      "description": "Imported rings",
+      "expected_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 1.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "inputs": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 2.0
+       },
+       {
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "quantity": 1.0
+       }
+      ],
+      "order_type": "assembly",
+      "output_item_id": "item:f64c7195-4a9c-4ebd-a145-165b05d06114"
+     },
+     "d7f9c0bfe5084e7c11d0b93514fbd18a"
+    ],
+    [
+     "mfg.order.issued",
+     {
+      "issued_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "items": [
+       {
+        "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+        "quantity": 2.0,
+        "value": "4.00"
+       },
+       {
+        "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+        "quantity": 1.0,
+        "value": "3.00"
+       }
+      ],
+      "request": "60cb2f07fc307122fca30c3495e41f1e",
+      "ts": "<date>",
+      "value": "7.00",
+      "wip_account_code": "1130-WIP"
+     },
+     null
+    ],
+    [
+     "mfg.order.received",
+     {
+      "lot_item_id": "item:2ad5d8fe-9a26-531e-b540-e07402e55784",
+      "quantity": 1.0,
+      "received_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "request": "60cb2f07fc307122fca30c3495e41f1e",
+      "ts": "<date>",
+      "value": "7.00"
+     },
+     null
+    ],
+    [
+     "mfg.order.completed",
+     {
+      "actual_outputs": [
+       {
+        "category": null,
+        "name": "GOLD-RING",
+        "quantity": 1.0,
+        "sku": "GOLD-RING"
+       }
+      ],
+      "closing": {
+       "booked": true,
+       "held": "0.00",
+       "lots": [],
+       "wasted": "0"
+      },
+      "completed_by": "ed44a948-4d7d-443d-b05c-9c28991f2537",
+      "labor_hours": null,
+      "request": "60cb2f07fc307122fca30c3495e41f1e",
+      "transferred": "7.00",
+      "ts": "<date>",
+      "waste": null,
+      "wasted": "0"
+     },
+     null
+    ]
+   ],
+   "journal": {
+    "je:auto:mfg:golden-import:issue:9cb0c561de0b4fea829745fc518aa106:issue": [
+     "posted",
+     [
+      [
+       "1130-OB",
+       0.0,
+       7.0,
+       [
+        "inventory_opening"
+       ]
+      ],
+      [
+       "1130-WIP",
+       7.0,
+       0.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ],
+    "je:auto:mfg:golden-import:receive:9cb0c561de0b4fea829745fc518aa106:receive": [
+     "posted",
+     [
+      [
+       "1130-P",
+       7.0,
+       0.0,
+       [
+        "inventory_purchased"
+       ]
+      ],
+      [
+       "1130-WIP",
+       0.0,
+       7.0,
+       [
+        "work_in_progress"
+       ]
+      ]
+     ]
+    ]
+   },
+   "read": {
+    "actual_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-RING",
+      "quantity": 1.0,
+      "sku": "GOLD-RING"
+     }
+    ],
+    "closing": {
+     "before": {
+      "actual_outputs": [],
+      "is_in_production": true,
+      "status": "in_progress",
+      "wip_transferred": "7.00"
+     },
+     "booked": true,
+     "held": "0.00",
+     "lots": [],
+     "wasted": "0"
+    },
+    "description": "Imported rings",
+    "entity_type": "mfg_order",
+    "expected_outputs": [
+     {
+      "category": null,
+      "name": "GOLD-RING",
+      "quantity": 1.0,
+      "sku": "GOLD-RING"
+     }
+    ],
+    "id": "mfg:golden-import",
+    "inputs": [
+     {
+      "issued_qty": 2.0,
+      "issued_value": "4.00",
+      "item_id": "item:50324054-d114-43e5-ad7a-1bca964c1f97",
+      "quantity": 2.0
+     },
+     {
+      "issued_qty": 1.0,
+      "issued_value": "3.00",
+      "item_id": "item:b38145b1-b757-4a6c-88fa-d42d53f9c1fb",
+      "quantity": 1.0
+     }
+    ],
+    "is_in_production": false,
+    "order_type": "assembly",
+    "output_item_id": "item:f64c7195-4a9c-4ebd-a145-165b05d06114",
+    "receipts": [
+     {
+      "lot_item_id": "item:2ad5d8fe-9a26-531e-b540-e07402e55784",
+      "quantity": 1.0,
+      "value": "7.00"
+     }
+    ],
+    "received_lots": [
+     "item:2ad5d8fe-9a26-531e-b540-e07402e55784"
+    ],
+    "received_qty": 1.0,
+    "status": "completed",
+    "wip_account_code": "1130-WIP",
+    "wip_issued": "7.00",
+    "wip_transferred": "7.00",
+    "wip_wasted": "0"
+   }
+  }
+ }
+}

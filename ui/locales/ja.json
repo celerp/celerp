@@ -2262,6 +2262,9 @@
   "manufacturing.err_run_not_found": "この生産ロットが見つかりませんでした。削除された可能性があります。一覧に戻ってください。",
   "manufacturing.err_item_not_found": "この品目が見つかりませんでした。削除された可能性があります。「再試行」を選んでから、別の品目を選んでください。",
   "manufacturing.err_component_no_item": "部品の各行には品目が必要です。品目を選ぶか、空の行を削除してください。",
+  "manufacturing.err_coproduct_in_recipe": "{item} はすでに製品またはその部品のため、「併産品」にも入れることはできません。その一覧から削除してください。",
+  "manufacturing.err_coproduct_duplicate": "{item} が「併産品」に2回入っています。1行だけ残してください。",
+  "manufacturing.err_cost_shares": "「併産品」の各原価配分は0以上で、合計は100%未満にして、主製品にも原価の一部が残るようにしてください。現在の合計は {total}% です。",
   "manufacturing.err_product_no_item": "この生産ロットで製造する品目を選んでください。",
   "manufacturing.err_item_unknown": "選んだ品目の 1 つが存在しません。削除された可能性があります。一覧から選び直してください。",
   "manufacturing.err_component_is_self": "品目を自分自身の部品にすることはできません。部品の一覧から外してください。",
@@ -5697,6 +5700,9 @@
   "mfg.reconciliation_required": "この生産ロットの材料の価額はまだ帳簿に記録されていないか、履歴から算出できません。材料や生産品を変更する前に照合してください。",
   "mfg.insufficient_stock": "{sku} の在庫で引当されていないものは {available:g} しかありません。{needed:g} 必要です。",
   "mfg.over_receipt": "この生産ロットから受け入れられる残りは {remaining:g} のみです。{quantity:g} は受け入れられません。",
+  "mfg.not_an_extra": "{sku} はこの生産ロットの併産品ではありません。",
+  "mfg.extra_quantity": "{sku} の受入数量はゼロ未満にできません。",
+  "mfg.no_cost_share": "この生産ロットからは原価配分のない産出品しか受け入れられていないため、保有する価額の行き先がありません。製品を一部受け入れるか、材料を仕損として記録してください。",
   "mfg.cancel_moved": "この生産ロットにはまだ材料または生産品があるため、キャンセルできません。先に材料を戻し、受け入れを取り消してください。",
   "mfg.run_not_found": "製造オーダー {order} が見つかりません。",
   "mfg.wip_location_unknown": "ロケーション {value} はこの会社のロケーションではありません。設定 > ロケーション から選択するか、空欄のままにしてください。",
@@ -8896,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "未変更の完成品に限り、製造作業で受け入れた完成品の入庫を取り消します。",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "完了済みの製造作業を再開し、完了時の処理を取り消します。",
   "tool.receive_order_manufacturing__order_id__receive_post": "製造作業の完成品を在庫に入庫します。",
-  "tool.complete_order_manufacturing__order_id__complete_post": "残りの原材料を払い出して完成品を受け入れ、製造作業を完了します。",
+  "tool.complete_order_manufacturing__order_id__complete_post": "残りの原材料を払い出し、製品と併産品（ある場合）を受け入れて、製造作業を完了します。",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "履歴から確認できない製造作業の材料費を記録します。",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "旧バージョンで記録された製造作業の生産実績を修正します。",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "原材料や完成品を保持していない製造作業をキャンセルします。",
@@ -9325,5 +9331,8 @@
   "enum.scopes.journals": "仕訳帳",
   "enum.scopes.products": "商品",
   "ai.card_name_unavailable": "名前を表示できません",
-  "error.fix_ask_roles": "あなたのロールでは{place}ページでこの操作を行えません。次のいずれかのロールを持つ人に依頼してください: {roles}。"
+  "error.fix_ask_roles": "あなたのロールでは{place}ページでこの操作を行えません。次のいずれかのロールを持つ人に依頼してください: {roles}。",
+  "inventory.also_produces": "併産品",
+  "inventory.cost_share": "原価配分 (%)",
+  "inventory.main_share": "主製品: {share}%"
 }

@@ -2263,6 +2263,9 @@
   "manufacturing.err_run_not_found": "Celerp non ha trovato questo ciclo di produzione. Potrebbe essere stato eliminato. Torna all'elenco.",
   "manufacturing.err_item_not_found": "Celerp non ha trovato questo articolo. Potrebbe essere stato eliminato. Seleziona Riprova, poi scegli un altro articolo.",
   "manufacturing.err_component_no_item": "Ogni riga di componente richiede un articolo. Scegli un articolo o rimuovi la riga vuota.",
+  "manufacturing.err_coproduct_in_recipe": "{item} è già il prodotto o uno dei suoi componenti, quindi non può comparire anche in Produce anche. Rimuovilo da quell'elenco.",
+  "manufacturing.err_coproduct_duplicate": "{item} compare due volte in Produce anche. Tieni una sola riga.",
+  "manufacturing.err_cost_shares": "Ogni quota di costo in Produce anche deve essere 0 o più, e insieme devono restare sotto il 100% perché il prodotto principale mantenga parte del costo. La somma è {total}%.",
   "manufacturing.err_product_no_item": "Scegli l'articolo prodotto da questo ciclo di produzione.",
   "manufacturing.err_item_unknown": "Uno degli articoli scelti non esiste. Potrebbe essere stato eliminato. Sceglilo di nuovo dall'elenco.",
   "manufacturing.err_component_is_self": "Un articolo non può essere uno dei propri componenti. Rimuovilo dall'elenco dei componenti.",
@@ -5699,6 +5702,9 @@
   "mfg.reconciliation_required": "Il valore dei materiali di questa produzione non è ancora registrato in contabilità o non può essere ricavato dalla sua cronologia. Riconcilialo prima di modificarne i materiali o la produzione.",
   "mfg.insufficient_stock": "Solo {available:g} di {sku} sono a magazzino e non riservati; ne servono {needed:g}.",
   "mfg.over_receipt": "Da questa produzione restano da ricevere solo {remaining:g}; non è possibile riceverne {quantity:g}.",
+  "mfg.not_an_extra": "{sku} non è una produzione aggiuntiva di questa produzione.",
+  "mfg.extra_quantity": "La quantità ricevuta di {sku} non può essere inferiore a zero.",
+  "mfg.no_cost_share": "Da questa produzione sono state ricevute solo produzioni senza quota di costo, quindi il suo valore non ha dove andare. Ricevi parte del prodotto o registra i materiali come scarto.",
   "mfg.cancel_moved": "Questa produzione contiene ancora materiali o articoli prodotti, quindi non può essere annullata. Prima restituisci i materiali e annulla i ricevimenti.",
   "mfg.run_not_found": "L'ordine di produzione {order} non è stato trovato.",
   "mfg.wip_location_unknown": "L'ubicazione {value} non è una delle ubicazioni di questa azienda. Scegli un'ubicazione da Impostazioni > Ubicazioni oppure lascia il campo vuoto.",
@@ -8896,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Ritira dal magazzino i prodotti finiti ricevuti da un ciclo di produzione finché non sono stati modificati.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Riapri un ciclo di produzione completato, annullando gli effetti della sua conclusione.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Carica a magazzino i prodotti finiti di un ciclo di produzione.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Completa un ciclo di produzione, prelevando i materiali rimanenti e caricando i prodotti finiti.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Completa un ciclo di produzione, prelevando i materiali rimanenti e caricando il prodotto ed eventuali prodotti aggiuntivi.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Registra il valore dei materiali di un ciclo di produzione che la cronologia non permette di dimostrare.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Correggi quanto registrato da una versione precedente sui prodotti ottenuti da un ciclo di produzione.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Annulla un ciclo di produzione senza materiali né prodotti finiti.",
@@ -9325,5 +9331,8 @@
   "enum.scopes.journals": "Scritture contabili",
   "enum.scopes.products": "Prodotti",
   "ai.card_name_unavailable": "Nome non disponibile",
-  "error.fix_ask_roles": "Il tuo ruolo non può eseguire questo passaggio nella pagina {place}. Chiedi a qualcuno con uno di questi ruoli: {roles}."
+  "error.fix_ask_roles": "Il tuo ruolo non può eseguire questo passaggio nella pagina {place}. Chiedi a qualcuno con uno di questi ruoli: {roles}.",
+  "inventory.also_produces": "Produce anche",
+  "inventory.cost_share": "Quota di costo (%)",
+  "inventory.main_share": "Prodotto principale: {share}%"
 }

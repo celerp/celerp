@@ -2262,6 +2262,9 @@
   "manufacturing.err_run_not_found": "Celerp ไม่พบใบสั่งผลิตนี้ อาจถูกลบไปแล้ว กลับไปที่รายการ",
   "manufacturing.err_item_not_found": "Celerp ไม่พบรายการนี้ อาจถูกลบไปแล้ว เลือก ลองอีกครั้ง แล้วเลือกรายการอื่น",
   "manufacturing.err_component_no_item": "ทุกบรรทัดส่วนประกอบต้องมีรายการ เลือกรายการหรือลบบรรทัดว่างออก",
+  "manufacturing.err_coproduct_in_recipe": "{item} เป็นสินค้าหลักหรือส่วนประกอบอยู่แล้ว จึงไม่สามารถอยู่ในรายการผลิตได้ด้วยได้อีก นำออกจากรายการนั้น",
+  "manufacturing.err_coproduct_duplicate": "{item} อยู่ในรายการผลิตได้ด้วยสองครั้ง เก็บไว้เพียงบรรทัดเดียว",
+  "manufacturing.err_cost_shares": "สัดส่วนต้นทุนแต่ละรายการในผลิตได้ด้วยต้องเป็น 0 ขึ้นไป และรวมกันต้องน้อยกว่า 100% เพื่อให้สินค้าหลักยังรับต้นทุนบางส่วน ตอนนี้รวมกันเป็น {total}%",
   "manufacturing.err_product_no_item": "เลือกรายการที่ใบสั่งผลิตนี้ผลิต",
   "manufacturing.err_item_unknown": "รายการหนึ่งที่เลือกไม่มีอยู่ อาจถูกลบไปแล้ว เลือกใหม่จากรายการ",
   "manufacturing.err_component_is_self": "รายการเป็นส่วนประกอบของตัวเองไม่ได้ นำออกจากรายการส่วนประกอบ",
@@ -5697,6 +5700,9 @@
   "mfg.reconciliation_required": "มูลค่าวัตถุดิบในใบสั่งผลิตนี้ยังไม่ได้บันทึกในบัญชี หรือคำนวณจากประวัติไม่ได้ ให้กระทบยอดก่อนเปลี่ยนวัตถุดิบหรือผลผลิตของใบสั่งผลิตนี้",
   "mfg.insufficient_stock": "{sku} มีในสต๊อกที่ไม่ได้จองไว้เพียง {available:g} แต่ต้องใช้ {needed:g}",
   "mfg.over_receipt": "ใบสั่งผลิตนี้เหลือที่ต้องรับอีกเพียง {remaining:g} จึงรับ {quantity:g} ไม่ได้",
+  "mfg.not_an_extra": "{sku} ไม่ใช่ผลผลิตเพิ่มเติมของใบสั่งผลิตนี้",
+  "mfg.extra_quantity": "จำนวน {sku} ที่รับต้องไม่ต่ำกว่าศูนย์",
+  "mfg.no_cost_share": "ใบสั่งผลิตนี้รับเฉพาะผลผลิตที่ไม่มีสัดส่วนต้นทุน มูลค่าที่ค้างอยู่จึงไม่มีที่ลง ให้รับสินค้าหลักบางส่วน หรือบันทึกวัตถุดิบเป็นของเสีย",
   "mfg.cancel_moved": "ใบสั่งผลิตนี้ยังมีวัตถุดิบหรือผลผลิตอยู่ จึงยกเลิกไม่ได้ ให้คืนวัตถุดิบและยกเลิกการรับสินค้าก่อน",
   "mfg.run_not_found": "ไม่พบใบสั่งผลิต {order}",
   "mfg.wip_location_unknown": "สถานที่ {value} ไม่ใช่สถานที่ของบริษัทนี้ เลือกสถานที่จาก การตั้งค่า > สถานที่ หรือเว้นว่างไว้",
@@ -8896,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "นำสินค้าสำเร็จรูปที่รับจากรอบการผลิตกลับออก หากสินค้าเหล่านั้นยังไม่เปลี่ยนแปลง",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "เปิดรอบการผลิตที่เสร็จแล้วอีกครั้ง พร้อมยกเลิกผลของการเสร็จสิ้น",
   "tool.receive_order_manufacturing__order_id__receive_post": "รับสินค้าสำเร็จรูปจากรอบการผลิตเข้าคลัง",
-  "tool.complete_order_manufacturing__order_id__complete_post": "ปิดรอบการผลิตโดยเบิกวัสดุที่เหลือและรับสินค้าสำเร็จรูป",
+  "tool.complete_order_manufacturing__order_id__complete_post": "ปิดรอบการผลิตโดยเบิกวัสดุที่เหลือ และรับสินค้าสำเร็จรูปพร้อมผลผลิตอื่นที่ได้ร่วมกัน (ถ้ามี)",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "บันทึกมูลค่าวัสดุในรอบการผลิตที่ประวัติไม่สามารถยืนยันได้",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "แก้ไขข้อมูลผลผลิตของรอบการผลิตที่ระบบเวอร์ชันเก่าบันทึกไว้",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "ยกเลิกรอบการผลิตที่ไม่มีวัตถุดิบหรือผลผลิตคงอยู่",
@@ -9325,5 +9331,8 @@
   "enum.scopes.journals": "สมุดรายวัน",
   "enum.scopes.products": "สินค้า",
   "ai.card_name_unavailable": "ไม่มีชื่อให้แสดง",
-  "error.fix_ask_roles": "บทบาทของคุณไม่สามารถทำขั้นตอนนี้ในหน้า {place} ได้ โปรดขอให้ผู้ที่มีบทบาทใดบทบาทหนึ่งต่อไปนี้ดำเนินการ: {roles}"
+  "error.fix_ask_roles": "บทบาทของคุณไม่สามารถทำขั้นตอนนี้ในหน้า {place} ได้ โปรดขอให้ผู้ที่มีบทบาทใดบทบาทหนึ่งต่อไปนี้ดำเนินการ: {roles}",
+  "inventory.also_produces": "ผลิตได้ด้วย",
+  "inventory.cost_share": "สัดส่วนต้นทุน (%)",
+  "inventory.main_share": "ผลิตภัณฑ์หลัก: {share}%"
 }

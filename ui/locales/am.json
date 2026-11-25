@@ -2433,6 +2433,9 @@
   "manufacturing.err_run_not_found": "Celerp ይህን የምርት ዙር ማግኘት አልቻለም። ተሰርዞ ሊሆን ይችላል። ወደ ዝርዝሩ ይመለሱ።",
   "manufacturing.err_item_not_found": "Celerp ይህን ዕቃ ማግኘት አልቻለም። ተሰርዞ ሊሆን ይችላል። እንደገና ሞክር ይምረጡና ሌላ ዕቃ ይምረጡ።",
   "manufacturing.err_component_no_item": "እያንዳንዱ የክፍል መስመር ዕቃ ያስፈልገዋል። ዕቃ ይምረጡ ወይም ባዶውን መስመር ያስወግዱ።",
+  "manufacturing.err_coproduct_in_recipe": "{item} አስቀድሞ ምርቱ ወይም ከክፍሎቹ አንዱ ነው፣ ስለዚህ በተጨማሪ ያመርታል ስር ሊዘረዘር አይችልም። ከዚያ ዝርዝር ያስወግዱት።",
+  "manufacturing.err_coproduct_duplicate": "{item} በተጨማሪ ያመርታል ስር ሁለት ጊዜ ተዘርዝሯል። አንድ መስመር ብቻ ያስቀሩ።",
+  "manufacturing.err_cost_shares": "በተጨማሪ ያመርታል ስር ያለው እያንዳንዱ የወጪ ድርሻ 0 ወይም ከዚያ በላይ መሆን አለበት፣ በአንድነትም ዋናው ምርት የወጪውን የተወሰነ ክፍል እንዲይዝ ከ100% በታች መሆን አለባቸው። ድምራቸው {total}% ነው።",
   "manufacturing.err_product_no_item": "ይህ የምርት ዙር የሚያመርተውን ዕቃ ይምረጡ።",
   "manufacturing.err_item_unknown": "ከተመረጡት ዕቃዎች አንዱ የለም። ተሰርዞ ሊሆን ይችላል። ከዝርዝሩ እንደገና ይምረጡት።",
   "manufacturing.err_component_is_self": "አንድ ዕቃ የራሱ ክፍል ሊሆን አይችልም። ከክፍሎች ዝርዝር ያስወግዱት።",
@@ -5697,6 +5700,9 @@
   "mfg.reconciliation_required": "የዚህ የምርት ዙር የዕቃዎች ዋጋ ገና በሂሳብ መዝገብ አልተመዘገበም ወይም ከታሪኩ ሊሰላ አይችልም። ዕቃዎቹን ወይም ምርቱን ከመቀየርዎ በፊት ያስታርቁት።",
   "mfg.insufficient_stock": "ከ{sku} በክምችት ያለው እና ያልተያዘው {available:g} ብቻ ነው፤ የሚያስፈልገው {needed:g} ነው።",
   "mfg.over_receipt": "ከዚህ የምርት ዙር ለመቀበል የቀረው {remaining:g} ብቻ ነው፤ {quantity:g} መቀበል አይቻልም።",
+  "mfg.not_an_extra": "{sku} የዚህ የምርት ዙር ተጨማሪ ውጤት አይደለም።",
+  "mfg.extra_quantity": "የተቀበለው የ{sku} መጠን ከዜሮ በታች ሊሆን አይችልም።",
+  "mfg.no_cost_share": "ከዚህ የምርት ዙር የተቀበሉት የወጪ ድርሻ የሌላቸው ውጤቶች ብቻ ናቸው፤ ስለዚህ ዋጋው የሚሄድበት የለም። ከምርቱ የተወሰነ ይቀበሉ፣ ወይም ቁሳቁሶቹን እንደ ብክነት ይመዝግቡ።",
   "mfg.cancel_moved": "ይህ የምርት ዙር አሁንም ዕቃዎች ወይም ምርት ይዟል፣ ስለዚህ ሊሰረዝ አይችልም። መጀመሪያ ዕቃዎቹን ይመልሱ እና ደረሰኞቹን ይቀልብሱ።",
   "mfg.run_not_found": "የምርት ትዕዛዝ {order} አልተገኘም።",
   "mfg.wip_location_unknown": "ቦታ {value} የዚህ ኩባንያ ቦታ አይደለም። ከቅንብሮች > ቦታዎች ቦታ ይምረጡ፣ ወይም ባዶ ይተዉት።",
@@ -8896,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "ያልተቀየሩ የተጠናቀቁ ምርቶችን ከማምረቻ ሂደት የተቀበለውን መቀበል ይቀልብሱ።",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "የተጠናቀቀ የማምረቻ ሂደትን እንደገና ይክፈቱ፤ በማጠናቀቁ የተፈጠሩ ለውጦችን ይቀልብሱ።",
   "tool.receive_order_manufacturing__order_id__receive_post": "ከማምረቻ ሂደት የተጠናቀቁ ምርቶችን ወደ ክምችት ይቀበሉ።",
-  "tool.complete_order_manufacturing__order_id__complete_post": "የቀሩትን ቁሳቁሶች በማውጣትና የተጠናቀቁ ምርቶችን በመቀበል የማምረቻ ሂደትን ያጠናቅቁ።",
+  "tool.complete_order_manufacturing__order_id__complete_post": "የቀሩትን ቁሳቁሶች በማውጣትና ምርቱን ከማንኛውም ተጨማሪ ምርት ጋር በመቀበል የማምረቻ ሂደትን ያጠናቅቁ።",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "የታሪክ መዝገቡ ማረጋገጥ የማይችለውን የማምረቻ ሂደት ቁሳቁስ ዋጋ ይመዝግቡ።",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "ቀደም ያለ ስሪት ስለ ማምረቻ ሂደት ውጤት የመዘገበውን ያስተካክሉ።",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "ምንም ቁሳቁስ ወይም የተመረተ እቃ የሌለበትን የማምረቻ ሂደት ይሰርዙ።",
@@ -9325,5 +9331,8 @@
   "enum.scopes.journals": "ጆርናሎች",
   "enum.scopes.products": "ምርቶች",
   "ai.card_name_unavailable": "ስሙ አይገኝም",
-  "error.fix_ask_roles": "የእርስዎ ሚና ይህን እርምጃ በ{place} ገጽ ላይ መውሰድ አይችልም። ከእነዚህ ሚናዎች አንዱ ያለውን ሰው ይጠይቁ፦ {roles}።"
+  "error.fix_ask_roles": "የእርስዎ ሚና ይህን እርምጃ በ{place} ገጽ ላይ መውሰድ አይችልም። ከእነዚህ ሚናዎች አንዱ ያለውን ሰው ይጠይቁ፦ {roles}።",
+  "inventory.also_produces": "በተጨማሪ ያመርታል",
+  "inventory.cost_share": "የወጪ ድርሻ (%)",
+  "inventory.main_share": "ዋና ምርት: {share}%"
 }

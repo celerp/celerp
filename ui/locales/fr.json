@@ -2263,6 +2263,9 @@
   "manufacturing.err_run_not_found": "Celerp n'a pas trouvé ce cycle de production. Il a peut-être été supprimé. Revenez à la liste.",
   "manufacturing.err_item_not_found": "Celerp n'a pas trouvé cet article. Il a peut-être été supprimé. Sélectionnez « Réessayer », puis choisissez un autre article.",
   "manufacturing.err_component_no_item": "Chaque ligne de composant a besoin d'un article. Choisissez un article ou supprimez la ligne vide.",
+  "manufacturing.err_coproduct_in_recipe": "{item} est déjà le produit ou l'un de ses composants, il ne peut donc pas aussi figurer sous Produit aussi. Retirez-le de cette liste.",
+  "manufacturing.err_coproduct_duplicate": "{item} figure deux fois sous Produit aussi. Gardez une seule ligne pour lui.",
+  "manufacturing.err_cost_shares": "Chaque part de coût sous Produit aussi doit être de 0 ou plus, et leur total doit rester sous 100 % pour que le produit principal garde une partie du coût. Leur total est de {total} %.",
   "manufacturing.err_product_no_item": "Choisissez l'article que produit ce cycle de production.",
   "manufacturing.err_item_unknown": "L'un des articles choisis n'existe pas. Il a peut-être été supprimé. Choisissez-le à nouveau dans la liste.",
   "manufacturing.err_component_is_self": "Un article ne peut pas être l'un de ses propres composants. Retirez-le de la liste des composants.",
@@ -5699,6 +5702,9 @@
   "mfg.reconciliation_required": "La valeur des matières de ce cycle n'est pas encore comptabilisée ou ne peut pas être déterminée à partir de son historique. Rapprochez-la avant de modifier ses matières ou sa production.",
   "mfg.insufficient_stock": "Seulement {available:g} de {sku} en stock et non réservés ; {needed:g} sont nécessaires.",
   "mfg.over_receipt": "Il ne reste que {remaining:g} à réceptionner de ce cycle ; {quantity:g} ne peuvent pas être réceptionnés.",
+  "mfg.not_an_extra": "{sku} n'est pas une production secondaire de ce cycle.",
+  "mfg.extra_quantity": "La quantité réceptionnée de {sku} ne peut pas être inférieure à zéro.",
+  "mfg.no_cost_share": "Seules des productions sans part de coût ont été réceptionnées de ce cycle : sa valeur ne peut aller nulle part. Réceptionnez une partie du produit ou enregistrez les matières comme perte.",
   "mfg.cancel_moved": "Ce cycle contient encore des matières ou de la production, il ne peut donc pas être annulé. Retournez d'abord ses matières et annulez ses réceptions.",
   "mfg.run_not_found": "L'ordre de production {order} est introuvable.",
   "mfg.wip_location_unknown": "L'emplacement {value} n'est pas un emplacement de cette entreprise. Choisissez un emplacement dans Paramètres > Emplacements, ou laissez le champ vide.",
@@ -8896,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Annulez la réception de produits finis d’un ordre de fabrication tant qu’ils n’ont pas été modifiés.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Rouvrez un ordre de fabrication terminé en annulant les effets de son achèvement.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Réceptionnez en stock les produits finis d’un ordre de fabrication.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Terminez un ordre de fabrication en sortant les matières restantes et en réceptionnant les produits fabriqués.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Terminez un ordre de fabrication en sortant les matières restantes et en réceptionnant le produit et ses éventuels produits supplémentaires.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Saisissez la valeur des matières d’un ordre de fabrication lorsque son historique ne permet pas de la prouver.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Corrigez les données enregistrées par une ancienne version concernant les produits d’un ordre de fabrication.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Annulez un ordre de fabrication ne détenant ni matières ni produits finis.",
@@ -9325,5 +9331,8 @@
   "enum.scopes.journals": "Écritures comptables",
   "enum.scopes.products": "Produits",
   "ai.card_name_unavailable": "Nom non disponible",
-  "error.fix_ask_roles": "Votre rôle ne permet pas de faire cette étape sur la page {place}. Demandez à une personne ayant l'un de ces rôles : {roles}."
+  "error.fix_ask_roles": "Votre rôle ne permet pas de faire cette étape sur la page {place}. Demandez à une personne ayant l'un de ces rôles : {roles}.",
+  "inventory.also_produces": "Produit aussi",
+  "inventory.cost_share": "Part de coût (%)",
+  "inventory.main_share": "Produit principal : {share} %"
 }

@@ -2262,6 +2262,9 @@
   "manufacturing.err_run_not_found": "Celerp no encontró este ciclo de producción. Puede que se haya eliminado. Vuelva a la lista.",
   "manufacturing.err_item_not_found": "Celerp no encontró este artículo. Puede que se haya eliminado. Seleccione Reintentar y elija otro artículo.",
   "manufacturing.err_component_no_item": "Cada línea de componente necesita un artículo. Elija un artículo o quite la línea vacía.",
+  "manufacturing.err_coproduct_in_recipe": "{item} ya es el producto o uno de sus componentes, así que no puede figurar también en Produce además. Quítelo de esa lista.",
+  "manufacturing.err_coproduct_duplicate": "{item} aparece dos veces en Produce además. Deje una sola línea para él.",
+  "manufacturing.err_cost_shares": "Cada parte del costo en Produce además debe ser 0 o más, y juntas deben quedar por debajo del 100 % para que el producto principal conserve parte del costo. Suman {total} %.",
   "manufacturing.err_product_no_item": "Elija el artículo que produce este ciclo de producción.",
   "manufacturing.err_item_unknown": "Uno de los artículos elegidos no existe. Puede que se haya eliminado. Vuelva a elegirlo de la lista.",
   "manufacturing.err_component_is_self": "Un artículo no puede ser uno de sus propios componentes. Quítelo de la lista de componentes.",
@@ -5699,6 +5702,9 @@
   "mfg.reconciliation_required": "El valor de los materiales de este ciclo aún no está registrado en la contabilidad o no se puede calcular a partir de su historial. Concílielo antes de cambiar sus materiales o su producción.",
   "mfg.insufficient_stock": "Solo hay {available:g} de {sku} en existencias sin reservar; se necesitan {needed:g}.",
   "mfg.over_receipt": "Solo quedan {remaining:g} por recibir de este ciclo; no se pueden recibir {quantity:g}.",
+  "mfg.not_an_extra": "{sku} no es una producción adicional de este ciclo.",
+  "mfg.extra_quantity": "La cantidad recibida de {sku} no puede ser menor que cero.",
+  "mfg.no_cost_share": "De este ciclo solo se recibieron producciones sin participación en el costo, así que su valor no tiene adónde ir. Reciba parte del producto o registre los materiales como merma.",
   "mfg.cancel_moved": "Este ciclo aún contiene materiales o producción, por lo que no se puede cancelar. Primero devuelva sus materiales y deshaga sus recepciones.",
   "mfg.run_not_found": "No se encontró la orden de producción {order}.",
   "mfg.wip_location_unknown": "La ubicación {value} no es una de las ubicaciones de esta empresa. Elija una ubicación en Configuración > Ubicaciones o déjela vacía.",
@@ -8896,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Deshaga la recepción de productos terminados de una orden de producción mientras no hayan cambiado.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Reabra una orden de producción finalizada y revierta los efectos de su finalización.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Reciba en inventario los productos terminados de una orden de producción.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Finalice una orden de producción entregando los materiales restantes y recibiendo los productos resultantes.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Finalice una orden de producción entregando los materiales restantes y recibiendo el producto y cualquier producto adicional.",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Registre el valor de los materiales de una orden de producción cuando su historial no permita acreditarlo.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Repare la información que una versión anterior registró sobre los productos resultantes de una orden de producción.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Cancele una orden de producción que no tenga materiales ni productos resultantes.",
@@ -9325,5 +9331,8 @@
   "enum.scopes.journals": "Asientos",
   "enum.scopes.products": "Productos",
   "ai.card_name_unavailable": "Nombre no disponible",
-  "error.fix_ask_roles": "Su rol no puede realizar este paso en la página {place}. Pídaselo a alguien con uno de estos roles: {roles}."
+  "error.fix_ask_roles": "Su rol no puede realizar este paso en la página {place}. Pídaselo a alguien con uno de estos roles: {roles}.",
+  "inventory.also_produces": "Produce además",
+  "inventory.cost_share": "Participación en el costo (%)",
+  "inventory.main_share": "Producto principal: {share}%"
 }

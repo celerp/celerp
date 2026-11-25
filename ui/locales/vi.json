@@ -2262,6 +2262,9 @@
   "manufacturing.err_run_not_found": "Celerp không tìm thấy đợt sản xuất này. Có thể nó đã bị xóa. Hãy quay lại danh sách.",
   "manufacturing.err_item_not_found": "Celerp không tìm thấy mặt hàng này. Có thể nó đã bị xóa. Hãy chọn Thử lại, rồi chọn mặt hàng khác.",
   "manufacturing.err_component_no_item": "Mỗi dòng thành phần cần có một mặt hàng. Hãy chọn mặt hàng hoặc xóa dòng trống.",
+  "manufacturing.err_coproduct_in_recipe": "{item} đã là sản phẩm hoặc một thành phần của nó, nên không thể đồng thời nằm trong Cũng tạo ra. Hãy xóa nó khỏi danh sách đó.",
+  "manufacturing.err_coproduct_duplicate": "{item} được liệt kê hai lần trong Cũng tạo ra. Chỉ giữ một dòng.",
+  "manufacturing.err_cost_shares": "Mỗi tỷ lệ chi phí trong Cũng tạo ra phải từ 0 trở lên và tổng phải dưới 100% để sản phẩm chính vẫn giữ một phần chi phí. Tổng hiện là {total}%.",
   "manufacturing.err_product_no_item": "Hãy chọn mặt hàng mà đợt sản xuất này tạo ra.",
   "manufacturing.err_item_unknown": "Một trong các mặt hàng đã chọn không tồn tại. Có thể nó đã bị xóa. Hãy chọn lại từ danh sách.",
   "manufacturing.err_component_is_self": "Một mặt hàng không thể là thành phần của chính nó. Hãy xóa nó khỏi danh sách thành phần.",
@@ -5699,6 +5702,9 @@
   "mfg.reconciliation_required": "Giá trị nguyên vật liệu của đợt sản xuất này chưa được ghi sổ hoặc không thể tính được từ lịch sử của nó. Hãy đối chiếu trước khi thay đổi nguyên vật liệu hoặc thành phẩm.",
   "mfg.insufficient_stock": "Chỉ có {available:g} {sku} trong kho và chưa được giữ chỗ; cần {needed:g}.",
   "mfg.over_receipt": "Chỉ còn {remaining:g} cần nhận từ đợt sản xuất này; không thể nhận {quantity:g}.",
+  "mfg.not_an_extra": "{sku} không phải là sản phẩm phụ của đợt sản xuất này.",
+  "mfg.extra_quantity": "Số lượng {sku} nhận được không thể nhỏ hơn 0.",
+  "mfg.no_cost_share": "Đợt sản xuất này chỉ nhận các sản phẩm không có tỷ lệ chi phí, nên giá trị của nó không có nơi phân bổ. Hãy nhận một phần sản phẩm chính, hoặc ghi nhận nguyên vật liệu là hao hụt.",
   "mfg.cancel_moved": "Đợt sản xuất này vẫn còn nguyên vật liệu hoặc thành phẩm nên không thể hủy. Hãy trả lại nguyên vật liệu và hoàn tác các lần nhận trước.",
   "mfg.run_not_found": "Không tìm thấy lệnh sản xuất {order}.",
   "mfg.wip_location_unknown": "Vị trí {value} không thuộc các vị trí của công ty này. Hãy chọn một vị trí trong Cài đặt > Vị trí, hoặc để trống.",
@@ -8896,7 +8902,7 @@
   "tool.undo_order_receipt_manufacturing__order_id__undo_receipt_post": "Thu hồi thành phẩm đã nhập kho từ đợt sản xuất khi chúng chưa bị thay đổi.",
   "tool.reopen_order_manufacturing__order_id__reopen_post": "Mở lại đợt sản xuất đã hoàn tất, đảo các tác động của việc hoàn tất.",
   "tool.receive_order_manufacturing__order_id__receive_post": "Nhập kho thành phẩm từ đợt sản xuất.",
-  "tool.complete_order_manufacturing__order_id__complete_post": "Hoàn tất đợt sản xuất bằng cách xuất hết nguyên vật liệu còn lại và nhập kho thành phẩm.",
+  "tool.complete_order_manufacturing__order_id__complete_post": "Hoàn tất đợt sản xuất bằng cách xuất hết nguyên vật liệu còn lại và nhập kho thành phẩm cùng các sản phẩm phụ (nếu có).",
   "tool.reconcile_order_manufacturing__order_id__reconcile_post": "Ghi nhận giá trị nguyên vật liệu trong đợt sản xuất mà lịch sử không đủ chứng minh.",
   "tool.repair_order_output_manufacturing__order_id__repair_output_post": "Sửa thông tin về sản lượng của một đợt sản xuất do phiên bản cũ ghi nhận.",
   "tool.cancel_order_manufacturing__order_id__cancel_post": "Hủy đợt sản xuất không còn giữ nguyên vật liệu hoặc thành phẩm.",
@@ -9325,5 +9331,8 @@
   "enum.scopes.journals": "Sổ nhật ký",
   "enum.scopes.products": "Sản phẩm",
   "ai.card_name_unavailable": "Không có tên",
-  "error.fix_ask_roles": "Vai trò của bạn không thể thực hiện bước này trên trang {place}. Hãy nhờ người có một trong các vai trò sau: {roles}."
+  "error.fix_ask_roles": "Vai trò của bạn không thể thực hiện bước này trên trang {place}. Hãy nhờ người có một trong các vai trò sau: {roles}.",
+  "inventory.also_produces": "Cũng tạo ra",
+  "inventory.cost_share": "Tỷ lệ chi phí (%)",
+  "inventory.main_share": "Sản phẩm chính: {share}%"
 }
