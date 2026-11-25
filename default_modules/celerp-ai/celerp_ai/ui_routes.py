@@ -9,7 +9,6 @@ import uuid
 from urllib.parse import urlencode
 
 from fasthtml.common import *
-from markdown_it import MarkdownIt
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
@@ -28,7 +27,7 @@ from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
 from ui.i18n import doc_type_label, read_kept, refusal_text, t, t_or, get_lang, tier_label
 from ui.security import not_permitted_redirect
-from ui.components.encode import call, html_response, js_value, safe_url
+from ui.components.encode import call, html_response, js_value, markdown_markup, safe_url
 
 # A proposal set larger than this renders as the review table instead of cards.
 TABLE_FROM = 5
@@ -1124,26 +1123,11 @@ async def _usage_table(token: str, session_token: str, status: dict | None) -> F
 # Components
 # ---------------------------------------------------------------------------
 
-class _Markdown(MarkdownIt):
-    """CommonMark with tables and strikethrough, raw HTML shown as text, and a link
-    only where ``safe_url`` keeps its target."""
-
-    def __init__(self):
-        super().__init__("commonmark", {"html": False})
-        self.enable(["table", "strikethrough"])
-
-    def validateLink(self, url: str) -> bool:
-        return super().validateLink(url) and safe_url(url) == url
-
-
-_MARKDOWN = _Markdown()
-
-
 def _reply_body(role: str, text: str, error: bool):
     """An assistant reply rendered from its Markdown; a question or an error as written."""
     if role == "user" or error:
         return text
-    return Div(NotStr(_MARKDOWN.render(text)), cls="ai-msg__md")
+    return Div(markdown_markup(text), cls="ai-msg__md")
 
 
 def _msg_bubble(role: str, text: str, *, error: bool = False, help_pages: list[str] | None = None,

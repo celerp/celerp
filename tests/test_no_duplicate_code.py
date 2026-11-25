@@ -8,12 +8,11 @@ import ast
 import hashlib
 from collections import Counter
 from functools import lru_cache
-from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
-ROOTS = ("celerp", "ui", "default_modules")
+from shipped_sources import APP_ROOTS, REPO
+
 _SKIP = {"tests", "migrations", "build", "__pycache__"}
 
 _QUEUED = "pre-existing, collapse queued 2026-11-25"
@@ -5387,7 +5386,7 @@ def _functions(node, prefix=""):
 def _modules():
     """(repo-relative path, tree) of every first-party module."""
     return tuple((path.relative_to(REPO).as_posix(), ast.parse(path.read_text(encoding="utf-8")))
-                 for root in ROOTS for path in sorted((REPO / root).rglob("*.py"))
+                 for root in APP_ROOTS for path in sorted((REPO / root).rglob("*.py"))
                  if not _SKIP.intersection(path.relative_to(REPO).parts))
 
 

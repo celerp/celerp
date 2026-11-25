@@ -211,14 +211,17 @@
   var columnLayouts = {};
   function celerpColumns(table, saved) {
     if (!(table in columnLayouts)) columnLayouts[table] = saved || {};
-    var layout = columnLayouts[table];
+    function put(part, value) {
+      var entry = {}; entry[part] = value;
+      columnLayouts[table] = Object.assign({}, columnLayouts[table], entry);
+      return entry;
+    }
     return {
-      get: function (part) { return layout[part] || null; },
+      get: function (part) { return columnLayouts[table][part] || null; },
       // What the page shows until the user changes it: held for the other scripts, not saved.
-      hold: function (part, value) { layout[part] = value; },
+      hold: put,
       set: function (part, value) {
-        layout[part] = value;
-        var change = {}; change[table] = {}; change[table][part] = value;
+        var change = {}; change[table] = put(part, value);
         saveColumns(change);
       }
     };

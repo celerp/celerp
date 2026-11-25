@@ -305,7 +305,6 @@ _ASCII_DUMPS = {
     ("default_modules/celerp-inventory/celerp_inventory/services.py", "import_preview_hash"): _DIGEST,
     ("default_modules/celerp-inventory/celerp_inventory/services.py", "write_import_batch"): _DIGEST,
     ("default_modules/celerp-labels/celerp_labels/ui_routes.py", "_build_field_options_js"): _PAGE,
-    ("default_modules/celerp-manufacturing/celerp_manufacturing/movements.py", "_fingerprint"): _DIGEST,
 }
 
 

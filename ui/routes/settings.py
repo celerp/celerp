@@ -760,7 +760,7 @@ def setup_routes(app):
         try:
             await api.patch_column_prefs(token, prefs)
         except APIError as e:
-            return Response(e.detail, status_code=e.status)
+            return api.refusal_response(e)
         return Response(status_code=204)
 
     @app.get("/settings")
