@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import random
 import uuid
+from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
@@ -285,7 +286,7 @@ async def test_press_run_oil_and_cake(client, session, auth):
     await assert_settled(client, session, auth)
 
 
-async def test_extra_zero_share_back(client, session, auth):
+async def test_extra_zero_share_back(client, session, auth, ids):
     """Cake at share 0 takes no value; a run that received only zero-share output and still
     holds value is refused; a run whose components were all wasted books cake at 0."""
     seed, oil, cake = await press(client, auth, share=0)
@@ -298,11 +299,10 @@ async def test_extra_zero_share_back(client, session, auth):
     order = await start(client, auth, oil, 10)
     assert (await issue(client, auth, order)).status_code == 200
     from celerp_manufacturing import movements
-    from celerp.services.dates import now_iso
     with pytest.raises(Exception) as exc:
-        await movements.complete(session, auth["company_id"], auth.get("user_id"), order,
+        await movements.complete(session, auth["company_id"], ids["user_id"], order,
                                  {"also_produces": [{"item_id": cake, "quantity": 20}]}, "zero",
-                                 at=now_iso(), quantity=0.0)
+                                 at=datetime.now(timezone.utc).isoformat(), quantity=0.0)
     assert getattr(exc.value, "status_code", None) == 409
     assert exc.value.detail["message_key"] == "mfg.no_cost_share"
     await session.rollback()
