@@ -116,7 +116,7 @@ def test_gemstone_columns_appear_in_table_after_enabling(page, gemstone_items):
         if cb.count() > 0 and not cb.is_checked():
             cb.check()
 
-    # Checking a box immediately shows the column (JS toggle + localStorage);
+    # Checking a box immediately shows the column (JS toggle, saved to the column setup);
     # there is no separate apply/submit button.
     page.wait_for_selector("th:has-text('Stone Type')", timeout=5000)
 
@@ -131,16 +131,7 @@ def test_all_tab_does_not_show_gemstone_cols_by_default(page, gemstone_items):
     """All-items view must NOT show gemstone cols by default (too noisy)."""
     page.goto("/inventory")
     page.wait_for_selector(".data-table", timeout=5000)
-    # Column prefs persist (localStorage + server) and leak across tests through
-    # the shared session context, so reset to defaults to test the *default* view.
-    page.evaluate("""async () => {
-        localStorage.removeItem('celerp_cols_inventory');
-        localStorage.removeItem('celerp_col_order_inventory');
-        localStorage.removeItem('celerp_col_widths_inventory');
-        await fetch('/inventory/columns', {method: 'POST', body: new FormData()});
-    }""")
-    page.reload(wait_until="domcontentloaded")
-    page.wait_for_selector(".data-table", timeout=5000)
+    # The page fixture starts every test from the default column setup.
 
     headers = page.inner_text("thead").upper()
     # In 'All' view, gemstone columns should be hidden by default (show_in_table=False)

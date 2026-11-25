@@ -11,6 +11,8 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import expect
 
+from .conftest import saved_column_layout
+
 pytestmark = pytest.mark.browser
 
 
@@ -141,11 +143,8 @@ def test_doc_lines_resize_persists_as_percent(page, ui_server, api):
     page.mouse.move(box["x"] + 120, cy, steps=6)
     page.mouse.up()
 
-    # Widths persist under the versioned, doc-type-namespaced key (see col_resize_script call).
-    stored = page.evaluate("localStorage.getItem('celerp_dline_wpct_invoice_v2')")
-    assert stored, "resize did not persist any widths"
-    import json
-    vals = json.loads(stored)
+    # Widths are saved per doc type with the user's column setup (see col_resize_script call).
+    vals = saved_column_layout(api, "doc_lines_invoice", lambda l: bool(l.get("widths"))).get("widths")
     assert vals and all(isinstance(v, (int, float)) for v in vals.values()), vals  # numeric %, not '120px'
 
 

@@ -48,7 +48,7 @@ def _assert_aligned(layout: dict) -> None:
         assert data == [k for k in head if k not in ("col-checkbox", "col-match", "col-actions")]
 
 
-def test_saved_column_order_keeps_match_column_first(page, ui_server, _tag):
+def test_saved_column_order_keeps_match_column_first(page, ui_server, _tag, api):
     """Red statement: the saved-order scripts kept only the checkbox and actions cells
     in place, so a reordered searched row put its match cell out of line with the
     header (or before the checkbox)."""
@@ -57,8 +57,8 @@ def test_saved_column_order_keeps_match_column_first(page, ui_server, _tag):
         "() => Array.from(document.querySelectorAll('#data-table thead th[data-key]'))"
         ".map(th => th.dataset.key)")
     assert len(keys) > 2
-    page.evaluate("(o) => localStorage.setItem('celerp_col_order_inventory', JSON.stringify(o))",
-                  list(reversed(keys)))
+    api.patch("/companies/me/column-prefs",
+              json={"prefs": {"inventory": {"order": list(reversed(keys))}}}).raise_for_status()
     page.reload(wait_until="domcontentloaded")
     page.wait_for_selector("#data-table tbody tr.data-row")
     _assert_aligned(page.evaluate(_LAYOUT_JS))

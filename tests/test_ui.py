@@ -16184,8 +16184,8 @@ class TestInventoryUXFixes:
     def test_data_table_js_no_force_hide_branch(self):
         """data_table IIFE must NOT contain the force-hide branch (Bug 2 fix).
 
-        The else-if (SCHEMA_DEFAULTS[key] === false) branch overwrites user
-        localStorage prefs when a column's schema default is false, causing
+        The else-if (SCHEMA_DEFAULTS[key] === false) branch overwrites the user's
+        saved column prefs when a column's schema default is false, causing
         user-visible columns (e.g. created_at) to disappear after sort.
         """
         from fasthtml.common import to_xml

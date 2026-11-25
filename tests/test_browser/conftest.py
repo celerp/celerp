@@ -267,9 +267,10 @@ def _shared_session_kept(request):
 @pytest.fixture
 def page(browser_context, ui_server, request):
     """Fresh page per test, from cold server- and client-side state. On setup, drop the UI's
-    per-token metadata snapshot and clear the app origin's localStorage, so client state (column
-    prefs, Excel-funnel filters, etc.) can't leak in from an earlier test - both are what made the
-    suite order- and shard-sensitive (e.g. the inventory attribute funnel). The storage is cleared
+    per-token metadata snapshot, forget the saved column setups (kept on the server per user) and
+    clear the app origin's localStorage, so state (columns, Excel-funnel filters, etc.) can't leak
+    in from an earlier test - that is what made the suite order- and shard-sensitive (e.g. the
+    inventory attribute funnel). The storage is cleared
     through the browser, not a page's script, so it holds however the earlier test left its page
     (closed, or on about:blank where a script can no longer reach the app's storage); a new page
     has its own sessionStorage.
@@ -282,9 +283,10 @@ def page(browser_context, ui_server, request):
     # schema/preset/location write goes through the UI. Browser tests seed those
     # writes straight against the API, which the UI never sees, so a snapshot a
     # prior test warmed would mask this test's setup. Start each test from a cold
-    # snapshot, the same reason localStorage is cleared on teardown below.
+    # snapshot, the same reason the column setups and localStorage are cleared below.
     from ui import api_client
     api_client._reset_metadata_cache_for_tests()
+    clear_column_prefs()
 
     p = browser_context.new_page()
     browser_context.new_cdp_session(p).send(
@@ -400,6 +402,27 @@ def clear_session_registry() -> None:
     with conn.cursor() as cur:
         cur.execute("DELETE FROM session_registry;")
     conn.close()
+
+
+def clear_column_prefs() -> None:
+    """Forget every user's saved column setup (a server copy per user, read by every device),
+    so a table opens with its default columns."""
+    conn = _test_db()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE companies SET settings = (settings::jsonb - 'column_prefs')::json"
+                    " WHERE settings::jsonb ? 'column_prefs';")
+    conn.close()
+
+
+def saved_column_layout(api, table: str, ready) -> dict:
+    """The signed-in user's saved column setup for *table* once ``ready(layout)`` holds (a change
+    on the page is saved in the background), or the last one read after a few seconds."""
+    deadline = time.monotonic() + 5
+    while True:
+        layout = api.get("/companies/me/column-prefs").json().get(table) or {}
+        if ready(layout) or time.monotonic() > deadline:
+            return layout
+        time.sleep(0.1)
 
 
 def css_class(name: str) -> re.Pattern:

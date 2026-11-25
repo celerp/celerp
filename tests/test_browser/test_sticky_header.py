@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import pytest
 
+from .conftest import saved_column_layout
+
 pytestmark = pytest.mark.browser
 
 
@@ -513,7 +515,7 @@ def test_phantom_scrollbar_cleared_on_print(page, ui_server, sticky_inventory):
 # ── a saved custom column layout must reach the pinned header's LOCKED geometry, not just ──
 # ── the live thead: the header pin captures widths once (colgroup + cell styles) and a ─────
 # ── later width restore can land after that capture without ever reaching the colgroup ─────
-def test_pinned_header_aligns_with_body_under_custom_layout(page, ui_server, sticky_inventory):
+def test_pinned_header_aligns_with_body_under_custom_layout(page, ui_server, sticky_inventory, api):
     """With a saved custom column-width layout, the pinned header must line up with the body
     columns. The load-time width restore is deferred (requestAnimationFrame) and can commit
     after the pin has already captured and locked geometry into the colgroup - a real race that
@@ -532,10 +534,7 @@ def test_pinned_header_aligns_with_body_under_custom_layout(page, ui_server, sti
     _goto(page, ui_server)
     keys = _data_keys(page)
     custom = {keys[0]: "300px", keys[1]: "80px"}
-    page.evaluate(
-        "(a) => localStorage.setItem(a[0], JSON.stringify(a[1]))",
-        ["celerp_col_widths_inventory", custom],
-    )
+    api.patch("/companies/me/column-prefs", json={"prefs": {"inventory": {"widths": custom}}}).raise_for_status()
     page.reload(wait_until="domcontentloaded")
     page.wait_for_selector("#data-table thead th[data-key]", timeout=10000)
     # scroll to pin BEFORE the deferred width restore has run at all (it is only queued,
@@ -563,7 +562,7 @@ def test_pinned_header_aligns_with_body_under_custom_layout(page, ui_server, sti
 # ── dragging a resize handle while the header is pinned must keep the dragged width, not ───
 # ── the pre-drag default the pin/unpin cycle recaptures when the drag's own style write ────
 # ── is mistaken for an external mutation ────────────────────────────────────────────────────
-def test_resize_while_pinned_persists(page, ui_server, sticky_inventory):
+def test_resize_while_pinned_persists(page, ui_server, sticky_inventory, api):
     """A column resized WHILE the header is pinned must keep the dragged width (and persist it
     to WIDTH_KEY), not silently revert to the pre-drag width. The resize handle's own onMove
     writes th.style.width, which the sticky controller's MutationObserver cannot distinguish
@@ -573,8 +572,6 @@ def test_resize_while_pinned_persists(page, ui_server, sticky_inventory):
     body. This drags the actual handle (mousedown/move/up), the only path that also exercises
     the handle's onUp -> persistence, matching what a user does."""
     _goto(page, ui_server)
-    page.evaluate("(k) => localStorage.removeItem(k)", "celerp_col_widths_inventory")
-    page.reload(wait_until="domcontentloaded")
     page.wait_for_selector("#data-table thead th[data-key] .col-resize-handle", timeout=10000)
     _scroll_to_pin(page)
     assert _pinned(page)
@@ -590,8 +587,8 @@ def test_resize_while_pinned_persists(page, ui_server, sticky_inventory):
     assert after > before + 150, (
         f"column '{key}' did not keep the width dragged while pinned: {before:.0f}px -> {after:.0f}px"
     )
-    stored = page.evaluate("(k) => JSON.parse(localStorage.getItem(k) || 'null')", "celerp_col_widths_inventory")
-    assert stored and key in stored, f"resize while pinned was not persisted to localStorage: {stored}"
+    stored = saved_column_layout(api, "inventory", lambda l: key in (l.get("widths") or {})).get("widths")
+    assert stored and key in stored, f"resize while pinned was not saved to the column setup: {stored}"
     stored_px = float(str(stored[key]).replace("px", ""))
     assert stored_px > before + 150, (
         f"persisted width for '{key}' lost the drag: stored {stored_px:.0f}px, pre-drag {before:.0f}px"
@@ -600,7 +597,7 @@ def test_resize_while_pinned_persists(page, ui_server, sticky_inventory):
 
 # ── hidden columns: the pinned body must keep every visible column under its header ────────
 def test_pinned_columns_align_with_hidden_column_after_sideways_scroll(page, ui_server, sticky_inventory):
-    """Hide one column the way the column manager does (prefs in localStorage), scroll the
+    """Hide one column with the column manager, scroll the
     table sideways FIRST, then down until the header pins. Every visible column's body cells
     must still sit under that column's header. The pin locks column geometry with a colgroup
     built from the header row's cells; a hidden column's cell generates no box, so a col built
@@ -609,13 +606,9 @@ def test_pinned_columns_align_with_hidden_column_after_sideways_scroll(page, ui_
     keys = _data_keys(page)
     assert len(keys) >= 4, f"need several columns to observe drift, got {keys}"
     hidden = keys[1]
-    page.evaluate(
-        "(args) => { var p = {}; args.keys.forEach(function(k){ p[k] = k !== args.hidden; });"
-        " localStorage.setItem('celerp_cols_inventory', JSON.stringify(p)); }",
-        {"keys": keys, "hidden": hidden},
-    )
-    page.reload(wait_until="domcontentloaded")
-    page.wait_for_selector("#data-table thead th[data-key]", timeout=10000)
+    page.locator("#col-mgr-btn").click()
+    page.locator(f"#col-chk-{hidden}").click()
+    page.keyboard.press("Escape")
     page.wait_for_function(
         "(k) => { var th=document.querySelector('#data-table thead th[data-key=\"'+k+'\"]');"
         " return !!th && th.style.display === 'none'; }",
