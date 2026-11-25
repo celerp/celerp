@@ -4,6 +4,7 @@
 quantity inputs in a run's own row, what Complete sends, and the tool schemas."""
 from __future__ import annotations
 
+import copy
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -67,7 +68,7 @@ def test_recipe_editor_extras():
 ])
 async def test_recipe_editor_extras_edits(ui_client, action, query, form, expect):
     ui_client.cookies.update(_authed())
-    with (patch("ui.api_client.get_item", new=AsyncMock(return_value={"id": "item:oil", "recipe": dict(RECIPE)})),
+    with (patch("ui.api_client.get_item", new=AsyncMock(return_value={"id": "item:oil", "recipe": copy.deepcopy(RECIPE)})),
           patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
           patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})),
           patch("ui.api_client.set_item_recipe", new=AsyncMock(return_value={})) as put):

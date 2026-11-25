@@ -9331,5 +9331,8 @@
   "enum.scopes.journals": "สมุดรายวัน",
   "enum.scopes.products": "สินค้า",
   "ai.card_name_unavailable": "ไม่มีชื่อให้แสดง",
-  "error.fix_ask_roles": "บทบาทของคุณไม่สามารถทำขั้นตอนนี้ในหน้า {place} ได้ โปรดขอให้ผู้ที่มีบทบาทใดบทบาทหนึ่งต่อไปนี้ดำเนินการ: {roles}"
+  "error.fix_ask_roles": "บทบาทของคุณไม่สามารถทำขั้นตอนนี้ในหน้า {place} ได้ โปรดขอให้ผู้ที่มีบทบาทใดบทบาทหนึ่งต่อไปนี้ดำเนินการ: {roles}",
+  "inventory.also_produces": "ผลิตได้ด้วย",
+  "inventory.cost_share": "สัดส่วนต้นทุน (%)",
+  "inventory.main_share": "ผลิตภัณฑ์หลัก: {share}%"
 }

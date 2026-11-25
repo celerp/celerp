@@ -9331,5 +9331,8 @@
   "enum.scopes.journals": "仕訳帳",
   "enum.scopes.products": "商品",
   "ai.card_name_unavailable": "名前を表示できません",
-  "error.fix_ask_roles": "あなたのロールでは{place}ページでこの操作を行えません。次のいずれかのロールを持つ人に依頼してください: {roles}。"
+  "error.fix_ask_roles": "あなたのロールでは{place}ページでこの操作を行えません。次のいずれかのロールを持つ人に依頼してください: {roles}。",
+  "inventory.also_produces": "併産品",
+  "inventory.cost_share": "原価配分 (%)",
+  "inventory.main_share": "主製品: {share}%"
 }

@@ -2295,6 +2295,14 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
                 changed = bool(new_desc)
                 if changed:
                     recipe["overhead"].append({"description": new_desc, "amount": _num_field(form.get("oh_new_amount"))})
+            elif action == "add_also":
+                # The share starts at 0 (the product keeps all the value) until it is entered.
+                new_id = str(form.get("also_new", "")).strip()
+                changed = bool(new_id)
+                if changed:
+                    recipe.setdefault("also_produces", []).append({"item_id": new_id, "quantity": 1, "cost_share": 0})
+            elif action == "remove_also" and 0 <= index < len(recipe.get("also_produces", [])):
+                recipe["also_produces"].pop(index)
             elif action == "remove_component" and 0 <= index < len(recipe.get("components", [])):
                 recipe["components"].pop(index)
             elif action == "remove_labor" and 0 <= index < len(recipe.get("labor", [])):
@@ -6555,6 +6563,7 @@ _RECIPE_CELLS: dict[str, dict[str, str]] = {
     "components": {"quantity": "number"},
     "labor": {"operation": "text", "kind": "select", "hours": "number", "rate": "number", "amount": "number"},
     "overhead": {"description": "text", "amount": "number"},
+    "also_produces": {"quantity": "number", "cost_share": "number"},
 }
 # Hourly and Daily are both rate-based (qty x rate); Fixed is a flat total. Order = dropdown order.
 _LABOR_KINDS: tuple[str, ...] = ("hourly", "daily", "fixed")
@@ -6599,6 +6608,12 @@ def _recipe_api_payload(recipe: dict) -> dict:
             {"description": o.get("description", ""), "amount": _num(o.get("amount"))}
             for o in recipe.get("overhead", [])
         ],
+        # Extras go back as stored, so an edit elsewhere keeps them; their unit cost is derived.
+        **({"also_produces": [
+            {"item_id": x.get("item_id"), "sku": x.get("sku"), "unit": x.get("unit"),
+             "quantity": _num(x.get("quantity")), "cost_share": _num(x.get("cost_share"))}
+            for x in recipe["also_produces"] if x.get("item_id")
+        ]} if "also_produces" in recipe else {}),
     }
 
 
@@ -7162,6 +7177,22 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             cls="data-row",
         )
 
+    def _also_row(i, x):
+        xid = x.get("item_id", "")
+        it = by_id.get(xid) or (hidden or {}).get(xid)
+        label = deleted_label(it.get("sku") or xid) if is_deleted(it) else (x.get("sku") or xid)
+        return Tr(
+            Td(A(label, href=f"/inventory/{xid}", cls="table-link") if it else Span(label)),
+            _recipe_cell(entity_id, "also_produces", i, "quantity", x.get("quantity")),
+            Td(display_unit(x.get("unit")) or EMPTY, cls="comp-unit-cell"),
+            _recipe_cell(entity_id, "also_produces", i, "cost_share", x.get("cost_share")),
+            # The standard cost the share gives it, derived by the roll-up.
+            Td(_recipe_money(x.get("unit_cost"), currency), cls="recipe-amount"),
+            Td(Button("×", type="button", title=t("btn.remove"), cls="btn btn--xs btn--ghost",
+                      hx_post=f"{sec}?action=remove_also&index={i}", **_htmx), cls="cell--actions"),
+            cls="data-row",
+        )
+
     cur_label = f" ({currency_symbol(currency).strip()})" if currency else ""
 
     # Permanent "add" row at the bottom of each table: committing on first input creates a real,
@@ -7227,6 +7258,24 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
                   hx_post=f"{sec}?action=add_overhead", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
+    also_rows = recipe.get("also_produces") or []
+    also_add_row = Tr(
+        Td(searchable_select("also_new", item_opts, value="", placeholder=t("inventory.scope_all_items"),
+                             hx_post=f"{sec}?action=add_also", hx_trigger="change",
+                             hx_include="#recipe-form", hx_target="#recipe-section", hx_swap="outerHTML")),
+        Td("", cls="cell--number"), Td(""), Td("", cls="cell--number"), Td("", cls="recipe-amount"),
+        Td("", cls="cell--actions"),
+        cls="recipe-add-row",
+    )
+    also_produces = Table(
+        Thead(Tr(Th(t("th.sku")), Th(t("th.quantity"), cls="cell--number"), Th(t("th.unit")),
+                 Th(t("inventory.cost_share"), cls="cell--number"),
+                 Th(f"{t('inventory.unit_cost')}{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
+        Tbody(*[_also_row(i, x) for i, x in enumerate(also_rows)], also_add_row),
+        cls="data-table",
+    )
+    main_share = 100 - sum(float(x.get("cost_share") or 0) for x in also_rows)
+
     materials = Table(
         Thead(Tr(Th(t("inventory.th_component_sku")), Th(t("th.quantity"), cls="cell--number"), Th(t("th.unit")),
                  Th(f"{t('inventory.unit_cost')}{cur_label}", cls="cell--number"), Th(f"{t('th.cost')}{cur_label}", cls="cell--number"),
@@ -7301,6 +7350,9 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             ),
             section_card(t("inventory.materials"), materials, header_extra=Span(_recipe_money(recipe.get("materials_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
             section_card(t("inventory.labor"), labor, header_extra=Span(_recipe_money(recipe.get("labor_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
+            section_card(t("inventory.also_produces"), also_produces,
+                         P(t("inventory.main_share", share=f"{main_share:g}"), cls="hint"),
+                         body_cls="recipe-block"),
             section_card(t("inventory.overhead"), overhead, header_extra=Span(_recipe_money(recipe.get("overhead_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
             # Cost summary as a right-aligned totals block under the recipe (like a document's totals).
             Div(_recipe_cost_card(entity_id, item, currency), cls="recipe-totals-wrap"),

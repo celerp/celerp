@@ -9331,5 +9331,8 @@
   "enum.scopes.journals": "Jurnal",
   "enum.scopes.products": "Produk",
   "ai.card_name_unavailable": "Nama tidak tersedia",
-  "error.fix_ask_roles": "Peran Anda tidak dapat melakukan langkah ini di halaman {place}. Minta bantuan seseorang dengan salah satu peran berikut: {roles}."
+  "error.fix_ask_roles": "Peran Anda tidak dapat melakukan langkah ini di halaman {place}. Minta bantuan seseorang dengan salah satu peran berikut: {roles}.",
+  "inventory.also_produces": "Juga menghasilkan",
+  "inventory.cost_share": "Porsi biaya (%)",
+  "inventory.main_share": "Produk utama: {share}%"
 }

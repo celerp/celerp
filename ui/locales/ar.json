@@ -9331,5 +9331,8 @@
   "enum.scopes.journals": "قيود اليومية",
   "enum.scopes.products": "المنتجات",
   "ai.card_name_unavailable": "الاسم غير متاح",
-  "error.fix_ask_roles": "لا يمكن لدورك تنفيذ هذه الخطوة في صفحة {place}. اطلب ذلك من شخص لديه أحد هذه الأدوار: {roles}."
+  "error.fix_ask_roles": "لا يمكن لدورك تنفيذ هذه الخطوة في صفحة {place}. اطلب ذلك من شخص لديه أحد هذه الأدوار: {roles}.",
+  "inventory.also_produces": "ينتج أيضًا",
+  "inventory.cost_share": "حصة من التكلفة (%)",
+  "inventory.main_share": "المنتج الرئيسي: {share}%"
 }

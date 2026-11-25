@@ -9331,5 +9331,8 @@
   "enum.scopes.journals": "Écritures comptables",
   "enum.scopes.products": "Produits",
   "ai.card_name_unavailable": "Nom non disponible",
-  "error.fix_ask_roles": "Votre rôle ne permet pas de faire cette étape sur la page {place}. Demandez à une personne ayant l'un de ces rôles : {roles}."
+  "error.fix_ask_roles": "Votre rôle ne permet pas de faire cette étape sur la page {place}. Demandez à une personne ayant l'un de ces rôles : {roles}.",
+  "inventory.also_produces": "Produit aussi",
+  "inventory.cost_share": "Part de coût (%)",
+  "inventory.main_share": "Produit principal : {share} %"
 }

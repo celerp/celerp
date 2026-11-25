@@ -9331,5 +9331,8 @@
   "enum.scopes.journals": "Lançamentos contábeis",
   "enum.scopes.products": "Produtos",
   "ai.card_name_unavailable": "Nome não disponível",
-  "error.fix_ask_roles": "Sua função não pode realizar esta etapa na página {place}. Peça a alguém com uma destas funções: {roles}."
+  "error.fix_ask_roles": "Sua função não pode realizar esta etapa na página {place}. Peça a alguém com uma destas funções: {roles}.",
+  "inventory.also_produces": "Também produz",
+  "inventory.cost_share": "Participação no custo (%)",
+  "inventory.main_share": "Produto principal: {share}%"
 }

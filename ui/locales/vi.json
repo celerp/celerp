@@ -9331,5 +9331,8 @@
   "enum.scopes.journals": "Sổ nhật ký",
   "enum.scopes.products": "Sản phẩm",
   "ai.card_name_unavailable": "Không có tên",
-  "error.fix_ask_roles": "Vai trò của bạn không thể thực hiện bước này trên trang {place}. Hãy nhờ người có một trong các vai trò sau: {roles}."
+  "error.fix_ask_roles": "Vai trò của bạn không thể thực hiện bước này trên trang {place}. Hãy nhờ người có một trong các vai trò sau: {roles}.",
+  "inventory.also_produces": "Cũng tạo ra",
+  "inventory.cost_share": "Tỷ lệ chi phí (%)",
+  "inventory.main_share": "Sản phẩm chính: {share}%"
 }

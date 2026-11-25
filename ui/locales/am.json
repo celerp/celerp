@@ -9331,5 +9331,8 @@
   "enum.scopes.journals": "ጆርናሎች",
   "enum.scopes.products": "ምርቶች",
   "ai.card_name_unavailable": "ስሙ አይገኝም",
-  "error.fix_ask_roles": "የእርስዎ ሚና ይህን እርምጃ በ{place} ገጽ ላይ መውሰድ አይችልም። ከእነዚህ ሚናዎች አንዱ ያለውን ሰው ይጠይቁ፦ {roles}።"
+  "error.fix_ask_roles": "የእርስዎ ሚና ይህን እርምጃ በ{place} ገጽ ላይ መውሰድ አይችልም። ከእነዚህ ሚናዎች አንዱ ያለውን ሰው ይጠይቁ፦ {roles}።",
+  "inventory.also_produces": "በተጨማሪ ያመርታል",
+  "inventory.cost_share": "የወጪ ድርሻ (%)",
+  "inventory.main_share": "ዋና ምርት: {share}%"
 }

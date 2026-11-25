@@ -9331,5 +9331,8 @@
   "enum.scopes.journals": "Buchungssätze",
   "enum.scopes.products": "Produkte",
   "ai.card_name_unavailable": "Name nicht verfügbar",
-  "error.fix_ask_roles": "Ihre Rolle kann diesen Schritt auf der Seite {place} nicht ausführen. Bitten Sie jemanden mit einer dieser Rollen: {roles}."
+  "error.fix_ask_roles": "Ihre Rolle kann diesen Schritt auf der Seite {place} nicht ausführen. Bitten Sie jemanden mit einer dieser Rollen: {roles}.",
+  "inventory.also_produces": "Erzeugt außerdem",
+  "inventory.cost_share": "Kostenanteil (%)",
+  "inventory.main_share": "Hauptprodukt: {share}%"
 }

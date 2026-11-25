@@ -9331,5 +9331,8 @@
   "enum.scopes.journals": "Asientos",
   "enum.scopes.products": "Productos",
   "ai.card_name_unavailable": "Nombre no disponible",
-  "error.fix_ask_roles": "Su rol no puede realizar este paso en la página {place}. Pídaselo a alguien con uno de estos roles: {roles}."
+  "error.fix_ask_roles": "Su rol no puede realizar este paso en la página {place}. Pídaselo a alguien con uno de estos roles: {roles}.",
+  "inventory.also_produces": "Produce además",
+  "inventory.cost_share": "Participación en el costo (%)",
+  "inventory.main_share": "Producto principal: {share}%"
 }

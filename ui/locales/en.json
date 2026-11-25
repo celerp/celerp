@@ -9331,5 +9331,8 @@
   "enum.scopes.inventory": "Inventory",
   "enum.scopes.journals": "Journals",
   "enum.scopes.products": "Products",
-  "error.fix_ask_roles": "Your role cannot take this step on the {place} page. Ask someone with one of these roles: {roles}."
+  "error.fix_ask_roles": "Your role cannot take this step on the {place} page. Ask someone with one of these roles: {roles}.",
+  "inventory.also_produces": "Also produces",
+  "inventory.cost_share": "Cost share (%)",
+  "inventory.main_share": "Main product: {share}%"
 }
