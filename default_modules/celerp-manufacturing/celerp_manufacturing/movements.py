@@ -777,11 +777,15 @@ def merge_item_lines(items: list[dict] | None) -> list[dict]:
     return [{"item_id": i, "quantity": float(q)} for i, q in sorted(merged.items())]
 
 
+# The closing details that list item lines.
+_ITEM_LINE_FIELDS = ("waste_items", "also_produces")
+
+
 def _closing_request(payload: dict) -> dict:
     """The closing details as one request: the same waste listed in another order, or split over
     repeated lines, is the same request."""
-    out = {k: v for k, v in payload.items() if k not in ("waste_items", "also_produces")}
-    for k in ("waste_items", "also_produces"):
+    out = {k: v for k, v in payload.items() if k not in _ITEM_LINE_FIELDS}
+    for k in _ITEM_LINE_FIELDS:
         if payload.get(k):
             out[k] = merge_item_lines(payload[k])
     return out

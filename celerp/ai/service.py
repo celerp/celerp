@@ -34,6 +34,7 @@ from celerp.ai import jobs
 from celerp.ai.card import action_title, card_arguments
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import ModelResult, RelayError, _build_user_content, complete
+from celerp.ai.reverse import BOOKS_CURRENCY_ROUTE
 from celerp.ai.tools import (
     AGENT_RESULT_MAX_BYTES,
     _agent_error,
@@ -303,9 +304,8 @@ file. Propose no import or posting; ask the user to set the currency in Settings
 Accounting first."""
 
 # Changes that bring amounts into the books: while the books' currency is not set, they
-# would be read in a guessed one. Setting the currency (``_BOOKS_CURRENCY_FIX``) stays open.
+# would be read in a guessed one. Setting the currency (``BOOKS_CURRENCY_ROUTE``) stays open.
 _BOOKS_PERMISSIONS = frozenset({"import_export_data", "finalize_documents", "record_payments", "manage_accounting"})
-_BOOKS_CURRENCY_FIX = ("PATCH", "/companies/me/books")
 
 
 def agent_area(capability: dict) -> str:
@@ -707,7 +707,7 @@ def _books_currency_unset(parsed: list, company_settings: dict) -> dict[str, dic
         for call_id, _name, capability, _arguments, error in parsed
         if error is None and capability is not None and capability.get("requires_confirmation")
         and _BOOKS_PERMISSIONS & set(capability.get("required_permissions") or ())
-        and (str(capability["method"]).upper(), capability["path"]) != _BOOKS_CURRENCY_FIX
+        and (str(capability["method"]).upper(), capability["path"]) != BOOKS_CURRENCY_ROUTE
     }
 
 

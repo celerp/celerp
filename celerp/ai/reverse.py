@@ -42,6 +42,9 @@ REASONS: dict[str, str] = {
     'memory_clear': 'Clearing is permanent, so what the assistant remembered stops shaping later answers; notes and facts can be added again.',
 }
 
+# The route that sets the books' currency; the assistant keeps it open while the currency is unset.
+BOOKS_CURRENCY_ROUTE = ('PATCH', '/companies/me/books')
+
 WAY_BACK: dict[tuple[str, str], str] = {
     # An account is retired by marking it inactive; a used account is never deleted, so past entries keep their account.
     ('POST', '/accounting/accounts'): 'tool:PATCH /accounting/accounts/{code}',
@@ -133,7 +136,7 @@ WAY_BACK: dict[tuple[str, str], str] = {
     ('POST', '/companies/me/apply-category'): 'tool:POST /companies/me/apply-category',
     ('POST', '/companies/me/apply-preset'): 'tool:POST /companies/me/apply-preset',
     ('PATCH', '/companies/me/base-price-list'): 'tool:PATCH /companies/me/base-price-list',
-    ('PATCH', '/companies/me/books'): 'tool:PATCH /companies/me/books',
+    BOOKS_CURRENCY_ROUTE: 'tool:PATCH /companies/me/books',
     ('POST', '/companies/me/business-type'): 'tool:POST /companies/me/business-type',
     ('POST', '/companies/me/categories'): 'tool:DELETE /companies/me/categories/{category_key}',
     ('DELETE', '/companies/me/categories/{category_key}'): 'tool:POST /companies/me/categories',
