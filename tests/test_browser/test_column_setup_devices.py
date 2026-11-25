@@ -28,7 +28,7 @@ def other_device(browser_context, ui_server, seeded_user):
 
 def _open(page, ui_server):
     page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
-    page.wait_for_selector("#data-table thead th[data-key]", timeout=10000)
+    page.wait_for_selector("#data-table thead th[data-key]", state="attached", timeout=10000)
 
 
 def _toggle(page, key):
@@ -55,3 +55,16 @@ def test_a_column_change_on_one_device_shows_on_the_other(page, other_device, ui
     saved_column_layout(api, "inventory", lambda l: (l.get("vis") or {}).get(key) is True)
     _open(page, ui_server)
     assert page.evaluate(_SHOWN, key), f"column {key} shown again on one device stays hidden on the other"
+
+
+def test_the_picker_lists_columns_in_the_saved_order(page, ui_server, api):
+    """The column picker opens in the order the user saved, not the schema's."""
+    api.post("/items", json={"sku": f"ORD-{uuid.uuid4().hex[:8]}", "name": "Order Item",
+                             "quantity": 1, "sell_by": "piece"}).raise_for_status()
+    _open(page, ui_server)
+    picker = "() => Array.from(document.querySelectorAll('#col-mgr-menu label[data-col]')).map(l => l.dataset.col)"
+    order = list(reversed(page.evaluate(picker)))
+    page.evaluate("(order) => celerpColumns('inventory').set('order', order)", order)
+    saved_column_layout(api, "inventory", lambda l: l.get("order") == order)
+    _open(page, ui_server)
+    assert page.evaluate(picker) == order

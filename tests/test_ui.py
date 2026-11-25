@@ -796,8 +796,9 @@ class TestClickToEdit:
         edit_inventory_amounts, returns the read-only paired display: no <input> and
         no <select>, so the sell unit cannot enter edit state from its paired entry
         point either (it server-syncs quantity, so it is amount-gated like the
-        single-field cell)."""
-        schema = [{"key": "sell_by", "label": "Sell by", "type": "text", "editable": True}]
+        single-field cell). Both halves come back read-only, the quantity included."""
+        schema = [{"key": "quantity", "label": "Quantity", "type": "number", "editable": True},
+                  {"key": "sell_by", "label": "Sell by", "type": "text", "editable": True}]
         item = {"entity_id": "gc:123", "sell_by": "piece", "quantity": 5}
         # Operator holds edit_inventory (default); edit_inventory_amounts is granted
         # only to manager and up, so the paired sell_by cell must render read-only.
@@ -818,6 +819,7 @@ class TestClickToEdit:
         assert r.status_code == 200
         assert b"<input" not in r.content
         assert b"<select" not in r.content
+        assert b"paired-primary--readonly" in r.content and b"paired-secondary--readonly" in r.content
 
     @pytest.mark.parametrize("field, route, hint", [
         ("sell_by", "edit", True),
