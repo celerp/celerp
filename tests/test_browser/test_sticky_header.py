@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from .conftest import saved_column_layout
+from .conftest import htmx_idle, saved_column_layout
 
 pytestmark = pytest.mark.browser
 
@@ -347,6 +347,11 @@ def test_sideways_scroll_while_pinned_keeps_the_header_pinned(page, ui_server, s
     _goto(page, ui_server)
     page.evaluate("() => { document.querySelector('#data-table thead th[data-key]').style.width = '900px'; }")
     _scroll_to_pin(page)
+    # Parts of the page that load late (htmx parts, the footer's fetched link) are DOM changes of
+    # their own that rightly re-pin; let them land so only the scroll is measured.
+    htmx_idle(page)
+    page.evaluate("""() => Promise.all(['/stars/cta?medium=footer', '/stars/badge']
+      .map(u => window.celerpStarFetch(u).catch(() => null)))""")
     page.evaluate("""() => { window.__flips = 0; new MutationObserver(function(rs){ window.__flips += rs.length; })
       .observe(document.getElementById('data-table'), {attributes: true, attributeFilter: ['class']}); }""")
     page.evaluate(_SCROLL_SIDEWAYS_JS, 20)

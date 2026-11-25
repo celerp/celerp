@@ -2247,11 +2247,13 @@ _STICKY_HEADER_JS = """
   }
   document.addEventListener('DOMContentLoaded', watch);
   document.addEventListener('htmx:afterSwap', watch);
-  // True when a batch of DOM changes is only this cue moving its shades (the box's style), which
-  // changes no column: observers that re-measure a table skip it, or every scroll re-measures.
+  // True when a batch of DOM changes is only this cue moving or toggling its shades (the box's
+  // style and class, written by update above), which changes no column: observers that
+  // re-measure a table skip it, or every scroll re-measures.
   window.celerpScrollCueOnly = function(records){
     return records.every(function(r){
-      return r.type === 'attributes' && r.attributeName === 'style' && !!r.target.dataset && !!r.target.dataset.scrollCue;
+      return r.type === 'attributes' && (r.attributeName === 'style' || r.attributeName === 'class')
+        && !!r.target.dataset && !!r.target.dataset.scrollCue;
     });
   };
 })();
