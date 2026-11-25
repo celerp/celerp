@@ -6,7 +6,7 @@
   "routes": ["/inventory", "/lists?type=audit", "/lists/new-audit"],
   "permission": "view_inventory",
   "order": 3,
-  "checked": "f94d4e5c3f03e7bbb11e7e7e5461e59f32c7666af126448a441e2def80eaee58",
+  "checked": "98c4b305c862d630cb2d0b468158da508033795805e53b767e42e44b8f979978",
   "steps": [
     {
       "text": "The sidebar also lists {sold}, {arch} and {disp}: the same inventory screen filtered to that status.",

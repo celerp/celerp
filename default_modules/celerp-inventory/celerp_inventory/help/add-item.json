@@ -6,7 +6,7 @@
   "routes": ["/inventory", "/inventory/{entity_id}", "/inventory/{entity_id}/history", "/inventory/{entity_id}/channel/{platform}"],
   "permission": "view_inventory",
   "order": 1,
-  "checked": "b69128bc80892873ed8dabddc90038814d15703db5f94c0612e68195b7277b15",
+  "checked": "ed6d874e3617bd98925a6fcbf05e55d8ec880902beead043502246f170769a67",
   "steps": [
     {
       "text": "Open {inv} from the sidebar to see the inventory list.",

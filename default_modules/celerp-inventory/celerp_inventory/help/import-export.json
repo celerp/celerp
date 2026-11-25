@@ -6,7 +6,7 @@
   "routes": ["/inventory", "/inventory/import", "/inventory/import/draft/{csv_ref}"],
   "permission": "import_export_data",
   "order": 2,
-  "checked": "dc74cdf0cfbd83546bd1824c8a17d61de82770c61294e775168ea8050733b62c",
+  "checked": "2f0212392bc030bed7c16aa55f7c2de52ffca96f2574a934dcf4474d419a3f1d",
   "steps": [
     {
       "text": "On {inv}, use {exp} to download the current list, or {imp} to start an import.",

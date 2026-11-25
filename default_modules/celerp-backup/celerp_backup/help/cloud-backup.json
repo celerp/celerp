@@ -6,7 +6,7 @@
   "routes": ["/settings/cloud"],
   "permission": "manage_integrations",
   "order": 1,
-  "checked": "8c228aacfc585db1b4d661316daafec897b9330ad498da0c63c57a179d4d5649",
+  "checked": "83d8bef54f6422015f4561d4b23ef5df3be5b09e49f52cc6fff9085054c7edef",
   "steps": [
     {
       "text": "Open {access} from Settings. Celerp Connect adds {backup}: your database is encrypted on this machine before it ever leaves it.",
