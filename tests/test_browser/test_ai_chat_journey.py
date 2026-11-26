@@ -27,6 +27,8 @@ import celerp.ai.service as ai_service
 from celerp.ai.llm import ModelResult
 from celerp_ai.ui_routes import QUESTION_POLL_S
 
+from .conftest import htmx_idle
+
 pytestmark = [pytest.mark.browser, pytest.mark.usefixtures("tools_open_when_called")]
 
 
@@ -380,6 +382,31 @@ def test_a_proposal_card_that_arrives_is_scrolled_into_view_to_its_foot(page: Pa
         button = card.get_by_role("button", name=name).bounding_box()
         assert thread["y"] <= button["y"] and button["y"] + button["height"] <= thread["y"] + thread["height"], (
             f"{name} is outside the thread's view: {button} in {thread}")
+
+
+def test_a_reader_scrolled_up_in_the_thread_stays_when_an_answer_lands(page: Page, ui_server):
+    """The thread follows a poll's answer to its foot only for a reader at the foot; a reader
+    who scrolled up to read an earlier message is left where they are."""
+    page.set_viewport_size({"width": 1280, "height": 720})
+    _SCRIPT.append(_answer("\n\n".join(f"Line {n} of a long answer." for n in range(40))))
+    _SCRIPT.append(_answer("The second answer."))
+    _open_chat(page, ui_server)
+    _send(page, "tell me something long")
+    expect(page.locator(".ai-msg--ai", has_text="Line 39 of a long answer.")).to_be_attached()
+
+    held: list = []
+    page.route("**/ai/question-ui**", lambda route: held.append(route))
+    with page.expect_request("**/ai/question-ui**"):
+        _send(page, "and one more thing")
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(100)
+    page.evaluate("document.getElementById('ai-messages').scrollTop = 0")
+    held[0].continue_()
+    expect(page.locator(".ai-msg--ai", has_text="The second answer.")).to_be_attached()
+    htmx_idle(page)
+    assert page.evaluate("document.getElementById('ai-messages').scrollTop") == 0
 
 
 def test_sidebar_header_input_layout_intact(page: Page, ui_server):
