@@ -135,9 +135,12 @@ async def test_sku_match_inline_confirmation():
 
     # Link all sends each item with the store product it was shown.
     sync.return_value = {"updated": 1, "errors": [], "needs_confirmation": []}
-    await _ui("POST", "/api/items/bulk/channel-sync/woocommerce/publish", base,
-              data={"selected": [EID], "confirm": [f"{EID}:88"]})
+    r = await _ui("POST", "/api/items/bulk/channel-sync/woocommerce/publish", base,
+                  data={"selected": [EID], "confirm": [f"{EID}:88"]})
     assert sync.await_args.kwargs["confirm_link"] == {EID: "88"}
+    # Nothing left to ask: the page refreshes and the outcome rides along as a toast.
+    assert r.headers["HX-Refresh"] == "true"
+    assert t("inventory.channel_bulk_done", n=1, service="WooCommerce") in r.headers["HX-Trigger"]
 
 
 @pytest.mark.asyncio

@@ -99,3 +99,24 @@ def test_company_admin_who_is_not_the_installation_owner_is_turned_away_untouche
     else:
         assert r.status_code == 403
         assert r.text == "Only the installation owner can do this."
+
+
+@pytest.mark.parametrize("role,acts", [("owner", True), ("admin", True), ("manager", False)])
+@pytest.mark.parametrize("step", ["resolve", "accept"])
+def test_a_partner_claim_is_resolved_and_accepted_for_an_owner_or_admin_only(role, acts, step):
+    """Resolving a claim code and accepting it reach the API for a company owner or admin;
+    any other role gets the neutral claim card back and nothing is sent."""
+    from ui.app import app
+
+    call = AsyncMock(return_value={"partner_name": "Acme Partners", "error": None})
+    with patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True), create=True), \
+         patch(f"ui.api_client.{step}_partner_claim", new=call):
+        client = TestClient(app, raise_server_exceptions=False, follow_redirects=False)
+        client.cookies.set("celerp_token", make_test_token(role=role))
+        r = client.post(f"/settings/partner-claim/{step}", data={"claim_token": "pc_1"},
+                        headers={"HX-Request": "true"})
+
+    assert r.status_code in (200, 204), r.text
+    assert call.await_count == (1 if acts else 0)
+    if acts:
+        assert call.await_args.args[1] == "pc_1"

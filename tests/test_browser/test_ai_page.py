@@ -301,6 +301,20 @@ class TestChatView:
         assert form.get_attribute("hx-sync") == "this:drop"
         expect(form.locator(".ai-input__receipts")).to_be_disabled()
 
+    def test_the_composer_counts_the_prompt_against_the_limit_and_keeps_a_longer_one(self, page, ui_server):
+        """The counter under the box follows what is typed, counting characters (an emoji is
+        one), and a prompt past the limit is marked, never cut short."""
+        page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
+        count, field = page.locator("#ai-query-count"), page.locator("#ai-query-input")
+        limit = int(count.get_attribute("data-limit"))
+        field.fill("hello \U0001F44D")
+        expect(count).to_have_text(f"7 / {limit}")
+        expect(count).not_to_have_class(re.compile("ai-input__count--over"))
+        field.fill("x" * (limit + 1))
+        expect(count).to_have_text(f"{limit + 1} / {limit}")
+        expect(count).to_have_class(re.compile("ai-input__count--over"))
+        assert len(field.input_value()) == limit + 1
+
     def test_chat_has_file_input(self, page, ui_server):
         """Hidden file input for attachments exists."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")

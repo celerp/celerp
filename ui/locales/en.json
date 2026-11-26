@@ -1655,7 +1655,7 @@
   "search.err_too_long": "Your search is too long. Shorten it to {max} characters or fewer.",
   "settings._a_restart_is_required_for_module_changes_to_take": "Restart Celerp to finish turning modules on or off.",
   "settings._applied": "✓ Applied",
-  "settings.err_column_table_unknown": "\"{table}\" is not a table with a column setup, so nothing was saved. Reload the page and change the columns again.",
+  "settings.err_column_table_unknown": "\"{table}\" is not a table with a column setup, so nothing was saved. Open the list from the menu and change its columns there.",
   "settings.err_column_tables_full": "Your column setup is kept for {limit} tables at most, so this change was not saved. Use Reset columns on a list you no longer change, then try again.",
   "settings._changing_the_database_requires_a_restart_and_data": "Changing the database requires a restart and data migration. Back up first.",
   "settings._connected": "✓ Connected",

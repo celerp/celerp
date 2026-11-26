@@ -1362,7 +1362,7 @@
   "search.err_too_long": "Sua pesquisa é longa demais. Reduza para {max} caracteres ou menos.",
   "settings._a_restart_is_required_for_module_changes_to_take": "Reinicie o Celerp para concluir a ativação ou desativação dos módulos.",
   "settings._applied": "✓ Aplicado",
-  "settings.err_column_table_unknown": "\"{table}\" não é uma tabela com configuração de colunas, por isso nada foi salvo. Recarregue a página e altere as colunas novamente.",
+  "settings.err_column_table_unknown": "\"{table}\" não é uma tabela com configuração de colunas, por isso nada foi salvo. Abra a lista pelo menu e altere as colunas lá.",
   "settings.err_column_tables_full": "A configuração de colunas é mantida para no máximo {limit} tabelas, por isso esta alteração não foi salva. Use \"Redefinir\" em uma lista que você não altera mais e tente novamente.",
   "settings._changing_the_database_requires_a_restart_and_data": "A alteração do banco de dados requer reinicialização e migração de dados. Faça backup primeiro.",
   "settings._connected": "✓ Conectado",

@@ -1362,7 +1362,7 @@
   "search.err_too_long": "検索語が長すぎます。{max} 文字以内に短くしてください。",
   "settings._a_restart_is_required_for_module_changes_to_take": "モジュールの有効化・無効化を完了するには、Celerp を再起動してください。",
   "settings._applied": "✓ 適用済み",
-  "settings.err_column_table_unknown": "「{table}」は列設定のあるテーブルではないため、何も保存されませんでした。ページを再読み込みして、もう一度列を変更してください。",
+  "settings.err_column_table_unknown": "「{table}」は列設定のあるテーブルではないため、何も保存されませんでした。メニューから一覧を開き、そこで列を変更してください。",
   "settings.err_column_tables_full": "列設定は最大{limit}個のテーブルまで保存されるため、この変更は保存されませんでした。もう変更しない一覧で「リセット」を使ってから、もう一度お試しください。",
   "settings._changing_the_database_requires_a_restart_and_data": "データベースを変更するには、再起動とデータの移行が必要です。まずバックアップしてください。",
   "settings._connected": "✓ 接続済み",

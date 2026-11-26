@@ -1362,7 +1362,7 @@
   "search.err_too_long": "Nội dung tìm kiếm quá dài. Hãy rút gọn còn tối đa {max} ký tự.",
   "settings._a_restart_is_required_for_module_changes_to_take": "Hãy khởi động lại Celerp để hoàn tất việc bật hoặc tắt mô-đun.",
   "settings._applied": "✓ Đã áp dụng",
-  "settings.err_column_table_unknown": "\"{table}\" không phải là bảng có thiết lập cột nên không có gì được lưu. Tải lại trang và thay đổi các cột lần nữa.",
+  "settings.err_column_table_unknown": "\"{table}\" không phải là bảng có thiết lập cột nên không có gì được lưu. Mở danh sách từ menu và thay đổi các cột ở đó.",
   "settings.err_column_tables_full": "Thiết lập cột của bạn được lưu cho tối đa {limit} bảng nên thay đổi này chưa được lưu. Dùng \"Đặt lại\" trên một danh sách bạn không còn thay đổi, rồi thử lại.",
   "settings._changing_the_database_requires_a_restart_and_data": "Việc thay đổi cơ sở dữ liệu yêu cầu khởi động lại và di chuyển dữ liệu. Sao lưu trước.",
   "settings._connected": "✓ Đã kết nối",

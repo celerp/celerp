@@ -1362,7 +1362,7 @@
   "search.err_too_long": "نص البحث طويل جدًا. اختصره إلى {max} حرفًا أو أقل.",
   "settings._a_restart_is_required_for_module_changes_to_take": "أعد تشغيل Celerp لإكمال تشغيل الوحدات أو إيقافها.",
   "settings._applied": "✓ مطبق",
-  "settings.err_column_table_unknown": "\"{table}\" ليس جدولاً له إعداد أعمدة، لذلك لم يُحفظ شيء. أعد تحميل الصفحة وغيّر الأعمدة مرة أخرى.",
+  "settings.err_column_table_unknown": "\"{table}\" ليس جدولاً له إعداد أعمدة، لذلك لم يُحفظ شيء. افتح القائمة من قائمة التنقل وغيّر أعمدتها هناك.",
   "settings.err_column_tables_full": "يُحفظ إعداد الأعمدة لعدد {limit} جدولاً على الأكثر، لذلك لم يُحفظ هذا التغيير. استخدم «إعادة تعيين» في قائمة لم تعد تغيّرها، ثم حاول مرة أخرى.",
   "settings._changing_the_database_requires_a_restart_and_data": "يتطلب تغيير قاعدة البيانات إعادة التشغيل وترحيل البيانات. النسخ الاحتياطي أولا.",
   "settings._connected": "✓ متصل",

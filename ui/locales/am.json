@@ -1464,7 +1464,7 @@
   "search.err_too_long": "ፍለጋዎ በጣም ረጅም ነው። ወደ {max} ቁምፊዎች ወይም ከዚያ በታች ያሳጥሩት።",
   "settings._a_restart_is_required_for_module_changes_to_take": "ሞጁሎችን ማብራት ወይም ማጥፋትን ለመጨረስ Celerpን እንደገና ያስጀምሩ።",
   "settings._applied": "✓ ተግባራዊ ሆኗል",
-  "settings.err_column_table_unknown": "\"{table}\" የአምድ ቅንብር ያለው ሠንጠረዥ አይደለም፣ ስለዚህ ምንም አልተቀመጠም። ገጹን እንደገና ይጫኑ እና አምዶቹን እንደገና ይቀይሩ።",
+  "settings.err_column_table_unknown": "\"{table}\" የአምድ ቅንብር ያለው ሠንጠረዥ አይደለም፣ ስለዚህ ምንም አልተቀመጠም። ዝርዝሩን ከምናሌው ይክፈቱ እና አምዶቹን እዚያ ይቀይሩ።",
   "settings.err_column_tables_full": "የአምድ ቅንብርዎ ቢበዛ ለ{limit} ሠንጠረዦች ይቀመጣል፣ ስለዚህ ይህ ለውጥ አልተቀመጠም። ከእንግዲህ በማይቀይሩት ዝርዝር ላይ «አምዶችን ወደ ነባሪ መልስ» ይጠቀሙ፣ ከዚያ እንደገና ይሞክሩ።",
   "settings._changing_the_database_requires_a_restart_and_data": "የመረጃ ቋቱን መቀየር እንደገና ማስጀመር እና የመረጃ ዝውውር ይፈልጋል። መጀመሪያ ምትኬ ያስቀምጡ።",
   "settings._connected": "✓ ተገናኝቷል",
