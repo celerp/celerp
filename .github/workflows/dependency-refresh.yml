@@ -85,7 +85,7 @@ jobs:
             --json number,headRefName,isCrossRepository,author |
             jq -r --arg branch "$BRANCH" \
               '.[] | select((.isCrossRepository | not) and .author.login == "app/github-actions"
-                and (.headRefName == $branch or (.headRefName | ltrimstr($branch + "-") | test("^[0-9]+-[0-9]+$")))) |
+                and (.headRefName == $branch or (.headRefName | startswith($branch + "-") and (ltrimstr($branch + "-") | test("^[0-9]+-[0-9]+$"))))) |
                 "\(.number) \(.headRefName)"')"
           if (($(grep -c . <<<"$owned") > 1)); then
             echo "More than one open dependency refresh PR ($(cut -d' ' -f1 <<<"$owned" | sed 's/^/#/' | paste -sd' ')); close all but one and run the workflow again" >&2

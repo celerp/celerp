@@ -315,6 +315,7 @@ def test_leftover_branch_with_no_open_pr_is_never_touched(scratch: Scratch, buil
         pytest.param([pr(author="someone")], id="person-authored-refresh-name"),
         pytest.param([pr(head=f"{BRANCH}-old")], id="refresh-prefix-not-run-name"),
         pytest.param([pr(head=f"{BRANCH}x-1-1")], id="longer-name-same-prefix"),
+        pytest.param([pr(head="123-4")], id="bare-run-suffix-without-the-prefix"),
     ],
 )
 def test_a_pr_that_is_not_the_refresh_pr_is_ignored(scratch: Scratch, listing: list[dict]) -> None:
