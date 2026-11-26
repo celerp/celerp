@@ -197,3 +197,17 @@ async def test_a_corrected_bank_imports_and_posts_again(client, session):
     assert r.status_code == 200 and all(x["ok"] for x in r.json()["results"]), r.text
     await B.statement(client, co, bk["id"], [("2026-04-02", "RENT", "-50.00")], opening="180.00", closing="130.00",
                       start="2026-04-01", end="2026-04-30")
+
+
+async def test_a_new_foreign_bank_with_no_entries_is_not_called_mislabelled(client, session):
+    """An account with no entries has nothing that disagrees with its label: a new account in
+    another currency than the books' gets no correction offered, on its own record or in the
+    account list, and it keeps its currency."""
+    h, _ = await _wizard_new_install(client, "USD")
+    r = await client.post("/accounting/bank-accounts", headers=h, json={
+        "bank_name": "Euro Bank", "account_number": "EU-1", "currency": "EUR", "bank_type": "checking", "opening_balance": 0})
+    assert r.status_code in (200, 201), r.text
+    assert r.json()["currency"] == "EUR" and r.json()["relabel_to"] is None, r.json()
+    banks = (await client.get("/accounting/bank-accounts", headers=h)).json()
+    banks = banks.get("items", banks) if isinstance(banks, dict) else banks
+    assert next(b for b in banks if b["id"] == r.json()["id"])["relabel_to"] is None

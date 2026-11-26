@@ -2836,7 +2836,7 @@ async def _bank_dicts(
         d = _bank_to_dict(b)
         d["balance"] = None if net is None else to_stored_float(round_money(net, b.currency))
         d["opening_unbacked"] = bool(b.opening_balance) and _opening_je_id(b.id) not in posted_ids
-        d["relabel_to"] = _relabel_to(b, base, lines)
+        d["relabel_to"] = _mislabelled_as(b, base, lines)
         d["books_currency"] = base
         out.append(d)
     return out
@@ -2997,15 +2997,21 @@ def _relabel_to(bank: BankAccount, base: str, lines: list[tuple[str, dict]]) -> 
     return base if bank.currency != base and not any(_carries_foreign_amount(e) for _, e in lines) else None
 
 
+def _mislabelled_as(bank: BankAccount, base: str, lines: list[tuple[str, dict]]) -> str | None:
+    """The correction the account's entries call for (``_relabel_to``). An account with no
+    entries has nothing that disagrees with its label, so none is called for."""
+    return _relabel_to(bank, base, lines) if lines else None
+
+
 async def refuse_mislabelled_bank(session: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> None:
     """Refuse a write that imports onto or posts from *bank* while its label and its entries
-    disagree (``_relabel_to``): every amount on it would be read in the wrong currency, so
+    disagree (``_mislabelled_as``): every amount on it would be read in the wrong currency, so
     nothing goes through until the account is set to the books' currency."""
     base = await _base_currency(session, company_id)
     if bank.currency == base:
         return
     lines = _bank_lines(await journal_rows(session, company_id, account=bank.chart_account_code), bank)
-    relabel = _relabel_to(bank, base, lines) if lines else None
+    relabel = _mislabelled_as(bank, base, lines)
     if relabel:
         raise HTTPException(status_code=422, detail=catalog_refusal(
             "acct.err_bank_mislabelled", currency=bank.currency, base=relabel))
