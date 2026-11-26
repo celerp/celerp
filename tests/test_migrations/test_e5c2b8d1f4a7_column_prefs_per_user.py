@@ -143,3 +143,11 @@ def test_a_price_list_column_left_out_of_the_all_items_list_is_hidden(companies_
     assert vis["sku"] is True
     assert (vis["gold_price"], vis["landed_price"], vis["landed_price_total"]) == (False, False, False)
     assert "retail_price" not in vis and "cost_price" not in vis
+
+
+def test_a_company_without_price_lists_hides_the_default_price_columns_it_left_out(companies_db):
+    cid = _put(companies_db, {"column_prefs": {"__all__": ["sku"]}})
+    user = _join(companies_db, cid)
+    run_migration_ops(companies_db, MODULE)
+    vis = _get(companies_db, cid)["column_prefs"][user]["inventory"]["vis"]
+    assert (vis["retail_price"], vis["wholesale_price"], vis["cost_price"], vis["cost_price_total"]) == (False,) * 4
