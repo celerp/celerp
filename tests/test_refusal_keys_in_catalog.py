@@ -306,6 +306,11 @@ _DYNAMIC_KEY_SITES = {
         "module_journal.source", "module_journal.unbalanced", "module_journal.unknown_operation",
         "posting.destination.not_in_chart",
     ],
+    # celerp/services/account_roles.py: map_added_role(..., refusal_key) refuses a turn-on under
+    # the key its caller passes; every caller passes one of these literals
+    "celerp/services/account_roles.py": [
+        "tax.turn_on_role_unmapped", "acct.err_suspense_unmapped", "fund.turn_on_role_unmapped",
+    ],
     # celerp/error_body.py: as_refusal answers a t() text as its own key's refusal; t()
     # read that key from the catalog, so there is no key here to check
     "celerp/error_body.py": [],

@@ -277,6 +277,11 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         # Durable "has been issued" marker: the status is later overwritten by
         # doc.sent, so the Issue button relies on this flag, not the status.
         current["finalized"] = True
+        # Finalizing again posts the withholding in today's shape, so an upgraded bill no
+        # longer needs its withholding correction and the one it had is reversed with the
+        # entries the revert to draft reversed.
+        current.pop("legacy_wht_entry", None)
+        current.pop("withholding_correction", None)
         # Invoice finalize assigns real ref_id (INV-...) and preserves proforma ref
         if data.get("ref_id"):
             current["ref_id"] = data["ref_id"]

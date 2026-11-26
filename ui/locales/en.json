@@ -9383,5 +9383,13 @@
   "th.valid_to": "Valid to",
   "settings.confirm_remove_version": "Remove the {rate}% version of {name}?",
   "documents.tax_version_notice": "The document date is now after a tax rate change. These lines still use the earlier rate: {lines}.",
-  "documents.tax_version_use": "Use the rate in force"
+  "documents.tax_version_use": "Use the rate in force",
+  "tax.withholding_correction_first": "Post the withholding correction for bill {bill} first, then issue the vendor credit memo.",
+  "tax.withholding_correction_not_needed": "{document} has no withholding correction to post. Only an issued bill from before tax codes that withheld tax needs one.",
+  "tax.withholding_correction_none": "{document} has no withholding correction to undo.",
+  "page.withholding_corrections": "Withholding corrections",
+  "tax.corrections_hint": "Bills from before tax codes counted withheld tax as less input tax. Tick the bills, choose a date in an open period and post their corrections: each moves the withheld tax out of input tax into withheld tax payable. Undo puts a corrected bill back on this list.",
+  "tax.corrections_post": "Post corrections",
+  "tax.corrections_none": "No bills are waiting for a withholding correction.",
+  "tax.corrections_done": "Corrected bills"
 }

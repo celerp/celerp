@@ -9383,5 +9383,13 @@
   "th.valid_to": "Berlaku sampai",
   "settings.confirm_remove_version": "Hapus versi {rate}% dari {name}?",
   "documents.tax_version_notice": "Tanggal dokumen kini setelah perubahan tarif pajak. Baris berikut masih memakai tarif sebelumnya: {lines}.",
-  "documents.tax_version_use": "Gunakan tarif yang berlaku"
+  "documents.tax_version_use": "Gunakan tarif yang berlaku",
+  "tax.withholding_correction_first": "Catat koreksi pemotongan pajak untuk tagihan {bill} terlebih dahulu, lalu terbitkan nota kredit pemasok.",
+  "tax.withholding_correction_not_needed": "{document} tidak memiliki koreksi pemotongan pajak untuk dicatat. Hanya tagihan terbit dari sebelum kode pajak yang memotong pajak yang memerlukannya.",
+  "tax.withholding_correction_none": "{document} tidak memiliki koreksi pemotongan pajak untuk dibatalkan.",
+  "page.withholding_corrections": "Koreksi pemotongan pajak",
+  "tax.corrections_hint": "Tagihan dari sebelum kode pajak mencatat pajak yang dipotong sebagai pengurang pajak masukan. Centang tagihan, pilih tanggal dalam periode terbuka, lalu posting koreksinya: setiap koreksi memindahkan pajak yang dipotong dari pajak masukan ke utang pajak potong. Batalkan mengembalikan tagihan yang sudah dikoreksi ke daftar ini.",
+  "tax.corrections_post": "Posting koreksi",
+  "tax.corrections_none": "Tidak ada tagihan yang menunggu koreksi pemotongan pajak.",
+  "tax.corrections_done": "Tagihan yang sudah dikoreksi"
 }

@@ -9383,5 +9383,13 @@
   "th.valid_to": "Hiệu lực đến",
   "settings.confirm_remove_version": "Xóa phiên bản {rate}% của {name}?",
   "documents.tax_version_notice": "Ngày chứng từ hiện đã sau một lần thay đổi thuế suất. Các dòng sau vẫn dùng thuế suất cũ: {lines}.",
-  "documents.tax_version_use": "Dùng thuế suất đang áp dụng"
+  "documents.tax_version_use": "Dùng thuế suất đang áp dụng",
+  "tax.withholding_correction_first": "Hãy ghi bút toán điều chỉnh thuế khấu trừ cho hóa đơn {bill} trước, rồi mới phát hành phiếu ghi có nhà cung cấp.",
+  "tax.withholding_correction_not_needed": "{document} không có bút toán điều chỉnh thuế khấu trừ nào cần ghi. Chỉ hóa đơn đã phát hành từ trước khi có mã thuế và có khấu trừ thuế mới cần.",
+  "tax.withholding_correction_none": "{document} không có bút toán điều chỉnh thuế khấu trừ nào để hoàn tác.",
+  "page.withholding_corrections": "Điều chỉnh thuế khấu trừ",
+  "tax.corrections_hint": "Hóa đơn mua hàng từ trước khi có mã thuế đã ghi thuế khấu trừ tại nguồn như một khoản giảm thuế đầu vào. Chọn các hóa đơn, chọn một ngày trong kỳ còn mở và ghi sổ các bút toán điều chỉnh: mỗi bút toán chuyển thuế khấu trừ tại nguồn từ thuế đầu vào sang thuế khấu trừ phải nộp. Hoàn tác đưa hóa đơn đã điều chỉnh trở lại danh sách này.",
+  "tax.corrections_post": "Ghi sổ điều chỉnh",
+  "tax.corrections_none": "Không có hóa đơn nào đang chờ điều chỉnh thuế khấu trừ.",
+  "tax.corrections_done": "Hóa đơn đã điều chỉnh"
 }

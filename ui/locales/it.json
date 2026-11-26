@@ -9383,5 +9383,13 @@
   "th.valid_to": "Valido fino al",
   "settings.confirm_remove_version": "Rimuovere la versione al {rate}% di {name}?",
   "documents.tax_version_notice": "La data del documento è ora successiva a una variazione dell'aliquota. Queste righe usano ancora l'aliquota precedente: {lines}.",
-  "documents.tax_version_use": "Usa l'aliquota in vigore"
+  "documents.tax_version_use": "Usa l'aliquota in vigore",
+  "tax.withholding_correction_first": "Registra prima la correzione della ritenuta della fattura {bill}, poi emetti la nota di credito del fornitore.",
+  "tax.withholding_correction_not_needed": "{document} non ha alcuna correzione della ritenuta da registrare. Serve solo a una fattura emessa prima dei codici d'imposta con ritenuta.",
+  "tax.withholding_correction_none": "{document} non ha alcuna correzione della ritenuta da annullare.",
+  "page.withholding_corrections": "Correzioni della ritenuta",
+  "tax.corrections_hint": "Le fatture passive precedenti ai codici imposta registravano la ritenuta come minore IVA a credito. Seleziona le fatture, scegli una data in un periodo aperto e registra le correzioni: ciascuna sposta la ritenuta dall'IVA a credito alle ritenute da versare. Annulla riporta una fattura corretta in questo elenco.",
+  "tax.corrections_post": "Registra correzioni",
+  "tax.corrections_none": "Nessuna fattura in attesa di correzione della ritenuta.",
+  "tax.corrections_done": "Fatture corrette"
 }

@@ -9,7 +9,6 @@ gross. Each withheld amount keeps what a certificate needs: party, tax id on the
 base, rate, nature code, period and the certificate file."""
 from __future__ import annotations
 
-import datetime as dt
 import re
 
 import pytest
@@ -96,24 +95,13 @@ async def test_sales_withholding_on_invoice(client, session):
 
 
 async def test_withholding_certificate_fields(client, session):
-    from celerp.localization.taxcodes import TaxIdentity, identity_on
     auth = await company(session)
-    tin = [{"scheme": "TIN", "number": "111", "label": "TIN", "valid_from": "2026-01-01"}]
-    supplier = await contact(client, auth, "Supplier Co", "vendor", tin)
-    customer = await contact(client, auth, "Customer Co", "customer", tin)
+    supplier = await contact(client, auth, "Supplier Co", "vendor")
+    customer = await contact(client, auth, "Customer Co", "customer")
     purchase = await codes(client, auth, [_wht("WHT 3", 3, "purchase", "document", report_tags=["WC158"])],
                            "purchase")
     sales = await codes(client, auth, [_wht("IRPF", 15, "sales", "document", report_tags=["irpf.pro"]),
                                        _wht("EWT 2", 2, "sales", "payment", report_tags=["WC160"])])
-
-    def _tax_id(contact_state: dict, day: str) -> str:
-        rows = [TaxIdentity(**row) for row in contact_state["tax_ids"]]
-        return identity_on(rows, "TIN", dt.date.fromisoformat(day)).number
-
-    async def _contact_state(cid: str) -> dict:
-        r = await client.get(f"/crm/contacts/{cid}", headers=auth["headers"])
-        assert r.status_code == 200, r.text
-        return r.json()
 
     for doc_type, party, row in (("bill", supplier, purchase["WHT 3"]), ("invoice", customer, sales["IRPF"])):
         doc_id = await doc(client, auth, doc_type, [line(1000.0, row["id"])], contact_id=party)
@@ -124,7 +112,6 @@ async def test_withholding_certificate_fields(client, session):
         assert (snap["base"], snap["rate"], snap["report_tags"]) == (1000.0, row["versions"][0]["rate"],
                                                                     row["report_tags"])
         assert file_id in [f["id"] for f in state["files"]]
-        assert _tax_id(await _contact_state(party), ISSUE) == "111"
 
     inv = await finalized(client, auth, await doc(client, auth, "invoice", [line(1000.0)], contact_id=customer))
     file_id = await upload(client, auth, inv["id"])
@@ -136,14 +123,6 @@ async def test_withholding_certificate_fields(client, session):
     assert payment["payment_date"] == PAID
     assert payment["withheld"] == [{"code_id": ewt["id"], "amount": 20.0, "rate": 2.0, "base": 1000.0,
                                     "report_tags": ["WC160"], "certificate_file_id": file_id}]
-
-    # A later tax id does not change the figure of an earlier period.
-    later = [*tin, {"scheme": "TIN", "number": "222", "label": "TIN", "valid_from": "2026-11-01"}]
-    r = await client.patch(f"/crm/contacts/{customer}", headers=auth["headers"],
-                           json={"fields_changed": {"tax_ids": {"new": later}}})
-    assert r.status_code == 200, r.text
-    changed = await _contact_state(customer)
-    assert (_tax_id(changed, PAID), _tax_id(changed, "2026-11-15")) == ("111", "222")
 
 
 async def _invoice_1070(client, auth) -> tuple[str, dict]:

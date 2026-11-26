@@ -401,6 +401,8 @@ REFUSAL_FIXES = {
                                "manage_accounting"),
     "error.recon_period_changed": ("/accounting/reconcile/bank/{bank_id}?view=posted", "recon.view_completed",
                                    "manage_accounting"),
+    "tax.withholding_correction_first": ("/settings/taxes/withholding-corrections", "page.withholding_corrections",
+                                         "manage_accounting"),
     "reconciliation.no_client_user": ("/settings/general?tab=users", "settings.tab_users", "manage_company_settings"),
 }
 # The settings of the company the current request acts in (get_auth_context): who holds a

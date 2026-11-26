@@ -3035,6 +3035,11 @@ async def finalize_document(
     _cn_invoice = await credit_note_original(session, company_id, _initial_doc_state, for_update=True)
     _cn_invoice_state = dict(_cn_invoice.state) if _cn_invoice is not None else None
     _scn_bill = await supplier_credit_original(session, company_id, _initial_doc_state, for_update=True)
+    if _scn_bill is not None and _scn_bill.state.get("legacy_wht_entry"):
+        # The bill still posts its withholding as before tax codes, so the note cannot mirror it.
+        raise HTTPException(status_code=409, detail=catalog_refusal(
+            "tax.withholding_correction_first", bill=_scn_bill.state.get("doc_number") or _scn_bill.state.get("ref_id")
+            or _scn_bill.entity_id.removeprefix("doc:")))
     if doc_type == "debit_note" and any(
             auto_je.bill_line_kind(li) == "stock" for li in _initial_doc_state.get("line_items") or []):
         # Goods sent back leave stock through the bill's return, which takes them off their

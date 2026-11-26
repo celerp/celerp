@@ -504,6 +504,8 @@ WAY_BACK: dict[tuple[str, str], str] = {
     ('POST', '/settings/taxes/localization/undo'): 'reason:is_undo',
     ('POST', '/settings/taxes/rate-review/{operation_id}/apply'): 'tool:POST /settings/taxes/rate-review/{operation_id}/undo',
     ('POST', '/settings/taxes/rate-review/{operation_id}/undo'): 'reason:is_undo',
+    ('POST', '/settings/taxes/withholding-corrections/{doc_id}'): 'tool:POST /settings/taxes/withholding-corrections/{doc_id}/undo',
+    ('POST', '/settings/taxes/withholding-corrections/{doc_id}/undo'): 'reason:is_undo',
     ('DELETE', '/stars/badge'): 'tool:POST /stars/badge',
     ('POST', '/stars/badge'): 'tool:DELETE /stars/badge',
     ('POST', '/stars/dismiss'): 'reason:seen',

@@ -16,8 +16,8 @@ from ui.api_client import APIError
 from ui.components.encode import call, EVENT, THIS
 from ui.components.operation_key import required_operation_key
 from ui.components.preview_confirm import confirmed_binding
-from ui.components.shell import base_shell, page_header, page_title, toast_header
-from ui.components.table import EMPTY
+from ui.components.shell import base_shell, flash, page_header, page_title, toast_header
+from ui.components.table import EMPTY, bulk_toolbar, fmt_money, select_all_th
 from ui.config import COOKIE_NAME
 from ui.i18n import doc_type_label, get_lang, refusal_text, t
 
@@ -230,6 +230,61 @@ def setup_routes(app):
     async def localization_close(request: Request):
         return Response("")
 
+    # --- Withholding corrections (S33): bills from before tax codes ---
+
+    @app.get(_CORRECTIONS)
+    async def withholding_corrections_page(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := await _check_permission(request, "manage_accounting")):
+            return r
+        try:
+            view = await api.withholding_corrections(token)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            view, refused = {}, [_refusal(e)]
+        else:
+            refused = []
+        return await base_shell(
+            _section_breadcrumb(t("page.withholding_corrections")),
+            page_header(t("page.withholding_corrections")),
+            _corrections_card(view, refused, await _today(token)),
+            title=page_title("page.withholding_corrections"),
+            nav_active="settings",
+            request=request,
+        )
+
+    async def _today(token: str) -> str:
+        """The company's business day, the date a correction is posted on unless changed."""
+        return business_today((await _get_company(token)).get("timezone")).isoformat()
+
+    async def _corrections_bulk(request: Request, act) -> FT:
+        """Run ``act`` on every ticked bill, then the card re-read; each refusal is listed."""
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        form = await request.form()
+        refused = []
+        for doc_id in dict.fromkeys(form.getlist("selected")):
+            try:
+                await act(token, doc_id, form)
+            except APIError as e:
+                if e.status == 401:
+                    return P(t("error.session_expired"), cls="cell-error")
+                refused.append(_refusal(e))
+        return _corrections_card(await api.withholding_corrections(token), refused, await _today(token))
+
+    @app.post(_CORRECTIONS + "/post")
+    async def withholding_corrections_post(request: Request):
+        return await _corrections_bulk(
+            request, lambda token, doc_id, form: api.withholding_correct(token, doc_id, str(form.get("date") or "")))
+
+    @app.post(_CORRECTIONS + "/undo")
+    async def withholding_corrections_undo(request: Request):
+        return await _corrections_bulk(request, lambda token, doc_id, form: api.withholding_correction_undo(token, doc_id))
+
     @app.get("/settings/sales")
     async def settings_sales_page(request: Request):
         token = _token(request)
@@ -387,6 +442,41 @@ def setup_routes(app):
         except APIError as e:
             return Span(_refusal(e), cls="cell-error")
         return Span(t("msg.saved"))
+
+
+_CORRECTIONS = "/settings/taxes/withholding-corrections"
+
+
+def _corrections_card(view: dict, refused: list[str], today: str) -> FT:
+    """Withholding corrections: the bills waiting for theirs, ticked and posted on one date with
+    the bulk toolbar, and the corrected bills, ticked and undone the same way."""
+    def table(table_id: str, docs: list[dict]) -> FT:
+        def row(doc: dict) -> FT:
+            return Tr(Td(Input(type="checkbox", cls="bulk-select", name="selected", value=doc["doc_id"]),
+                         cls="col-checkbox"),
+                      Td(A(doc["number"], href=f"/docs/{doc['doc_id']}")), Td(doc.get("contact_name") or EMPTY),
+                      Td(doc.get("issue_date") or EMPTY),
+                      Td(fmt_money(doc.get("withheld") or 0, doc.get("currency")), cls="cell--number"), cls="data-row")
+        return Div(Table(Thead(Tr(select_all_th(), Th(t("th.number")), Th(t("th.contact")), Th(t("th.date")),
+                                  Th(t("documents.withheld"), cls="cell--number"))),
+                         Tbody(*[row(doc) for doc in docs]), cls="data-table", id=table_id),
+                   cls="table-scroll-wrap")
+
+    def action(value: str, label: str, path: str, **extra) -> dict:
+        return {"value": value, "label": label, "method": "post", "url": _CORRECTIONS + path,
+                "target": "#withholding-corrections", "swap": "outerHTML", **extra}
+
+    bills, corrected = view.get("bills") or [], view.get("corrected") or []
+    day = Input(type="date", name="date", value=today,
+                cls="form-input form-input--sm bulk-field")
+    waiting = (bulk_toolbar("corrections-waiting", [action("post", t("tax.corrections_post"), "/post", fields=True)],
+                            fields=[day]),
+               table("corrections-waiting", bills)) if bills else (P(t("tax.corrections_none"), cls="hint"),)
+    done = (H4(t("tax.corrections_done")),
+            bulk_toolbar("corrections-done", [action("undo", t("btn.undo"), "/undo")]),
+            table("corrections-done", corrected)) if corrected else ()
+    return Div(*[flash(text) for text in refused], P(t("tax.corrections_hint"), cls="text-muted"),
+               *waiting, *done, id="withholding-corrections")
 
 
 def _refusal(e: APIError) -> str:

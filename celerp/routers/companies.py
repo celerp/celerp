@@ -25,7 +25,7 @@ from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.importers.results import BatchImportResult, record_refused, row_flag, row_n, row_refusal
 from celerp.localization import COUNTRY_CODE
-from celerp.localization.taxcodes import TaxCategory, TaxCode, TaxVersion, list_fingerprint
+from celerp.localization.taxcodes import TaxCategory, TaxCode, TaxListRefused, TaxVersion, list_fingerprint
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.agent_markers import agent_excluded, agent_gate
@@ -1708,7 +1708,7 @@ async def _save_tax_list(session: AsyncSession, company_id, user_id, side: str, 
     await _refuse_removing_used_codes(session, company_id, current, held - {row["id"] for row in rows})
     try:
         settings = with_taxes(dict(company.settings), side, rows)
-    except ValueError as exc:
+    except TaxListRefused as exc:  # rows are valid codes already; the list as a whole may not be
         raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
     company.settings = settings
     await map_tax_roles(session, company_id, settings, user_id)

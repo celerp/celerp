@@ -9383,5 +9383,13 @@
   "th.valid_to": "Valable au",
   "settings.confirm_remove_version": "Supprimer la version à {rate}% de {name} ?",
   "documents.tax_version_notice": "La date du document est désormais postérieure à un changement de taux de taxe. Ces lignes utilisent encore l'ancien taux : {lines}.",
-  "documents.tax_version_use": "Utiliser le taux en vigueur"
+  "documents.tax_version_use": "Utiliser le taux en vigueur",
+  "tax.withholding_correction_first": "Enregistrez d'abord la correction de la retenue de la facture {bill}, puis émettez l'avoir fournisseur.",
+  "tax.withholding_correction_not_needed": "{document} n'a aucune correction de retenue à enregistrer. Seule une facture émise avant les codes de taxe et soumise à une retenue en a besoin.",
+  "tax.withholding_correction_none": "{document} n'a aucune correction de retenue à annuler.",
+  "page.withholding_corrections": "Corrections de retenue",
+  "tax.corrections_hint": "Les factures fournisseur antérieures aux codes de taxe comptaient la retenue comme une TVA déductible moindre. Cochez les factures, choisissez une date dans une période ouverte et passez leurs corrections : chacune transfère la retenue de la TVA déductible vers les retenues à payer. Annuler remet une facture corrigée dans cette liste.",
+  "tax.corrections_post": "Passer les corrections",
+  "tax.corrections_none": "Aucune facture n'attend de correction de retenue.",
+  "tax.corrections_done": "Factures corrigées"
 }

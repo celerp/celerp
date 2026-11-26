@@ -9383,5 +9383,13 @@
   "th.valid_to": "Válido até",
   "settings.confirm_remove_version": "Remover a versão de {rate}% de {name}?",
   "documents.tax_version_notice": "A data do documento agora é posterior a uma alteração de taxa de imposto. Estas linhas ainda usam a taxa anterior: {lines}.",
-  "documents.tax_version_use": "Usar a taxa em vigor"
+  "documents.tax_version_use": "Usar a taxa em vigor",
+  "tax.withholding_correction_first": "Registre primeiro a correção da retenção da fatura {bill} e depois emita a nota de crédito do fornecedor.",
+  "tax.withholding_correction_not_needed": "{document} não tem correção de retenção a registrar. Só precisa dela uma fatura emitida antes dos códigos de imposto que reteve imposto.",
+  "tax.withholding_correction_none": "{document} não tem correção de retenção a desfazer.",
+  "page.withholding_corrections": "Correções de retenção",
+  "tax.corrections_hint": "As faturas de fornecedor anteriores aos códigos de imposto registavam a retenção como menos imposto dedutível. Marque as faturas, escolha uma data num período aberto e lance as correções: cada uma passa a retenção do imposto dedutível para retenções a pagar. Desfazer devolve uma fatura corrigida a esta lista.",
+  "tax.corrections_post": "Lançar correções",
+  "tax.corrections_none": "Nenhuma fatura aguarda correção de retenção.",
+  "tax.corrections_done": "Faturas corrigidas"
 }

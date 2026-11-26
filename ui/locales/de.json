@@ -9383,5 +9383,13 @@
   "th.valid_to": "Gültig bis",
   "settings.confirm_remove_version": "Die Version mit {rate}% von {name} entfernen?",
   "documents.tax_version_notice": "Das Belegdatum liegt jetzt nach einer Steuersatzänderung. Diese Positionen verwenden noch den früheren Satz: {lines}.",
-  "documents.tax_version_use": "Geltenden Satz verwenden"
+  "documents.tax_version_use": "Geltenden Satz verwenden",
+  "tax.withholding_correction_first": "Buchen Sie zuerst die Quellensteuer-Korrektur für die Rechnung {bill} und stellen Sie dann die Lieferantengutschrift aus.",
+  "tax.withholding_correction_not_needed": "Für {document} ist keine Quellensteuer-Korrektur zu buchen. Nur eine ausgestellte Rechnung aus der Zeit vor den Steuercodes mit einbehaltener Steuer braucht eine.",
+  "tax.withholding_correction_none": "Für {document} gibt es keine Quellensteuer-Korrektur zum Rückgängigmachen.",
+  "page.withholding_corrections": "Quellensteuer-Korrekturen",
+  "tax.corrections_hint": "Rechnungen aus der Zeit vor den Steuercodes haben einbehaltene Steuer als geringere Vorsteuer gebucht. Markieren Sie die Rechnungen, wählen Sie ein Datum in einer offenen Periode und buchen Sie die Korrekturen: Jede verschiebt die einbehaltene Steuer aus der Vorsteuer in die abzuführende Quellensteuer. Rückgängig setzt eine korrigierte Rechnung wieder auf diese Liste.",
+  "tax.corrections_post": "Korrekturen buchen",
+  "tax.corrections_none": "Keine Rechnung wartet auf eine Quellensteuer-Korrektur.",
+  "tax.corrections_done": "Korrigierte Rechnungen"
 }

@@ -1210,6 +1210,26 @@ async def rate_review_undo(token: str, operation_id: str) -> dict:
         return _raise(await c.post(f"/settings/taxes/rate-review/{_segment(operation_id)}/undo")).json()
 
 
+async def withholding_corrections(token: str) -> dict:
+    """GET /settings/taxes/withholding-corrections: the bills from before tax codes still waiting
+    for their withholding correction (``bills``) and those corrected (``corrected``)."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/settings/taxes/withholding-corrections")).json()
+
+
+async def withholding_correct(token: str, doc_id: str, day: str) -> dict:
+    """POST /settings/taxes/withholding-corrections/{doc_id}: post the bill's correction on ``day``."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/settings/taxes/withholding-corrections/{_segment(doc_id)}",
+                                   json={"date": day})).json()
+
+
+async def withholding_correction_undo(token: str, doc_id: str) -> dict:
+    """POST /settings/taxes/withholding-corrections/{doc_id}/undo: reverse the bill's correction."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/settings/taxes/withholding-corrections/{_segment(doc_id)}/undo")).json()
+
+
 async def set_business_type(token: str, vertical: str) -> dict:
     """Set the company's business type. Returns the API result, including
     ``restart_required`` when the type's modules are not running yet."""

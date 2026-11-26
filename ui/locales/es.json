@@ -9383,5 +9383,13 @@
   "th.valid_to": "Válido hasta",
   "settings.confirm_remove_version": "¿Quitar la versión del {rate}% de {name}?",
   "documents.tax_version_notice": "La fecha del documento es ahora posterior a un cambio de tipo impositivo. Estas líneas siguen usando el tipo anterior: {lines}.",
-  "documents.tax_version_use": "Usar el tipo vigente"
+  "documents.tax_version_use": "Usar el tipo vigente",
+  "tax.withholding_correction_first": "Registra primero la corrección de la retención de la factura {bill} y después emite la nota de crédito del proveedor.",
+  "tax.withholding_correction_not_needed": "{document} no tiene ninguna corrección de retención que registrar. Solo la necesita una factura emitida antes de los códigos de impuesto que retuvo impuesto.",
+  "tax.withholding_correction_none": "{document} no tiene ninguna corrección de retención que deshacer.",
+  "page.withholding_corrections": "Correcciones de retención",
+  "tax.corrections_hint": "Las facturas de proveedor anteriores a los códigos de impuesto registraron la retención como menos impuesto soportado. Marque las facturas, elija una fecha en un periodo abierto y registre sus correcciones: cada una pasa la retención del impuesto soportado a retenciones por pagar. Deshacer devuelve una factura corregida a esta lista.",
+  "tax.corrections_post": "Registrar correcciones",
+  "tax.corrections_none": "No hay facturas pendientes de corrección de retención.",
+  "tax.corrections_done": "Facturas corregidas"
 }

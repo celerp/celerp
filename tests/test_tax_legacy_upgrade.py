@@ -47,8 +47,8 @@ def _ref(doc_id: str) -> str:
 async def test_legacy_wht_bill_paths_after_upgrade(client, session):
     """An upgraded old-shape bill goes through payment, voided payment, void, unvoid and
     re-finalizing; re-finalizing posts the new shape (input tax in full, the withholding owed to
-    the tax office) and clears the flag. A supplier note against a flagged bill is refused with
-    the way to the correction; once corrected it applies at most what the bill owes. The books
+    the tax office) and clears the flag. Issuing a supplier note against a flagged bill is refused
+    with the way to the correction; once corrected it applies at most what the bill owes. The books
     balance and replay to the stored projections after every step."""
     auth = await old_shape_company(session)
     bill = await old_bill(session, auth)
@@ -81,13 +81,14 @@ async def test_legacy_wht_bill_paths_after_upgrade(client, session):
 
     note = {"doc_type": "debit_note", "contact_id": "supplier:1", "original_doc_id": other, "issue_date": "2026-10-01",
             "line_items": [line(1100.0)]}
-    r = await client.post("/docs", headers=auth["headers"], json=note)
+    draft = ok(await client.post("/docs", headers=auth["headers"], json=note))["id"]
+    r = await post(client, auth, f"/docs/{draft}/finalize")
     assert r.status_code == 409
     assert f"Post the withholding correction for bill {_ref(other)} first" in r.text and _CORRECTIONS in r.text
     await _books_hold(session, auth)
 
     ok(await post(client, auth, f"{_CORRECTIONS}/{other}", {"date": "2026-10-15"}))
-    await finalized(client, auth, await doc(client, auth, "debit_note", [line(1100.0)], original_doc_id=other))
+    await finalized(client, auth, draft)
     assert (await get(client, auth, other))["amount_outstanding"] == 0  # applied 1040 of the 1100
     await _books_hold(session, auth)
 
@@ -109,14 +110,14 @@ async def test_legacy_wht_correction_entry_and_undo(client, session):
     after = await roles(session, auth)
     assert round(after["tax_input"] - before["tax_input"], 2) == 30.0
     assert round(after["tax_withheld_payable"] - before.get("tax_withheld_payable", 0), 2) == -30.0
-    entries = {k: v for k, v in (await _journal(session, auth)).items() if f"wht-fix:{bill}:0" in k}
+    entries = {k: v for k, v in (await _journal(session, auth)).items() if f"{bill}:wht-fix:0" in k}
     assert len(entries) == 1 and next(iter(entries.values()))["entry_date"].startswith("2026-10-15")
     state = await get(client, auth, bill)
     assert not state.get("legacy_wht_entry") and state["withholding_correction"] == next(iter(entries))
 
     r = await post(client, auth, f"{_CORRECTIONS}/{bill}", {"date": "2026-10-16"})
     assert r.status_code == 422
-    assert len([k for k in await _journal(session, auth) if f"wht-fix:{bill}:" in k]) == 1
+    assert len([k for k in await _journal(session, auth) if f"{bill}:wht-fix:" in k]) == 1
 
     ok(await post(client, auth, f"{_CORRECTIONS}/{bill}/undo"))
     assert await roles(session, auth) == before
@@ -128,7 +129,7 @@ async def test_legacy_wht_correction_entry_and_undo(client, session):
     ok(await post(client, auth, "/accounting/period-lock", {"lock_date": None}))
     assert (await post(client, auth, f"{_CORRECTIONS}/{bill}", {"date": "2026-09-01"})).status_code == 422
     ok(await post(client, auth, f"{_CORRECTIONS}/{bill}", {"date": "2026-11-05"}))
-    assert any(f"wht-fix:{bill}:1" in k for k in await _journal(session, auth))
+    assert any(f"{bill}:wht-fix:1" in k for k in await _journal(session, auth))
     await _books_hold(session, auth)
 
 

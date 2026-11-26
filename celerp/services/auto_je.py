@@ -3335,11 +3335,12 @@ async def void_supplier_return(session, *, company_id, user_id, doc_id: str, ret
 # fin:{cycle} after reverts), bill conversion, the one-time COGS backfill, the
 # fulfillment COGS adjustment (cogs-adj:{cycle_tag}), and the COGS an invoice
 # booked at fulfillment before COGS moved into the finalize JE (fulfill,
-# fulfill-{cycle}), which no flow posts or reverses any more. These are what a
+# fulfill-{cycle}), which no flow posts or reverses any more, and the withholding
+# correction of an upgraded bill (wht-fix:{n}). These are what a
 # doc void or revert to draft reverses and an unvoid restores. Settlement and
 # stock-movement JEs (payments, credit-note applications, receiving, landed
 # cost, returns) are not recognition: they reverse through their own flows.
-_RECOGNITION_FAMILIES = ("fin", "bill", "cogs-backfill", "cogs-adj")
+_RECOGNITION_FAMILIES = ("fin", "bill", "cogs-backfill", "cogs-adj", "wht-fix")
 _FULFILLMENT_COGS = re.compile(r"fulfill(?:-\d+)?")
 # The entries of a bill's own receipts and returns to the supplier: the goods, the landed
 # cost the receipts capitalised and the returns expensed, and the returns' tax reversed when
