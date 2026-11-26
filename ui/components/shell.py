@@ -969,12 +969,12 @@ function quietError(e) {
   return !!(el && el.closest && el.closest('[data-quiet-error]'));
 }
 
-/* A short plain-text or JSON {detail} reply already says what went wrong;
-   anything else (an HTML page, a long body) gets the general message. */
-function serverErrorText(xhr) {
-  if (!xhr) return '';
-  var type = xhr.getResponseHeader('Content-Type') || '';
-  var body = xhr.responseText || '';
+/* A short plain-text or JSON {detail} reply (its content type and body, read from htmx or
+   a fetch) already says what went wrong; anything else (an HTML page, a long body) gets
+   the general message. */
+function serverErrorText(type, body) {
+  type = type || '';
+  body = body || '';
   var text = '';
   if (type.indexOf('text/plain') === 0) {
     text = body;
@@ -987,7 +987,9 @@ function serverErrorText(xhr) {
 
 document.addEventListener('htmx:responseError', function(e) {
   if (quietError(e)) return;
-  showGlobalUiError(serverErrorText(e.detail && e.detail.xhr) || window.__shellI18n.requestFailed);
+  var xhr = e.detail && e.detail.xhr;
+  showGlobalUiError((xhr && serverErrorText(xhr.getResponseHeader('Content-Type'), xhr.responseText))
+                    || window.__shellI18n.requestFailed);
 });
 
 document.addEventListener('htmx:sendError', function(e) {

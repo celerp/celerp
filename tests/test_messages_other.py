@@ -300,7 +300,7 @@ def test_shell_errors_show_the_message_not_the_request_path():
     assert texts["networkError"] == t("shell.network_error", "en")
     assert "unknownRequest" not in texts
     assert "requestPath" not in shell._CLIENT_JS
-    assert "serverErrorText(e.detail && e.detail.xhr)" in shell._CLIENT_JS
+    assert "serverErrorText(xhr.getResponseHeader('Content-Type'), xhr.responseText)" in shell._CLIENT_JS
 
 
 def test_unusable_rate_is_one_sentence_naming_the_value():

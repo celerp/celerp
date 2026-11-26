@@ -191,6 +191,33 @@ def test_a_column_change_or_reset_that_cannot_save_says_so_and_stays(page, ui_se
 
 
 @pytest.mark.parametrize("path", _COLUMN_PAGES)
+def test_a_refused_column_save_shows_the_servers_refusal_as_other_saves_do(page, ui_server, lists_with_rows, path):
+    """The column save reads a refusal the way every other save does: a short plain-text
+    refusal is shown as written; an answer with no readable refusal shows the general notice."""
+    refusal = "Column setup is kept for at most 60 tables."
+    answers = iter([(422, "text/plain; charset=utf-8", refusal),
+                    (500, "text/html", "<html><body>Internal Server Error</body></html>")])
+
+    def refuse(route):
+        if route.request.method != "POST":
+            return route.continue_()
+        status, ctype, body = next(answers)
+        route.fulfill(status=status, content_type=ctype, body=body)
+    page.route("**/column-prefs", refuse)
+    page.goto(f"{ui_server}{path}", wait_until="load")
+    htmx_idle(page)
+    error = page.locator("#global-ui-error")
+    with page.expect_response("**/column-prefs"):
+        _toggle_first_optional_column(page)
+    expect(error).to_contain_text(refusal)
+    general = page.evaluate("window.__shellI18n.requestFailed")
+    assert refusal not in general
+    with page.expect_response("**/column-prefs"):
+        page.locator("#col-mgr-menu input[type=checkbox]:not(:disabled)").last.click()
+    expect(error).to_contain_text(general)
+
+
+@pytest.mark.parametrize("path", _COLUMN_PAGES)
 def test_a_column_change_and_reset_that_save_show_on_the_table(page, ui_server, lists_with_rows, path):
     page.goto(f"{ui_server}{path}", wait_until="load")
     htmx_idle(page)

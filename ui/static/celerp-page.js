@@ -234,9 +234,13 @@
                                          body: JSON.stringify(change)});
   }
   function saveColumns(change) {
-    return postColumns(change)
-      .then(function (r) { if (!r.ok) throw new Error(r.status); return true; })
-      .catch(function () { showGlobalUiError(window.__shellI18n.requestFailed); return false; });
+    return postColumns(change).then(function (r) {
+      if (r.ok) return true;
+      return r.text().then(function (body) {
+        showGlobalUiError(serverErrorText(r.headers.get('Content-Type'), body) || window.__shellI18n.requestFailed);
+        return false;
+      });
+    }).catch(function () { showGlobalUiError(window.__shellI18n.networkError); return false; });
   }
 
   // Before the setup lived on the server each browser kept its own copy. The first page that
