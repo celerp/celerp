@@ -29,6 +29,7 @@ from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.api_client import migration_staged_run as api_migration_staged_run
 from ui.components.shell import auth_shell, client_scripts, flash, landing_path, page_title, sign_in_fields
+from ui.components.branding import logo
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies, get_role, get_token
 from ui.i18n import t, get_lang
 from celerp.services import backup_import
@@ -48,7 +49,7 @@ START_COMPANY_MIGRATE = f"{START_COMPANY}/migrate"
 def auth_header(title: str, subtitle: str = "") -> FT:
     """The logo, title and optional subtitle that open every sign-in and setup card."""
     return Div(
-        Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+        logo("auth-logo"),
         H1(title, cls="auth-title"),
         P(subtitle, cls="auth-subtitle") if subtitle else "",
         cls="auth-header",
@@ -965,7 +966,7 @@ def _direct_connection_gate(email: str, password: str, next_url: str) -> FT:
 
     return Div(
         Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+            logo("auth-logo"),
             H2(t("page.direct_connections_are_one_at_a_time"),
                style="font-size:18px;"),
             P(
@@ -999,7 +1000,7 @@ def _direct_connection_gate(email: str, password: str, next_url: str) -> FT:
 def _api_error_page(message: str) -> FT:
     return Div(
         Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+            logo("auth-logo"),
             H1(t("page.api_unavailable"), cls="auth-title"),
             P(message, cls="auth-subtitle text-danger"),
             A(t("btn.retry"), href="/login", cls="btn btn--primary mt-md"),

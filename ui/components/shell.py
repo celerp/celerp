@@ -18,6 +18,7 @@ from ui.i18n import t, get_lang, available_langs, lang_label, may_take, refusal_
 from ui.components.doc_money import DOC_MONEY_JS
 from ui.components.encode import js_value, safe_url
 from ui.components.icons import icon
+from ui.components.branding import favicon_links, logo
 from ui.components.preview_confirm import preview_confirm_script
 from ui.components.table import searchable_select
 
@@ -2402,15 +2403,6 @@ def client_scripts(lang: str = "en", request=None) -> list:
     ]
 
 
-def _favicon_links() -> tuple[FT, ...]:
-    """The Celerp shield icon set, made from the same master as the desktop app icon."""
-    return (
-        Link(rel="icon", type="image/x-icon", href="/static/favicon.ico"),
-        Link(rel="icon", type="image/png", sizes="32x32", href="/static/favicon-32x32.png"),
-        Link(rel="apple-touch-icon", sizes="180x180", href="/static/apple-touch-icon.png"),
-    )
-
-
 def _redirect_notice(request, lang: str) -> list:
     """Why the caller was sent here, on whichever page answers the redirect: the
     dashboard, or the page standing in for it where the company turned it off
@@ -2471,7 +2463,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Meta(charset="utf-8"),
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
         Title(title),
-        *_favicon_links(),
+        *favicon_links(),
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         *client_scripts(lang, request),
         Script(ESC_BLURS_FIELD),
@@ -2529,7 +2521,7 @@ def _minimal_sidebar() -> FT:
     permission-dependent nav is ever computed or shown."""
     return Nav(
         Div(
-            A(Img(src="/static/logo.png", alt="Celerp", cls="sidebar-logo"), href="/dashboard"),
+            A(logo("sidebar-logo"), href="/dashboard"),
             cls="sidebar-logo-wrap",
         ),
         cls="sidebar",
@@ -3186,7 +3178,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         )
     return Nav(
         Div(
-            A(Img(src="/static/logo.png", alt="Celerp", cls="sidebar-logo"), href="/dashboard"),
+            A(logo("sidebar-logo"), href="/dashboard"),
             cls="sidebar-logo-wrap",
         ),
         *sections,
@@ -3208,7 +3200,7 @@ def auth_shell(*content, title: str = "Celerp") -> FT:
             Meta(charset="utf-8"),
             Meta(name="viewport", content="width=device-width, initial-scale=1"),
             Title(title),
-            *_favicon_links(),
+            *favicon_links(),
             Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
             Script(ESC_BLURS_FIELD),
         ),

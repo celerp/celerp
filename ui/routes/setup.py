@@ -18,6 +18,7 @@ import json
 import logging
 
 from ui.components.icons import icon
+from ui.components.branding import logo
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
@@ -435,7 +436,7 @@ def _company_setup_form(values: dict, error: str | None = None) -> FT:
     company."""
     return Div(
         Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+            logo("auth-logo"),
             H1(t("setup.finish_title"), cls="auth-title"),
             cls="auth-header",
         ),
@@ -456,7 +457,7 @@ def _activating_form(lang: str = "en") -> FT:
     """Spinner page shown while server restarts to load new modules."""
     return Div(
         Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+            logo("auth-logo"),
             H1(t("page.activating_your_modules"), cls="auth-title"),
             P(t("setup.your_erp_is_being_configured_this_takes_just_a_mom"), cls="auth-subtitle"),
             cls="auth-header",
@@ -613,7 +614,7 @@ def _cloud_form() -> FT:
     ]
     return Div(
         Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+            logo("auth-logo"),
             H1(t("page.one_last_thing"), cls="auth-title"),
             P(
                 t("setup.cloud_subtitle"),
@@ -676,7 +677,7 @@ def _new_company_form(error: str = "", lang: str = "en") -> FT:
     back_link = P(A(t("btn.back", lang), href="/setup/new-company", cls="auth-link"), cls="auth-footer-text")
     return Div(
         Div(
-            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+            logo("auth-logo"),
             H1(t("setup.new_company_title", lang), cls="auth-title"),
             P(t("setup.new_company_subtitle", lang), cls="auth-subtitle"),
             cls="auth-header",
