@@ -2547,7 +2547,6 @@
   "error.attachment_not_found": "Celerp ይህን አባሪ ማግኘት አልቻለም። ተሰርዞ ሊሆን ይችላል። እንደገና ሞክር ይምረጡ።",
   "error.auto_je_unbalanced": "{memo}: የዚህ መዝገብ ሁለቱ ጎኖች አይዛመዱም ({debits} ከ {credits} {currency} ጋር)። መጠኖቹን ያረጋግጡና እንደገና ይሞክሩ።",
   "error.cogs_line_unknown": "Celerp ዕቃዎቹ {items} በደረሰኝ {doc} በየትኛው መስመር እንደተላኩ ማወቅ አይችልም፣ ስለዚህ ወጪያቸው ሊመዘገብ አይችልም እና ምንም አልተቀየረም። ለማስተካከል «ወደ ረቂቅ መልስ»ን፣ ከዚያም «እትም የሽያጭ ደረሰኝ»ን ይምረጡ፤ ከዚያ ደረሰኙ እንደተለመደው መላክ ይችላል።",
-  "error.output_tax_negative": "የዚህ ሰነድ ግብሮች ድምር ከዜሮ ያንሳል። ሽያጭ አሉታዊ ግብር ሊይዝ አይችልም፤ የተቀናሽ ግብሩን ያስወግዱ፣ ከዚያ እንደገና ያጠናቅቁ።",
   "error.backup_tool_missing": "በዚህ ኮምፒውተር ላይ የዳታቤዝ መሣሪያ ስለሌለ ምትኬ መፍጠር አልተቻለም። Celerpን የጫነውን ሰው PostgreSQL client tools እንዲጭን ይጠይቁ።",
   "error.restore_tool_missing": "በዚህ ኮምፒውተር ላይ የዳታቤዝ መሣሪያ ስለሌለ ምትኬውን መመለስ አልተቻለም። Celerpን የጫነውን ሰው PostgreSQL client tools እንዲጭን ይጠይቁ።",
   "error.backup_timed_out": "ምትኬው ከ5 ደቂቃ በላይ ስለወሰደ ቆሟል። Celerpን የሚጠቀሙ ሰዎች ሲያንሱ እንደገና ይሞክሩ፤ መከሰቱን ከቀጠለ በGitHub Issues ወይም Discussions ይጠይቁ።",

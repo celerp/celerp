@@ -2628,7 +2628,6 @@
   "error.attachment_not_found": "Celerp couldn't find this attachment. It may have been deleted. Select Try again.",
   "error.auto_je_unbalanced": "{memo}: the two sides of this entry don't match ({debits} against {credits} {currency}). Check the amounts and try again.",
   "error.cogs_line_unknown": "Celerp can't tell which line of invoice {doc} the goods {items} were shipped on, so their cost can't be booked and nothing was changed. To put it right, select Revert to Draft, then Issue Invoice, and the invoice can be shipped as usual.",
-  "error.output_tax_negative": "This document's taxes add up to less than zero. A sale can't carry negative tax, so remove the withholding tax from it, then finalize again.",
   "error.backup_tool_missing": "The backup couldn't be made because a database tool is missing on this computer. Ask whoever installed Celerp to install the PostgreSQL client tools.",
   "error.restore_tool_missing": "The backup couldn't be restored because a database tool is missing on this computer. Ask whoever installed Celerp to install the PostgreSQL client tools.",
   "error.backup_timed_out": "The backup took longer than 5 minutes and was stopped. Try again when fewer people are using Celerp; if it keeps happening, ask on GitHub Issues or Discussions.",

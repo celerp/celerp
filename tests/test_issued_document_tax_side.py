@@ -134,22 +134,6 @@ async def test_an_issued_credit_note_imported_with_withholding_tax_is_refused(cl
     assert await _entries(session) == before
 
 
-async def test_an_issued_credit_note_whose_tax_is_below_zero_is_refused(client, session):
-    """No rate to read the side from: the tax amount itself is below zero."""
-    h = await _company(client)
-    invoice = await _invoice(client, h)
-    before = await _entries(session)
-    eid, r = await _import(client, h, {"doc_type": "credit_note", "status": "final", "issue_date": "2026-10-01",
-                                       "original_doc_id": invoice, "line_items": [
-                                           {"description": "Service", "quantity": 1, "unit_price": 1000.0,
-                                            "line_total": 1000.0}],
-                                       "subtotal": 1000.0, "tax": -30.0, "total": 970.0, "amount_paid": 0.0,
-                                       "amount_outstanding": 970.0})
-    assert r.status_code in (409, 422), r.text
-    assert (await client.get(f"/docs/{eid}", headers=h)).status_code == 404
-    assert await _entries(session) == before
-
-
 async def test_an_issued_bill_imported_with_a_sales_tax_is_refused(client, session):
     h = await _company(client)
     before = await _entries(session)

@@ -297,6 +297,8 @@ READERS = {
         (_DOCS + "migration_sink.py", 'total - tax'), (_DOCS + "routes.py", 'bill_line_charges('),
         (_DOCS + "routes.py", 'get("tax"'), (_DOCS + "routes_share.py", 'get("tax"'),
         ("ui/routes/documents.py", 'get("tax"'), ("ui/routes/documents.py", 'total - discount + tax'),
+        # A scanned receipt's tax, read to suggest a bank line's posting: no document's figure.
+        (_ACC + "suggest.py", 'get("tax"'),
     },
     "amount_due": {
         ("celerp/services/doc_balance.py", 'def outstanding_balance'),

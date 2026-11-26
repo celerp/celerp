@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from celerp.services.doc_balance import MEMO_DRAW_STATUSES
 from celerp.services.list_behavior import FINALIZED
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
-from celerp.tax_regimes import charged, line_tax_unset, tax_entries, tax_text, unreadable_tax
+from celerp.tax_regimes import charged, line_tax_unset, tax_entries, tax_text, unreadable_tax, withheld_on_document
 from celerp_docs.doc_constants import (DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DOC_TYPES,
                                       INBOUND_DRAFT_REVERT_STATUSES)
 from celerp.localization.taxcodes import LineTaxSnapshot
@@ -216,11 +216,14 @@ def _recompute_tax_applications(entries: list, base, currency: str, inclusive: b
     """Recompute stored tax definitions against a new base, never stale amounts; with
     *inclusive*, *base* already holds them (compute_tax_amounts). The entries were checked first
     (refuse_malformed_taxes). Returns the snapshots and what they charge (a self-assessed tax
-    keeps its amount on the snapshot and charges nothing)."""
+    keeps its amount on the snapshot and charges nothing) and what they withhold on the document
+    (withheld_on_document)."""
     resolved = compute_tax_amounts([_definition(value) for value in entries],
                                    to_stored_float(round_money(base, currency)), currency, inclusive=inclusive)
-    return [item.model_dump() for item in resolved], sum(
-        (to_decimal(item.amount) for item in resolved if charged(item)), to_decimal(0))
+
+    def total(keep) -> Decimal:
+        return sum((to_decimal(item.amount) for item in resolved if keep(item)), to_decimal(0))
+    return [item.model_dump() for item in resolved], total(charged), total(withheld_on_document)
 
 
 def line_tax_definition(line: dict) -> tuple[list[dict], Decimal]:
@@ -499,7 +502,9 @@ def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     computed on the lines (line taxes, a line or header rate, document taxes): each is
     back-calculated from its gross on its own (compute_tax_amounts), the subtotal is net of
     them and the total is the prices less the discount. Shipping is a charge, not a price: its
-    taxes are added to it either way."""
+    taxes are added to it either way. ``withheld`` is what the taxes withheld on the document
+    keep back from what is owed (withheld_on_document): it is in no tax or total, and what is
+    owed is the total less it (amount_due)."""
     inclusive = bool(state.get("prices_include_tax"))
     subtotal = round_money(
         sum((_line_amount(line, currency) for line in lines if isinstance(line, dict)), to_decimal(0)),
@@ -515,6 +520,7 @@ def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     ratio = taxable / subtotal if subtotal > 0 else to_decimal(1)
 
     line_tax_total = to_decimal(0)
+    withheld = to_decimal(0)
     has_line_tax = False
     for line in lines:
         if not isinstance(line, dict):
@@ -522,9 +528,10 @@ def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
         base = _line_amount(line, currency) * ratio
         line_taxes, rate = line_tax_definition(line)
         if line_taxes:
-            resolved, amount = _recompute_tax_applications(line_taxes, base, currency, inclusive)
+            resolved, amount, kept = _recompute_tax_applications(line_taxes, base, currency, inclusive)
             line["taxes"] = resolved
             line_tax_total += amount
+            withheld += kept
             has_line_tax = True
         elif rate:
             line_tax_total += _rate_tax(base, rate, currency, inclusive)
@@ -537,11 +544,13 @@ def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     shipping_taxes = tax_entries(state.get("shipping_taxes"))
     shipping_tax = to_decimal(0)
     if shipping_taxes:
-        result["shipping_taxes"], shipping_tax = _recompute_tax_applications(shipping_taxes, shipping, currency)
+        result["shipping_taxes"], shipping_tax, kept = _recompute_tax_applications(shipping_taxes, shipping, currency)
+        withheld += kept
     doc_taxes = tax_entries(state.get("doc_taxes"))
     if doc_taxes:
-        resolved_doc_taxes, doc_tax_total = _recompute_tax_applications(
+        resolved_doc_taxes, doc_tax_total, kept = _recompute_tax_applications(
             doc_taxes, taxable - line_tax_total if inclusive else taxable, currency, inclusive)
+        withheld += kept
         result["doc_taxes"] = resolved_doc_taxes
         tax_total = line_tax_total + doc_tax_total
     elif has_line_tax or shipping_taxes:
@@ -562,6 +571,7 @@ def _derived_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     result["subtotal"] = to_stored_float(subtotal - included)
     result["tax"] = to_stored_float(tax_total)
     result["total"] = to_stored_float(round_money(taxable - included + tax_total + shipping, currency))
+    result["withheld"] = to_stored_float(withheld)
     return result
 
 

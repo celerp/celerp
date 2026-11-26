@@ -108,11 +108,28 @@ def get_regime(country_code: str | None) -> dict:
 SELF_ASSESSED = ("reverse_charge", "self_assessed_import")
 
 
+def _field(tax, name: str):
+    return tax.get(name) if isinstance(tax, dict) else getattr(tax, name)
+
+
 def charged(tax) -> bool:
-    """Whether a tax snapshot (a LineTaxSnapshot or its stored dict) is charged on the document:
-    every tax but a self-assessed one (SELF_ASSESSED), which the buyer accounts for itself."""
-    category = tax.get("category") if isinstance(tax, dict) else tax.category
-    return category not in SELF_ASSESSED
+    """Whether a tax snapshot (a LineTaxSnapshot or its stored dict) is charged on the document,
+    in its ``tax`` and total: every tax but a self-assessed one (SELF_ASSESSED), which the buyer
+    accounts for itself, and a withholding one, which is kept back from what is owed instead."""
+    return _field(tax, "category") not in (*SELF_ASSESSED, "withholding")
+
+
+def self_assessed(tax) -> bool:
+    """Whether a tax snapshot is self-assessed (SELF_ASSESSED): computed and booked by the buyer,
+    never charged."""
+    return _field(tax, "category") in SELF_ASSESSED
+
+
+def withheld_on_document(tax) -> bool:
+    """Whether a tax snapshot is withheld on the document itself (a withholding code at point
+    ``document``): it is in the document's ``withheld``, never its ``tax``. A code withheld at
+    payment is recorded with the payment instead."""
+    return _field(tax, "category") == "withholding" and _field(tax, "withholding_point") == "document"
 
 # Categories whose tax is settled when the document is, never when the cash moves (V36).
 _NOT_CASH_BASIS = ("withholding", "perception", *SELF_ASSESSED)
@@ -145,13 +162,13 @@ def tax_day(doc: dict | None, timezone_name: str | None = None) -> dt.date:
 
 def taxes_on(taxes: list[dict], day: dt.date) -> list[dict]:
     """A stored tax list as it charges on ``day``: each code in force that day with its ``rate``
-    as a line carries it (_line_rate); a code with no version in force that day is left out.
+    (rate_on); a code with no version in force that day is left out.
     Every reader of a list row's rate reads it here."""
-    from celerp.localization.taxcodes import NoRateInForce
+    from celerp.localization.taxcodes import NoRateInForce, rate_on
     rows = []
     for row in taxes:
         try:
-            rate = _line_rate(_tax_code(row), day)
+            rate = rate_on(_tax_code(row), day)
         except NoRateInForce:
             continue
         rows.append({**row, "rate": rate})
@@ -163,14 +180,6 @@ def _tax_code(row: dict):
     the rate is read from its versions, never from that copy."""
     from celerp.localization.taxcodes import TaxCode
     return TaxCode.model_validate({key: value for key, value in row.items() if key != "rate"})
-
-
-def _line_rate(code, day: dt.date) -> float:
-    """The rate of ``code`` on ``day`` (rate_on) as a line carries it: a withholding code's
-    negative."""
-    from celerp.localization.taxcodes import rate_on
-    rate = rate_on(code, day)
-    return -rate if code.category == "withholding" else rate
 
 
 def outdated_line_tax(tax: dict, codes: dict[str, dict], day: dt.date) -> bool:
@@ -315,15 +324,16 @@ def line_tax_unset(line: dict) -> bool:
 def line_tax(code: dict, day: dt.date, side: str) -> dict:
     """A company tax code as a line on a ``side`` ("sales" or "purchase") document carries it on
     ``day`` (LineTaxSnapshot): its name as ``code``, its id, the version in force that day (its
-    rate as _line_rate gives it, start and base fraction), its category, component, report tags,
+    rate, start and base fraction; every rate is positive and the category gives
+    the direction), its category, component, report tags,
     withholding point, cash basis and the account of that side (None posts to the role default),
     its saved calculation order and compounding, with no amount yet. NoRateInForce when no
     version is in force that day. Posting reads this copy, never the live code."""
-    from celerp.localization.taxcodes import LineTaxSnapshot, version_on
+    from celerp.localization.taxcodes import LineTaxSnapshot, rate_on, version_on
     tax = _tax_code(code)
     version = tax.versions[version_on(tax, day)]
     return LineTaxSnapshot(
-        code=tax.name, rate=_line_rate(tax, day), order=tax.default_order, is_compound=tax.is_compound,
+        code=tax.name, rate=rate_on(tax, day), order=tax.default_order, is_compound=tax.is_compound,
         code_id=tax.id, base_fraction=version.base_fraction, category=tax.category, component=tax.component,
         report_tags=tax.report_tags, version_from=version.valid_from, withholding_point=tax.withholding_point,
         cash_basis=tax.cash_basis, account=tax.input_account if side == "purchase" else tax.output_account,
@@ -376,24 +386,18 @@ def holds_tax(taxes: list[dict], name: str) -> bool:
 
 
 def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> str | None:
-    """The name of the first tax in ``applied`` (each a ``code`` and ``rate``) a document of
+    """The name of the first tax in ``applied`` (each with its ``code``) a document of
     this type cannot carry, else None. A tax takes its side from the company's tax lists by
     name, ignoring case and surrounding spaces, the document's own side's list deciding a name
-    both lists hold. On a sale a negative rate is always refused: it is tax withheld on a
-    purchase, and a sale has no output tax to net it against."""
+    both lists hold."""
     side = doc_side(doc_type)
     other = sales_taxes(settings) if side == "purchase" else purchasing_taxes(settings)
     sides = {tax_name_key(x.get("name")): x.get("tax_type") or "both"
              for x in [*other, *side_taxes(settings, doc_type)]}
     for tax in applied:
         code = str(tax.get("code") or "").strip()
-        try:
-            rate = float(tax.get("rate") or 0)
-        except (TypeError, ValueError):
-            rate = 0.0  # an unreadable rate is refused where the money is computed
-        tax_side = "purchase" if side == "sales" and rate < 0 else sides.get(tax_name_key(code), "both")
-        if tax_side not in (side, "both"):
-            return code or f"{rate:g}%"
+        if sides.get(tax_name_key(code), "both") not in (side, "both"):
+            return code
     return None
 
 
