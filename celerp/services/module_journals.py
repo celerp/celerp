@@ -288,10 +288,10 @@ async def _check_accounts(session, company_id, module: str, lines: list[JournalL
 
 def _intent_hash(operation: str, date: str, lines: list[JournalLine], source: JournalSource, intent: dict) -> str:
     body = {"operation": operation, "date": date, "source": source.fields(), "intent": intent,
-            # A line with no fund hashes without the field, so a journal stored before lines
-            # carried funds still matches its own retry.
+            # A line with no fund hashes without the field, and a zero amount (0.00, -0.00)
+            # hashes as 0, so a journal stored before either change still matches its retry.
             "lines": [{**{k: v for k, v in asdict(ln).items() if k != "fund_id" or v},
-                       "debit": str(to_decimal(ln.debit)), "credit": str(to_decimal(ln.credit))}
+                       "debit": str(to_decimal(ln.debit) or 0), "credit": str(to_decimal(ln.credit) or 0)}
                       for ln in lines]}
     return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
 
