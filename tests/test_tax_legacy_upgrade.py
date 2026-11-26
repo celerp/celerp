@@ -214,6 +214,28 @@ async def test_projection_rebuild_matches_stored(client, session):
     assert await rebuild_divergence(session, auth["company_id"]) == [bill]
 
 
+async def test_upgrade_keeps_the_seeded_country_and_dated_rows(client, session):
+    """A company an earlier version seeded from a country pack keeps that country as its
+    localization, and a row already holding dated rates is kept as it is."""
+    from celerp.services.company_lock import locked_company
+
+    auth = await old_shape_company(session)
+    row = await locked_company(session, auth["company_id"])
+    dated = {"id": "kept-1", "name": "Import VAT", "tax_type": "purchase", "category": "standard",
+             "versions": [{"rate": 7.0, "valid_to": "2026-12-31"}, {"rate": 8.0, "valid_from": "2027-01-01"}]}
+    row.settings = {**row.settings, "taxes_seeded_for": "TH",
+                    "purchasing_taxes": [*row.settings["purchasing_taxes"], dated]}
+    await session.commit()
+    await upgrade(session, auth)
+
+    settings = await _settings(client, auth)
+    assert settings["localization"] == {"country": "TH"} and "taxes_seeded_for" not in settings
+    kept = next(c for c in settings["purchasing_taxes"] if c["name"] == "Import VAT")
+    assert (kept["id"], kept["category"]) == ("kept-1", "standard")
+    assert [(v["rate"], v["valid_from"], v["valid_to"]) for v in kept["versions"]] == [
+        (7.0, None, "2026-12-31"), (8.0, "2027-01-01", None)]
+
+
 async def test_upgrade_notice_lists_migration_outcomes(client, session):
     """The upgrade notice counts what needs the company's attention: no country chosen, codes
     no category fits, posting roles it could not map, bills awaiting their withholding

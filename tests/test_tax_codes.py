@@ -322,6 +322,18 @@ async def test_version_boundary_notice_on_date_move(client):
 _FROM_CODE = "Tax details come from the tax code VAT; change the code, or its rate in Settings > Taxes"
 
 
+async def test_line_tax_needs_a_code_id_or_code_and_rate():
+    from pydantic import ValidationError
+
+    from celerp.localization.taxcodes import LineTaxEntry
+
+    for entry in ({}, {"code": "VAT 7%"}, {"rate": 7.0}):
+        with pytest.raises(ValidationError, match="a line tax needs code_id, or code and rate"):
+            LineTaxEntry.model_validate(entry)
+    assert LineTaxEntry.model_validate({"code_id": "c-1"}).code_id == "c-1"
+    assert LineTaxEntry.model_validate({"code": "VAT 7%", "rate": 7.0}).rate == 7.0
+
+
 async def test_identity_on_reads_the_number_in_force():
     from celerp.localization.taxcodes import TaxIdentity, identity_on
 
