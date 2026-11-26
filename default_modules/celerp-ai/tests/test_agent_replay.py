@@ -227,7 +227,7 @@ async def test_agent_replay(client, session, agent_caps, ai_session, module, par
     owned = {key for key, c in tools.items() if c["module"] == module}
     assert owned <= set(routes), sorted(owned - set(routes))
 
-    headers = (await perm_setup(client, session))["admin_h"]
+    headers = (await perm_setup(client, session, currency="USD"))["admin_h"]
     conversation_id = await _new_conversation(client, headers)
     async with answered_continuation():
         for key in sorted(owned)[part::SLICES]:

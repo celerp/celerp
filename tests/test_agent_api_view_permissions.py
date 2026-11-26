@@ -10,7 +10,7 @@ from test_helpers import grant_permission, perm_setup
 
 @pytest.mark.asyncio
 async def test_agent_candidate_reads_enforce_current_view_permissions(client, session):
-    s = await perm_setup(client, session)
+    s = await perm_setup(client, session, currency="USD")
     owner = s["admin_h"]
     operator = s["operator_h"]
     item_id = s["item_id"]

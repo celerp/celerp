@@ -123,7 +123,7 @@ def _script(monkeypatch, turns, caps=CAPS, executed=None) -> _Model:
 async def _run(**over):
     kwargs = dict(
         app=object(), bearer=lambda: "Bearer tok", query="a question",
-        company_id=uuid.uuid4(), company_settings={}, user_id=uuid.uuid4(),
+        company_id=uuid.uuid4(), company_settings={"currency": "THB"}, user_id=uuid.uuid4(),
         role="owner", memory={"notes": [], "kv": {}}, file_ids=None, history=[],
         operation_id=uuid.uuid4(),
     )
@@ -592,6 +592,38 @@ async def test_setting_the_books_currency_stays_open_and_a_set_currency_lets_imp
     assert len(result.pending_actions) == 1
     _model, result = await _propose(monkeypatch, real_app, {"currency": "THB"}, 0)
     assert len(result.pending_actions) == 1
+
+
+# Changes that bring amounts into the books though their permission is not an
+# accounting one: a build posts stock and WIP, an item cost edit revalues stock.
+_BOOKS_CHANGES = [("POST", "/manufacturing/items/{item_id}/build"), ("POST", "/manufacturing/{order_id}/complete"),
+                  ("PATCH", "/items/{entity_id}"), ("POST", "/fixed-assets/api/assets/{asset_id}/revalue"),
+                  ("POST", "/accounting/reconciliation/import-statement"), ("POST", "/docs/{entity_id}/payment"),
+                  ("POST", "/docs/bulk-payment"), ("POST", "/items/bulk/transfer")]
+
+
+def test_every_change_waits_for_the_books_currency_whatever_its_permission(real_app):
+    """Manufacturing, inventory valuation, imports, payments and bulk actions are all
+    refused while no books currency is set, and all allowed once one is; only setting
+    the currency stays open."""
+    from celerp.ai.service import books_currency_refusal
+    caps = ai_tools.compile_agent_capabilities(real_app, {}, "owner", caller_gates=frozenset())
+    by_route = {(c["method"], c["path"]): c for c in caps.values() if c["requires_confirmation"]}
+    for route in _BOOKS_CHANGES:
+        refusal = books_currency_refusal(by_route[route], {})
+        assert refusal and refusal["error"]["code"] == "books_currency_unset", route
+        assert books_currency_refusal(by_route[route], {"currency": "THB"}) is None, route
+    assert books_currency_refusal(by_route[("PATCH", "/companies/me/books")], {}) is None
+
+
+def test_a_new_change_nobody_classified_is_refused_without_a_books_currency():
+    """Fail closed: a change registered with no declaration of any kind is held to the
+    rule, so a new action cannot slip past it by not being listed."""
+    from celerp.ai.service import books_currency_refusal
+    new = {"name": "brand_new", "method": "POST", "path": "/brand/new", "requires_confirmation": True,
+           "required_permissions": []}
+    assert books_currency_refusal(new, {})["error"]["code"] == "books_currency_unset"
+    assert books_currency_refusal({**new, "method": "GET", "requires_confirmation": False}, {}) is None
 
 
 def test_the_prompt_names_the_books_currency_from_the_company_settings_only():

@@ -6953,7 +6953,7 @@
   "ai.err_refused_in_answer": "O Celerp não conseguiu fazer isso. Abra a tela correspondente para ver o motivo.",
   "ai.err_too_much_data": "Dados demais foram retornados; faça uma pergunta mais específica.",
   "ai.err_capability_timeout": "Esta etapa não terminou em {seconds} segundos. Tente novamente.",
-  "ai.err_books_currency_unset": "A moeda da sua empresa ainda não está definida, por isso o assistente não vai importar nem lançar nada. Defina a moeda em Dados da empresa e pergunte novamente.",
+  "ai.err_books_currency_unset": "A moeda da sua empresa ainda não está definida, por isso o assistente não vai fazer nenhuma alteração. Defina a moeda em Dados da empresa e pergunte novamente.",
   "ai.err_prompt_too_long": "A sua mensagem tem {length} caracteres e o assistente aceita até {limit}. Encurte-a ou envie-a em partes e tente novamente.",
   "ai.err_invalid_arguments": "O assistente preparou esta etapa com dados que o Celerp não consegue usar. Peça ao assistente para tentar novamente.",
   "ai.err_no_authorization": "O Celerp não conseguiu confirmar seu login para esta etapa. Entre novamente e tente outra vez.",

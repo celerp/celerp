@@ -72,7 +72,7 @@ async def _stored_text(session, conv_id) -> str:
 
 @pytest.mark.asyncio
 async def test_generated_password_never_reaches_model_and_shows_once(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     conv_id, message_id, call_id = await _propose_user(client, admin, agent_caps, "teammate@example.com")
     with _fixed_secret():
@@ -92,7 +92,7 @@ async def test_generated_password_never_reaches_model_and_shows_once(client, ses
 async def test_create_user_existing_email_shows_no_password(client, session, agent_caps, ai_session):
     """An email that already has a user links that person; they keep their own password,
     so the card shows none and the generated value is thrown away."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     session.add(User(id=uuid.uuid4(), email="known@example.com", name="Known", auth_hash="x", is_active=True))
     await session.commit()
     admin = ctx["admin_h"]
@@ -108,7 +108,7 @@ async def test_create_user_existing_email_shows_no_password(client, session, age
 
 @pytest.mark.asyncio
 async def test_generated_password_absent_from_history_model_and_ledger(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     conv_id, message_id, call_id = await _propose_user(client, admin, agent_caps, "second@example.com")
     with _fixed_secret():
@@ -149,7 +149,7 @@ async def test_label_source_refused_by_argument_reaches_card(client, session, ag
     monkeypatch.setitem(slots._slots, "label_source", [*slots.get("label_source"), {
         "entity_type": "stock_tag", "handler": "celerp_labels.routes:get_source", "permission": "edit_inventory",
         "label_key": "labels.title", "keys": ["name"], "_module": "celerp-labels"}])
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     await grant_permission(client, ctx["admin_h"], "view_fixed_assets", "admin")
     op = _op(agent_caps, "GET", "/api/labels/sources/{source}")
     model = ScriptedModel(
@@ -181,7 +181,7 @@ async def _propose_upload(client, headers, caps, contact_id, file_id):
 @pytest.mark.asyncio
 async def test_upload_tool_posts_the_attached_file(client, session, agent_caps, ai_session):
     """A file attached in the chat (a contract PDF, a type contacts take) reaches the route."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     contact_id = await _contact(client, admin)
     uploaded = await client.post("/ai/upload", headers=admin, files={"files": (
@@ -197,7 +197,7 @@ async def test_upload_tool_posts_the_attached_file(client, session, agent_caps, 
 
 @pytest.mark.asyncio
 async def test_upload_tool_refuses_a_file_of_another_user(client, session, agent_caps, ai_session, xlsx_upload):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     contact_id = await _contact(client, ctx["admin_h"])
     theirs = await xlsx_upload(client, ctx["manager_h"], {"Sheet": [["a"]]}, filename="theirs.xlsx")
     conv_id, message_id, call_id = await _propose_upload(client, ctx["admin_h"], agent_caps, contact_id, theirs)
@@ -210,7 +210,7 @@ async def test_upload_tool_refuses_a_file_of_another_user(client, session, agent
 
 @pytest.mark.asyncio
 async def test_upload_tool_refuses_a_missing_file(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     contact_id = await _contact(client, ctx["admin_h"])
     conv_id, message_id, call_id = await _propose_upload(
         client, ctx["admin_h"], agent_caps, contact_id, str(uuid.uuid4()))
@@ -235,7 +235,7 @@ def _two_patches_and_a_create(caps, missing_id: str):
 
 @pytest.mark.asyncio
 async def test_confirm_all_stops_dependent_actions_at_first_failure(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     conv_id = await _new_conversation(client, admin)
     with patch("celerp.ai.service.complete", ScriptedModel(_two_patches_and_a_create(agent_caps, str(uuid.uuid4())))):
@@ -253,7 +253,7 @@ async def test_a_change_beside_a_refused_call_goes_back_to_the_model(client, ses
     """One change tool proposed twice is refused; the change beside it is not proposed
     alone either, and the model sees both answers instead of a card that silently lost
     two of the three changes it asked for."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     patch_op = _op(agent_caps, "PATCH", "/companies/me/locations/{location_id}")
     create_op = _op(agent_caps, "POST", _LOCATIONS)
@@ -276,7 +276,7 @@ async def test_a_change_beside_a_refused_call_goes_back_to_the_model(client, ses
 
 @pytest.mark.asyncio
 async def test_confirm_all_independent_failure_continues(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     before = await _location_count(client, admin)
     conv_id = await _new_conversation(client, admin)
@@ -291,7 +291,7 @@ async def test_confirm_all_independent_failure_continues(client, session, agent_
 async def test_confirm_resumes_the_request(client, session, agent_caps, ai_session):
     """Answering the last card carries the request on with the outcome, so the user does
     not have to ask again for the next step."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     op = _op(agent_caps, "POST", _LOCATIONS)
     model = ScriptedModel(
@@ -311,7 +311,7 @@ async def test_confirm_resumes_the_request(client, session, agent_caps, ai_sessi
 
 @pytest.mark.asyncio
 async def test_dismiss_all_does_not_continue(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     op = _op(agent_caps, "POST", _LOCATIONS)
     model = ScriptedModel(_call(op, {"body": {"name": "Never", "type": "warehouse"}}, "n1"))
@@ -326,7 +326,7 @@ async def test_dismiss_all_does_not_continue(client, session, agent_caps, ai_ses
 async def test_twenty_record_ask_is_one_bulk_card(client, session, agent_caps, ai_session):
     """Twenty records of one kind arrive as one card that says how many it changes; a
     turn that proposes the same change twice is refused and pointed at propose_for_each."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     op = _op(agent_caps, "POST", _LOCATIONS)
     records = [{"body": {"name": f"Bay {i}", "type": "warehouse"}} for i in range(20)]
@@ -352,7 +352,7 @@ async def test_twenty_record_ask_is_one_bulk_card(client, session, agent_caps, a
 
 @pytest.mark.asyncio
 async def test_bulk_tool_card_states_the_selection_size(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     op = _op(agent_caps, "POST", "/items/bulk/expire")
     ids = [str(uuid.uuid4()) for _ in range(3)]
     field = next(iter(agent_caps[op]["tool"]["function"]["parameters"]["properties"]["body"]["properties"]))
@@ -364,7 +364,7 @@ async def test_bulk_tool_card_states_the_selection_size(client, session, agent_c
 
 @pytest.mark.asyncio
 async def test_bulk_tool_refuses_an_empty_selection(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     op = _op(agent_caps, "POST", "/items/bulk/expire")
     field = next(iter(agent_caps[op]["tool"]["function"]["parameters"]["properties"]["body"]["properties"]))
     model = ScriptedModel(_call(op, {"body": {field: []}}, "be1"), lambda _m: text_result("Nothing chosen."))
@@ -385,7 +385,7 @@ async def test_propose_for_each_prefers_the_bulk_route(client, session, agent_ca
         _call("propose_for_each", {"tool": single, "records": [{"path": {}}, {"path": {}}]}, "pf1"),
         lambda _m: text_result("Using the bulk tool."),
     )
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     conv_id = await _new_conversation(client, ctx["admin_h"])
     with patch("celerp.ai.service.complete", model):
         body = await asked_in_thread(client, ctx["admin_h"], conv_id, {"query": "all of them"})
@@ -404,7 +404,7 @@ async def _new_location(client, headers, name: str) -> str:
 async def test_two_changes_under_one_id_get_no_card_and_cannot_be_confirmed(client, session, agent_caps, ai_session):
     """A reply that names two different changes by one id is refused whole: neither is
     proposed, so confirming that id runs nothing."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     doomed = await _new_location(client, admin, "Doomed")
     before = await _location_count(client, admin)
@@ -458,7 +458,7 @@ async def test_ids_one_space_apart_get_no_card_and_neither_can_be_confirmed(
     """The screen trims the id a card posts, so "k" and "k " would confirm one card for the
     other: the reply is refused whole, and confirming either id, one card or both ticked,
     runs nothing."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     doomed = await _new_location(client, admin, "Doomed")
     before = await _location_count(client, admin)
@@ -483,7 +483,7 @@ async def test_ids_one_space_apart_get_no_card_and_neither_can_be_confirmed(
 
 @pytest.mark.asyncio
 async def test_confirming_the_second_card_runs_the_second_change(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     doomed = await _new_location(client, admin, "Doomed")
     before = await _location_count(client, admin)

@@ -304,11 +304,8 @@ the company and bank account currencies before you propose importing or posting 
 _NO_BOOKS_CURRENCY_PROMPT = """
 
 The company's books currency is not set yet. Never guess it from a bank account or a
-file. Propose no import or posting; tell the user to set the currency in {screen}, then ask again."""
+file. Propose no change other than setting it; tell the user to set the currency in {screen}, then ask again."""
 
-# Changes that bring amounts into the books: while the books' currency is not set, they
-# would be read in a guessed one. Setting the currency (``BOOKS_CURRENCY_ROUTE``) stays open.
-_BOOKS_PERMISSIONS = frozenset({"import_export_data", "finalize_documents", "record_payments", "manage_accounting"})
 
 
 def agent_area(capability: dict) -> str:
@@ -703,21 +700,29 @@ def _books_currency_set(company_settings: dict) -> str | None:
     return company_settings.get("currency") or None
 
 
+def books_currency_refusal(capability: dict | None, company_settings: dict) -> dict | None:
+    """The refusal for a change while the company has no books currency set, else None.
+    Fails closed: any change may bring amounts into the books (a build posts stock and
+    WIP, a valuation revalues, an import posts lines), and they would be read in a guessed
+    currency, so every change counts, a new one included, without being listed anywhere.
+    Only setting the currency (``BOOKS_CURRENCY_ROUTE``), the way out, stays open. Checked
+    when a change is proposed and again when a confirmed one runs, so an older proposal
+    or a retry is held to it too."""
+    if (_books_currency_set(company_settings) or capability is None
+            or not capability.get("requires_confirmation")
+            or (str(capability["method"]).upper(), capability["path"]) == BOOKS_CURRENCY_ROUTE):
+        return None
+    return _agent_error(
+        "books_currency_unset", "ai.err_books_currency_unset",
+        "The company's books currency is not set, so no change may be made. Ask the user to set "
+        f"it in {BOOKS_CURRENCY_SCREEN}, then propose this again.")
+
+
 def _books_currency_unset(parsed: list, company_settings: dict) -> dict[str, dict]:
-    """Errors for changes that bring amounts into the books while the company has no books
-    currency set: never proposed in a guessed currency. The refusal says how to set it."""
-    if _books_currency_set(company_settings):
-        return {}
-    return {
-        call_id: _agent_error(
-            "books_currency_unset", "ai.err_books_currency_unset",
-            "The company's books currency is not set, so nothing may be imported or posted. Ask the "
-            f"user to set it in {BOOKS_CURRENCY_SCREEN}, then propose this again.")
-        for call_id, _name, capability, _arguments, error in parsed
-        if error is None and capability is not None and capability.get("requires_confirmation")
-        and _BOOKS_PERMISSIONS & set(capability.get("required_permissions") or ())
-        and (str(capability["method"]).upper(), capability["path"]) != BOOKS_CURRENCY_ROUTE
-    }
+    """The proposed calls refused while the company has no books currency set."""
+    refused = {call_id: books_currency_refusal(capability, company_settings)
+               for call_id, _name, capability, _arguments, error in parsed if error is None}
+    return {call_id: error for call_id, error in refused.items() if error is not None}
 
 
 async def run_agent(

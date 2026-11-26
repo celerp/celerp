@@ -6953,7 +6953,7 @@
   "ai.err_refused_in_answer": "Celerp konnte das nicht ausführen. Öffnen Sie die zugehörige Seite, um den Grund zu sehen.",
   "ai.err_too_much_data": "Es wurden zu viele Daten zurückgegeben. Stellen Sie eine gezieltere Frage.",
   "ai.err_capability_timeout": "Dieser Schritt wurde nicht innerhalb von {seconds} Sekunden abgeschlossen. Versuchen Sie es erneut.",
-  "ai.err_books_currency_unset": "Die Währung Ihres Unternehmens ist noch nicht festgelegt, daher importiert oder bucht der Assistent nichts. Legen Sie die Währung unter Unternehmensdetails fest und fragen Sie dann erneut.",
+  "ai.err_books_currency_unset": "Die Währung Ihres Unternehmens ist noch nicht festgelegt, daher nimmt der Assistent keine Änderungen vor. Legen Sie die Währung unter Unternehmensdetails fest und fragen Sie dann erneut.",
   "ai.err_prompt_too_long": "Ihre Nachricht ist {length} Zeichen lang, der Assistent nimmt höchstens {limit} an. Kürzen Sie sie oder senden Sie sie in Teilen und versuchen Sie es dann erneut.",
   "ai.err_invalid_arguments": "Der Assistent hat diesen Schritt mit Angaben vorbereitet, die Celerp nicht verwenden kann. Bitten Sie den Assistenten, es erneut zu versuchen.",
   "ai.err_no_authorization": "Celerp konnte Ihre Anmeldung für diesen Schritt nicht bestätigen. Melden Sie sich erneut an und versuchen Sie es dann noch einmal.",

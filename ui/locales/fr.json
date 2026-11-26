@@ -6953,7 +6953,7 @@
   "ai.err_refused_in_answer": "Celerp n'a pas pu effectuer cette action. Ouvrez l'écran correspondant pour en voir la raison.",
   "ai.err_too_much_data": "Trop de données ont été renvoyées ; posez une question plus précise.",
   "ai.err_capability_timeout": "Cette étape ne s'est pas terminée en {seconds} secondes. Réessayez.",
-  "ai.err_books_currency_unset": "La devise de votre entreprise n'est pas encore définie, l'assistant n'importera ni ne comptabilisera donc rien. Définissez la devise dans Informations sur l'entreprise, puis posez la question à nouveau.",
+  "ai.err_books_currency_unset": "La devise de votre entreprise n'est pas encore définie, l'assistant n'effectuera donc aucune modification. Définissez la devise dans Informations sur l'entreprise, puis posez la question à nouveau.",
   "ai.err_prompt_too_long": "Votre message fait {length} caractères et l'assistant en accepte {limit} au maximum. Raccourcissez-le ou envoyez-le en plusieurs parties, puis réessayez.",
   "ai.err_invalid_arguments": "L'assistant a préparé cette étape avec des informations que Celerp ne peut pas utiliser. Demandez à l'assistant de réessayer.",
   "ai.err_no_authorization": "Celerp n'a pas pu confirmer votre connexion pour cette étape. Reconnectez-vous, puis réessayez.",

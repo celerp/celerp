@@ -179,7 +179,7 @@ async def test_inventory_search(client, session, agent_caps, ai_session):
     """The agent answers a stock question by searching inventory through the
     generic list capability, and the result it reads is byte-identical to the
     same search over the public API."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     await client.post("/items", headers=admin, json={
         "sku": "WIDGET-BLUE", "name": "Blue Widget", "quantity": 8,
@@ -212,7 +212,7 @@ async def test_restock_with_reorder_suggestion(client, session, agent_caps, ai_s
     """A restock request composes a read (the velocity-based reorder suggestion)
     with a write (a draft purchase order for the suggested quantity). The write
     is proposed as a pending action and only lands once the user confirms."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     item_id = ctx["item_id"]
     company_id = await _company_id(client, admin)
@@ -276,7 +276,7 @@ async def test_draft_document_requires_confirmation(client, session, agent_caps,
     """A proposed document write never executes on the query turn: it comes back
     as a pending action, nothing is persisted, and only the explicit confirm
     creates the document."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     create_doc_op = _op(agent_caps, "POST", "/docs")
 
@@ -313,7 +313,7 @@ async def test_draft_document_requires_confirmation(client, session, agent_caps,
 async def test_stock_discrepancy_audit_read_only(client, session, agent_caps, ai_session):
     """An audit chains several reads across turns and answers in prose, proposing
     no write - a read-only task leaves the ledger untouched."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     item_id = ctx["item_id"]
 

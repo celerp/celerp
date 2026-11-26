@@ -67,7 +67,7 @@ def _card(conv: dict, message_id: str) -> list[dict]:
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("tools_open_when_called", "model_answers_unscripted_runs")
 async def test_old_pending_action_is_read_and_confirmed_through_the_api(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     before = await _location_count(client, admin)
     conv_id, message_id, call_id = await _propose_location(client, admin, agent_caps, "Old room")
@@ -87,7 +87,7 @@ async def test_old_pending_action_is_read_and_confirmed_through_the_api(client, 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("tools_open_when_called", "model_answers_unscripted_runs")
 async def test_old_pending_action_is_dismissed_through_the_api(client, session, agent_caps, ai_session):
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     conv_id, message_id, call_id = await _propose_location(client, admin, agent_caps, "Spare room")
     await _flood(session, conv_id)
@@ -129,7 +129,7 @@ async def test_old_retryable_action_is_read_and_retried_through_the_api(client, 
 async def test_running_action_blocks_deletion_and_stays_auditable(client, session, agent_caps, ai_session):
     """A confirmed action paused between its claim and its result: the conversation
     cannot be deleted under it, and the action finalizes on its own record."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     conv_id, message_id, call_id = await _propose_location(client, admin, agent_caps, "Busy room")
     msg = (await session.execute(select(AIMessage).where(AIMessage.id == uuid.UUID(message_id)))).scalar_one()
@@ -163,7 +163,7 @@ async def test_more_older_actions_than_a_page_are_each_reached_by_paging_and_act
     bounded, and each is then confirmed, retried or dismissed as its status allows."""
     cap = 4
     monkeypatch.setattr(ai_conversations, "MAX_MESSAGES_PER_CONVERSATION", cap)
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     before = await _location_count(client, admin)
     conv_id, message_id, call_id = await _propose_location(client, admin, agent_caps, "Room 0")

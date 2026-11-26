@@ -48,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal_detail
 from celerp.ai.files import XLSX_CONTENT_TYPE
-from celerp.ai.service import PROPOSAL_TTL_S
+from celerp.ai.service import PROPOSAL_TTL_S, books_currency_refusal
 from celerp.agent_markers import agent_excluded
 from celerp.ai.tools import SHOWN_ONCE
 from celerp.config import settings
@@ -998,6 +998,7 @@ async def _run_confirmed_action(
     tool_call_id: str,
     company_id,
     user_id,
+    company_settings: dict,
     run_again: bool = False,
 ) -> dict:
     """Claim, execute and finalize one pending action; never raises for action state.
@@ -1028,6 +1029,14 @@ async def _run_confirmed_action(
         if dependency_error.get("code") == "action_dependency_not_ready":
             outcome["action_status"] = "pending"
         return outcome
+    # Held to the rule it was proposed under, before the claim, so the card stays pending
+    # and confirms once the currency is set.
+    refused = books_currency_refusal(capabilities.get(dependency_record["name"]), company_settings)
+    if refused is not None:
+        return {"tool_call_id": tool_call_id, "name": dependency_record["name"],
+                "title": dependency_record.get("title") or dependency_record["name"],
+                "ok": False, "status": 409, "action_status": "pending", "data": None,
+                "error": refused["error"]}
 
     try:
         record = await claim_tool_call(
@@ -1275,7 +1284,7 @@ async def confirm_action(
         request.app, company_settings, role, caller_gates=await gates_of_caller(session, user_id, role)),
         conversation_id=conversation_id, message_id=body.message_id,
         tool_call_id=body.tool_call_id, company_id=company_id, user_id=user_id,
-        run_again=body.run_again,
+        company_settings=company_settings, run_again=body.run_again,
     )
     error = outcome.get("error") or {}
     # A refused claim is 409; a run that just ended unknown is the card's outcome (200).
@@ -1455,6 +1464,7 @@ async def confirm_all(
             request, session, capabilities,
             conversation_id=conversation_id, message_id=body.message_id,
             tool_call_id=tool_call_id, company_id=company_id, user_id=user_id,
+            company_settings=company_settings,
         )
         results.append(outcome)
         if not outcome["ok"] and group is not None:

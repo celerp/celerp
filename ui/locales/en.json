@@ -7043,7 +7043,7 @@
   "ai.err_refused_in_answer": "Celerp could not do this. Open its screen to see the reason.",
   "ai.err_too_much_data": "Too much data was returned; ask a narrower question.",
   "ai.err_capability_timeout": "This step didn't finish within {seconds} seconds. Try again.",
-  "ai.err_books_currency_unset": "Your company currency isn't set yet, so the assistant won't import or post anything. Set the currency in Company Details, then ask again.",
+  "ai.err_books_currency_unset": "Your company currency isn't set yet, so the assistant won't make any changes. Set the currency in Company Details, then ask again.",
   "ai.err_prompt_too_long": "Your message is {length} characters long and the assistant takes up to {limit}. Shorten it or send it in parts, then try again.",
   "ai.err_invalid_arguments": "The assistant prepared this step with details Celerp can't use. Ask the assistant to try again.",
   "ai.err_no_authorization": "Celerp couldn't confirm your sign-in for this step. Sign in again, then try again.",

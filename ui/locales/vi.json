@@ -6953,7 +6953,7 @@
   "ai.err_refused_in_answer": "Celerp không thể thực hiện việc này. Mở màn hình tương ứng để xem lý do.",
   "ai.err_too_much_data": "Có quá nhiều dữ liệu được trả về; hãy đặt câu hỏi cụ thể hơn.",
   "ai.err_capability_timeout": "Bước này chưa hoàn tất trong {seconds} giây. Hãy thử lại.",
-  "ai.err_books_currency_unset": "Đơn vị tiền tệ của công ty bạn chưa được đặt, nên trợ lý sẽ không nhập hoặc ghi sổ gì. Hãy đặt đơn vị tiền tệ trong Thông tin công ty, rồi hỏi lại.",
+  "ai.err_books_currency_unset": "Đơn vị tiền tệ của công ty bạn chưa được đặt, nên trợ lý sẽ không thực hiện thay đổi nào. Hãy đặt đơn vị tiền tệ trong Thông tin công ty, rồi hỏi lại.",
   "ai.err_prompt_too_long": "Tin nhắn của bạn dài {length} ký tự, trợ lý nhận tối đa {limit} ký tự. Hãy rút ngắn hoặc gửi thành nhiều phần, rồi thử lại.",
   "ai.err_invalid_arguments": "Trợ lý đã chuẩn bị bước này với dữ liệu mà Celerp không dùng được. Hãy yêu cầu trợ lý thử lại.",
   "ai.err_no_authorization": "Celerp không xác nhận được phiên đăng nhập của bạn cho bước này. Hãy đăng nhập lại rồi thử lại.",
