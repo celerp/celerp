@@ -137,7 +137,6 @@ def _doc_change(state: dict, settings: dict) -> dict:
         lines.append({**line, "taxes": taxes} if isinstance(line, dict) and "taxes" in line else line)
     if not held:
         return {}
-    held = round_money(held, currency)
     change = {"line_items": lines,
               "tax": to_stored_float(round_money(to_decimal(state.get("tax") or 0) + held, currency)),
               "total": to_stored_float(round_money(to_decimal(state.get("total") or 0) + held, currency)),
