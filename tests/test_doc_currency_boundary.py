@@ -67,6 +67,21 @@ async def test_the_boundary_keeps_every_document_and_list_in_a_supported_currenc
     assert (await session.get(Projection, (cid, kept), populate_existing=True)).state["currency"] == "GBP"
 
 
+
+async def test_a_payment_event_carries_the_payment_currency_not_the_documents(client, session):
+    """A payment step keeps the currency the payment service reported (Stripe sends it in
+    lower case) on the payment; it sets no currency of the document, so the boundary
+    leaves it alone and the document keeps its own."""
+    headers, context = await _sink_context(client, session, _no_attachments)
+    cid, doc = context.company_id, f"doc:{uuid.uuid4().hex[:8]}"
+    await _emit(session, cid, doc, "doc.created",
+                {"doc_type": "invoice", "status": "draft", "line_items": [], "currency": "USD"})
+    await _emit(session, cid, doc, "doc.payment.disputed",
+                {"payment_index": 0, "reference": "pi_1", "dispute_id": "dp_1", "state": "created",
+                 "outcome": None, "amount_minor": 100, "currency": "usd", "occurred_at": None, "posted": []})
+    await session.commit()
+    assert (await session.get(Projection, (cid, doc), populate_existing=True)).state["currency"] == "USD"
+
 def _import_record(currency) -> dict:
     eid = f"doc:{uuid.uuid4().hex[:8]}"
     return {"entity_id": eid, "event_type": "doc.created", "source": "test", "idempotency_key": eid,

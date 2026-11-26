@@ -887,8 +887,10 @@ async def emit_event(
     if kwargs.get("entity_type") in ("doc", "list"):
         data = kwargs.get("data") or {}
         changed = data.get("fields_changed") if isinstance(data.get("fields_changed"), dict) else {}
-        # The fields the write sets, whether it carries them whole or as changes.
-        sets = {field: data[field] for field in ("line_items", "contact_id", "currency") if field in data}
+        # The fields the write sets, whether it carries them whole or as changes. A payment
+        # step (doc.payment.*) sets none of them: its currency is the payment's, kept on it.
+        whole = {} if kwargs.get("event_type", "").startswith("doc.payment.") else data
+        sets = {field: whole[field] for field in ("line_items", "contact_id", "currency") if field in whole}
         sets.update({field: change["new"] for field, change in changed.items()
                      if field in ("line_items", "contact_id", "currency") and isinstance(change, dict)
                      and "new" in change})
