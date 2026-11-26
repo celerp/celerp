@@ -1210,6 +1210,12 @@ async def rate_review_undo(token: str, operation_id: str) -> dict:
         return _raise(await c.post(f"/settings/taxes/rate-review/{_segment(operation_id)}/undo")).json()
 
 
+async def dismiss_tax_upgrade_notice(token: str) -> dict:
+    """POST /settings/taxes/upgrade-notice/dismiss: hide the tax codes upgrade notice for the company."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/settings/taxes/upgrade-notice/dismiss")).json()
+
+
 async def withholding_corrections(token: str) -> dict:
     """GET /settings/taxes/withholding-corrections: the bills from before tax codes still waiting
     for their withholding correction (``bills``) and those corrected (``corrected``)."""

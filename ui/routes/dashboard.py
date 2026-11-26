@@ -21,6 +21,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
 from ui.components.funds import fund_waiting_banner
+from celerp.accounting_roles import POSTING_ACCOUNTS_PATH
 from celerp.services.permissions import role_has_permission as _role_has_permission
 from ui.routes.company_backup import SETTINGS as _RESTORE
 from ui.routes.migrations import COMPANY as _MIGRATE
@@ -775,6 +776,7 @@ def setup_routes(app):
             Script("window.celerpUseDays && window.celerpUseDays(true);"),
             _finish_setup_banner(company, settings, role),
             _older_stock_banner(settings, role),
+            _tax_upgrade_banner(settings, role),
             await fund_waiting_banner(token, settings, role),
             welcome or "",
             await _demo_note(token, settings, role),
@@ -829,6 +831,19 @@ def setup_routes(app):
             await api.patch_company(token, {"finish_setup_dismissed": True})
         except APIError as e:
             return Div(e.detail, cls="error-banner", id="finish-setup-banner")
+        return ""
+
+    @app.post("/settings/taxes/upgrade-notice/dismiss")
+    async def dismiss_tax_upgrade(request: Request):
+        """Close the tax codes upgrade banner for every user of the company. Undo is not
+        offered: each outcome it lists stays on the settings page it linked to."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            await api.dismiss_tax_upgrade_notice(token)
+        except APIError as e:
+            return Div(e.detail, cls="error-banner", id="tax-upgrade-banner")
         return ""
 
     @app.post("/dashboard/older-stock/dismiss")
@@ -1065,6 +1080,39 @@ def _older_stock_banner(settings: dict, role: str) -> FT | str:
                       hx_post="/dashboard/older-stock/dismiss",
                       hx_target="#older-stock-banner", hx_swap="outerHTML"),
                cls="info-banner", id="older-stock-banner")
+
+
+# What the tax codes upgrade left to check: (notice key, catalog key, page that resolves it).
+_TAX_UPGRADE_OUTCOMES = (
+    ("country_missing", "dashboard.tax_upgrade_country", "/settings/general?tab=company"),
+    ("codes_without_category", "dashboard.tax_upgrade_categories", "/settings/sales?tab=taxes"),
+    ("unmapped_roles", "dashboard.tax_upgrade_roles", POSTING_ACCOUNTS_PATH),
+    ("bills_awaiting_correction", "dashboard.tax_upgrade_bills", "/settings/taxes/withholding-corrections"),
+    ("unmatched_item_tax_codes", "dashboard.tax_upgrade_items", "/inventory"),
+)
+
+
+def _tax_upgrade_banner(settings: dict, role: str) -> FT | str:
+    """What the tax codes upgrade needs the company to check, each linked to its page, shown to
+    admins until one of them closes it; hidden when nothing is left to check."""
+    notice = settings.get("upgrade_notice") or {}
+    links = []
+    for key, label, href in _TAX_UPGRADE_OUTCOMES:
+        value = notice.get(key)
+        if value:
+            n = len(value) if isinstance(value, list) else value
+            links.append(A(t(label) if value is True else t(label, n=n), href=href))
+    if (not links or settings.get("upgrade_notice_dismissed")
+            or not _role_has_permission(settings, role, "manage_company_settings")):
+        return ""
+    items = [part for i, link in enumerate(links) for part in (" " if i == 0 else " · ", link)]
+    return Div(Span(icon("info"), cls="info-banner-icon"),
+               Span(t("dashboard.tax_upgrade"), *items),
+               Button("×", type="button", cls="getting-started-dismiss info-banner-close",
+                      title=t("settings.dismiss"), aria_label=t("settings.dismiss"),
+                      hx_post="/settings/taxes/upgrade-notice/dismiss",
+                      hx_target="#tax-upgrade-banner", hx_swap="outerHTML"),
+               cls="info-banner", id="tax-upgrade-banner")
 
 
 async def _load_dashboard(token: str):

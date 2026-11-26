@@ -19,6 +19,7 @@ SCREEN_ONLY = re.compile(r"same (action|as) (on |as )?(the )?screen|screen offer
 REASONS: dict[str, str] = {
     'no_record_change': 'It reads, checks, prepares or fetches without changing any business record, so there is nothing to undo.',
     'suggestion': 'It stores what the assistant read or suggests beside the statement lines, with a record of the request so a retry answers the same; nothing is posted or matched, and a later run replaces the suggestions.',
+    'notice_closed': 'It hides a notice for the whole company; no business record changes, and what the notice listed stays on the settings pages it linked to.',
     'seen':'It records only that this user has seen a notice; no business record changes, and the notice stays read.',
     'recalculate': 'It recalculates stored figures from the records they come from; the earlier figures disagreed with those records, so the way back is to correct the source records and recalculate.',
     'sync': 'Records brought in are archived or deleted from their lists; a change already sent to the connected platform cannot be recalled and is undone there.',
@@ -504,6 +505,8 @@ WAY_BACK: dict[tuple[str, str], str] = {
     ('POST', '/settings/taxes/localization/undo'): 'reason:is_undo',
     ('POST', '/settings/taxes/rate-review/{operation_id}/apply'): 'tool:POST /settings/taxes/rate-review/{operation_id}/undo',
     ('POST', '/settings/taxes/rate-review/{operation_id}/undo'): 'reason:is_undo',
+    ('POST', '/settings/taxes/cash-basis/confirm'): 'tool:POST /accounting/journal-entries/{entity_id}/void',
+    ('POST', '/settings/taxes/upgrade-notice/dismiss'): 'reason:notice_closed',
     ('POST', '/settings/taxes/withholding-corrections/{doc_id}'): 'tool:POST /settings/taxes/withholding-corrections/{doc_id}/undo',
     ('POST', '/settings/taxes/withholding-corrections/{doc_id}/undo'): 'reason:is_undo',
     ('DELETE', '/stars/badge'): 'tool:POST /stars/badge',

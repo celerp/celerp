@@ -92,6 +92,8 @@ OWNERS: dict[str, str] = {
     "posting_source_controls": SYSTEM,
     "inventory_origin_schema": SYSTEM,  # set once older stock is upgraded
     "older_stock_placed": SYSTEM,  # the latest automatic placement, shown on the dashboard
+    "upgrade_notice": SYSTEM,  # what the tax codes upgrade changed (localization/upgrade.py)
+    "upgrade_notice_dismissed": "POST /settings/taxes/upgrade-notice/dismiss",
     "sequences": SYSTEM,  # document numbering, advanced as documents are numbered
     "self_contact_id": SYSTEM,
     "ai_memory": SYSTEM,

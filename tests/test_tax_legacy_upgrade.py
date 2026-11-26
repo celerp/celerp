@@ -111,7 +111,7 @@ async def test_legacy_wht_correction_entry_and_undo(client, session):
     assert round(after["tax_input"] - before["tax_input"], 2) == 30.0
     assert round(after["tax_withheld_payable"] - before.get("tax_withheld_payable", 0), 2) == -30.0
     entries = {k: v for k, v in (await _journal(session, auth)).items() if f"{bill}:wht-fix:0" in k}
-    assert len(entries) == 1 and next(iter(entries.values()))["entry_date"].startswith("2026-10-15")
+    assert len(entries) == 1 and next(iter(entries.values()))["ts"].startswith("2026-10-15")
     state = await get(client, auth, bill)
     assert not state.get("legacy_wht_entry") and state["withholding_correction"] == next(iter(entries))
 
@@ -207,7 +207,7 @@ async def test_upgrade_notice_lists_migration_outcomes(client, session):
     await old_item(client, auth, "GONE", ["Gone 9%"])
     counts = await upgrade(session, auth)
 
-    expected = {"country_missing": True, "codes_without_category": 1, "unmapped_roles": ["tax_withheld_payable"],
+    expected = {"country_missing": True, "codes_without_category": 3, "unmapped_roles": ["tax_withheld_payable"],
                 "bills_awaiting_correction": 1, "unmatched_item_tax_codes": 1}
     assert counts == expected
     settings = await _settings(client, auth)

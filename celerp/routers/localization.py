@@ -78,6 +78,16 @@ async def undo(payload: Undo, company_id=Depends(get_current_company_id), user=D
     return {"kept": kept}
 
 
+@router.post("/upgrade-notice/dismiss", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/dashboard"}, summary="Hide the tax codes upgrade notice for every user of the company; its counts stay on the localization page.")
+async def dismiss_upgrade_notice(company_id=Depends(get_current_company_id),
+                                 _: None = require_permission("manage_company_settings"),
+                                 session: AsyncSession = Depends(get_session)) -> dict:
+    company = await _company(session, company_id)
+    company.settings = {**(company.settings or {}), "upgrade_notice_dismissed": True}
+    await session.commit()
+    return {"ok": True}
+
+
 @router.get("/rate-review/{operation_id}", openapi_extra={"x-celerp-agent": True}, summary="List the items whose tax rate a tax list update suggests changing.")
 async def review(operation_id: str, company_id=Depends(get_current_company_id),
                  _: None = require_permission("edit_inventory"),
