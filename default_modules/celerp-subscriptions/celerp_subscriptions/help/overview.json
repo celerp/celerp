@@ -6,7 +6,7 @@
   "routes": ["/subscriptions", "/subscriptions/{entity_id}"],
   "permission": "view_subscriptions",
   "order": 1,
-  "checked": "3981f90774d9bd2e5c3ec6a6288bdc03d98523dbef0987152762a6c1ccaa851a",
+  "checked": "cd73ccf504b196e7774fb620debec65ca472a294e33e7ad6600c7dccb7ec84e2",
   "steps": [
     {
       "text": "Open {sales} or {purch} from the sidebar to see sales and purchasing subscriptions separately.",

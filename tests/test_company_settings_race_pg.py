@@ -241,7 +241,8 @@ async def test_settings_writer_and_type_change_both_land(committed_engine, monke
 
     await _race(
         committed_engine, lambda s: _hold_first_call(monkeypatch, s, "commit"),
-        lambda s: patch_taxes(payload=TaxRatesPatch(**body), company_id=company_id, _=None, session=s),
+        lambda s: patch_taxes(payload=TaxRatesPatch(**body), company_id=company_id,
+                              user=types.SimpleNamespace(id=user_id), _=None, session=s),
         _type_change(company_id, user_id),
     )
 

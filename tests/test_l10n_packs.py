@@ -545,7 +545,7 @@ async def test_existing_company_untouched(l10n_dir, client, auth, session, monke
     from celerp.tax_regimes import get_regime
 
     company_id = auth["company_id"]
-    await _set_settings(session, company_id, _pin_shaped("TH"))
+    await _set_settings(session, company_id, {**await _stored(session, company_id), **_pin_shaped("TH")})
     before = await _stored(session, company_id)
     await _start(monkeypatch)
     for path in ("/companies/me", "/companies/me/taxes", "/companies/me/purchasing-taxes"):

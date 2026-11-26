@@ -1046,6 +1046,7 @@ _READS_WITHOUT_CARD = {
     ("POST", "/items/merge/preview"): "shows what a merge of the named items would produce; merges nothing",
     ("POST", "/accounting/accounts/import/preview"): "checks chart of accounts rows; saves nothing",
     ("POST", "/accounting/reconciliation/statement-preview/{job_id}"): "re-checks a reading job's statements with edits; imports nothing",
+    ("POST", "/settings/taxes/localization/preview"): "lists what a country pack update would change in the tax list; saves nothing",
 }
 
 

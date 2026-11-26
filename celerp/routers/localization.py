@@ -42,14 +42,14 @@ async def _company(session: AsyncSession, company_id):
     return company
 
 
-@router.post("/localization/preview")
+@router.post("/localization/preview", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False}, summary="Show what updating the tax list from the company's country pack would add, change or retire, before anything is changed.")
 async def preview(company_id=Depends(get_current_company_id),
                   _: None = require_permission("manage_company_settings"),
                   session: AsyncSession = Depends(get_session)) -> dict:
     return localization.preview(dict((await _company(session, company_id)).settings or {}))
 
 
-@router.post("/localization/confirm")
+@router.post("/localization/confirm", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Update the tax list from the company's country pack, as the preview showed it.")
 async def confirm(payload: Confirm, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                   _: None = require_permission("manage_company_settings"),
                   session: AsyncSession = Depends(get_session)) -> dict:
@@ -59,7 +59,7 @@ async def confirm(payload: Confirm, company_id=Depends(get_current_company_id), 
     return {"operation_id": operation_id}
 
 
-@router.post("/localization/undo")
+@router.post("/localization/undo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/sales"}, summary="Undo a tax list update from the country pack, keeping any tax code changed since.")
 async def undo(payload: Undo, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                _: None = require_permission("manage_company_settings"),
                session: AsyncSession = Depends(get_session)) -> dict:
@@ -69,14 +69,14 @@ async def undo(payload: Undo, company_id=Depends(get_current_company_id), user=D
     return {"kept": kept}
 
 
-@router.get("/rate-review/{operation_id}")
+@router.get("/rate-review/{operation_id}", openapi_extra={"x-celerp-agent": True}, summary="List the items whose tax rate a tax list update suggests changing.")
 async def review(operation_id: str, company_id=Depends(get_current_company_id),
                  _: None = require_permission("edit_inventory"),
                  session: AsyncSession = Depends(get_session)) -> dict:
     return await rate_review.propose(session, company_id, operation_id)
 
 
-@router.post("/rate-review/{operation_id}/apply")
+@router.post("/rate-review/{operation_id}/apply", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/sales"}, summary="Move the chosen items to the tax rate a tax list update suggests.")
 async def review_apply(operation_id: str, payload: ReviewApply, company_id=Depends(get_current_company_id),
                        user=Depends(get_current_user), _: None = require_permission("edit_inventory"),
                        session: AsyncSession = Depends(get_session)) -> dict:
@@ -86,7 +86,7 @@ async def review_apply(operation_id: str, payload: ReviewApply, company_id=Depen
     return {"skipped": skipped}
 
 
-@router.post("/rate-review/{operation_id}/undo")
+@router.post("/rate-review/{operation_id}/undo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/sales"}, summary="Undo moving items to a suggested tax rate, keeping any item changed since.")
 async def review_undo(operation_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                       _: None = require_permission("edit_inventory"),
                       session: AsyncSession = Depends(get_session)) -> dict:
