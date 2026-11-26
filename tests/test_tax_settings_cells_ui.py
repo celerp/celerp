@@ -15,6 +15,8 @@ import re
 
 import pytest
 
+from celerp.services.business_time import business_today
+
 from test_helpers import with_versions
 from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
 from ui.api_client import APIError
@@ -95,7 +97,7 @@ async def test_taxes_tab_tax_type_column_shows_the_same_label_as_the_select(ui_c
     from ui.routes.settings import _taxes_tab
 
     from fasthtml.common import to_xml
-    html = to_xml(_taxes_tab(_taxes(), prefix="taxes"))
+    html = to_xml(_taxes_tab(_taxes(), dt.date.today(), prefix="taxes"))
     assert f">{t('enum.tax_type.both')}<" in html
     assert ">both<" not in html
 
@@ -339,7 +341,6 @@ async def test_tax_side_cell_takes_only_the_three_sides(ui_client, prefix, gname
 async def test_the_rate_column_shows_the_rate_in_force_on_the_company_day(ui_client, url):
     # A rate change from Kiritimati's today shows there, and not yet in Pago Pago, a day or two
     # behind: whatever the hour, one of the two days differs from today in UTC.
-    from celerp.services.business_time import business_today
     change = business_today("Pacific/Kiritimati")
     row = {"name": "VAT", "tax_type": "both",
            "versions": [{"rate": 7.0, "valid_to": (change - dt.timedelta(days=1)).isoformat()},
@@ -359,7 +360,7 @@ async def test_the_rate_column_shows_the_rate_in_force_on_the_company_day(ui_cli
 
 @pytest.mark.parametrize("prefix, gname, pname", _PREFIXES)
 async def test_a_rate_edit_changes_the_version_in_force_and_never_another(ui_client, prefix, gname, pname):
-    today = dt.date.today()
+    today = business_today(None)  # the company has no timezone set: the default business timezone
     scheduled = {"name": "VAT", "tax_type": "both",
                  "versions": [{"rate": 7.0, "valid_to": today.isoformat()},
                               {"rate": 9.0, "valid_from": (today + dt.timedelta(days=1)).isoformat()}]}

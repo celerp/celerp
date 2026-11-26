@@ -18,6 +18,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_serializer, field_validator, model_validator
 
+from celerp.accounting_roles import Refused
 from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import TAX_TYPES, tax_name_key
 
@@ -113,8 +114,8 @@ def rate_on(code: TaxCode, day: dt.date) -> float:
     return code.versions[version_on(code, day)].rate
 
 
-class TaxListRefused(ValueError):
-    """A tax list a save would write breaks a rule of the list as a whole."""
+class TaxListRefused(Refused):
+    """A tax list a save would write breaks a rule of the list as a whole (a keyed refusal)."""
 
 
 def normalized_list(rows: list[dict]) -> list[dict]:
@@ -130,9 +131,9 @@ def normalized_list(rows: list[dict]) -> list[dict]:
         code = TaxCode.model_validate(row)
         code.id = code.id or f"u-{uuid.uuid4().hex[:12]}"
         if code.id in ids:
-            raise TaxListRefused(f"{code.name}: id {code.id} belongs to another tax of this list")
+            raise TaxListRefused("company.err_tax_id_taken", name=code.name, id=code.id)
         if tax_name_key(code.name) in names:
-            raise TaxListRefused(f"{code.name}: name is used by another tax of this list")
+            raise TaxListRefused("company.err_tax_name_taken", name=code.name)
         ids.add(code.id)
         names.add(tax_name_key(code.name))
         stored.append(code.model_dump(mode="json"))

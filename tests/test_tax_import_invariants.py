@@ -1,6 +1,7 @@
 """A tax import keeps the same invariants as every other tax list writer: names are told
 apart as tax_name_key compares them, and a rate must be a finite number. Both import
-endpoints are held to it, through the TaxRate model the PATCH routes take."""
+endpoints are held to it, through with_taxes, which stores every tax list as normalized_list
+does."""
 
 from __future__ import annotations
 
@@ -80,9 +81,6 @@ async def test_a_rate_that_is_not_finite_is_refused_per_row(client, endpoint, ra
     assert "Odd Tax" not in names and "Fine Tax" in names, names
 
 
-_CHECKED_BY = {"TaxRatesPatch", "_import_taxes", "get_regime"}
-
-
 def _tax_list_writers() -> dict[str, set[str]]:
     """Each function of the companies router that writes a tax list (with_taxes, or a
     settings["taxes"] / settings["purchasing_taxes"] assignment), with the names it uses."""
@@ -107,11 +105,10 @@ def _tax_list_writers() -> dict[str, set[str]]:
 
 
 def test_every_tax_list_writer_takes_its_taxes_through_the_shared_checks():
-    """A tax list is written only from a TaxRatesPatch, from _import_taxes, or from a country
-    pack (get_regime, whose taxes passed the CountryPack schema): each holds names unique as
-    tax_name_key compares them and rates finite. A new writer that skips them fails here."""
+    """A tax list is written only through with_taxes, whose normalized_list holds names unique
+    as tax_name_key compares them and rates finite, never by assigning settings["taxes"] or
+    settings["purchasing_taxes"] directly. A new writer that skips it fails here."""
     writers = _tax_list_writers()
-    assert {"patch_taxes", "patch_purchasing_taxes", "import_taxes_batch",
-            "import_purchasing_taxes_batch", "_apply_default_location"} <= set(writers), sorted(writers)
-    unchecked = sorted(name for name, used in writers.items() if not used & _CHECKED_BY)
+    assert {"_save_tax_list", "_import_tax_rows"} <= set(writers), sorted(writers)
+    unchecked = sorted(name for name, used in writers.items() if "with_taxes" not in used)
     assert unchecked == [], unchecked

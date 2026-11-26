@@ -1824,7 +1824,7 @@ async def _import_tax_rows(session: AsyncSession, company_id, user_id, side: str
     try:
         settings = with_taxes(dict(company.settings), side, taxes)
     except ValueError as exc:
-        res.errors.append(str(exc))
+        res.errors.append(refusal_detail(exc))
         res.created = 0
         return res
     company.settings = settings

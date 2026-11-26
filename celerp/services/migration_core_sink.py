@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import Refused, catalog_refusal
 from celerp.events.engine import find_event_by_idempotency
 from celerp.importers.adapters.base import ScanError
 from celerp.importers.results import ImportOutcome, RecordOutcome, keyed_reason
@@ -332,8 +332,10 @@ def _apply_tax_code(company: Company, tax: CIFTaxCode) -> dict | None:
     })
     try:
         company.settings = with_taxes(settings, "sales", taxes)
-    except ValueError as exc:
-        return f"Tax code {tax.name} cannot be added: {exc}"
+    except Refused as exc:
+        return exc.detail
+    except ValueError:
+        return catalog_refusal("migration.record.tax_invalid", name=tax.name, rate=rate)
     return None
 
 

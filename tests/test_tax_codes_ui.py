@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from celerp.services.business_time import business_today
+
 from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
 from ui.api_client import APIError
 
@@ -110,7 +112,7 @@ async def test_add_rate_version_starts_today_and_closes_the_open_one(ui_client, 
     from celerp.localization.taxcodes import list_fingerprint
 
     ui_client.cookies.update(_authed())
-    today = dt.date.today()
+    today = business_today(None)  # the company has no timezone set: the default business timezone
     saved = AsyncMock(return_value={})
     with patch(f"ui.api_client.{gname}", new=AsyncMock(return_value=_rows())), \
          patch(f"ui.api_client.{pname}", new=saved):
