@@ -117,6 +117,19 @@ async def test_partner_link_ending_restores_the_standard_mark(ui_client):
 
 
 @pytest.mark.asyncio
+async def test_the_relay_ending_the_partner_link_restores_the_standard_mark(ui_client):
+    """The partner link starts and ends as a relay push the API accepts and persists;
+    the UI follows the persisted store alone, never the API's in-memory model."""
+    import celerp.gateway.state as gw_state
+    assert gw_state.apply_commercial_context(_partner(1)) == "applied"
+    gw_state._commercial_context = {}
+    assert await _login_marks(ui_client) == _ENTERPRISE
+    assert gw_state.apply_commercial_context(_direct(2)) == "applied"
+    gw_state._commercial_context = _partner(1)
+    assert await _login_marks(ui_client) == _STANDARD
+
+
+@pytest.mark.asyncio
 async def test_team_subscription_on_a_direct_install_keeps_the_standard_mark(ui_client):
     _store(_direct(1, {"status": "active", "tier": "team"}))
     assert await _login_marks(ui_client) == _STANDARD
