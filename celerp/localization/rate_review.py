@@ -87,8 +87,6 @@ async def _last_entry(session, company_id) -> int:
 
 
 async def _edited_since(session, company_id, item_ids, mark: int) -> set[str]:
-    if not item_ids:
-        return set()
     return set((await session.execute(select(LedgerEntry.entity_id).where(
         LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(list(item_ids)),
         LedgerEntry.id > mark))).scalars().all())

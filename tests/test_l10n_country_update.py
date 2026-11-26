@@ -292,6 +292,9 @@ async def test_rate_review_offered_never_applied(client, auth):
                           json={"item_ids": [items[0], items[2]], "binding": proposal["fingerprint"]})
     assert r.status_code == 200, r.text
     assert r.json()["skipped"] == [items[2]]
+    r = await client.post(f"/settings/taxes/rate-review/{applied['operation_id']}/apply", headers=auth["headers"],
+                          json={"item_ids": [items[0]], "binding": proposal["fingerprint"]})  # a retry replays
+    assert r.status_code == 200 and r.json()["skipped"] == [], r.text
     codes = {i: (await client.get(f"/items/{i}", headers=auth["headers"])).json()["tax_codes"] for i in items}
     assert codes[items[0]] == [moved["code_id"]]
     assert codes[items[1]] == ["old-code"] and codes[items[2]] == ["old-code"]
@@ -299,4 +302,8 @@ async def test_rate_review_offered_never_applied(client, auth):
     r = await client.post(f"/settings/taxes/rate-review/{applied['operation_id']}/undo", headers=auth["headers"])
     assert r.status_code == 200, r.text
     assert r.json()["kept"] == []
+
+    again = await _apply_country(client, auth, "IN")  # an update that moves no item rate offers no review
+    r = await client.get(f"/settings/taxes/rate-review/{again['operation_id']}", headers=auth["headers"])
+    assert r.status_code == 200 and r.json()["items"] == [], r.text
     assert (await client.get(f"/items/{items[0]}", headers=auth["headers"])).json()["tax_codes"] == ["old-code"]

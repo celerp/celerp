@@ -322,6 +322,19 @@ async def test_version_boundary_notice_on_date_move(client):
 _FROM_CODE = "Tax details come from the tax code VAT; change the code, or its rate in Settings > Taxes"
 
 
+async def test_identity_on_reads_the_number_in_force():
+    from celerp.localization.taxcodes import TaxIdentity, identity_on
+
+    rows = [TaxIdentity(scheme="TIN", number="111", valid_from=dt.date(2026, 1, 1)),
+            TaxIdentity(scheme="VAT", number="V9")]
+    assert identity_on(rows, "TIN", dt.date(2026, 10, 1)).number == "111"
+    rows.append(TaxIdentity(scheme="TIN", number="222", valid_from=dt.date(2026, 11, 1)))
+    assert identity_on(rows, "TIN", dt.date(2026, 10, 1)).number == "111"  # a later number never reaches back
+    assert identity_on(rows, "TIN", dt.date(2026, 11, 1)).number == "222"
+    assert identity_on(rows, "VAT", dt.date(2020, 1, 1)).number == "V9"  # no start date: always held
+    assert identity_on(rows, "TIN", dt.date(2025, 12, 31)) is None
+
+
 async def test_line_snapshot_fields_server_built(client):
     h = await _register(client)
     [vat] = await _saved(client, h, [_code("VAT", output_account="2120")])
