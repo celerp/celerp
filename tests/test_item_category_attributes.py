@@ -182,3 +182,22 @@ async def test_every_vertical_demo_item_holds_only_its_own_categorys_attributes(
                                                       & (item.get("attributes") or {}).keys()))
                for items in _VERTICAL_ITEMS.values() for item in items]
     assert [m for m in misfits if m[2]] == []
+
+
+async def test_the_cell_of_an_attribute_outside_the_category_stays_not_applicable_when_opened_or_restored(client, auth):
+    """The All-view cell routes: opening shows the refusal, never an editor; Esc restores the
+    not-applicable mark; an attribute the category does define opens and restores as usual."""
+    from test_list_old_rule_total_ui import _browser, _token
+
+    h = auth["headers"]
+    await _categories(client, h)
+    item_id = await _legacy(client, h)
+    async with _browser(_token(auth)) as ui:
+        restored = (await ui.get(f"/api/items/{item_id}/field/origin/display")).text
+        opened = (await ui.get(f"/api/items/{item_id}/field/origin/edit")).text
+        own_restored = (await ui.get(f"/api/items/{item_id}/field/material/display")).text
+        own_opened = (await ui.get(f"/api/items/{item_id}/field/material/edit")).text
+    assert "cell--na" in restored and "cell-error" not in restored
+    assert "cell--na" in opened and "no origin attribute" in opened and "<input" not in opened
+    assert "cell--na" not in own_restored
+    assert "cell--na" not in own_opened and "<input" in own_opened
