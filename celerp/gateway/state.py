@@ -500,47 +500,91 @@ def get_offer(tier: str | None = None) -> dict | None:
     return copy.deepcopy(offer) if isinstance(offer, dict) else None
 
 
+def _commercial_store_path() -> str:
+    """The file that holds the persisted commercial context on this platform:
+    <CELERP_DATA_DIR>/celerp-config.json when packaged, config.toml otherwise."""
+    import os
+    data_dir = os.environ.get("CELERP_DATA_DIR", "")
+    if data_dir:
+        return os.path.join(data_dir, "celerp-config.json")
+    from celerp.config import config_path
+    return str(config_path())
+
+
+def _read_stored_commercial_context() -> dict | None:
+    """The commercial context as last persisted, decoded but not yet validated, or
+    None when the store, the key or its JSON is missing or unreadable.
+
+    Packaged (Electron, CELERP_DATA_DIR set): the 'commercial_context' key of
+    celerp-config.json. Self-hosted (no CELERP_DATA_DIR): the [cloud]
+    commercial_context_json key of config.toml, compact JSON of the
+    already-validated context.
+    """
+    import os
+    import json
+    try:
+        if os.environ.get("CELERP_DATA_DIR", ""):
+            path = _commercial_store_path()
+            if not os.path.exists(path):
+                return None
+            with open(path) as f:
+                cached = json.load(f).get("commercial_context")
+        else:
+            from celerp.config import read_config
+            raw = read_config().get("cloud", {}).get("commercial_context_json", "")
+            cached = json.loads(raw) if raw else None
+    except Exception as exc:
+        log.debug("Gateway: commercial-context cache unreadable; using neutral default: %s", exc)
+        return None
+    return cached if isinstance(cached, dict) else None
+
+
 def load_commercial_context() -> None:
     """Load the last-known-good commercial context from the local cache at
     startup, ungated by the relay connection so an offline restart still
     presents the cached partner_managed identity instead of the neutral default.
 
-    Packaged (Electron, CELERP_DATA_DIR set): reads the 'commercial_context' key
-    from <CELERP_DATA_DIR>/celerp-config.json. Self-hosted (no CELERP_DATA_DIR):
-    reads and decodes the [cloud] commercial_context_json key from config.toml.
-    Both route the decoded object through set_commercial_context(), so a missing
+    The decoded object routes through set_commercial_context(), so a missing
     store, missing key, corrupt JSON, or an invalid/stale shape leaves the
     neutral empty model in place; it never fabricates a partner.
     """
+    cached = _read_stored_commercial_context()
+    if cached is not None:
+        set_commercial_context(cached)
+
+
+# The store file's identity and the stored context the UI process last mirrored.
+_mirrored_store_stamp: tuple | None = None
+_mirrored_context: dict | None = None
+
+
+def mirror_stored_commercial_context() -> None:
+    """Make this process's model the persisted one: the UI process's view of the
+    commercial context.
+
+    The UI runs in its own process and never receives the relay push; the API
+    persists every context it accepts (``_persist_commercial_context``), so the
+    UI reads that store. The file is re-read only when its identity (inode,
+    size, mtime) changes, and the held model is replaced only when the stored
+    context itself changed, so a write of an unrelated config key keeps the
+    model. A stored context that fails validation, or none at all, reads as the
+    neutral model: a direct install, never a fabricated partner.
+    """
     import os
-    import json
-    data_dir = os.environ.get("CELERP_DATA_DIR", "")
-    if data_dir:
-        config_path = os.path.join(data_dir, "celerp-config.json")
-        if not os.path.exists(config_path):
-            return
-        try:
-            with open(config_path) as f:
-                existing = json.load(f)
-            cached = existing.get("commercial_context")
-            if isinstance(cached, dict):
-                set_commercial_context(cached)
-        except Exception as exc:
-            log.debug("Gateway: commercial-context cache unreadable; using neutral default: %s", exc)
-        return
-    # Self-hosted: the durable store is the fixed [cloud] commercial_context_json
-    # config key, serialised as compact JSON of the already-validated context.
+    global _commercial_context, _mirrored_store_stamp, _mirrored_context
     try:
-        from celerp.config import read_config
-        raw = read_config().get("cloud", {}).get("commercial_context_json", "")
-        if not raw:
-            return
-        cached = json.loads(raw)
-        if isinstance(cached, dict):
-            set_commercial_context(cached)
-    except Exception as exc:
-        log.debug("Gateway: self-hosted commercial-context cache unreadable; "
-                  "using neutral default: %s", exc)
+        st = os.stat(_commercial_store_path())
+        stamp = (st.st_ino, st.st_size, st.st_mtime_ns)
+    except OSError:
+        stamp = None
+    if stamp is not None and stamp == _mirrored_store_stamp:
+        return
+    _mirrored_store_stamp = stamp
+    stored = _read_stored_commercial_context() if stamp is not None else None
+    if stored == _mirrored_context:
+        return
+    _mirrored_context = stored
+    _commercial_context = (_validated_commercial_shape(stored) or {}) if stored is not None else {}
 
 
 def grace_ends_in_future(value) -> bool:
