@@ -309,10 +309,10 @@ class TestChatView:
         limit = int(count.get_attribute("data-limit"))
         field.fill("hello \U0001F44D")
         expect(count).to_have_text(f"7 / {limit}")
-        expect(count).not_to_have_class(re.compile("ai-input__count--over"))
+        expect(count).not_to_have_class(css_class("ai-input__count--over"))
         field.fill("x" * (limit + 1))
         expect(count).to_have_text(f"{limit + 1} / {limit}")
-        expect(count).to_have_class(re.compile("ai-input__count--over"))
+        expect(count).to_have_class(css_class("ai-input__count--over"))
         assert len(field.input_value()) == limit + 1
 
     def test_chat_has_file_input(self, page, ui_server):

@@ -6,7 +6,7 @@
   "routes": ["/ai"],
   "permission": "use_ai_assistant",
   "order": 2,
-  "checked": "3b9f8e597097e392854b58a0245b0864ba26e8f05df4f9019e04b375e891e634",
+  "checked": "c5d1f1ef638528e8d024575bd8ddab5b45b6cb28ee6c4c88b21c81b1d07dd064",
   "steps": [
     {
       "text": "Before the assistant changes anything in your books, it shows the change as a card naming what it wants to create, update or delete, with its fields in your language and the records and files it uses by name. The card also says when the change sends something outside Celerp, or finalizes or voids a document, and a change to many records comes as one card with their count and list.",
