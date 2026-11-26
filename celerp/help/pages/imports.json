@@ -45,16 +45,16 @@
       "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}, {"click": "form[action$='/decisions'] button[type=submit]"}, {"wait": ".wizard-step:nth-child(4) .step-num--active"}], "evidence": [".step-label--active:text-is('{rev}')"]}
     },
     {
-      "text": "Under {ver}, Celerp compares its totals with the totals in your file. Review each difference before you finish; you can also fix the file and upload it again.",
-      "labels": {"ver": "migration.step_verify"},
-      "image": "img/imports-7.webp",
-      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}, {"click": "form[action$='/decisions'] button[type=submit]"}, {"wait": ".wizard-step:nth-child(4) .step-num--active"}, {"click": "form[action$='/start'] button[type=submit]"}, {"wait": "#migration-progress a[href$='/verify']"}, {"click": "#migration-progress a[href$='/verify']"}, {"wait": ".wizard-step:nth-child(6) .step-num--active"}], "evidence": [".step-label--active:text-is('{ver}')", ".migration-wizard table thead"]}
-    },
-    {
       "text": "Once the import starts, a progress page shows each step with what was created, skipped or failed. You can leave the page: the move keeps running.",
       "labels": {},
-      "image": "img/imports-8.webp",
+      "image": "img/imports-7.webp",
       "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}, {"click": "form[action$='/decisions'] button[type=submit]"}, {"wait": ".wizard-step:nth-child(4) .step-num--active"}, {"click": "form[action$='/start'] button[type=submit]"}, {"wait": "#migration-progress a[href$='/verify']"}], "evidence": ["#migration-progress table"]}
+    },
+    {
+      "text": "Under {ver}, Celerp compares its totals with the totals in your file. Review each difference before you finish; you can also fix the file and upload it again.",
+      "labels": {"ver": "migration.step_verify"},
+      "image": "img/imports-8.webp",
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": [{"click": "button:has-text('Try a sample migration')"}, {"wait": ".wizard-step:nth-child(2) .step-num--active"}, {"click": "form[action$='/decisions'] button[type=submit]"}, {"wait": ".wizard-step:nth-child(4) .step-num--active"}, {"click": "form[action$='/start'] button[type=submit]"}, {"wait": "#migration-progress a[href$='/verify']"}, {"click": "#migration-progress a[href$='/verify']"}, {"wait": ".wizard-step:nth-child(6) .step-num--active"}], "evidence": [".step-label--active:text-is('{ver}')", ".migration-wizard table thead"]}
     },
     {
       "text": "Before you choose {fin}, pick the account Celerp asks for under each posting role; it suggests one from your chart. Finishing completes the move and the company opens from there. A move you no longer want can be discarded from its progress page, which removes the new company and everything imported into it.",

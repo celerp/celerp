@@ -79,3 +79,13 @@ def test_help_ledger(pages):
 def test_help_translations(pages):
     """Every guide catalog is valid and the bundle built from it passes the bundle rules."""
     assert checks.check_translations(pages) == []
+
+
+def test_the_migration_guide_follows_the_wizard_in_the_order_it_runs(pages):
+    """Each step of the migration guide is reached by going on from the steps before it: no step
+    pictures a screen the wizard shows before an earlier step's screen."""
+    steps = next(p.data["steps"] for p in pages if p.data.get("id") == "core.imports")
+    actions = [s["capture"]["actions"] for s in steps]
+    earlier = [(n, m) for n, a in enumerate(actions, 1) for m, b in enumerate(actions[n:], n + 1)
+               if len(b) < len(a) and a[:len(b)] == b]
+    assert earlier == [], f"(step, later step shown before it in the wizard): {earlier}"
