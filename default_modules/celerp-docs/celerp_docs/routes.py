@@ -543,8 +543,8 @@ LINE_ANSWER_KEYS = {
     "binding": ("this answer as one digest; send it back with the action to have the action refused "
                 "(409 ``lines.preview_differs``), changing nothing, if it would now do anything else"),
     "fulfillment_status": "the record's shipping status after the action",
-    "fulfilled": ("the items it ships; in a preview, a part of a lot it would carve off is named by an id "
-                  "the action does not keep"),
+    "fulfilled": ("the items it ships; a preview names only the lots it ships whole, since a part of a lot "
+                  "it would carve off has no id until the action runs"),
     "taken_from": ("the other open invoices whose goods it ships, each with the lot's ``sku`` and ``name`` "
                    "as text (null when it has none), ``takes`` (``all``: that invoice can no longer ship the lot; "
                    "``part``: it has less of it to ship), ``lot_id``, ``doc_id`` and ``doc_number``"),
@@ -10860,18 +10860,19 @@ def _selected_line_indices(line_items: list[dict], body: FulfillLinesRequest) ->
 
 
 async def _line_stock(
-    session, company_id, owner_id: str, line_items: list[dict], indices: list[int],
+    session, company_id, owner_id: str, line_items: list[dict], indices: list[int], *, lock: bool = True,
 ) -> tuple[dict[str, Projection], dict[int, list[str]]]:
     """Lock the stock the chosen lines can touch and say which line holds which lot.
 
     Locks every lot a chosen line binds, every lot the owner holds or shipped, and all
-    other lots of those products. Returns the locked lots and the owner's holds by line.
+    other lots of those products; without ``lock`` (a preview) reads them unlocked.
+    Returns the lots and the owner's holds by line.
     A hold several lines bind with nothing recording which one holds it is refused when
     one of them is chosen: no line may treat it as its own."""
     from celerp.services.pick import attribute_holds
     owned = await _memo_allocation_items(session, company_id, owner_id)
     seeds = {str(line_item_id(line_items[i])) for i in indices if line_item_id(line_items[i])}
-    locked = await _lock_item_sku_lots(session, company_id, seeds | {p.entity_id for p in owned})
+    locked = await _lock_item_sku_lots(session, company_id, seeds | {p.entity_id for p in owned}, lock=lock)
     held = {eid: p.state for eid, p in locked.items()
             if p.state.get("status") == "reserved" and p.state.get("status_doc_id") == owner_id}
     by_line, _orphans, ambiguous = attribute_holds(line_items, held)
@@ -11256,9 +11257,10 @@ async def _release_holds(session, *, company_id, uid, owner: Projection) -> list
 
 
 async def _lock_item_sku_lots(
-    session, company_id, item_ids: list[str] | set[str],
+    session, company_id, item_ids: list[str] | set[str], *, lock: bool = True,
 ) -> dict[str, Projection]:
-    """Lock selected items and every same-SKU lot in one deterministic batch.
+    """Lock selected items and every same-SKU lot in one deterministic batch; without
+    ``lock`` (a preview, which carves nothing) read the same rows unlocked.
 
     Takes the company code namespace first: a partial line later carves a child lot, which
     needs that lock, and taking it after these item row locks would invert the canonical
@@ -11267,7 +11269,8 @@ async def _lock_item_sku_lots(
     ids = {eid for eid in item_ids if eid}
     if not ids:
         return {}
-    await lock_item_code_namespace(session, company_id)
+    if lock:
+        await lock_item_code_namespace(session, company_id)
     seeds = (await session.execute(select(Projection).where(
         Projection.company_id == company_id,
         Projection.entity_type == "item",
@@ -11278,12 +11281,13 @@ async def _lock_item_sku_lots(
     clauses = [Projection.entity_id.in_(ids)]
     if skus:
         clauses.append(Projection.state["sku"].as_string().in_(sorted(skus)))
+    query = select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "item",
+        _sa.or_(*clauses),
+    ).order_by(Projection.entity_id)
     rows = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "item",
-            _sa.or_(*clauses),
-        ).order_by(Projection.entity_id).with_for_update().execution_options(populate_existing=True)
+        (query.with_for_update() if lock else query).execution_options(populate_existing=True)
     )).scalars().all()
     locked = {row.entity_id: row for row in rows}
     for eid in ids:
@@ -11334,8 +11338,11 @@ async def _fulfill_lines_impl(
     session: AsyncSession,
     *,
     commit: bool = True,
+    preview: bool = False,
 ) -> dict:
-    """Ship the lines at ``indices``. Valid for memo and invoice docs only.
+    """Ship the lines at ``indices``. Valid for memo and invoice docs only. With ``preview``
+    it plans the shipment by the same rule and answers what it would do, writing and locking
+    nothing: the confirm runs it again under the locks and its binding refuses a changed outcome.
 
     Each line ships what it holds and, when that is short of its quantity, free stock as a
     reservation would take it; a line holding more than its quantity is refused until it is
@@ -11348,7 +11355,7 @@ async def _fulfill_lines_impl(
     """
     from celerp.services import auto_je
 
-    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    row = await _get_doc(session, company_id, entity_id, for_update=not preview)
     state = row.state
     doc_type = state.get("doc_type", "")
 
@@ -11361,13 +11368,13 @@ async def _fulfill_lines_impl(
             doc_status=state.get("status")))
 
     line_items = state.get("line_items", [])
-    locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
+    locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices, lock=not preview)
     indices, counted, left = _acting_lines(line_items, indices, locked, "fulfill")
     _out, line_of = await _lots_out(session, company_id, entity_id, state, locked.values())
     already = [i for i in indices if i in set(line_of.values())]
     indices = [i for i in indices if i not in already]
     service_lines = set(counted)
-    unit_map = await _get_unit_map(session, company_id)
+    unit_map = build_unit_map(await read_company_units(session, company_id)) if preview else await _get_unit_map(session, company_id)
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}
     ship_from = state.get("from_location_id") or None
@@ -11470,7 +11477,7 @@ async def _fulfill_lines_impl(
         taken_from = await auto_je.create_for_cost_moves(
             session, company_id=cid, user_id=uid, doc_id=entity_id,
             doc_number=state.get("doc_number") or state.get("ref_id") or entity_id,
-            cycle_tag=_fulfill_tag, moving=moving, ts=fulfillment_date)
+            cycle_tag=_fulfill_tag, moving=moving, ts=fulfillment_date, post=not preview)
     if doc_type == "invoice":
         # A lot shipped whole is gone for every other invoice naming it, including one that
         # held none of it at a cost: name those too.
@@ -11482,6 +11489,27 @@ async def _fulfill_lines_impl(
                                                takes=auto_je.LotTaken.ALL.value, lot_id=lot_id,
                                                doc_id=d["doc_id"], doc_number=d["doc_number"])
                            for d in docs if (lot_id, d["doc_id"]) not in told]
+
+    # The doc's fulfillment_status, from the plan. Service lines count as fulfilled (they are
+    # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".
+    # A lot another line binds and this shipment takes whole ships with it.
+    fulfilled_lines: set[int] = set(service_lines) | {idx for idx, _proj, _take, _full in shipments}
+    whole = {proj.entity_id for _idx, proj, _take, full in shipments if full}
+    all_statuses: list[str] = []
+    for _idx, li in enumerate(line_items):
+        li_eid = line_item_id(li)
+        if not li_eid:
+            continue
+        if _idx in fulfilled_lines or li_eid in whole:
+            all_statuses.append("memo_out")
+        else:
+            li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
+            all_statuses.append(li_proj.state.get("status", "available") if li_proj else "available")
+    doc_fulfillment_status = "fulfilled" if all_statuses and all(s in ("memo_out", "sold") for s in all_statuses) else "partial"
+    if preview:
+        # A lot carved off is new each time, so the preview names only the lots shipped whole.
+        return {"fulfillment_status": doc_fulfillment_status, "taken_from": taken_from, "skipped": left,
+                "fulfilled": sorted(whole)}
 
     # A part of a lot ships as its own lot carved off first; a line whose bound lot is
     # carved names the carved part from then on.
@@ -11495,13 +11523,11 @@ async def _fulfill_lines_impl(
 
     total_cogs = 0.0
     shipped: list[str] = []
-    fulfilled_lines: set[int] = set(service_lines)
     for idx, proj, take, full in shipments:
         lot_id = proj.entity_id if full else next(children)
         lot = await session.get(Projection, {"company_id": company_id, "entity_id": lot_id})
         total_cogs += auto_je.lot_cost_of_sale(lot.state)
         shipped.append(lot_id)
-        fulfilled_lines.add(idx)
         await emit_event(
             session,
             company_id=cid,
@@ -11535,24 +11561,10 @@ async def _fulfill_lines_impl(
         except Refused as exc:
             raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
-    # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
-    # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".
-    line_items = state.get("line_items", [])
-    all_statuses: list[str] = []
-    for _idx, li in enumerate(line_items):
-        li_eid = line_item_id(li)
-        if not li_eid:
-            continue
-        if _idx in fulfilled_lines:
-            all_statuses.append("memo_out")
-        else:
-            li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
-            all_statuses.append(li_proj.state.get("status", "available") if li_proj else "available")
 
     done_eids = shipped + [str(line_item_id(line_items[i])) for i in sorted(service_lines)]
     fulfilled_brief = _line_item_brief(line_items, done_eids)
-    if all_statuses and all(s in ("memo_out", "sold") for s in all_statuses):
-        doc_fulfillment_status = "fulfilled"
+    if doc_fulfillment_status == "fulfilled":
         doc_event_type = "doc.fulfilled"
         doc_event_data: dict = {
             "fulfilled_items": fulfilled_brief,
@@ -11563,7 +11575,6 @@ async def _fulfill_lines_impl(
             "ts": fulfillment_date,
         }
     else:
-        doc_fulfillment_status = "partial"
         doc_event_type = "doc.partially_fulfilled"
         # Lines on the doc not in this fulfill batch are still pending.
         unfulfilled_brief = _line_item_brief(
@@ -11715,10 +11726,11 @@ async def fulfill_lines(
     ``skipped_notice`` saying why, and for goods not free to ship where they are and what to do
     first; ``acted`` lists the lines it ships. A choice of only such
     lines is refused (422), naming them."""
-    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    row = await _get_doc(session, company_id, entity_id, for_update=not body.dry_run)
     return await _line_action(
         session, company_id, user, row, "fulfill", body,
-        lambda indices: _fulfill_lines_impl(entity_id, indices, company_id, user, session, commit=False))
+        lambda indices: _fulfill_lines_impl(entity_id, indices, company_id, user, session, commit=False,
+                                            preview=body.dry_run))
 
 
 async def _expand_invoice_line_allocations(

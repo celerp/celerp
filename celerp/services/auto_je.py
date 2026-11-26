@@ -4649,14 +4649,16 @@ async def moved_costs(session, company_id, *, doc_id: str, cycle_tag: str,
 
 
 async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, doc_number: str, cycle_tag: str,
-                                moving: dict[str, list[UnshippedClaim]], ts: str | None) -> list[dict]:
+                                moving: dict[str, list[UnshippedClaim]], ts: str | None,
+                                post: bool = True) -> list[dict]:
     """Move the cost of goods invoice ``doc_id`` ships from the open invoices that had set
     them aside (moved_costs): one entry per invoice, Dr cost of goods sold for the shipper,
     Cr cost of goods sold for the other, at the cost that invoice set them aside at.
     Inventory is not touched: it gave the goods up once, when they were set aside. The
     other invoice holds that many fewer units (recognized_cogs) and is costed for them
     when it ships. Returns the invoices the goods were taken from, for the notice: a
-    taken_entry for each lot, ``takes`` all the invoice held of it or part."""
+    taken_entry for each lot, ``takes`` all the invoice held of it or part. Without ``post``
+    (a preview) it posts nothing and returns the same notice."""
     if not moving:
         return []
     cogs_code = await resolve(session, company_id, R.COGS)
@@ -4672,19 +4674,20 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
         from_number = from_state.get("doc_number") or from_state.get("ref_id") or from_doc
         amount = to_stored_float(round_money(sum(c.amount for c in claims), currency))
         skus = sorted({str((rows[c.lot_id].state or {}).get("sku") or "") for c in claims if c.lot_id in rows})
-        await _emit_auto_posted_je(
-            session, company_id=company_id, user_id=user_id,
-            je_id=f"je:auto:{doc_id}:cost-move:{cycle_tag}:{from_doc}", record_id=doc_id,
-            idem_create=je_idempotency_key(doc_id, f"cost_move:{cycle_tag}:{from_doc}", "c"),
-            idem_posted=je_idempotency_key(doc_id, f"cost_move:{cycle_tag}:{from_doc}", "p"),
-            memo=f"Cost of {', '.join(skus)} moved from {from_number} to {doc_number}, which shipped them",
-            ts=ts, currency=currency,
-            entries=[_line(cogs_code, R.COGS, debit=amount), _line(cogs_code, R.COGS, credit=amount)],
-            metadata_={"trigger": "doc.cost_moved", "doc_id": doc_id, "from_doc_id": from_doc,
-                       "from_je": source.je_id,
-                       "moves": [{"line": c.line, "lot_id": c.lot_id, "qty": c.qty, "key": c.key,
-                                  "amount": c.amount} for c in claims]},
-        )
+        if post:
+            await _emit_auto_posted_je(
+                session, company_id=company_id, user_id=user_id,
+                je_id=f"je:auto:{doc_id}:cost-move:{cycle_tag}:{from_doc}", record_id=doc_id,
+                idem_create=je_idempotency_key(doc_id, f"cost_move:{cycle_tag}:{from_doc}", "c"),
+                idem_posted=je_idempotency_key(doc_id, f"cost_move:{cycle_tag}:{from_doc}", "p"),
+                memo=f"Cost of {', '.join(skus)} moved from {from_number} to {doc_number}, which shipped them",
+                ts=ts, currency=currency,
+                entries=[_line(cogs_code, R.COGS, debit=amount), _line(cogs_code, R.COGS, credit=amount)],
+                metadata_={"trigger": "doc.cost_moved", "doc_id": doc_id, "from_doc_id": from_doc,
+                           "from_je": source.je_id,
+                           "moves": [{"line": c.line, "lot_id": c.lot_id, "qty": c.qty, "key": c.key,
+                                      "amount": c.amount} for c in claims]},
+            )
         for lot_id in dict.fromkeys(c.lot_id for c in claims):
             lot = (rows[lot_id].state or {}) if lot_id in rows else {}
             takes = LotTaken.PART if any(c.left > 1e-9 for c in claims if c.lot_id == lot_id) else LotTaken.ALL
