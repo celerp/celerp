@@ -876,8 +876,8 @@
  },
  {
   "route": "ui POST /settings/partner-claim/resolve",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /settings/password",
