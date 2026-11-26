@@ -2910,6 +2910,7 @@ async def post_opening(session: AsyncSession, company_id: uuid.UUID, actor_id, b
                        amount: Decimal, when: str, rate: Decimal | None, memo: str) -> None:
     """Post ``amount`` onto the bank against equity (the retained earnings account) as
     entry ``je_id`` dated ``when``: the opening balance, or a later change to it."""
+    await refuse_mislabelled_bank(session, company_id, bank)
     base = await _base_currency(session, company_id)
     retained = await resolve(session, company_id, AccountRole.RETAINED_EARNINGS)
     entries = _bank_entries(bank, base, rate, [({"account": retained}, abs(amount))], inflow=amount > 0)
@@ -3119,12 +3120,15 @@ async def transfer_entries(session: AsyncSession, company_id: uuid.UUID, from_ba
                            allocation: list[tuple[str | None, Decimal]] | None = None) -> list[dict]:
     """The lines of one transfer of ``amount`` (in the source account's currency) between two
     of the company's bank accounts, the one way ``POST /transfers`` and a statement line's
-    transfer or cash decision build it. A destination kept in another currency than both the
+    transfer or cash decision build it. Neither account may be one whose label and entries
+    disagree (``refuse_mislabelled_bank``). A destination kept in another currency than both the
     source and the books receives ``to_amount`` of its own currency."""
     from celerp_accounting.statement_lines import money_value
 
     if from_bank.id == to_bank.id:
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_transfer_same_bank"))
+    for bank in (from_bank, to_bank):
+        await refuse_mislabelled_bank(session, company_id, bank)
     money_value(amount, from_bank.currency)
     await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code})
     base = await _base_currency(session, company_id)
