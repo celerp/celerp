@@ -91,6 +91,31 @@ async def test_labor_and_overhead_are_not_added_to_work_in_progress(client, sess
     await assert_settled(client, session, auth)
 
 
+@pytest.mark.parametrize("field", ["hours", "rate", "amount"])
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+async def test_a_labor_figure_that_is_not_a_number_is_refused_and_the_recipe_kept(client, session, auth, field, token):
+    raw = await _item(client, auth, 100.0, qty=10)
+    item = await product(client, auth, [(raw, 5)])
+    good = {"output_qty": 1, "components": [{"item_id": raw, "quantity": 5}],
+            "labor": [{"operation": "Assemble", "hours": 2, "rate": 40}], "overhead": []}
+    r = await client.put(f"/manufacturing/items/{item}/recipe", headers=auth["headers"], json=good)
+    assert r.status_code == 200, r.text
+    kept = (await _state(session, auth, item))["recipe"]
+
+    line = '{"operation": "Assemble", "kind": "fixed", "hours": 2, "rate": 40, "amount": 5}'.replace(
+        f'"{field}": {2 if field == "hours" else 40 if field == "rate" else 5}', f'"{field}": {token}')
+    raw_body = ('{"output_qty": 1, "components": [{"item_id": "%s", "quantity": 5}], "labor": [%s], "overhead": []}'
+                % (raw, line))
+    r = await client.put(f"/manufacturing/items/{item}/recipe",
+                         headers={**auth["headers"], "content-type": "application/json"}, content=raw_body)
+
+    assert r.status_code == 422, r.text
+    [err] = r.json()["detail"]
+    assert err["type"] == "finite_number" and err["loc"] == ["body", "labor", 0, field], r.text
+    session.expire_all()
+    assert (await _state(session, auth, item))["recipe"] == kept
+
+
 async def _moved_on(client, session, auth) -> str:
     """Work in progress remapped to a new account; returns the account the run's balance stays on."""
     first = await role(session, auth, WIP)

@@ -437,9 +437,9 @@ class CoProductSpec(BaseModel):
 class LaborLine(BaseModel):
     operation: str
     kind: str = "hourly"               # "hourly" (hours × rate) | "fixed" (flat amount)
-    hours: float = 0
-    rate: float = 0                    # per-line rate (no company default)
-    amount: float = 0                  # flat cost, used when kind == "fixed"
+    hours: FiniteFloat = 0
+    rate: FiniteFloat = 0              # per-line rate (no company default)
+    amount: FiniteFloat = 0            # flat cost, used when kind == "fixed"
     source: str = "manual"             # "manual" | "auto:<rule>" (future auto-labor module)
 
 
