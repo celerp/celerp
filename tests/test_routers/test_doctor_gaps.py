@@ -131,8 +131,8 @@ async def test_doctor_duplicate_jes_legacy_entity_id(client: "AsyncClient", sess
     # Create two JEs with legacy entity_id format via batch import
     legacy_id = f"je:legacy:{uuid.uuid4()}"
     balanced = [
-        {"account": "1000", "debit": 100.0, "credit": 0.0},
-        {"account": "3000", "debit": 0.0, "credit": 100.0},
+        {"account": "1111", "debit": 100.0, "credit": 0.0},
+        {"account": "3100", "debit": 0.0, "credit": 100.0},
     ]
 
     # First JE via API

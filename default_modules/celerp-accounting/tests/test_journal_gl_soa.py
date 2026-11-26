@@ -1462,29 +1462,33 @@ async def test_batch_import_tolerates_null_amounts(client):
 
 @pytest.mark.asyncio
 async def test_ledger_buckets_by_literal_code_only(client):
-    """A legacy entry posted directly to a parent code shows on the parent's
-    own ledger and nowhere else, matching how TB/GL/journal bucket it."""
+    """An entry posted to an account that later gained an account under it (so it is now
+    a parent) shows on the parent's own ledger and nowhere else, matching how TB/GL/journal
+    bucket it."""
     tok = await _reg(client)
     r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
         "entity_id": f"je:{uuid.uuid4()}",
         "event_type": "acc.journal_entry.created",
         "data": {"status": "posted", "ts": "2026-01-10", "entries": [
-            {"account": "1130", "debit": 70.0, "credit": 0},
+            {"account": "1140", "debit": 70.0, "credit": 0},
             {"account": "3200", "debit": 0, "credit": 70.0},
         ]},
         "source": "test", "idempotency_key": str(uuid.uuid4()),
     }]})
-    assert r.status_code == 200 and r.json()["created"] == 1
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    r = await client.post("/accounting/accounts", headers=_h(tok), json={
+        "code": "1140-C", "name": "Child", "account_type": "asset", "parent_code": "1140"})
+    assert r.status_code == 200, r.text
 
-    parent = (await client.get("/accounting/ledger/1130", headers=_h(tok))).json()
+    parent = (await client.get("/accounting/ledger/1140", headers=_h(tok))).json()
     assert any(abs(l["debit"] - 70.0) < 0.01 for l in parent["lines"])
-    child = (await client.get("/accounting/ledger/1130-P", headers=_h(tok))).json()
+    child = (await client.get("/accounting/ledger/1140-C", headers=_h(tok))).json()
     assert not any(abs(l["debit"] - 70.0) < 0.01 for l in child["lines"])
 
     gl = (await client.get("/accounting/general-ledger", headers=_h(tok))).json()
     rows = {r["code"]: r for r in gl["rows"]}
-    assert abs(rows["1130"]["closing"] - 70.0) < 0.01
-    assert "1130-P" not in rows or abs(rows["1130-P"]["closing"]) < 0.01
+    assert abs(rows["1140"]["closing"] - 70.0) < 0.01
+    assert "1140-C" not in rows or abs(rows["1140-C"]["closing"]) < 0.01
 
 
 @pytest.mark.asyncio

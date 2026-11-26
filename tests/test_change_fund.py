@@ -646,7 +646,7 @@ async def test_change_fund_gates_in_check_order(client, session, auth):
                      "idempotency_key": uuid.uuid4().hex,
                      "data": {"status": "draft", "ts": "2026-03-01", "memo": "Filed, not posted",
                               "entries": [{"account": "1111", "debit": 10, "credit": 0},
-                                          {"account": "4000", "debit": 0, "credit": 10}]}}],
+                                          {"account": "4100", "debit": 0, "credit": 10}]}}],
         "fund_choices": {"all": f["R"]}})
     assert r.status_code == 200 and r.json()["created"] == 1, r.text
     r = await _change_journal(client, session, auth, je, all="unrestricted")
