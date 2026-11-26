@@ -3,7 +3,7 @@
 """Shared steps for the tax money tests: a company with books, tax codes saved through the
 settings API, documents and payments through the documents API, the ledger read back by account
 role, and the one rebuild comparator (the projections a replay of the ledger produces against
-the ones stored), which the money proof script reuses."""
+the ones stored)."""
 from __future__ import annotations
 
 import re
