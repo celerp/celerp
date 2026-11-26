@@ -60,11 +60,11 @@ def _kinds(codes) -> dict[str, str | None]:
 
 
 def test_importer_maps_tax_types_to_categories(tmp_path):
-    from celerp.importers.tax_types import tax_kind
+    from celerp.importers.tax_types import tax_fields
 
     (tmp_path / "x").mkdir()
     (tmp_path / "q").mkdir()
-    assert tax_kind("xero", "Tourism Levy") is None
+    assert tax_fields("xero", "Tourism Levy")["category"] is None
     xero = _adapter().build_manifest(_set(tmp_path / "x", _xero()), FULL).bundle.tax_codes
     assert _kinds(xero) == {"20% (VAT on Income)": "standard", "20% (VAT on Expenses)": "standard",
                             "20% (VAT on Capital Purchases)": "standard", "Zero Rated Income": "zero",

@@ -229,6 +229,31 @@ async def test_localization_undo_keeps_later_edits(client, auth):
     kept = r.json()["kept"]
     assert any(item["name"] == edited["name"] for item in kept)
     assert any(row.get("description") == "my own words" for row in await _taxes(client, auth))
+    reapplied = await _apply_country(client, auth, "TH")
+    taxes = await _taxes(client, auth)
+    r = await client.post("/settings/taxes/localization/undo", headers=auth["headers"],
+                          json={"operation_id": applied["operation_id"]})  # undoing again replays
+    assert r.status_code == 200 and r.json()["kept"] == kept, r.text
+    assert await _taxes(client, auth) == taxes  # and leaves the later update standing
+    assert reapplied["operation_id"] != applied["operation_id"]
+
+
+async def test_localization_diff_adds_versions_and_category():
+    from celerp.localization.apply import _diff
+
+    base = [{"name": "VAT", "versions": [{"rate": 8.0, "valid_from": "2027-01-01"}]},
+            {"name": "Zero", "category": "zero", "versions": [{"rate": 0.0}]}]
+    pack = [{"name": "vat", "category": "standard",
+             "versions": [{"rate": 8.0, "valid_from": "2027-01-01"}, {"rate": 7.0, "valid_to": "2026-12-31"}]},
+            {"name": "Zero", "category": "exempt", "versions": [{"rate": 0.0}]}]
+    diff, result = _diff(base, pack)
+    assert [v["rate"] for v in result[0]["versions"]] == [7.0, 8.0]  # the open start sorts first
+    assert diff["added_versions"] == [{"name": "VAT", "versions": [
+        {"rate": 7.0, "valid_from": None, "valid_to": "2026-12-31", "base_fraction": None}]}]
+    assert result[0]["category"] == "standard" and diff["retagged"] == [{"name": "VAT", "category": "standard"}]
+    assert result[1]["category"] == "zero"  # a category already set is never retagged
+    assert diff["added"] == [] and diff["kept"] == []
+    assert _diff(result, pack)[0] == {"added": [], "added_versions": [], "retagged": [], "kept": []}
 
 
 # ── S6: item rate review ────────────────────────────────────────────────────────
@@ -261,6 +286,9 @@ async def test_rate_review_offered_never_applied(client, auth):
                           json={"item_ids": ["not-proposed"], "binding": proposal["fingerprint"]})
     assert r.status_code == 422
     r = await client.post(f"/settings/taxes/rate-review/{applied['operation_id']}/apply", headers=auth["headers"],
+                          json={"item_ids": [items[0]], "binding": "forged"})
+    assert r.status_code == 422
+    r = await client.post(f"/settings/taxes/rate-review/{applied['operation_id']}/apply", headers=auth["headers"],
                           json={"item_ids": [items[0], items[2]], "binding": proposal["fingerprint"]})
     assert r.status_code == 200, r.text
     assert r.json()["skipped"] == [items[2]]
@@ -270,4 +298,5 @@ async def test_rate_review_offered_never_applied(client, auth):
 
     r = await client.post(f"/settings/taxes/rate-review/{applied['operation_id']}/undo", headers=auth["headers"])
     assert r.status_code == 200, r.text
+    assert r.json()["kept"] == []
     assert (await client.get(f"/items/{items[0]}", headers=auth["headers"])).json()["tax_codes"] == ["old-code"]

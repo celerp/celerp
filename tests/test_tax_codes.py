@@ -117,6 +117,7 @@ async def test_overlapping_versions_refused(client):
     for fraction in (0, 1.5):
         _refused(await _save(client, h, [{**stored, "versions": [{"rate": 7.0, "base_fraction": fraction}]}]),
                  "VAT", "base_fraction")
+    _refused(await _save(client, h, [{**stored, "versions": [{"rate": 7.0, "rate_pct": 7.0}]}]), "rate_pct")
     assert await _list(client, h) == [stored]
 
 

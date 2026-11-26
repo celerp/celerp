@@ -55,11 +55,6 @@ def _row(system: str, source_type: str) -> tuple[str, str] | None:
     return None
 
 
-def tax_kind(system: str, source_type: str) -> str | None:
-    """The Celerp category of ``system``'s tax type ``source_type``; None when it has no mapping."""
-    return tax_fields(system, source_type)["category"]
-
-
 def tax_fields(system: str, source_type: str) -> dict:
     """The CIFTaxCode fields ``system``'s tax type ``source_type`` sets: its category (None when
     it has no mapping), its side (both when unmapped) and the source type itself."""
