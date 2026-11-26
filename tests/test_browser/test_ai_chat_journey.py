@@ -355,6 +355,33 @@ def test_action_card_within_message_column(page: Page, ui_server, item_create_ca
     assert card_box["x"] + card_box["width"] <= main_box["x"] + main_box["width"] + 2
 
 
+def test_a_proposal_card_that_arrives_is_scrolled_into_view_to_its_foot(page: Page, ui_server, item_create_cap):
+    """A card lands in the thread at the question's poll; the thread follows it to its foot,
+    so Confirm and Dismiss are on screen, not under the composer. A reply that only answers
+    keeps the thread at its foot the same way."""
+    page.set_viewport_size({"width": 1280, "height": 720})
+    _SCRIPT.append(_answer("\n\n".join(f"Line {n} of a long answer." for n in range(40))))
+    _SCRIPT.append(_mutation(item_create_cap, {"name": "Scrolled Widget", "sell_by": "piece"},
+                             "I'll add that once you confirm."))
+    _open_chat(page, ui_server)
+    at_foot = """() => { const m = document.getElementById('ai-messages');
+                         return m.scrollHeight > m.clientHeight && m.scrollTop + m.clientHeight >= m.scrollHeight - 2; }"""
+
+    _send(page, "tell me something long")
+    expect(page.locator(".ai-msg--ai", has_text="Line 39 of a long answer.")).to_be_attached()
+    page.wait_for_function(at_foot)
+
+    _send(page, "add a scrolled widget")
+    card = page.locator(".ai-action__card", has_text="Scrolled Widget")
+    expect(card).to_be_attached()
+    page.wait_for_function(at_foot)
+    thread = page.locator("#ai-messages").bounding_box()
+    for name in ("Confirm", "Dismiss"):
+        button = card.get_by_role("button", name=name).bounding_box()
+        assert thread["y"] <= button["y"] and button["y"] + button["height"] <= thread["y"] + thread["height"], (
+            f"{name} is outside the thread's view: {button} in {thread}")
+
+
 def test_sidebar_header_input_layout_intact(page: Page, ui_server):
     """The card rename only touches `.ai-action*` selectors inside the message
     column, so the chat shell around it must be undisturbed: the sidebar abuts

@@ -1875,7 +1875,8 @@ def _pending_bubble(poll_url: str, delay_s: float, *children: FT, cls: str, also
                     method: str = "get", **attrs) -> FT:
     """A bubble that calls ``poll_url`` after ``delay_s`` seconds (at once for 0) and is
     replaced by what it returns: the one way the thread follows a running job. A poll
-    that may save something (``method="post"``) is never a GET."""
+    that may save something (``method="post"``) is never a GET. The thread follows what
+    lands to its foot (``#ai-messages``)."""
     poll = f"load delay:{delay_s:g}s" if delay_s else "load"
     return Div(*children, cls=cls, hx_trigger=f"{poll}{', ' if also_on else ''}{also_on}",
                hx_swap="outerHTML", **({"hx_post": poll_url} if method == "post" else {"hx_get": poll_url}), **attrs)
@@ -2250,6 +2251,11 @@ def _chat_view(
                 *message_children,
                 id="ai-messages",
                 cls="ai-messages",
+                # A swapped-out poll bubble hands its finished request to the thread, so what
+                # lands in the thread is followed to its foot when the reader was at the foot
+                # (a reader who scrolled up stays where they are).
+                hx_on__before_swap="this.dataset.atFoot = celerpAiAtFoot();",
+                hx_on__after_request="if (this.dataset.atFoot === 'true') celerpAiScrollToFoot();",
             ),
             # Input area: text row + drop zone
             Form(
@@ -2440,7 +2446,18 @@ function celerpAiBeforeRequest() {
         return celerpNode('span', {class: 'ai-typing__dot'});
     })));
     m.appendChild(typing);
-    m.scrollTop = m.scrollHeight;
+    celerpAiScrollToFoot();
+}
+
+// The thread shows its newest message: after a reply, and after a poll's answer lands.
+function celerpAiScrollToFoot() {
+    var m = document.getElementById('ai-messages');
+    if (m) m.scrollTop = m.scrollHeight;
+}
+
+function celerpAiAtFoot() {
+    var m = document.getElementById('ai-messages');
+    return !m || m.scrollTop + m.clientHeight >= m.scrollHeight - 8;
 }
 
 function celerpAiFillQuery(text, needsFiles) {
@@ -2509,8 +2526,7 @@ function celerpAiAfterRequest(event) {
     var xhr = event && event.detail && event.detail.xhr;
     if (xhr && xhr.getResponseHeader('X-AI-Clear-Composer') === '1') celerpAiResetForm();
     celerpAiRefreshComposer();
-    var m = document.getElementById('ai-messages');
-    if (m) m.scrollTop = m.scrollHeight;
+    celerpAiScrollToFoot();
 }
 
 // Drag-and-drop handlers on the drop zone
