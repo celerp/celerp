@@ -32821,5 +32821,13 @@
     "tests/test_enterprise_logo.py::test_team_subscription_on_a_direct_install_keeps_the_standard_mark": 0.00810595485381782,
     "tests/test_enterprise_logo.py::test_the_relay_ending_the_partner_link_restores_the_standard_mark": 0.01005637610796839,
     "tests/test_browser/test_enterprise_mark.py::test_sidebar_shows_the_enterprise_logo[chromium]": 6.809466607985087,
-    "tests/test_browser/test_enterprise_mark.py::test_sign_in_card_shows_the_enterprise_logo_then_the_standard_one": 0.7337611839175224
+    "tests/test_browser/test_enterprise_mark.py::test_sign_in_card_shows_the_enterprise_logo_then_the_standard_one": 0.7337611839175224,
+    "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_journal_posts_only_to_active_leaf_accounts": 0.8591331229545176,
+    "tests/test_doc_currency_boundary.py::test_a_connected_company_document_in_an_unsupported_currency_is_refused": 0.22605254198424518,
+    "tests/test_doc_currency_boundary.py::test_a_migration_refuses_a_document_in_an_unsupported_currency": 0.1258402318926528,
+    "tests/test_doc_currency_boundary.py::test_a_shop_order_in_an_unsupported_currency_fails_its_sync": 0.04978710401337594,
+    "tests/test_doc_currency_boundary.py::test_the_boundary_keeps_every_document_and_list_in_a_supported_currency[doc]": 0.12640659394674003,
+    "tests/test_doc_currency_boundary.py::test_the_boundary_keeps_every_document_and_list_in_a_supported_currency[list]": 0.17989457305520773,
+    "tests/test_doc_currency_boundary.py::test_the_document_imports_refuse_an_unsupported_currency": 0.28111295320559293,
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_journal_import_destinations.py]": 0.006258037989027798
 }
