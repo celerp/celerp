@@ -48,7 +48,7 @@ MAKERS = {
     "tax unset": ("subscription_invoice", {"line_items": UNTAXED}, "documents.err_line_tax_unset"),
     "unpriced": ("subscription_po", {"line_items": [{"description": "Hosting", "quantity": 1, "taxes": []}]},
                  "docs.unpriced_line"),
-    "purchase tax": ("subscription_invoice", {"line_items": [{**LINE, "taxes": [{"code": "WHT", "rate": -3}]}]},
+    "purchase tax": ("subscription_invoice", {"line_items": [{**LINE, "taxes": [{"code": "WHT", "rate": 3}]}]},
                      "documents.err_tax_purchase_only"),
     "no account": ("subscription_po", {"line_items": [{**LINE, "taxes": [], "account_code": "9999"}]},
                    "posting.destination.not_in_chart"),
@@ -135,6 +135,8 @@ async def test_every_refusal_of_the_bill_names_cancel_and_new_at_every_door(clie
     freeze_day(monkeypatch, DAY)
     hd = owner_ui.api.headers
     doc_type, fields, reason = MAKERS[maker]
+    # The company's purchase-only code the "purchase tax" agreement names.
+    assert (await save_taxes(client, hd, [{"name": "WHT", "rate": 3.0, "tax_type": "purchase"}])).status_code == 200
     eid = await agreement(client, hd, start=DAY, doc_type=doc_type)
     await _stored(session, client, hd, eid, **fields)
     ref = (await template(client, hd, eid))["ref_id"]

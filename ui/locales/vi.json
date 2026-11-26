@@ -4531,6 +4531,7 @@
   "documents.tax_route_void_order": "Sau đó hủy chứng từ và tạo hóa đơn nhà cung cấp mới với thuế đã chọn. Nếu Celerp yêu cầu chuyển hóa đơn về nháp thay vì hủy, hãy dùng Chuyển về nháp để quay lại đơn mua hàng của nó, rồi hủy đơn đó.",
   "documents.tax_route_new": "Chứng từ ở trạng thái này không thể chuyển về nháp, vì vậy hãy tạo chứng từ mới và chọn thuế.",
   "documents.err_tax_purchase_only": "{tax} là thuế mua hàng, ví dụ thuế khấu trừ của nhà cung cấp, nên không thể dùng trên chứng từ bán hàng. Hãy xóa thuế này khỏi chứng từ.",
+  "documents.err_tax_negative": "{tax} nhỏ hơn 0. Thuế không thể âm: để ghi nhận thuế khấu trừ, hãy dùng mã thuế khấu trừ trong Cài đặt > Thuế, rồi lưu lại.",
   "documents.err_tax_sales_only": "{tax} là thuế bán hàng, nên không thể dùng trên chứng từ mua hàng. Hãy xóa thuế này khỏi chứng từ.",
   "documents.err_contact_not_contact": "Liên hệ bạn chọn không phải là bản ghi liên hệ. Hãy chọn lại liên hệ từ danh sách.",
   "documents.err_contact_deleted": "Liên hệ này đã bị xóa nên không thể dùng trên chứng từ. Hãy chọn liên hệ khác.",

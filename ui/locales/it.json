@@ -4531,6 +4531,7 @@
   "documents.tax_route_void_order": "Annulla il documento e crea una nuova fattura fornitore con l'imposta selezionata. Se Celerp chiede invece di ripristinare la fattura, usa Ripristina bozza, che la riporta al suo ordine di acquisto, poi annulla l'ordine.",
   "documents.tax_route_new": "Un documento in questo stato non può tornare in bozza: creane uno nuovo con l'imposta selezionata.",
   "documents.err_tax_purchase_only": "{tax} è un'imposta sugli acquisti, come una ritenuta a un fornitore, quindi non può stare su un documento di vendita. Rimuovila da questo documento.",
+  "documents.err_tax_negative": "{tax} è inferiore a zero. Un'imposta non può essere negativa: per registrare una ritenuta, usa un codice di ritenuta da Impostazioni > Imposte, poi salva di nuovo.",
   "documents.err_tax_sales_only": "{tax} è un'imposta sulle vendite, quindi non può stare su un documento di acquisto. Rimuovila da questo documento.",
   "documents.err_contact_not_contact": "Il contatto scelto non è una scheda contatto. Scegli di nuovo il contatto dall'elenco.",
   "documents.err_contact_deleted": "Questo contatto è stato eliminato, quindi non può essere usato nei documenti. Scegli un altro contatto.",

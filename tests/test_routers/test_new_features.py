@@ -594,14 +594,8 @@ async def test_non_compound_doc_taxes_both_apply_to_base(client):
 
 @pytest.mark.asyncio
 async def test_negative_wht_doc_tax(client):
-    """Negative (offset) doc tax on a purchase bill - withholding tax reduces net payable.
-    A sale cannot carry it (tests/test_routers/test_tax_side.py).
-
-    Setup: subtotal = 1000
-      VAT 7%: +70.0
-      WHT -3%: is_compound=False, amount=0 → server computes -30.0
-    Total = 1000 + 70 - 30 = 1040
-    """
+    """A negative document tax on a purchase bill is refused: tax withheld from a supplier is a
+    withholding code with a positive rate, never a negative one."""
     token = await _register(client, email="wht@test.example")
     payload = {
         "doc_type": "bill",
@@ -612,12 +606,8 @@ async def test_negative_wht_doc_tax(client):
         ],
     }
     r = await client.post("/docs", headers=_auth(token), json=payload)
-    assert r.status_code == 200
-    doc = (await client.get(f"/docs/{r.json()['id']}", headers=_auth(token))).json()
-
-    taxes = {t["code"]: t for t in doc["doc_taxes"]}
-    assert taxes["WHT"]["amount"] == pytest.approx(-30.0, abs=0.01)
-    assert doc["total"] == pytest.approx(1040.0, abs=0.01)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "documents.err_tax_negative"
 
 
 @pytest.mark.asyncio

@@ -4531,6 +4531,7 @@
   "documents.tax_route_void_order": "Depois, anule o documento e crie uma nova fatura de fornecedor com o imposto selecionado. Se o Celerp pedir para reverter a fatura, use Reverter para rascunho para retornar ao pedido de compra e depois anule esse pedido.",
   "documents.tax_route_new": "Um documento neste status não pode voltar a rascunho; crie outro com o imposto selecionado.",
   "documents.err_tax_purchase_only": "{tax} é um imposto de compra, como uma retenção a um fornecedor, por isso não pode ir num documento de venda. Remova-o deste documento.",
+  "documents.err_tax_negative": "{tax} está abaixo de zero. Um imposto não pode ser negativo: para registar uma retenção na fonte, use um código de retenção em Definições > Impostos e guarde novamente.",
   "documents.err_tax_sales_only": "{tax} é um imposto de venda, por isso não pode ir num documento de compra. Remova-o deste documento.",
   "documents.err_contact_not_contact": "O contato escolhido não é um registro de contato. Escolha o contato de novo na lista.",
   "documents.err_contact_deleted": "Este contato foi excluído, então não pode ser usado em documentos. Escolha outro contato.",

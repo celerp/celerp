@@ -27,7 +27,7 @@ from celerp.accounting_roles import catalog_refusal
 # document_money reads, the currency, and the rate that values it in the base currency.
 # A document made from another (an agreement's bill) carries every one of them.
 HEADER_MONEY_FIELDS = ("currency", "conversion_rate", "discount", "discount_type", "shipping", "tax", "tax_rate",
-                       "doc_taxes", "shipping_taxes")
+                       "doc_taxes", "shipping_taxes", "prices_include_tax")
 
 
 class UnratedTaxError(ValueError):
@@ -336,6 +336,25 @@ def refuse_malformed_taxes(values: dict, state: dict | None = None) -> None:
     named = uncomputable_tax(values)
     if named is not None:
         raise unreadable_tax_refusal(named, state)
+
+
+def refuse_negative_taxes(state: dict) -> None:
+    """Refuse (422, naming it) a document written with a tax below zero: a rate of a line,
+    document or shipping tax, a line or header ``tax_rate``, or a ``tax`` amount no rate gives.
+    A negative tax cannot say who pays it or when; tax withheld is a withholding code, kept
+    positive. Every write of a document's taxes checks it."""
+    lines = [line for line in state.get("line_items") or [] if isinstance(line, dict)]
+    rated = [*tax_entries(state.get("doc_taxes")), *tax_entries(state.get("shipping_taxes")),
+             *(tax for line in lines for tax in tax_entries(line.get("taxes")))]
+    named = next((tax.get("code") or tax.get("label") or f"{float(tax['rate']):g}%" for tax in rated
+                  if isinstance(tax.get("rate"), (int, float)) and tax["rate"] < 0), None)
+    for rate in (*(line.get("tax_rate") for line in lines), state.get("tax_rate")):
+        if named is None and to_decimal(rate or 0) < 0:
+            named = f"{float(rate):g}%"
+    if named is None and not _has_rate(state) and to_decimal(state.get("tax") or 0) < 0:
+        named = f"{float(state['tax']):g}"
+    if named is not None:
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_tax_negative", tax=named))
 
 
 def _line_amount(line: dict, currency: str) -> Decimal:

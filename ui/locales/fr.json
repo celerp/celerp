@@ -4531,6 +4531,7 @@
   "documents.tax_route_void_order": "Annulez ensuite le document et créez une nouvelle facture fournisseur avec la taxe choisie. Si Celerp vous demande plutôt de revenir au brouillon, utilisez « Revenir au brouillon » pour retourner au bon de commande d’origine, puis annulez celui-ci.",
   "documents.tax_route_new": "Un document dans cet état ne peut pas revenir au brouillon : créez-en un nouveau avec la taxe choisie.",
   "documents.err_tax_purchase_only": "{tax} est une taxe d'achat, comme une retenue à la source sur un fournisseur, elle ne peut donc pas figurer sur un document de vente. Retirez-la de ce document.",
+  "documents.err_tax_negative": "{tax} est inférieur à zéro. Une taxe ne peut pas être négative : pour enregistrer une retenue à la source, utilisez un code de retenue dans Paramètres > Taxes, puis enregistrez à nouveau.",
   "documents.err_tax_sales_only": "{tax} est une taxe de vente, elle ne peut donc pas figurer sur un document d'achat. Retirez-la de ce document.",
   "documents.err_contact_not_contact": "Le contact choisi n'est pas une fiche contact. Choisissez à nouveau le contact dans la liste.",
   "documents.err_contact_deleted": "Ce contact a été supprimé, il ne peut donc pas être utilisé sur des documents. Choisissez un autre contact.",

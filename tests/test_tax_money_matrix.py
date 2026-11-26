@@ -299,6 +299,9 @@ READERS = {
         ("ui/routes/documents.py", 'get("tax"'), ("ui/routes/documents.py", 'total - discount + tax'),
         # A scanned receipt's tax, read to suggest a bank line's posting: no document's figure.
         (_ACC + "suggest.py", 'get("tax"'),
+        # The upgrade's one rewrite of a pre-upgrade document: its withheld amount moves back
+        # into the tax figure as a withholding (P2.18), read once from the stored state.
+        ("celerp/localization/upgrade.py", 'get("tax"'),
     },
     "amount_due": {
         ("celerp/services/doc_balance.py", 'def outstanding_balance'),

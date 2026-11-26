@@ -32,6 +32,7 @@ SERVER_BUILT = {
     "celerp/events/engine.py::connector_upsert": "the primitive; each connector's caller is its own row here",
     "celerp/services/attachments.py::attach_file": "writes only the files list it builds",
     "celerp/services/demo.py::follow_books_currency": "writes the books' currency onto the demo documents it seeded",
+    "celerp/services/withholding_correction.py::_mark": "writes the withholding correction flag and entry it posts",
     "default_modules/celerp-admin/celerp_admin/routes.py::_check_inverted_doc_dates":
         "rewrites the issue and due dates of a document already stored",
     "default_modules/celerp-contacts/celerp_contacts/routes.py::merge_contacts_service":

@@ -76,16 +76,13 @@ async def test_withholding_added_to_a_draft_invoice_is_refused_and_the_draft_kee
 
 
 @pytest.mark.asyncio
-async def test_a_bill_with_withholding_tax_reduces_what_is_payable_and_finalizes(client, session):
+async def test_a_negative_rate_is_refused_on_a_bill(client, session):
+    """Tax withheld from a supplier is a withholding code with a positive rate; a negative rate
+    on a bill is refused naming it."""
     auth = await _with_taxes(client, session, "TH")
     r = await client.post("/docs", headers=auth["headers"], json=_doc("bill", doc_taxes=[_VAT, _WHT]))
-    assert r.status_code == 200, r.text
-    doc_id = r.json()["id"]
-    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
-    assert {t["code"]: t["amount"] for t in doc["doc_taxes"]} == {"VAT 7%": 70.0, "WHT 3%": -30.0}
-    assert doc["total"] == pytest.approx(1040.0)
-    r = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
-    assert r.status_code == 200, r.text
+    assert r.status_code == 422, r.text
+    assert "WHT 3%" in refusal_text(r.json()["detail"]) and "below zero" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -98,20 +95,21 @@ async def test_a_sales_only_tax_is_refused_on_a_purchase_bill(client, session):
 
 
 @pytest.mark.asyncio
-async def test_a_sale_whose_taxes_come_to_less_than_zero_does_not_finalize(client, session):
-    """A sales document saved with a negative tax before sides were checked never posts
-    a negative output tax line: finalize is refused and no entry is written."""
+async def test_a_tax_amount_below_zero_is_refused_and_a_draft_keeps_its_tax(client, session):
+    """A tax amount below zero, sent with no rate, is refused when the document is written, so
+    no negative output tax can reach a posting."""
     auth = await _with_taxes(client, session, "TH")
-    r = await client.post("/docs", headers=auth["headers"], json={
-        "doc_type": "invoice", "line_items": [{"description": "Service", "quantity": 1, "unit_price": 1000.0}],
-        "subtotal": 1000.0, "tax": -30.0, "total": 970.0})
+    body = {"doc_type": "invoice", "line_items": [{"description": "Service", "quantity": 1, "unit_price": 1000.0}],
+            "subtotal": 1000.0, "tax": -30.0, "total": 970.0}
+    r = await client.post("/docs", headers=auth["headers"], json=body)
+    assert r.status_code == 422, r.text
+    assert "below zero" in refusal_text(r.json()["detail"])
+    r = await client.post("/docs", headers=auth["headers"], json={**body, "tax": 30.0, "total": 1030.0})
     assert r.status_code == 200, r.text
     doc_id = r.json()["id"]
-    r = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
-    assert r.status_code == 409, r.text
-    assert "less than zero" in refusal_text(r.json()["detail"])
-    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
-    assert doc["status"] == "draft"
+    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={"fields_changed": {"tax": {"new": -30.0}}})
+    assert r.status_code == 422, r.text
+    assert (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()["tax"] == pytest.approx(30.0)
 
 
 @pytest.mark.asyncio

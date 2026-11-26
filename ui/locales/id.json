@@ -4531,6 +4531,7 @@
   "documents.tax_route_void_order": "Kemudian batalkan dokumen dan buat tagihan pemasok baru dengan pajak yang dipilih. Jika Celerp meminta tagihan dikembalikan, gunakan Kembalikan ke Draf agar kembali ke pesanan pembeliannya, lalu batalkan pesanan tersebut.",
   "documents.tax_route_new": "Dokumen dengan status ini tidak dapat kembali ke draf, jadi buat dokumen baru dengan pajak yang dipilih.",
   "documents.err_tax_purchase_only": "{tax} adalah pajak pembelian, seperti pajak yang dipotong dari pemasok, jadi tidak bisa dipakai di dokumen penjualan. Hapus dari dokumen ini.",
+  "documents.err_tax_negative": "{tax} di bawah nol. Pajak tidak boleh negatif: untuk mencatat pajak yang dipotong, gunakan kode pajak potongan dari Pengaturan > Pajak, lalu simpan lagi.",
   "documents.err_tax_sales_only": "{tax} adalah pajak penjualan, jadi tidak bisa dipakai di dokumen pembelian. Hapus dari dokumen ini.",
   "documents.err_contact_not_contact": "Kontak yang Anda pilih bukan data kontak. Pilih lagi kontak dari daftar.",
   "documents.err_contact_deleted": "Kontak ini sudah dihapus, jadi tidak bisa dipakai di dokumen. Pilih kontak lain.",

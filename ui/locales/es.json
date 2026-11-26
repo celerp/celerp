@@ -4531,6 +4531,7 @@
   "documents.tax_route_void_order": "Después, anúlelo y cree una nueva factura de proveedor con el impuesto seleccionado. Si Celerp le pide que revierta la factura, utilice «Volver a borrador» para devolverla a su orden de compra y, a continuación, anule esa orden.",
   "documents.tax_route_new": "Un documento en este estado no puede volver a borrador; cree uno nuevo con el impuesto seleccionado.",
   "documents.err_tax_purchase_only": "{tax} es un impuesto de compra, como una retención a un proveedor, así que no puede ir en un documento de venta. Quítelo de este documento.",
+  "documents.err_tax_negative": "{tax} es inferior a cero. Un impuesto no puede ser negativo: para registrar una retención, use un código de impuesto de retención de Configuración > Impuestos y vuelva a guardar.",
   "documents.err_tax_sales_only": "{tax} es un impuesto de venta, así que no puede ir en un documento de compra. Quítelo de este documento.",
   "documents.err_contact_not_contact": "El contacto elegido no es un registro de contacto. Vuelva a elegir el contacto de la lista.",
   "documents.err_contact_deleted": "Este contacto se eliminó, así que no se puede usar en documentos. Elija otro contacto.",

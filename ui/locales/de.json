@@ -4531,6 +4531,7 @@
   "documents.tax_route_void_order": "Stornieren Sie dann das Dokument und erstellen Sie eine neue Lieferantenrechnung mit ausgewählter Steuer. Falls Celerp stattdessen verlangt, die Rechnung zurückzusetzen, verwenden Sie „In Entwurf zurücksetzen“, wodurch sie wieder zur Bestellung wird, und stornieren Sie anschließend diese Bestellung.",
   "documents.tax_route_new": "Ein Dokument mit diesem Status kann nicht wieder zum Entwurf werden. Erstellen Sie ein neues Dokument mit ausgewählter Steuer.",
   "documents.err_tax_purchase_only": "{tax} ist eine Einkaufssteuer, etwa eine bei einem Lieferanten einbehaltene Steuer, und kann daher nicht auf einem Verkaufsbeleg stehen. Entfernen Sie sie aus diesem Beleg.",
+  "documents.err_tax_negative": "{tax} liegt unter null. Eine Steuer kann nicht negativ sein: Um einbehaltene Steuer zu erfassen, verwenden Sie einen Quellensteuer-Code aus Einstellungen > Steuern und speichern Sie dann erneut.",
   "documents.err_tax_sales_only": "{tax} ist eine Verkaufssteuer und kann daher nicht auf einem Einkaufsbeleg stehen. Entfernen Sie sie aus diesem Beleg.",
   "documents.err_contact_not_contact": "Der gewählte Kontakt ist kein Kontaktdatensatz. Wählen Sie den Kontakt erneut aus der Liste.",
   "documents.err_contact_deleted": "Dieser Kontakt wurde gelöscht und kann nicht in Dokumenten verwendet werden. Wählen Sie einen anderen Kontakt.",

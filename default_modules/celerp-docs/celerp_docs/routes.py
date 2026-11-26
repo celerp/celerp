@@ -38,7 +38,7 @@ from celerp.models.projections import (
 )
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import (DOC_MONEY_INPUTS, payment_withheld, LIST_TOTAL_FIELDS, build_line_taxes, build_shipping_taxes, document_money, document_terms,
+from celerp_docs.doc_money import (DOC_MONEY_INPUTS, refuse_negative_taxes, payment_withheld, LIST_TOTAL_FIELDS, build_line_taxes, build_shipping_taxes, document_money, document_terms,
                                    drawn_line_money, fixed_discount, list_totals_differ, memo_draws, memo_fixed_amounts, memo_tax_rate_money,
                                    money_from_lines, refuse_malformed_taxes, refuse_unset_line_tax, released_header_money,
                                    unrated_tax)
@@ -2242,6 +2242,7 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
     if not payload.total and payload.line_items:
         data.update(money_from_lines(data, data.get("currency", "USD")))
     auto_je.refuse_misplaced_tax(settings, payload.doc_type, data, data.get("line_items") or [])
+    refuse_negative_taxes(data)
 
     if contact is not None:
         data.update(await _contact_selection_values(
@@ -2544,9 +2545,10 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
             fields_changed["shipping_taxes"] = {"new": _charged["shipping_taxes"]}
     refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
     # Taxes change only on a draft; a finalized document's line edits leave them as posted.
-    if is_draft and {"doc_type", "doc_taxes", "shipping_taxes", "line_items", "tax_rate"} & fields_changed.keys():
+    if is_draft and {"doc_type", "doc_taxes", "shipping_taxes", "line_items", "tax_rate", "tax"} & fields_changed.keys():
         _taxed = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}
         auto_je.refuse_misplaced_tax(settings, _taxed.get("doc_type"), _taxed, _taxed.get("line_items") or [])
+        refuse_negative_taxes(_taxed)
     await free_patched_numbers(session, company_id, entity_id, fields_changed)
     # Validate issue/due date ordering against the merged resulting state
     patch_flat = {k: v.get("new") for k, v in fields_changed.items() if v.get("new") is not None}
