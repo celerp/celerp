@@ -229,15 +229,16 @@
   function saveColumns(change) {
     return celerpFetch('/column-prefs', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                          body: JSON.stringify(change)})
-      .then(function (r) { if (!r.ok) throw new Error(r.status); })
-      .catch(function () { showGlobalUiError(window.__shellI18n.requestFailed); });
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return true; })
+      .catch(function () { showGlobalUiError(window.__shellI18n.requestFailed); return false; });
   }
 
-  // Forget the saved column setup of the given tables, then reload.
+  // Forget the saved column setup of the given tables, then reload to show the defaults.
+  // A save that failed changed nothing, so the page stays and keeps its error on screen.
   function celerpResetColumns(tables) {
     var change = {};
-    tables.forEach(function (t) { change[t] = null; delete columnLayouts[t]; });
-    saveColumns(change).then(function () { location.reload(); });
+    tables.forEach(function (t) { change[t] = null; });
+    saveColumns(change).then(function (saved) { if (saved) location.reload(); });
   }
 
   // An inline panel's Cancel, or Escape on it (given ev), removes the element it sits in.

@@ -3363,23 +3363,20 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
         return _page_state(QueryParams(urlsplit(request.headers.get("hx-current-url", "")).query))
 
     def _bulk_destructive_success(request: Request, message: str, redirect_qs: str = "",
-                                  cls: str = "flash--success", notice: str = "") -> Response:
-        """Return a bulk-action result response that clears the client-side selection.
+                                  kind: str = "success", notice: str = "") -> Response:
+        """Answer a bulk action that worked (merge, delete, archive, expire, duplicate, ...).
 
-        Sends HX-Trigger: celerpSelectionClear so the JS handler resets CelerpSelection
-        and the toolbar before the table reloads.  Used for bulk actions (merge, delete,
-        archive, expire, duplicate) that reload the table; `cls` selects the flash
-        variant (success, or warning for a partial-success count). Clearing the
-        selection hides the toolbar that holds the flash, so a ``notice`` the user must
-        read (what a merge did to the books) is also raised as a toast that stays until
-        dismissed.
+        The outcome is a toast: the response also fires celerpSelectionClear, which resets
+        CelerpSelection and hides the toolbar, and the table reloads a second later, so the
+        toast is the one place that is still on screen afterwards. A partial outcome
+        (``kind`` "warning": some rows kept or failed) and a ``notice`` the user must read
+        (what a merge did to the books) stay until dismissed.
         """
         # Without a result filter of its own the table reloads the list the owner is on
         # (search, tab, filters), never the unfiltered default.
         state = _base_state(_current_list_query(request))
         content_qs = redirect_qs or (f"?{urlencode(state)}" if state else "")
         content = Div(
-            P(message, cls=f"flash {cls}"),
             id="bulk-action-result",
             hx_trigger="load delay:1s",
             hx_get=f"/inventory/content{content_qs}",
@@ -3387,8 +3384,8 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             hx_swap="outerHTML",
             **({"hx_push_url": f"/inventory{redirect_qs}"} if redirect_qs else {}),
         )
-        headers = (toast_header(f"{message} {notice}", persist=True, celerpSelectionClear=True) if notice
-                   else {"HX-Trigger": "celerpSelectionClear"})
+        headers = toast_header(f"{message} {notice}".strip(), kind, persist=bool(notice) or kind == "warning",
+                               celerpSelectionClear=True)
         return html_response(content, headers=headers)
 
     def _bulk_toast_error(msg: str) -> Response:
@@ -3466,7 +3463,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
         updated = result.get("updated", len(entity_ids))
         refused = [row["detail"] for row in result.get("refused") or []]
         return _bulk_destructive_success(request, t("inventory.bulk_transferred", n=updated),
-                                         cls="flash--warning" if refused else "flash--success",
+                                         kind="warning" if refused else "success",
                                          notice=refusal_text(refused))
 
     @app.post("/api/items/bulk/delete")
@@ -3489,12 +3486,12 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
         if on_demo_list:
             if result["kept"]:
                 message += " " + t("settings.business_type_changes.demo_kept", count=result["kept"])
-            return _bulk_destructive_success(request, message, cls="flash--warning" if result["kept"] else "flash--success")
+            return _bulk_destructive_success(request, message, kind="warning" if result["kept"] else "success")
         # Each item kept as Deleted is named with the reason, so nothing moves silently.
         moved = [_moved_to_deleted_line(i) for i in result["items"] if i["outcome"] == "moved_to_deleted"]
         if moved:
             message = f'{message} {t("inventory.bulk_moved_to_deleted", n=len(moved))}'
-        return _bulk_destructive_success(request, message, cls="flash--warning" if moved else "flash--success",
+        return _bulk_destructive_success(request, message, kind="warning" if moved else "success",
                                          notice=" ".join(moved))
 
     def _moved_to_deleted_line(item: dict) -> str:
@@ -3598,7 +3595,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
                        id="bulk-action-result")
         if failed:
             return _bulk_destructive_success(request, t("inventory.bulk_duplicated_partial", ok=ok, failed=failed),
-                                             cls="flash--warning", notice=refused)
+                                             kind="warning", notice=refused)
         return _bulk_destructive_success(request, t("inventory.bulk_duplicated", n=ok))
 
     # ── Bulk merge (direct — no preview modal) ───────────────────────────
@@ -4066,7 +4063,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             request,
             t("inventory.transformed", parent=parent_sku, child=child_sku),
             f"?skus={exact_skus}&status=all",
-            cls="flash--warning" if notice else "flash--success",
+            kind="warning" if notice else "success",
             notice=notice,
         )
 

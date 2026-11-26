@@ -65,6 +65,12 @@ def _delete_answer(n: int, moved: list[dict] | None = None) -> dict:
     return {"deleted": n, "moved_to_deleted": len(moved or []), "items": items}
 
 
+def _bulk_toast(r) -> dict:
+    """The toast a bulk action that worked answers with: the outcome that stays on screen once
+    the selection is cleared and the bar hides."""
+    return json.loads(r.headers["hx-trigger"])["celerpToast"]
+
+
 def _authed(token: str | None = None, role: str = "owner") -> dict:
     """Return cookies dict with a properly-formed test token."""
     return {"celerp_token": token or make_test_token(role=role)}
@@ -6612,7 +6618,7 @@ class TestBulkTransferRoute:
                 data={"selected": ["item:a", "item:b"], "bulk_location_id": "loc:1"},
             )
         assert r.status_code == 200
-        assert b"Transferred: 2." in r.content
+        assert _bulk_toast(r) == {"message": "Transferred: 2.", "type": "success"}
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_no_items_selected(self, ui_client):
@@ -7042,7 +7048,7 @@ class TestInventoryBulkActions:
                 content=b"selected=item%3Aa&selected=item%3Ab&bulk_status=inactive", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Updated to 'Inactive': 2." in r.content
+        assert _bulk_toast(r) == {"message": "Updated to 'Inactive': 2.", "type": "success"}
 
     @pytest.mark.asyncio
     async def test_bulk_status_passes_ids_and_status(self, ui_client):
@@ -7102,7 +7108,7 @@ class TestInventoryBulkActions:
                 content=b"selected=item%3Aa&selected=item%3Ab&selected=item%3Ac&bulk_location_id=loc%3A1", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Transferred: 3." in r.content
+        assert _bulk_toast(r) == {"message": "Transferred: 3.", "type": "success"}
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_passes_ids_and_location(self, ui_client):
@@ -7162,7 +7168,7 @@ class TestInventoryBulkActions:
                 content=b"selected=item%3Aa&selected=item%3Ab", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Deleted: 2." in r.content
+        assert _bulk_toast(r) == {"message": "Deleted: 2.", "type": "success"}
 
     @pytest.mark.asyncio
     async def test_bulk_delete_names_each_item_moved_to_deleted(self, ui_client):
@@ -7176,7 +7182,7 @@ class TestInventoryBulkActions:
                 headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Deleted: 1. Moved to Deleted: 2." in r.content
+        assert _bulk_toast(r)["message"].startswith("Deleted: 1. Moved to Deleted: 2.")
         toast = json.loads(r.headers["hx-trigger"])["celerpToast"]
         assert "REF-1 moved to Deleted, still referenced by QUO-7." in toast["message"]
         assert "FILE-1 moved to Deleted, it still holds files." in toast["message"]
@@ -7203,7 +7209,7 @@ class TestInventoryBulkActions:
                 headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Restored to draft: 2." in r.content
+        assert _bulk_toast(r) == {"message": "Restored to draft: 2.", "type": "success"}
         assert restore.await_args.args[1] == ["item:a", "item:b"]
 
     @pytest.mark.asyncio
@@ -7292,7 +7298,7 @@ class TestBulkDuplicate:
                 content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Duplicated: 2." in r.content
+        assert _bulk_toast(r) == {"message": "Duplicated: 2.", "type": "success"}
         assert create.call_count == 2
 
     @pytest.mark.asyncio
@@ -7331,8 +7337,8 @@ class TestBulkDuplicate:
                 content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert t("inventory.bulk_duplicated_partial", ok=1, failed=1).encode() in r.content
-        assert b"flash--warning" in r.content
+        assert _bulk_toast(r)["message"].startswith(t("inventory.bulk_duplicated_partial", ok=1, failed=1))
+        assert _bulk_toast(r)["type"] == "warning" and _bulk_toast(r)["persist"] is True
         assert create.call_count == 2
 
     @pytest.mark.asyncio
@@ -7385,7 +7391,7 @@ class TestBulkDuplicate:
                 content=b"selected=gc%3A123&selected=gc%3A123", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Duplicated: 1." in r.content
+        assert _bulk_toast(r) == {"message": "Duplicated: 1.", "type": "success"}
         assert create.call_count == 1
 
     @pytest.mark.asyncio
@@ -7572,7 +7578,7 @@ class TestBulkActionsPhase1to5:
                 headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Expired: 2." in r.content
+        assert _bulk_toast(r) == {"message": "Expired: 2.", "type": "success"}
 
     @pytest.mark.asyncio
     async def test_bulk_expire_no_selection(self, ui_client):
@@ -7835,7 +7841,7 @@ class TestBulkSelectionClear:
         assert "celerpSelectionClear" in trigger, (
             f"Merge success must send HX-Trigger: celerpSelectionClear; got: {trigger!r}"
         )
-        assert b"merged successfully" in r.content.lower() or b"merged" in r.content.lower()
+        assert "merged" in _bulk_toast(r)["message"].lower()
 
     @pytest.mark.asyncio
     async def test_bulk_delete_success_sends_selection_clear_trigger(self, ui_client):
@@ -20809,10 +20815,10 @@ async def test_transform_handler_raises_a_setting_not_carried_over_as_a_toast_th
     assert r.status_code == 200
     toast = _json.loads(r.headers["HX-Trigger"])["celerpToast"]
     assert "Default Sell Qty 0.5 was not carried over: piece cannot hold it." in toast["message"], toast
-    assert toast["persist"] is True and "flash--warning" in r.text
+    assert toast["persist"] is True and toast["type"] == "warning"
     with patch("ui.api_client.transform_item", new=AsyncMock(return_value={**result, "notices": []})):
         r = await ui_client.post("/api/items/bulk/transform", data=base)
-    assert "celerpToast" not in r.headers["HX-Trigger"] and "flash--success" in r.text
+    assert _bulk_toast(r) == {"message": t("inventory.transformed", parent="P-1", child="C-1"), "type": "success"}
 
 
 def test_reserved_badge_renders():
