@@ -3723,6 +3723,9 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 #local-modules-panel .data-table td,
 #community-zone .data-table td,
 #marketplace-panel .data-table td { height: auto; padding-top: 8px; padding-bottom: 8px; vertical-align: top; white-space: normal; }
+/* The local list fits its card: its cells wrap, so Status and the on/off control stay
+   on screen instead of behind a sideways scroll. */
+#local-modules-panel .data-table { width: 100%; }
 /* Standard module column: bound the name/description cell so long copy wraps at
    a readable measure instead of pushing the action column off-screen. Same on
    all three module lists, wherever the cell sits in its row. */

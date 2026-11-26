@@ -113,7 +113,7 @@
       "text": "When you start using funds, use {opening} to give part of each account's balance to a fund as at the {date}. Each line takes the amount from money with no fund.",
       "labels": {
         "opening": "funds.opening_title",
-        "date": "funds.opening_date"
+        "date": "th.date"
       },
       "image": "img/funds-5.webp",
       "capture": {

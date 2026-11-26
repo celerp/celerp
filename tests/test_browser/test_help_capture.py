@@ -119,13 +119,14 @@ _SHOWS_EMPTY_STATE: dict[str, str] = {
     "fixed-assets.settings#1": _NO_TAX_REGIME,
     "fixed-assets.settings#3": _NO_TAX_REGIME,
 }
-# Labels a step names that its picture leaves out, because they are not on the screen the step
-# opens: "<page id>#<step>": {label name: why}. A label listed here that the picture does show
+# Labels a step names that its picture leaves out, because they are not on the part of the
+# screen the step works in: "<page id>#<step>": {label name: why}. A label listed here that the picture does show
 # fails the capture, so the list holds only what it must.
 _SIDE_MENU = "the side menu entry that opens the pictured screen"
 _SETTINGS_MENU = "the Settings entry that opens the pictured screen"
 _BULK_OPTION = "an option of the bulk actions list, which the picture shows closed"
 _NAMED_ELSEWHERE: dict[str, dict[str, str]] = {
+    "core.imports#3": {"src": "the wizard's step heading, above the form the picture shows whole"},
     "core.web-access#3": {"access": _SETTINGS_MENU},
     "backup.cloud-backup#1": {"access": _SETTINGS_MENU},
     "connectors.connect-store#1": {"access": _SETTINGS_MENU},

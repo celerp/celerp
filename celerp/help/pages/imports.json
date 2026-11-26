@@ -24,7 +24,7 @@
       "text": "Under {src}, choose {sys}, upload the export file it gives you and click {analyze}. Nothing is created yet.",
       "labels": {"src": "migration.step_source", "sys": "migration.source_label", "analyze": "migration.analyze"},
       "image": "img/imports-3.webp",
-      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": [], "evidence": ["{src}", "{sys}"]}
+      "capture": {"route": "/setup/new-company/migrate", "selector": "form[action$=\"/scan\"]", "actions": [{"click": "input[name=source] >> nth=1"}], "evidence": ["{sys}"]}
     },
     {
       "text": "Under {cov}, choose how much to bring. Full history recreates every transaction in the file. Cutover starts your books on a date you pick: balances on that date become opening balances, and open invoices, bills and stock are recreated.",

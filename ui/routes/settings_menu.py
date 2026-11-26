@@ -119,12 +119,12 @@ def _editor(settings: dict, notice: FT | str = "") -> FT:
             cls=f"menu-editor__section {'menu-editor__section--hidden' if is_hidden else ''}", data_group=gid))
     return Div(
         notice,
-        *sections,
         Div(
             Button(t("settings_menu.reset"), type="button", cls="btn btn--secondary",
                    hx_post="/settings/menu/reset", hx_target=f"#{_EDITOR_ID}", hx_swap="outerHTML",
                    hx_confirm=t("settings_menu.reset_confirm")),
-            cls="mt-md"),
+            cls="mb-md"),
+        *sections,
         id=_EDITOR_ID, cls="settings-card menu-editor")
 
 
