@@ -81,6 +81,11 @@ def test_importer_maps_tax_types_to_categories(tmp_path):
     manager = manager_adapter().build_manifest([artifact(book)], FULL).bundle.tax_codes
     assert _kinds(manager)["Reverse charge 10%"] == "reverse_charge"
     assert _kinds(manager)["VAT 10%"] == "standard"
+    # A total-rate code still stops the scan: its rate is the sum of other codes, not its own.
+    total = specs.obj("TaxCode", "TOT", {1: "Total 12%", 5: 1, 6: specs.SINGLE_RATE, 4: D("12")})
+    book = specs.write_manager_file(tmp_path / "total.manager", [*specs.basic_objects(), total], specs.basic_blobs())
+    coverage = {r.source_type: r for r in manager_adapter().inspect([artifact(book)]).coverage}
+    assert coverage["TaxCode (unsupported feature)"].count == 1
 
     company = _company()
     errors = [_apply_tax_code(company, code) for code in (
