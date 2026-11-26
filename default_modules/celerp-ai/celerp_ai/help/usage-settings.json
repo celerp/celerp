@@ -12,7 +12,7 @@
       "text": "Open {settings} from the AI page's settings link, or from Settings directly. It shows how many questions are included, used and topped up this period.",
       "labels": {"settings": "page.ai_settings"},
       "image": "img/usage-settings-1.webp",
-      "capture": {"route": "/ai/settings", "selector": ".ai-settings__quota", "actions": [{"wait": "#ai-settings-content .ai-settings"}], "evidence": [".ai-settings__stats"]}
+      "capture": {"route": "/ai/settings", "selector": "main", "actions": [{"wait": "#ai-settings-content .ai-settings"}], "evidence": [".ai-settings__stats"]}
     },
     {
       "text": "Owners and admins who can manage users also see a table of how many questions each person asked this month, so usage can be reviewed without reading every conversation.",

@@ -24,7 +24,7 @@
       "text": "To start a count, open {title}, pick the {loc} to count and choose {start}. The count lists the stocked items at that location; scan barcodes to confirm stock and adjust it.",
       "labels": {"title": "documents.new_audit_title", "loc": "label.location", "start": "documents.start_audit"},
       "image": "img/stock-views-3.webp",
-      "capture": {"route": "/lists/new-audit", "selector": "main form.form-card", "actions": [], "evidence": ["{loc}", "{start}"]}
+      "capture": {"route": "/lists/new-audit", "selector": "main", "actions": [], "evidence": ["{loc}", "{start}"]}
     },
     {
       "text": "You can also ask the assistant what was sold, archived or disposed of, or to restore an item or start a stock audit. It shows each change as a card and makes it only when you confirm.",

@@ -119,6 +119,31 @@ _SHOWS_EMPTY_STATE: dict[str, str] = {
     "fixed-assets.settings#1": _NO_TAX_REGIME,
     "fixed-assets.settings#3": _NO_TAX_REGIME,
 }
+# Labels a step names that its picture leaves out, because they are not on the screen the step
+# opens: "<page id>#<step>": {label name: why}. A label listed here that the picture does show
+# fails the capture, so the list holds only what it must.
+_SIDE_MENU = "the side menu entry that opens the pictured screen"
+_SETTINGS_MENU = "the Settings entry that opens the pictured screen"
+_BULK_OPTION = "an option of the bulk actions list, which the picture shows closed"
+_NAMED_ELSEWHERE: dict[str, dict[str, str]] = {
+    "core.web-access#3": {"access": _SETTINGS_MENU},
+    "backup.cloud-backup#1": {"access": _SETTINGS_MENU},
+    "connectors.connect-store#1": {"access": _SETTINGS_MENU},
+    "accounting.funds#9": {"reports": _SIDE_MENU},
+    "accounting.reconcile#1": {"rec": _SIDE_MENU},
+    "accounting.reconcile#3": {"another": "the bank's own page, which the preview replaces, holds it"},
+    "ai.ask-questions#1": {"ai": _SIDE_MENU},
+    "docs.payments#1": {"pay": _SIDE_MENU},
+    "docs.purchasing-documents#1": {"bill": _SIDE_MENU, "scn": _SIDE_MENU, "ci": _SIDE_MENU},
+    "docs.sales-documents#1": {"cn": _SIDE_MENU, "co": _SIDE_MENU},
+    "labels.print-labels#1": {"inv": _SIDE_MENU},
+    "subscriptions.overview#1": {"purch": _SIDE_MENU},
+    "subscriptions.members#2": {"days": "a field of the agreement, not of the members list"},
+    "manufacturing.production#4": {"tab": "the item's tab that opens the pictured block, a screen above it"},
+    "manufacturing.make-from-recipe#4": {"issue": _BULK_OPTION},
+    "manufacturing.make-from-recipe#5": {"complete": _BULK_OPTION},
+    "manufacturing.demand-planning#4": {"req": "the bulk action that opens the pictured page"},
+}
 # Pages whose steps add records (a sample import, a dropped bank statement, an AI conversation and
 # the item it adds): each is taken on a company of its own.
 _ADDS_RECORDS = {"core.imports", "accounting.reconcile", "ai.ask-questions", "ai.review-proposals"}
@@ -995,16 +1020,16 @@ def _evidence_locator(page, entry: str, labels: dict):
         lambda m: _visible_label(labels[m.group(1)]).replace("\\", "\\\\").replace("'", "\\'"), entry))
 
 
-def _evidence_entries(step: dict) -> list[str]:
+def _evidence_entries(step: dict, elsewhere=()) -> list[str]:
     """The step's evidence, then every label its text names that the evidence leaves out: the
-    control a step tells the reader to use is in its picture."""
+    control a step tells the reader to use is in its picture, unless it is ``elsewhere``."""
     evidence = step["capture"]["evidence"]
-    listed = {m.group(1) for entry in evidence for m in PLACEHOLDER.finditer(entry)}
+    listed = {m.group(1) for entry in evidence for m in PLACEHOLDER.finditer(entry)} | set(elsewhere)
     named = dict.fromkeys(m.group(1) for m in PLACEHOLDER.finditer(step.get("text", "")))
     return [*evidence, *(f"{{{name}}}" for name in named if name not in listed)]
 
 
-def _evidence_missing(page, target, step: dict) -> list[str]:
+def _evidence_missing(page, target, step: dict, elsewhere=()) -> list[str]:
     """The step's evidence entries with no visible match lying wholly inside the part of
     ``target`` a picture keeps (its top _MAX_HEIGHT pixels) and on top from end to end: a match
     elsewhere on the page, hidden, cut by the picture's edge or by a scrolling box, or covered
@@ -1025,16 +1050,17 @@ def _evidence_missing(page, target, step: dict) -> list[str]:
             if clip[3] <= page.viewport_size["height"]:
                 break
             page.set_viewport_size({"width": viewport["width"], "height": math.ceil(clip[3])})
-        return [entry for entry in _evidence_entries(step)
+        return [entry for entry in _evidence_entries(step, elsewhere)
                 if not _evidence_locator(page, entry, step["labels"]).evaluate_all("""(els, [l, t, r, b]) =>
                     els.some(e => {
                         const box = e.getBoundingClientRect();
                         if (!(e.checkVisibility() && box.width > 0 && box.height > 0 && box.left >= l - 1
                               && box.top >= t - 1 && box.right <= r + 1 && box.bottom <= b + 1)) return false;
                         // The element hit at both ends and the centre of its widest line box
-                        // (a wrapped label's whole box has gaps).
+                        // (a wrapped label's whole box has gaps), the ends 3 px in: a box laid
+                        // out on a fraction of a pixel is hit as its neighbour on its last one.
                         const line = [...e.getClientRects()].reduce((a, c) => c.width > a.width ? c : a);
-                        return [line.left + 1, (line.left + line.right) / 2, line.right - 1].every(x => {
+                        return [line.left + 3, (line.left + line.right) / 2, line.right - 3].every(x => {
                             const hit = document.elementFromPoint(x, (line.top + line.bottom) / 2);
                             return hit !== null && e.contains(hit);
                         });
@@ -1140,8 +1166,12 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[s
         return [f"a record id in place of its name: {ids}"]
     if _SIDELOADED in text:
         return ["a bundled module shown as sideloaded: its files differ from the module lock"]
-    if missing := _evidence_missing(demo_page, target, step):
+    elsewhere = _NAMED_ELSEWHERE.get(step_id, {})
+    if missing := _evidence_missing(demo_page, target, step, elsewhere):
         return [f"no visible match wholly inside the picture for evidence {missing}"]
+    only = {"labels": step["labels"], "capture": {"evidence": [f"{{{name}}}" for name in elsewhere]}}
+    if shown := sorted(set(only["capture"]["evidence"]) - set(_evidence_missing(demo_page, target, only))):
+        return [f"listed in _NAMED_ELSEWHERE, yet in the picture: {shown}"]
     if _WRITE:
         page_id, n = step_id.rsplit("#", 1)
         _write_image(target, help_page.help_dir / step["image"], capture_marker(page_id, int(n), step["capture"]))
@@ -1346,6 +1376,15 @@ def test_every_label_a_step_names_is_checked_as_evidence_of_the_screen(page):
     page.locator("#t").evaluate("(e, label) => e.insertAdjacentHTML('beforeend', `<button>${label}</button>`)",
                                 _shown("btn.post"))
     assert _evidence_missing(page, page.locator("#t"), step) == []
+
+
+def test_a_label_excused_from_its_picture_is_one_its_step_names_and_does_not_list():
+    """An entry for a step or label that no longer exists, or that the evidence lists, is stale."""
+    steps = {f"{p.data['id']}#{n}": step for p in _PAGES for n, step in enumerate(p.data["steps"], 1)}
+    stale = [f"{step_id} {name}" for step_id, names in _NAMED_ELSEWHERE.items() for name in names
+             if step_id not in steps
+             or f"{{{name}}}" not in _evidence_entries(steps[step_id])[len(steps[step_id]["capture"]["evidence"]):]]
+    assert not stale, stale
 
 
 def test_a_control_covered_where_the_picture_is_taken_is_not_evidence_of_the_screen(page):

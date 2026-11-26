@@ -12,7 +12,7 @@
       "text": "Open {lbl} from Inventory Settings to see the {tmpl} list.",
       "labels": {"lbl": "nav.labels", "tmpl": "page.templates"},
       "image": "img/settings-1.webp",
-      "capture": {"route": "/settings/labels", "selector": "main div.label-settings-layout", "actions": [], "evidence": ["{tmpl}"]}
+      "capture": {"route": "/settings/labels", "selector": "main", "actions": [], "evidence": ["{tmpl}"]}
     },
     {
       "text": "Choose {add} to create a new template, then lay out its fields in the editor.",

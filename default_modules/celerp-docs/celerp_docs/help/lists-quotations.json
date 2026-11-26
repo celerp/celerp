@@ -24,7 +24,7 @@
       "text": "On {title}, use {dl} for a blank spreadsheet in the expected format, fill it in and upload it to bring in many quotations at once.",
       "labels": {"title": "lists_import.import_lists", "dl": "btn.download_template"},
       "image": "img/lists-quotations-3.webp",
-      "capture": {"route": "/lists/import", "selector": "#import-dropzone", "actions": [], "evidence": ["{dl}"]}
+      "capture": {"route": "/lists/import", "selector": "main", "actions": [], "evidence": ["{dl}"]}
     },
     {
       "text": "You can also ask the assistant to create a list or quotation, reprice it, finalize it or convert it into a document. It shows each change as a card and makes it only when you confirm.",

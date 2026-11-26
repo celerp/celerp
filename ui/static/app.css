@@ -3844,7 +3844,7 @@ svg[aria-hidden="true"] { vertical-align: -0.125em; flex-shrink: 0; }
 .bank-groups { display: flex; flex-direction: column; border-top: 1px solid var(--c-border); }
 .bank-row { display: grid; gap: 8px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--c-border); }
 .bank-row--group { grid-template-columns: 24px minmax(160px, 2fr) 60px 120px minmax(160px, 2fr) 110px; font-weight: 600; }
-.bank-row--line { grid-template-columns: 24px 96px minmax(140px, 2fr) 80px 100px 100px 60px minmax(120px, 1.5fr) 90px minmax(80px, 1fr) minmax(200px, auto); }
+.bank-row--line { grid-template-columns: 24px 96px minmax(80px, 2fr) 80px 100px 100px 60px minmax(70px, 1.5fr) 90px minmax(50px, 1fr) minmax(116px, auto); }
 .bank-row--head { color: var(--c-text2); font-size: 0.85em; text-align: center; }
 .bank-views { display: flex; flex-wrap: wrap; }
 .bank-row--preview { grid-template-columns: 96px minmax(160px, 2fr) 110px 110px 120px; }

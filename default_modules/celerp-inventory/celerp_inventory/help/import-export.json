@@ -18,7 +18,7 @@
       "text": "On {title}, use {dl} to get a blank spreadsheet in the expected format, then upload your file and map its columns.",
       "labels": {"title": "page.import_inventory", "dl": "btn.download_template"},
       "image": "img/import-export-2.webp",
-      "capture": {"route": "/inventory/import", "selector": "#import-dropzone", "actions": [], "evidence": ["{dl}"]}
+      "capture": {"route": "/inventory/import", "selector": "main", "actions": [], "evidence": ["{dl}"]}
     },
     {
       "text": "After the upload, a review page shows each row as it will be imported, so you can fix a row or upload a corrected file before anything is created.",

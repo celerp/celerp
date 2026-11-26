@@ -12,7 +12,7 @@
       "text": "Open {settings} and go to the Categories tab; your applied categories are listed under {yours}.",
       "labels": {"settings": "settings_inventory.page_header", "yours": "settings.your_categories"},
       "image": "img/category-library-1.webp",
-      "capture": {"route": "/settings/inventory?tab=categories", "selector": "#your-cats-section", "actions": [], "evidence": ["{yours}"]}
+      "capture": {"route": "/settings/inventory?tab=categories", "selector": "main", "actions": [], "evidence": ["{yours}"]}
     },
     {
       "text": "Expand {browse} to add categories one at a time, or apply a whole industry preset in a single step.",
