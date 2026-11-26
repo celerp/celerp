@@ -23,7 +23,7 @@ from celerp.importers.results import ImportOutcome, record_refused, row_refusal
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
-from celerp.services.journal_accounts import hold_fund_ledger, require_destinations
+from celerp.services.journal_accounts import require_destinations
 from celerp.services.peer_lines import (
     ImportFundChoices, check_import_fund_choices, chosen_journal_lines, journal_inbound_keys, refuse_inbound,
 )
@@ -130,9 +130,7 @@ async def import_journal_records(
                 lines = [e for e in entries if isinstance(e, dict)]
                 await check_line_contacts(session, company_id, lines)
                 # An imported journal is a new posting: each line goes to an active account
-                # with nothing under it, as a manual journal does. The fund ledger is held
-                # before the account rows lock (lock order: company, fund ledger, rows).
-                await hold_fund_ledger(session, company_id)
+                # with nothing under it, as a manual journal does.
                 await require_destinations(session, company_id, {
                     a for e in lines if isinstance(a := e.get("account"), str) and a})
             data, grant = await _with_fund_choices(session, company_id, rec, fund_choices, origin)
