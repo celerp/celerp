@@ -7043,6 +7043,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     Values use the system-standard double-click-to-edit cells (same as item and document
     tables) so the page behaves like the rest of celerp. All editing is on-page via HTMX.
     """
+    num = "cell--number"
     recipe = item.get("recipe") or {}
     components = recipe.get("components", [])
     labor_rows = recipe.get("labor", [])
@@ -7160,7 +7161,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         Td(searchable_select("comp_new", comp_opts, value="", placeholder=t("inventory.ph_search_component"),
                              hx_post=f"{sec}?action=add_component", hx_trigger="change",
                              hx_include="#recipe-form", hx_target="#recipe-section", hx_swap="outerHTML")),
-        Td("", cls="cell--number"), Td(""), Td("", cls="recipe-amount"), Td("", cls="recipe-amount"),
+        Td("", cls=num), Td(""), Td("", cls="recipe-amount"), Td("", cls="recipe-amount"),
         Td("", cls="cell--actions"),
         cls="recipe-add-row",
     )
@@ -7191,12 +7192,12 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         Td(Input(type="text", name="labor_new_op", value="", placeholder=t("inventory.ph_add_operation"), cls="form-input recipe-req", onkeydown=_add_enter)),
         Td(Select(*[Option(lbl, value=val, selected=(val == "hourly")) for val, lbl in _labor_kind_labels().items()],
                   name="labor_new_kind", cls="form-input labor-kind", onchange=_kind_toggle)),
-        Td(Input(type="number", name="labor_new_hours", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
-        Td(Input(type="number", name="labor_new_rate", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
+        Td(Input(type="number", name="labor_new_hours", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", oninput=_live_total, onkeydown=_add_enter), cls=num),
+        Td(Input(type="number", name="labor_new_rate", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", oninput=_live_total, onkeydown=_add_enter), cls=num),
         # Total: read-only computed preview for rate-based (default Hourly), editable only for Fixed.
         Td(Output("", name="labor_new_total", cls="recipe-amount"),
            Input(type="number", name="labor_new_amount", value="", placeholder="0", step="any", min="0",
-                 cls="form-input cell--number", hidden=True, disabled=True, onkeydown=_add_enter), cls="cell--number"),
+                 cls="form-input cell--number", hidden=True, disabled=True, onkeydown=_add_enter), cls=num),
         Td(Button(t("btn.save"), type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
                   hx_post=f"{sec}?action=add_labor", onclick=_add_validate, **_add), cls="cell--actions"),
         # Computed previews use the company's money precision, just like saved totals.
@@ -7204,7 +7205,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     )
     oh_add_row = Tr(
         Td(Input(type="text", name="oh_new_desc", value="", placeholder=t("inventory.ph_add_cost"), cls="form-input recipe-req", onkeydown=_add_enter)),
-        Td(Input(type="number", name="oh_new_amount", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", onkeydown=_add_enter), cls="cell--number"),
+        Td(Input(type="number", name="oh_new_amount", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", onkeydown=_add_enter), cls=num),
         Td(Button(t("btn.save"), type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
                   hx_post=f"{sec}?action=add_overhead", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
@@ -7214,35 +7215,35 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         Td(searchable_select("also_new", item_opts, value="", placeholder=t("inventory.scope_all_items"),
                              hx_post=f"{sec}?action=add_also", hx_trigger="change",
                              hx_include="#recipe-form", hx_target="#recipe-section", hx_swap="outerHTML")),
-        Td("", cls="cell--number"), Td(""), Td("", cls="cell--number"), Td("", cls="recipe-amount"),
+        Td("", cls=num), Td(""), Td("", cls=num), Td("", cls="recipe-amount"),
         Td("", cls="cell--actions"),
         cls="recipe-add-row",
     )
     also_produces = Table(
-        Thead(Tr(Th(t("th.sku")), Th(t("th.quantity"), cls="cell--number"), Th(t("th.unit")),
-                 Th(t("inventory.cost_share"), cls="cell--number"),
-                 Th(f"{t('inventory.unit_cost')}{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
+        Thead(Tr(Th(t("th.sku")), Th(t("th.quantity"), cls=num), Th(t("th.unit")),
+                 Th(t("inventory.cost_share"), cls=num),
+                 Th(f"{t('inventory.unit_cost')}{cur_label}", cls=num), Th("", cls="cell--actions"))),
         Tbody(*[_also_row(i, x) for i, x in enumerate(also_rows)], also_add_row),
         cls="data-table",
     )
     main_share = 100 - sum(float(x.get("cost_share") or 0) for x in also_rows)
 
     materials = Table(
-        Thead(Tr(Th(t("inventory.th_component_sku")), Th(t("th.quantity"), cls="cell--number"), Th(t("th.unit")),
-                 Th(f"{t('inventory.unit_cost')}{cur_label}", cls="cell--number"), Th(f"{t('th.cost')}{cur_label}", cls="cell--number"),
+        Thead(Tr(Th(t("inventory.th_component_sku")), Th(t("th.quantity"), cls=num), Th(t("th.unit")),
+                 Th(f"{t('inventory.unit_cost')}{cur_label}", cls=num), Th(f"{t('th.cost')}{cur_label}", cls=num),
                  Th("", cls="cell--actions"))),
         Tbody(*[_comp_row(i, c) for i, c in enumerate(components)], comp_add_row),
         cls="data-table",
     )
     labor = Table(
-        Thead(Tr(Th(t("inventory.th_operation")), Th(t("th.type")), Th(t("th.qty"), cls="cell--number"),
-                 Th(f"{t('th.rate')}{cur_label}", cls="cell--number"), Th(f"{t('th.total')}{cur_label}", cls="cell--number"),
+        Thead(Tr(Th(t("inventory.th_operation")), Th(t("th.type")), Th(t("th.qty"), cls=num),
+                 Th(f"{t('th.rate')}{cur_label}", cls=num), Th(f"{t('th.total')}{cur_label}", cls=num),
                  Th("", cls="cell--actions"))),
         Tbody(*[_labor_row(i, l) for i, l in enumerate(labor_rows)], labor_add_row),
         cls="data-table",
     )
     overhead = Table(
-        Thead(Tr(Th(t("th.description")), Th(f"{t('label.amount')}{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
+        Thead(Tr(Th(t("th.description")), Th(f"{t('label.amount')}{cur_label}", cls=num), Th("", cls="cell--actions"))),
         Tbody(*[_oh_row(i, o) for i, o in enumerate(overhead_rows)], oh_add_row),
         cls="data-table",
     )

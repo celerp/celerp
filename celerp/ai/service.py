@@ -350,7 +350,7 @@ def agent_system_prompt(lang: str, capabilities: dict, company_settings: dict) -
         prompt += _AREAS_PROMPT.format(max_open=MAX_OPEN_PER_CALL,
                                        areas=", ".join(f"{a} ({labels.get(a, a)})" for a in used))
     prompt += _ASK_PROMPT.format(groups="\n".join(f"- {reason}" for reason in USER_ACTION_EXCLUSIONS.values()))
-    currency = company_settings.get("currency")
+    currency = _books_currency_set(company_settings)
     prompt += (_BOOKS_CURRENCY_PROMPT if currency else _NO_BOOKS_CURRENCY_PROMPT).format(
         currency=currency, screen=BOOKS_CURRENCY_SCREEN)
     return prompt + _HELP_PROMPT.format(language=lang_label(lang),
@@ -698,10 +698,15 @@ def _repeated_changes(parsed: list, capabilities: dict) -> dict[str, dict]:
     return refused
 
 
+def _books_currency_set(company_settings: dict) -> str | None:
+    """The currency the company set for its books, or None while it has set none."""
+    return company_settings.get("currency") or None
+
+
 def _books_currency_unset(parsed: list, company_settings: dict) -> dict[str, dict]:
     """Errors for changes that bring amounts into the books while the company has no books
     currency set: never proposed in a guessed currency. The refusal says how to set it."""
-    if company_settings.get("currency"):
+    if _books_currency_set(company_settings):
         return {}
     return {
         call_id: _agent_error(

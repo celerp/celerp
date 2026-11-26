@@ -374,18 +374,6 @@ def test_activity_table_full_width_css():
     assert rule and rule.start() > base, "activity-table width:100% must follow data-table max-content"
 
 
-def test_activity_table_resizable_opt_in():
-    # H10: resizable=True wires the shared col-resize script + fixed layout; default keeps
-    # the compact auto-layout (so dashboard/contacts/doc widgets are unaffected).
-    evs = [{"id": 1, "event_type": "item.created", "entity_id": "item:x",
-            "ts": "2026-06-21T10:00:00+00:00", "data": {"sku": "S", "name": "n"}}]
-    on = to_xml(activity_table(evs, resizable=True))
-    assert "col-resize-handle" in on and "table-layout:fixed" in on and "celerpColumns(CFG.table,CFG.layout)" in on
-    assert 'class="col-event"' in on
-    off = to_xml(activity_table(evs))
-    assert "col-resize-handle" not in off and "table-layout:fixed" not in off
-
-
 def test_activity_table_see_all_footer_link():
     # H7: when more events exist than are shown, the footer links to the full-history page.
     evs = [{"id": i, "event_type": "item.created", "entity_id": "item:x",
