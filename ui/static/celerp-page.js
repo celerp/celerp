@@ -229,9 +229,17 @@
       }
     };
   }
+  // Every column setup write of this page (a change, a reset, the move of a browser copy) goes
+  // through one queue: each is sent once the one before it has answered or failed, so the
+  // server applies them in the order the user made them and the newest always lands last.
+  var columnWrites = Promise.resolve();
   function postColumns(change) {
-    return celerpFetch('/column-prefs', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                         body: JSON.stringify(change)});
+    var sent = columnWrites.then(function () {
+      return celerpFetch('/column-prefs', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                           body: JSON.stringify(change)});
+    });
+    columnWrites = sent.catch(function () {});
+    return sent;
   }
   function saveColumns(change) {
     return postColumns(change).then(function (r) {
@@ -245,30 +253,49 @@
 
   // Before the setup lived on the server each browser kept its own copy. The first page that
   // names a table moves this browser's copy into the user's setup, where it replaces the parts
-  // it holds, and then clears it. The copy is cleared once the server has answered: saved, or
-  // refused as a setup it cannot keep. With no answer it stays for the next page load.
+  // it holds. Each part is first cut down to the values a setup can hold (a part with none left
+  // is not a setup and is cleared), then saved on its own, and its copy is cleared once the
+  // server has kept it. A part the server refuses, or that got no answer, stays for the next load.
+  var columnKey = function (k) { return k.length > 0 && k.length <= 100; };
+  var columnParts = {
+    vis: function (v) {
+      var out = {};
+      Object.keys(v).slice(0, 200).forEach(function (k) { if (columnKey(k) && typeof v[k] === 'boolean') out[k] = v[k]; });
+      return out;
+    },
+    order: function (v) {
+      return Array.isArray(v) ? v.filter(function (k) { return typeof k === 'string' && columnKey(k); }).slice(0, 200) : [];
+    },
+    widths: function (v) {
+      var out = {};
+      Object.keys(v).slice(0, 200).forEach(function (k) {
+        var w = v[k];
+        if (columnKey(k) && ((typeof w === 'string' && w.length <= 20) || (typeof w === 'number' && isFinite(w)))) out[k] = w;
+      });
+      return out;
+    }
+  };
   function importBrowserColumns(table) {
     var lines = table.indexOf('doc_lines_') === 0;
     var keys = lines ? {widths: 'celerp_dline_wpct_' + table.slice(10) + '_v2'}
       : {vis: 'celerp_cols_' + table, order: 'celerp_col_order_' + table, widths: 'celerp_col_widths_' + table};
-    var found = {}, stored = [];
+    var found = {};
     try {
       Object.keys(keys).forEach(function (part) {
-        var raw = localStorage.getItem(keys[part]);
+        var raw = localStorage.getItem(keys[part]), value = null;
         if (raw === null) return;
-        stored.push(keys[part]);
-        try {
-          var value = JSON.parse(raw);
-          if (value && typeof value === 'object') found[part] = value;
-        } catch (e) { /* not a setup: cleared with the rest */ }
+        try { value = JSON.parse(raw); } catch (e) { /* not a setup */ }
+        value = value && typeof value === 'object' ? columnParts[part](value) : null;
+        if (value && Object.keys(value).length) found[part] = value;
+        else localStorage.removeItem(keys[part]);
       });
     } catch (e) { return; }  // this browser keeps no storage
-    if (!stored.length) return;
-    function clear() { stored.forEach(function (key) { localStorage.removeItem(key); }); }
-    if (!Object.keys(found).length) return clear();
+    if (!Object.keys(found).length) return;
     columnLayouts[table] = Object.assign({}, columnLayouts[table], found);
-    var change = {}; change[table] = found;
-    postColumns(change).then(function (r) { if (r.ok || r.status === 422) clear(); }).catch(function () {});
+    Object.keys(found).forEach(function (part) {
+      var change = {}; change[table] = {}; change[table][part] = found[part];
+      postColumns(change).then(function (r) { if (r.ok) localStorage.removeItem(keys[part]); }).catch(function () {});
+    });
   }
 
   // Forget the saved column setup of the given tables, then reload to show the defaults.
