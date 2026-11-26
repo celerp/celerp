@@ -32809,5 +32809,17 @@
     "tests/test_browser/test_not_applicable_cell.py::test_a_cell_outside_the_rows_category_explains_instead_of_editing[chromium]": 1.4341321939136833,
     "tests/test_item_category_attributes.py::test_the_cell_of_an_attribute_outside_the_category_stays_not_applicable_when_opened_or_restored": 0.6877993840025738,
     "tests/test_migrations/test_e5c2b8d1f4a7_column_prefs_per_user.py::test_a_company_without_price_lists_hides_the_default_price_columns_it_left_out": 0.07385680603329092,
-    "tests/test_non_finite_numbers.py::test_the_float_walk_refuses_a_size_it_cannot_resolve": 0.005447832052595913
+    "tests/test_non_finite_numbers.py::test_the_float_walk_refuses_a_size_it_cannot_resolve": 0.005447832052595913,
+    "tests/test_enterprise_logo.py::test_a_changed_store_rebuilds_a_model_cleared_in_process": 0.04762360791210085,
+    "tests/test_enterprise_logo.py::test_an_invalid_stored_context_reads_as_a_direct_install": 0.009603300015442073,
+    "tests/test_enterprise_logo.py::test_direct_install_shows_the_standard_mark": 0.01644634804688394,
+    "tests/test_enterprise_logo.py::test_enterprise_logo_is_web_sized": 0.005407014978118241,
+    "tests/test_enterprise_logo.py::test_every_mark_is_served": 0.017015267978422344,
+    "tests/test_enterprise_logo.py::test_no_surface_names_a_mark_file_outside_the_branding_resolver": 0.028613034985028207,
+    "tests/test_enterprise_logo.py::test_partner_link_ending_restores_the_standard_mark": 0.01892590196803212,
+    "tests/test_enterprise_logo.py::test_partner_managed_install_shows_the_enterprise_mark_everywhere": 0.01753052999265492,
+    "tests/test_enterprise_logo.py::test_team_subscription_on_a_direct_install_keeps_the_standard_mark": 0.00810595485381782,
+    "tests/test_enterprise_logo.py::test_the_relay_ending_the_partner_link_restores_the_standard_mark": 0.01005637610796839,
+    "tests/test_browser/test_enterprise_mark.py::test_sidebar_shows_the_enterprise_logo[chromium]": 6.809466607985087,
+    "tests/test_browser/test_enterprise_mark.py::test_sign_in_card_shows_the_enterprise_logo_then_the_standard_one": 0.7337611839175224
 }
