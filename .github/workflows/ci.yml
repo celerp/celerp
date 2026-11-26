@@ -546,6 +546,21 @@ jobs:
       - name: Compare with main
         run: python scripts/check_stale_translations.py --base HEAD^1
 
+  # Country behaviour lives in country packs: every country with installs has a locked pack,
+  # and no country code drives a condition in core or the documents module.
+  country-packs:
+    name: Country packs cover installs, no country branch in core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Every country with installs has a locked pack
+        run: python scripts/check_install_countries_have_packs.py
+      - name: No country branch in core
+        run: python scripts/check_core_has_no_country_branch.py
+
   # The Intel macOS desktop build installs into an x86_64 bundled Python, where a
   # package with no x86_64 wheel fails. Runs on every PR so Test gates on it.
   mac-intel-deps:
@@ -671,7 +686,7 @@ jobs:
 
   test:
     name: Test
-    needs: [shard, census, process, lock-order, integration, browser, embedded, electron, lockfile, constraints, translations, mac-intel-deps, update-changes, update-e2e, l10n-golden]
+    needs: [shard, census, process, lock-order, integration, browser, embedded, electron, lockfile, constraints, translations, country-packs, mac-intel-deps, update-changes, update-e2e, l10n-golden]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -723,6 +738,10 @@ jobs:
           fi
           if [ "${{ needs.translations.result }}" != "success" ]; then
             echo "An English string changed with its translations left as before (result: ${{ needs.translations.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.country-packs.result }}" != "success" ]; then
+            echo "A country with installs has no locked pack, or core branches on a country (result: ${{ needs.country-packs.result }})"
             exit 1
           fi
           if [ "${{ needs.mac-intel-deps.result }}" != "success" ] && [ "${{ needs.mac-intel-deps.result }}" != "skipped" ]; then

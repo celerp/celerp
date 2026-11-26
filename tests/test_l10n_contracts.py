@@ -17,15 +17,19 @@ async def _country(client, session, country: str) -> tuple[dict, dict]:
     from test_l10n_country_update import _apply_country
     auth = await company(session)
     await _apply_country(client, auth, country)
-    lists = {side: ok(await client.get(path, headers=auth["headers"])) for side, path in
+    lists = {side: (side, ok(await client.get(path, headers=auth["headers"]))) for side, path in
              (("sales", "/companies/me/taxes"), ("purchase", "/companies/me/purchasing-taxes"))}
     return auth, lists
 
 
-def _find(rows: list[dict], category: str, rate: float | None = None, point: str | None = None) -> str:
+def _find(listed: tuple[str, list[dict]], category: str, rate: float | None = None, point: str | None = None) -> str:
+    """The first code in the listed side's rows that the side can carry, by category, current rate
+    and withholding point."""
     def current(row):
         return row["versions"][-1]["rate"]
+    side, rows = listed
     found = [r for r in rows if r["category"] == category and (rate is None or current(r) == rate)
+             and r.get("tax_type", "both") in (side, "both")
              and (point is None or r.get("withholding_point") == point)]
     assert found, (category, rate, point, rows)
     return found[0]["id"]
@@ -56,12 +60,12 @@ async def test_contract_zz_es(client, session):
     irpf = _find(lists["sales"], "withholding", point="document")
     await every_path(client, auth, sale=[iva, recargo, irpf], buy=[iva_in])
     await every_path(client, auth, sale=[iva], buy=[rc])
-    irpf_pay = (await codes(client, auth, [*lists["sales"], code("IRPF at payment", 15, "sales", "withholding",
+    irpf_pay = (await codes(client, auth, [*lists["sales"][1], code("IRPF at payment", 15, "sales", "withholding",
                                                                  withholding_point="payment")]))["IRPF at payment"]["id"]
     await every_path(client, auth, sale=[iva], buy=[iva_in], sale_wht=irpf_pay)
     sales = ok(await client.get("/companies/me/taxes", headers=auth["headers"]))
     caja = (await codes(client, auth, [*sales, code("IVA caja", 21, "sales", cash_basis=True)]))["IVA caja"]["id"]
-    caja_in = (await codes(client, auth, [*lists["purchase"], code("IVA caja", 21, "purchase", cash_basis=True)],
+    caja_in = (await codes(client, auth, [*lists["purchase"][1], code("IVA caja", 21, "purchase", cash_basis=True)],
                            "purchase"))["IVA caja"]["id"]
     await every_path(client, auth, sale=[caja], buy=[caja_in])
     await _balanced(session, auth)
