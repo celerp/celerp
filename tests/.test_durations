@@ -32806,5 +32806,8 @@
     "tests/test_browser/test_column_setup_writes.py::test_a_refused_part_of_the_browser_copy_stays_for_the_next_load[chromium]": 1.629234005114995,
     "tests/test_browser/test_column_setup_writes.py::test_a_save_whose_answer_is_lost_still_lets_the_newer_one_win[chromium]": 1.7438546328339726,
     "tests/test_browser/test_column_setup_writes.py::test_an_earlier_save_answered_late_does_not_overwrite_a_newer_one[chromium]": 1.717941659851931,
-    "tests/test_browser/test_not_applicable_cell.py::test_a_cell_outside_the_rows_category_explains_instead_of_editing[chromium]": 1.4341321939136833
+    "tests/test_browser/test_not_applicable_cell.py::test_a_cell_outside_the_rows_category_explains_instead_of_editing[chromium]": 1.4341321939136833,
+    "tests/test_item_category_attributes.py::test_the_cell_of_an_attribute_outside_the_category_stays_not_applicable_when_opened_or_restored": 0.6877993840025738,
+    "tests/test_migrations/test_e5c2b8d1f4a7_column_prefs_per_user.py::test_a_company_without_price_lists_hides_the_default_price_columns_it_left_out": 0.07385680603329092,
+    "tests/test_non_finite_numbers.py::test_the_float_walk_refuses_a_size_it_cannot_resolve": 0.005447832052595913
 }
