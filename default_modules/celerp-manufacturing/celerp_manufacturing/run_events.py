@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from celerp.events.schemas import register_event_type
+from celerp.schemas.numbers import FiniteFloat
 
 
 class MfgOrderReturned(BaseModel):
@@ -22,7 +23,7 @@ register_event_type("mfg.order.returned", MfgOrderReturned)
 
 class MfgOrderReceiptUndone(BaseModel):
     lot_item_id: str
-    quantity: float
+    quantity: FiniteFloat
     value: str
     undone_by: str | None = None
     # Set only when the lot undone is of one of the run's extras.
@@ -53,7 +54,7 @@ register_event_type("mfg.order.wip_reconciled", MfgOrderWipReconciled)
 class MfgOrderOutputRepaired(BaseModel):
     # What an older release recorded about a run's output, put right: the quantity it marked
     # received without making a lot, and the product the run makes when the user chose one.
-    discarded: float = 0
+    discarded: FiniteFloat = 0
     output_item_id: str | None = None
     expected_outputs: list[dict[str, Any]] | None = None
     repaired_by: str | None = None

@@ -391,7 +391,7 @@ async def statement_preview(job_id: uuid.UUID,
     return await _preview(db, company_id, user.id, job_id)
 
 
-_Figure = str | int | float | None
+_Figure = str | int | FiniteFloat | None
 
 
 class StatementHeaderIn(BaseModel):

@@ -25,7 +25,6 @@ import sqlalchemy as sa
 from alembic import op
 
 from celerp.migrations._json_compat import update_company_settings
-from celerp.services.field_schema import effective_field_schema
 
 revision = "e5c2b8d1f4a7"
 down_revision = "c4d1e7a2f9b3"
@@ -33,6 +32,20 @@ branch_labels = None
 depends_on = None
 
 ALL_ITEMS = "__all__"  # the list the older version kept for the item list with no category chosen
+
+# The item list's shared columns as this revision found them, frozen here so a later change to
+# the live field list never changes what this upgrade does: the default fields, then a price
+# column per price list (and a total beside each cost list's).
+_DEFAULT_FIELDS = (
+    "thumbnail", "sku", "name", "category", "quantity", "sell_by", "weight", "weight_unit", "pieces",
+    "reorder_point", "reorder_qty", "gross_weight", "gross_weight_unit", "inventory_type",
+    "allow_splitting", "default_sell_qty", "pick_method", "location_name", "status",
+    "short_description", "description", "notes", "barcode", "gtin", "rfid_epc", "hs_code",
+    "country_of_origin", "preferred_supplier", "batch_no", "purchase_sku", "purchase_name",
+    "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at",
+)
+_DEFAULT_PRICE_LISTS = ("Retail", "Wholesale", "Cost")
+_COST_LISTS = frozenset({"cost", "cost price", "landed", "landed cost"})
 
 
 def _item_list_layout(settings: dict, lists: dict) -> dict:
@@ -43,7 +56,13 @@ def _item_list_layout(settings: dict, lists: dict) -> dict:
     def named(value) -> list[str]:
         return [key for key in value if isinstance(key, str)]
 
-    shared = keys(effective_field_schema(settings))
+    names = [str(pl.get("name", "")) for pl in settings.get("price_lists") or [] if isinstance(pl, dict)]
+    names = names or list(_DEFAULT_PRICE_LISTS)
+    if not any(name.strip().lower() in _COST_LISTS for name in names):
+        names.append("Cost")
+    prices = [key for name in names for key in (f"{name.lower()}_price", f"{name.lower()}_price_total")
+              if not key.endswith("_total") or name.lower() in _COST_LISTS]
+    shared = list(dict.fromkeys([*keys(settings.get("item_schema")), *_DEFAULT_FIELDS, *prices]))
     everything = named(lists.get(ALL_ITEMS) or [])
     order = list(dict.fromkeys(everything))
     vis = {key: key in everything for key in shared} if everything else {}

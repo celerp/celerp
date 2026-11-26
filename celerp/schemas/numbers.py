@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Number types shared by request bodies."""
+"""Number types shared by request bodies and event payloads (every first-party schema float is
+FiniteFloat; tests/test_non_finite_numbers.py walks them)."""
 from __future__ import annotations
 
 from typing import Annotated

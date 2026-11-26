@@ -123,3 +123,23 @@ def test_downgrade_keeps_each_users_setup(companies_db):
     before = _get(companies_db, cid)
     run_migration_ops(companies_db, MODULE, "downgrade")
     assert _get(companies_db, cid) == before
+
+
+def test_the_shared_columns_are_frozen_in_the_migration():
+    """The upgrade reads no live field list: a later change to the app's fields never changes it."""
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2] / "celerp" / "migrations" / "versions" / f"{MODULE}.py"
+    imported = {n.module for n in ast.walk(ast.parse(source.read_text())) if isinstance(n, ast.ImportFrom)}
+    assert imported <= {"__future__", "alembic", "celerp.migrations._json_compat"}, imported
+
+
+def test_a_price_list_column_left_out_of_the_all_items_list_is_hidden(companies_db):
+    cid = _put(companies_db, {"column_prefs": {"__all__": ["sku"]}, "price_lists": [{"name": "Gold"}, {"name": "Landed"}]})
+    user = _join(companies_db, cid)
+    run_migration_ops(companies_db, MODULE)
+    vis = _get(companies_db, cid)["column_prefs"][user]["inventory"]["vis"]
+    assert vis["sku"] is True
+    assert (vis["gold_price"], vis["landed_price"], vis["landed_price_total"]) == (False, False, False)
+    assert "retail_price" not in vis and "cost_price" not in vis
