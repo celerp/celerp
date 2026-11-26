@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Update localization (Settings > Taxes): preview, confirm and undo applying the company's
 country pack to its tax list (``celerp.localization.apply``), the item rate review an update
-offers (``celerp.localization.rate_review``), and the withholding correction of a bill from before
-tax codes (``celerp.services.withholding_correction``)."""
+offers (``celerp.localization.rate_review``), the withholding correction of a bill from before
+tax codes (``celerp.services.withholding_correction``) and the cut-off catch-up of cash-basis tax
+(``celerp.services.cash_basis``)."""
 from __future__ import annotations
 
 import datetime
@@ -16,7 +17,7 @@ from celerp.db import get_session
 from celerp.localization import apply as localization
 from celerp.localization import rate_review
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services import withholding_correction
+from celerp.services import cash_basis, withholding_correction
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
 from ui.i18n import t
@@ -130,3 +131,22 @@ async def correction_undo(doc_id: str, company_id=Depends(get_current_company_id
     await withholding_correction.undo(session, company_id, user.id, doc_id)
     await session.commit()
     return {"ok": True}
+
+
+_CASH_BASIS = "/cash-basis"
+
+
+@router.post(_CASH_BASIS + "/preview", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False}, summary="List the documents whose cash-basis cut-off has passed with tax still pending, before anything is posted.")
+async def cash_basis_preview(company_id=Depends(get_current_company_id),
+                             _: None = require_permission("manage_accounting"),
+                             session: AsyncSession = Depends(get_session)) -> dict:
+    return await cash_basis.preview(session, company_id)
+
+
+@router.post(_CASH_BASIS + "/confirm", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Post the cash-basis tax still pending on each listed document as due on its cut-off date, as the preview showed it; undo by voiding the entry.")
+async def cash_basis_confirm(payload: Confirm, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+                             _: None = require_permission("manage_accounting"),
+                             session: AsyncSession = Depends(get_session)) -> dict:
+    ids = await cash_basis.confirm(session, company_id, user.id, payload.binding, payload.idempotency_key)
+    await session.commit()
+    return {"entry_ids": ids}

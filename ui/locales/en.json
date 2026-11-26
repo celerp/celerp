@@ -9387,6 +9387,8 @@
   "tax.withholding_correction_first": "Post the withholding correction for bill {bill} first, then issue the vendor credit memo.",
   "tax.withholding_correction_not_needed": "{document} has no withholding correction to post. Only an issued bill from before tax codes that withheld tax needs one.",
   "tax.withholding_correction_none": "{document} has no withholding correction to undo.",
+  "tax.cash_basis_none_pending": "No pending cash-basis tax at {date}.",
+  "tax.cash_basis_none_due": "Nothing to post: no document has cash-basis tax pending past its cut-off.",
   "page.withholding_corrections": "Withholding corrections",
   "tax.corrections_hint": "Bills from before tax codes counted withheld tax as less input tax. Tick the bills, choose a date in an open period and post their corrections: each moves the withheld tax out of input tax into withheld tax payable. Undo puts a corrected bill back on this list.",
   "tax.corrections_post": "Post corrections",

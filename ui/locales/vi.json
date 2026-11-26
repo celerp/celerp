@@ -9387,6 +9387,8 @@
   "tax.withholding_correction_first": "Hãy ghi bút toán điều chỉnh thuế khấu trừ cho hóa đơn {bill} trước, rồi mới phát hành phiếu ghi có nhà cung cấp.",
   "tax.withholding_correction_not_needed": "{document} không có bút toán điều chỉnh thuế khấu trừ nào cần ghi. Chỉ hóa đơn đã phát hành từ trước khi có mã thuế và có khấu trừ thuế mới cần.",
   "tax.withholding_correction_none": "{document} không có bút toán điều chỉnh thuế khấu trừ nào để hoàn tác.",
+  "tax.cash_basis_none_pending": "Không có thuế theo phương pháp thực thu đang chờ tại {date}.",
+  "tax.cash_basis_none_due": "Không có gì để ghi sổ: không có chứng từ nào còn thuế theo phương pháp thực thu đang chờ sau ngày khóa sổ.",
   "page.withholding_corrections": "Điều chỉnh thuế khấu trừ",
   "tax.corrections_hint": "Hóa đơn mua hàng từ trước khi có mã thuế đã ghi thuế khấu trừ tại nguồn như một khoản giảm thuế đầu vào. Chọn các hóa đơn, chọn một ngày trong kỳ còn mở và ghi sổ các bút toán điều chỉnh: mỗi bút toán chuyển thuế khấu trừ tại nguồn từ thuế đầu vào sang thuế khấu trừ phải nộp. Hoàn tác đưa hóa đơn đã điều chỉnh trở lại danh sách này.",
   "tax.corrections_post": "Ghi sổ điều chỉnh",

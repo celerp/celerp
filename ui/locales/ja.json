@@ -9387,6 +9387,8 @@
   "tax.withholding_correction_first": "先に請求書 {bill} の源泉徴収の修正を記帳してから、仕入先のクレジットメモを発行してください。",
   "tax.withholding_correction_not_needed": "{document} に記帳する源泉徴収の修正はありません。修正が必要なのは、税コード導入前に発行され源泉徴収した請求書だけです。",
   "tax.withholding_correction_none": "{document} に取り消す源泉徴収の修正はありません。",
+  "tax.cash_basis_none_pending": "{date} 時点で保留中の現金主義の税はありません。",
+  "tax.cash_basis_none_due": "計上するものはありません。締め日を過ぎて現金主義の税が保留中の書類はありません。",
   "page.withholding_corrections": "源泉徴収の修正",
   "tax.corrections_hint": "税コード導入前の請求書は、源泉徴収税を仕入税額の減額として計上していました。請求書を選択し、未締めの期間の日付を選んで修正を記帳してください。各修正は源泉徴収税を仕入税額から預り源泉税に振り替えます。元に戻すと、修正済みの請求書がこの一覧に戻ります。",
   "tax.corrections_post": "修正を記帳",

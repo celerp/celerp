@@ -3381,6 +3381,9 @@ async def _credit_note_owed(session, company_id, user_id, cn_id: str, cn_state: 
             metadata={"source_credit_note": cn_id, "credit_note_effect": "reduced" if taking else "restored",
                       "credit_amount": to_stored_float(amount)})
     await session.refresh(invoice)
+    from celerp.services import auto_je
+    await auto_je.settle_cash_basis(session, company_id, user_id, [invoice.entity_id, cn_id],
+                                   cn_now.get("issue_date") if taking else None)
 
 
 def credit_note_currency(invoice_state: dict, base_currency: str, currency, rate) -> dict:
@@ -4909,6 +4912,7 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
         entries=[{**e, "debit": e.get("credit") or 0.0, "credit": e.get("debit") or 0.0} for e in lines],
         metadata_={"trigger": "doc.payment.refund_reversed", "doc_id": entity_id, "payment_index": index},
     )
+    await auto_je.settle_cash_basis(session, company_id, actor_id, [entity_id], reversal_date)
     return entry
 
 
@@ -5112,6 +5116,7 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         if _app_idx is not None:
             await auto_je.void_credit_note_payment_rate(session, company_id=company_id, user_id=user.id,
                                                         doc_id=_cn_id, payment_index=_app_idx)
+        await auto_je.settle_cash_basis(session, company_id, user.id, [_inv_id, _cn_id], payload.refund_date)
 
     await session.commit()
     return {"event_id": entry.id}
@@ -5278,6 +5283,9 @@ async def delete_doc_payment(session: AsyncSession, company_id, entity_id: str, 
         await auto_je.void_credit_note_payment_rate(session, company_id=company_id, user_id=actor_id,
                                                     doc_id=entity_id, payment_index=payment_index)
 
+    await auto_je.settle_cash_basis(
+        session, company_id, actor_id,
+        [entity_id, payment.get("source_doc_id") or payment.get("target_doc_id")], payment.get("payment_date"))
     await return_unmatched(session, company_id, entity_id, payment.get("reference"))
     return {"event_id": entry.id}
 

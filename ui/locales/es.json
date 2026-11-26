@@ -9387,6 +9387,8 @@
   "tax.withholding_correction_first": "Registra primero la corrección de la retención de la factura {bill} y después emite la nota de crédito del proveedor.",
   "tax.withholding_correction_not_needed": "{document} no tiene ninguna corrección de retención que registrar. Solo la necesita una factura emitida antes de los códigos de impuesto que retuvo impuesto.",
   "tax.withholding_correction_none": "{document} no tiene ninguna corrección de retención que deshacer.",
+  "tax.cash_basis_none_pending": "No hay IVA de caja pendiente a {date}.",
+  "tax.cash_basis_none_due": "Nada que registrar: ningún documento tiene IVA de caja pendiente pasada su fecha límite.",
   "page.withholding_corrections": "Correcciones de retención",
   "tax.corrections_hint": "Las facturas de proveedor anteriores a los códigos de impuesto registraron la retención como menos impuesto soportado. Marque las facturas, elija una fecha en un periodo abierto y registre sus correcciones: cada una pasa la retención del impuesto soportado a retenciones por pagar. Deshacer devuelve una factura corregida a esta lista.",
   "tax.corrections_post": "Registrar correcciones",

@@ -28,8 +28,8 @@ async def _cash_company(client, session, side: str = "sales") -> tuple[dict, str
 async def test_cash_basis_pending_moves_with_allocations(client, session):
     """After every allocation the pending output tax is the tax share of what is still
     outstanding (21/121 of it), and pending plus recognized output tax is the tax of the
-    invoices less the tax of the credit note. An advance is a payment dated before its
-    invoice. The last payments clear the pending tax to zero. A bill does the same with
+    invoices less the tax of the credit notes, whether applied or issued against the invoice.
+    An advance is a payment dated before its invoice. The last payments clear the pending tax to zero. A bill does the same with
     input tax."""
     auth, caja = await _cash_company(client, session)
     open_docs: list[str] = []
@@ -46,8 +46,7 @@ async def test_cash_basis_pending_moves_with_allocations(client, session):
     await check(210.0)
     ok(await pay(client, auth, inv["id"], 605.0))
     await check(210.0)
-    note = await finalized(client, auth, await doc(client, auth, "credit_note", [line(100.0, caja)],
-                                                   original_doc_id=inv["id"]))
+    note = await finalized(client, auth, await doc(client, auth, "credit_note", [line(100.0, caja)]))
     ok(await post(client, auth, f"/docs/{note['id']}/apply-to-invoice", {
         "target_doc_id": inv["id"], "amount": 121.0, "idempotency_key": uuid.uuid4().hex}))
     await check(189.0)
@@ -63,9 +62,12 @@ async def test_cash_basis_pending_moves_with_allocations(client, session):
     open_docs.append(advance["id"])
     ok(await pay(client, auth, advance["id"], 242.0, date="2026-09-01"))
     await check(399.0)
+    await finalized(client, auth, await doc(client, auth, "credit_note", [line(100.0, caja)],
+                                            original_doc_id=advance["id"]))
+    await check(378.0)
     for d in open_docs:
         ok(await pay(client, auth, d, (await get(client, auth, d))["amount_outstanding"]))
-    await check(399.0)
+    await check(378.0)
     assert (await roles(session, auth)).get("tax_output_pending", 0) == 0
 
     buyer, input_caja = await _cash_company(client, session, "purchase")

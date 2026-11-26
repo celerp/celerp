@@ -135,6 +135,13 @@ def withheld_on_document(tax) -> bool:
 _NOT_CASH_BASIS = ("withholding", "perception", *SELF_ASSESSED)
 
 
+def cash_basis_cutoff(settings: dict) -> dict | None:
+    """The cash basis cut-off (``month``, ``day``, ``years_after`` the issue year) the pack of the
+    localization applied declares, or None."""
+    applied = (settings.get("localization") or {}).get("country")
+    return (applied and packs().get(applied, {}).get("cash_basis_cutoff")) or None
+
+
 def with_taxes(settings: dict, side: str, taxes: list[dict]) -> dict:
     """``settings`` with the company's ``side`` ("sales" or "purchase") tax list set to ``taxes``
     as normalized_list stores it. Cash basis codes are refused (TaxListRefused, naming every such
@@ -142,8 +149,7 @@ def with_taxes(settings: dict, side: str, taxes: list[dict]) -> dict:
     has no cash basis cut-off."""
     from celerp.localization.taxcodes import TaxListRefused, normalized_list
     stored = normalized_list(taxes)
-    applied = (settings.get("localization") or {}).get("country")
-    cutoff = applied and packs().get(applied, {}).get("cash_basis_cutoff")
+    cutoff = cash_basis_cutoff(settings)
     cash_basis = [code for code in stored if code["cash_basis"]]
     wrong_kind = [code["name"] for code in cash_basis if code["category"] in _NOT_CASH_BASIS]
     if wrong_kind:

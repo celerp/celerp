@@ -794,25 +794,38 @@ def _doc_tax_lists(doc: dict) -> list:
             doc.get("shipping_taxes"), doc.get("doc_taxes")]
 
 
-def _tax_by_account(doc: dict) -> dict[str, _Dec]:
-    """The tax a document charges (charged) on codes that name their own account (a snapshot's
-    ``account``, such as a perception credited to the authority's account), in the document's
-    currency, by that account. Every other tax posts to the side's tax role."""
-    out: dict[str, _Dec] = {}
+def _tax_by_target(doc: dict, pending: AccountRole) -> dict[str | AccountRole, _Dec]:
+    """The tax a document charges (charged) that does not post to the side's tax role, in the
+    document's currency, by where it posts: a cash-basis code's tax on the ``pending`` role (it
+    is due as the document is paid, cash_basis.settle), and a code naming its own account (a
+    snapshot's ``account``, such as a perception credited to the authority's account) on that
+    account. Every other tax posts to the side's tax role."""
+    out: dict[str | AccountRole, _Dec] = {}
     for tax in (tax for taxes in _doc_tax_lists(doc) for tax in tax_entries(taxes)):
-        if charged(tax) and tax.get("account"):
-            out[tax["account"]] = out.get(tax["account"], _Dec(0)) + to_decimal(tax.get("amount") or 0)
-    return {code: amount for code, amount in sorted(out.items()) if amount}
+        target = pending if tax.get("cash_basis") else tax.get("account")
+        if charged(tax) and target:
+            out[target] = out.get(target, _Dec(0)) + to_decimal(tax.get("amount") or 0)
+    return {target: amount for target, amount in sorted(out.items(), key=lambda kv: str(kv[0])) if amount}
 
 
-def _sale_tax_lines(doc: dict, acc: dict, tax: float, base_currency: str) -> list[tuple[str, float]]:
-    """Where a sale's tax ``tax`` (its whole charged tax, in the books' currency) is credited:
-    each account its codes name (_tax_by_account) its converted share, and the output tax role's
-    account the rest, so the parts add up to ``tax`` exactly."""
+def has_cash_basis_tax(doc: dict) -> bool:
+    """Whether a document charges tax on a cash-basis code."""
+    return any(charged(tax) and tax.get("cash_basis")
+               for taxes in _doc_tax_lists(doc) for tax in tax_entries(taxes))
+
+
+def _sale_tax_lines(doc: dict, acc: dict, tax: float, base_currency: str) -> list[tuple[AccountRole, str, float]]:
+    """Where a sale's tax ``tax`` (its whole charged tax, in the books' currency) is credited, as
+    (role, account, amount): the pending output tax role and each account its codes name
+    (_tax_by_target) their converted shares, and the output tax role's account the rest, so the
+    parts add up to ``tax`` exactly. ``acc`` holds the pending role when has_cash_basis_tax."""
     rate = require_doc_rate(doc, base_currency)
-    own = [(code, to_decimal(to_base(to_stored_float(a), rate, base_currency))) for code, a in _tax_by_account(doc).items()]
+    own = [((R.TAX_OUTPUT_PENDING, acc[target]) if target == R.TAX_OUTPUT_PENDING else (R.TAX_OUTPUT, target),
+            to_decimal(to_base(to_stored_float(a), rate, base_currency)))
+           for target, a in _tax_by_target(doc, R.TAX_OUTPUT_PENDING).items()]
     rest = to_decimal(tax) - sum((a for _, a in own), _Dec(0))
-    return [(code, to_stored_float(a)) for code, a in [*([(acc[R.TAX_OUTPUT], rest)] if rest else []), *own]]
+    parts = [*([((R.TAX_OUTPUT, acc[R.TAX_OUTPUT]), rest)] if rest else []), *own]
+    return [(role, code, to_stored_float(a)) for (role, code), a in parts]
 
 
 def _clearing_bases(doc: dict, allocations: dict | None, clearing: list[dict]) -> list[dict]:
@@ -847,6 +860,8 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     roles = [R.RECEIVABLE, R.SALES_REVENUE]
     if tax:
         roles.append(R.TAX_OUTPUT)
+    if tax and has_cash_basis_tax(doc):
+        roles.append(R.TAX_OUTPUT_PENDING)
     if kept:
         roles.append(R.TAX_WITHHELD_CREDIT)
     if cogs > 0:
@@ -870,8 +885,8 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=to_stored_float(to_decimal(total) - kept)),
                *clearing, *income]
     bases = [CONTROL, *_clearing_bases(doc, allocations, clearing), *behind]
-    for code, amount in _sale_tax_lines(doc, acc, tax, base_currency) if tax else []:
-        entries.append(_tax_line(acc, R.TAX_OUTPUT, code, credit=amount))
+    for role, code, amount in _sale_tax_lines(doc, acc, tax, base_currency) if tax else []:
+        entries.append(_tax_line(acc, role, code, credit=amount))
         bases.append(_line_tax_basis(doc))
     if kept:
         # The customer keeps the withheld tax back for the authority: a credit against the
@@ -1015,6 +1030,7 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
     roles = [r for r, have in ((R.RECEIVABLE, ar), (R.SALES_REVENUE, sold_on)) if not have]
     kept = _ledger_withheld(doc, base_currency)
     acc = await resolve_many(session, company_id, [*roles, *([R.TAX_OUTPUT] if tax else []),
+                                                   *([R.TAX_OUTPUT_PENDING] if tax and has_cash_basis_tax(doc) else []),
                                                    *([R.TAX_WITHHELD_CREDIT] if kept else [])])
 
     def side(amount: float, debit: bool) -> dict:
@@ -1093,8 +1109,8 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
         entries, bases = [], []
     entries += clearing
     bases += _clearing_bases(doc, allocations, clearing)
-    for code, amount in _sale_tax_lines(doc, acc, tax, base_currency) if tax else []:
-        entries.append(_tax_line(acc, R.TAX_OUTPUT, code, **side(amount, True)))
+    for role, code, amount in _sale_tax_lines(doc, acc, tax, base_currency) if tax else []:
+        entries.append(_tax_line(acc, role, code, **side(amount, True)))
         bases.append(_line_tax_basis(doc))
     if kept:
         entries.append(_line(acc[R.TAX_WITHHELD_CREDIT], R.TAX_WITHHELD_CREDIT, **side(to_stored_float(kept), False)))
@@ -1604,6 +1620,14 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
         metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": payment_index},
         extra={"fund_allocation": split} if split else None,
     )
+    await settle_cash_basis(session, company_id, user_id, [doc_id], payment_date)
+
+
+async def settle_cash_basis(session, company_id, user_id, doc_ids: list[str], day: str | None) -> None:
+    """Move the cash-basis tax of documents an allocation changed to where it is due
+    (cash_basis.settle), on the allocation's day."""
+    from celerp.services import cash_basis
+    await cash_basis.settle(session, company_id, user_id, doc_ids, day)
 
 
 async def doc_fund_open(session, company_id, doc_id: str, doc_type: str) -> dict[str | None, Decimal]:
@@ -1953,6 +1977,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         entries=entries,
         metadata_={"trigger": trigger, "doc_id": doc_id, "payment_index": payment_index},
     )
+    await settle_cash_basis(session, company_id, user_id, [doc_id], refund_date)
 
 
 async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float, target_rate: float, currency: str) -> None:
@@ -2029,6 +2054,7 @@ async def _create_for_note_application(session, *, company_id, user_id, doc_id: 
         metadata_={"trigger": f"{kind}.applied", "doc_id": doc_id, f"{kind}_id": note_id},
         extra={"settles": [note_id]},
     )
+    await settle_cash_basis(session, company_id, user_id, [doc_id, note_id], payment_date)
 
 
 def bill_line_kind(line: dict) -> str:
@@ -2338,17 +2364,19 @@ async def create_for_landed_capitalisation(
 def _bill_debit_parts(doc: dict) -> list[tuple[int | AccountRole | str, _Dec]]:
     """What a bill's entry debits, in the document's currency: each line it charges for (by
     line index) at its amount less its share of the discount, the tax (on the input tax role,
-    or the account a code names for itself), and the shipping."""
+    the pending input tax role for a cash-basis code, or the account a code names for itself),
+    and the shipping."""
     currency = doc.get("currency", "USD")
     parts: list[tuple[int | AccountRole | str, _Dec]] = [
         (index, line_total - discount)
         for index, (line_total, discount, _tax) in enumerate(bill_line_charges(doc)) if line_total > 0]
     # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
     # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets.
-    # A code naming its own account (a perception paid) is debited there (_tax_by_account).
+    # A cash-basis code's tax waits on the pending input tax role, and a code naming its own
+    # account (a perception paid) is debited there (_tax_by_target).
     tax_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency) if doc.get("line_items") else _Dec(0)
     if tax_d > 0:
-        own = _tax_by_account(doc)
+        own = _tax_by_target(doc, R.TAX_INPUT_PENDING)
         rest = tax_d - sum(own.values(), _Dec(0))
         parts += [*([(R.TAX_INPUT, rest)] if rest else []), *own.items()]
     # Doc-level shipping on a bill is inbound freight: debit the freight clearing account.
@@ -2860,7 +2888,7 @@ def _bill_bases(doc: dict, built) -> list:
     kept = 1 if any(R.TAX_WITHHELD_PAYABLE.value in (e.get("account_roles") or []) for e in entries) else 0
     charged_lines = len(debits) - pair - kept
     return [*({index + 1: d} if index is not None
-              else _line_tax_basis(doc) if R.TAX_INPUT.value in (e.get("account_roles") or [])
+              else _line_tax_basis(doc) if {R.TAX_INPUT.value, R.TAX_INPUT_PENDING.value} & set(e.get("account_roles") or [])
               or "account_roles" not in e
               else goods or HEADER
               for index, e, d in zip(sources[:charged_lines], entries, debits[:charged_lines])),
@@ -3336,11 +3364,12 @@ async def void_supplier_return(session, *, company_id, user_id, doc_id: str, ret
 # fulfillment COGS adjustment (cogs-adj:{cycle_tag}), and the COGS an invoice
 # booked at fulfillment before COGS moved into the finalize JE (fulfill,
 # fulfill-{cycle}), which no flow posts or reverses any more, and the withholding
-# correction of an upgraded bill (wht-fix:{n}). These are what a
+# correction of an upgraded bill (wht-fix:{n}), and the moves of cash-basis tax
+# from pending to due (cashbasis:{n}, cashcutoff:{n}). These are what a
 # doc void or revert to draft reverses and an unvoid restores. Settlement and
 # stock-movement JEs (payments, credit-note applications, receiving, landed
 # cost, returns) are not recognition: they reverse through their own flows.
-_RECOGNITION_FAMILIES = ("fin", "bill", "cogs-backfill", "cogs-adj", "wht-fix")
+_RECOGNITION_FAMILIES = ("fin", "bill", "cogs-backfill", "cogs-adj", "wht-fix", "cashbasis", "cashcutoff")
 _FULFILLMENT_COGS = re.compile(r"fulfill(?:-\d+)?")
 # The entries of a bill's own receipts and returns to the supplier: the goods, the landed
 # cost the receipts capitalised and the returns expensed, and the returns' tax reversed when

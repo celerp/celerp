@@ -9387,6 +9387,8 @@
   "tax.withholding_correction_first": "Registra prima la correzione della ritenuta della fattura {bill}, poi emetti la nota di credito del fornitore.",
   "tax.withholding_correction_not_needed": "{document} non ha alcuna correzione della ritenuta da registrare. Serve solo a una fattura emessa prima dei codici d'imposta con ritenuta.",
   "tax.withholding_correction_none": "{document} non ha alcuna correzione della ritenuta da annullare.",
+  "tax.cash_basis_none_pending": "Nessuna imposta per cassa in sospeso al {date}.",
+  "tax.cash_basis_none_due": "Niente da registrare: nessun documento ha imposta per cassa in sospeso oltre la sua data limite.",
   "page.withholding_corrections": "Correzioni della ritenuta",
   "tax.corrections_hint": "Le fatture passive precedenti ai codici imposta registravano la ritenuta come minore IVA a credito. Seleziona le fatture, scegli una data in un periodo aperto e registra le correzioni: ciascuna sposta la ritenuta dall'IVA a credito alle ritenute da versare. Annulla riporta una fattura corretta in questo elenco.",
   "tax.corrections_post": "Registra correzioni",

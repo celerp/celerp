@@ -521,7 +521,8 @@
     "query:skus": "Comma-separated list of exact stock keeping units to include.",
     "query:sort": "Field or supported sort key used to order the result.",
     "query:source": "Connected store platform, for example shopify or woocommerce. Keeps only items linked to that store.",
-    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
+    "query:tax_codes": "Comma-separated tax code ids; keeps only items carrying any of them."
   },
   "GET /items/{entity_id}": {
     "path:entity_id": "Identifier of the requested Celerp record."
@@ -558,7 +559,8 @@
     "query:skus": "Comma-separated list of exact stock keeping units to include.",
     "query:sort": "Field or supported sort key used to order the result.",
     "query:source": "Connected store platform, for example shopify or woocommerce. Keeps only items linked to that store.",
-    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
+    "query:tax_codes": "Comma-separated tax code ids; keeps only items carrying any of them."
   },
   "GET /items/field-values": {
     "query:field": "Categorical inventory field whose distinct values should be returned."
@@ -585,7 +587,8 @@
     "query:skus": "Comma-separated list of exact stock keeping units to include.",
     "query:sort": "Field or supported sort key used to order the result.",
     "query:source": "Connected store platform, for example shopify or woocommerce. Keeps only items linked to that store.",
-    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
+    "query:tax_codes": "Comma-separated tax code ids; keeps only items carrying any of them."
   },
   "GET /ledger": {
     "query:after": "Event id to read from: returns the page of events just newer than this one.",
@@ -1759,5 +1762,20 @@
   },
   "POST /accounting/reconciliation/bank/{bank_id}/withdraw-question": {
     "path:bank_id": "Identifier of the bank or card account."
+  },
+  "GET /settings/taxes/rate-review/{operation_id}": {
+    "path:operation_id": "Identifier of the tax list update whose suggested item rate changes are reviewed."
+  },
+  "POST /settings/taxes/rate-review/{operation_id}/apply": {
+    "path:operation_id": "Identifier of the tax list update whose suggested item rate changes are reviewed."
+  },
+  "POST /settings/taxes/rate-review/{operation_id}/undo": {
+    "path:operation_id": "Identifier of the tax list update whose suggested item rate changes are reviewed."
+  },
+  "POST /settings/taxes/withholding-corrections/{doc_id}": {
+    "path:doc_id": "Identifier of the bill whose withholding correction is posted or undone."
+  },
+  "POST /settings/taxes/withholding-corrections/{doc_id}/undo": {
+    "path:doc_id": "Identifier of the bill whose withholding correction is posted or undone."
   }
 }
