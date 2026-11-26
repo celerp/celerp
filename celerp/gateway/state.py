@@ -553,9 +553,8 @@ def load_commercial_context() -> None:
         set_commercial_context(cached)
 
 
-# The store file's identity and the stored context the UI process last mirrored.
+# The identity of the store file the UI process last mirrored.
 _mirrored_store_stamp: tuple | None = None
-_mirrored_context: dict | None = None
 
 
 def mirror_stored_commercial_context() -> None:
@@ -565,13 +564,13 @@ def mirror_stored_commercial_context() -> None:
     The UI runs in its own process and never receives the relay push; the API
     persists every context it accepts (``_persist_commercial_context``), so the
     UI reads that store. The file is re-read only when its identity (inode,
-    size, mtime) changes, and the held model is replaced only when the stored
-    context itself changed, so a write of an unrelated config key keeps the
-    model. A stored context that fails validation, or none at all, reads as the
+    size, mtime) changes, and every re-read rebuilds the model from what the
+    store holds, so nothing that cleared the model in between can outlast a
+    store change. A stored context that fails validation, or none at all, reads as the
     neutral model: a direct install, never a fabricated partner.
     """
     import os
-    global _commercial_context, _mirrored_store_stamp, _mirrored_context
+    global _commercial_context, _mirrored_store_stamp
     try:
         st = os.stat(_commercial_store_path())
         stamp = (st.st_ino, st.st_size, st.st_mtime_ns)
@@ -581,9 +580,6 @@ def mirror_stored_commercial_context() -> None:
         return
     _mirrored_store_stamp = stamp
     stored = _read_stored_commercial_context() if stamp is not None else None
-    if stored == _mirrored_context:
-        return
-    _mirrored_context = stored
     _commercial_context = (_validated_commercial_shape(stored) or {}) if stored is not None else {}
 
 

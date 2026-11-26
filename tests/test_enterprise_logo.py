@@ -146,6 +146,21 @@ async def test_an_invalid_stored_context_reads_as_a_direct_install(ui_client):
 
 
 @pytest.mark.asyncio
+async def test_a_changed_store_rebuilds_a_model_cleared_in_process(ui_client, monkeypatch):
+    """Whenever the store changes, the mark follows what it holds, even when the same
+    partner context comes back after the model was cleared in between (an instance
+    change clears it)."""
+    import celerp.gateway.state as gw_state
+    _store(_partner(1))
+    assert await _login_marks(ui_client) == _ENTERPRISE
+    monkeypatch.setattr(gw_state, "_instance_id", "instance-a")
+    gw_state.set_instance_id("instance-b")
+    _store(None)
+    _store(_partner(1))
+    assert await _login_marks(ui_client) == _ENTERPRISE
+
+
+@pytest.mark.asyncio
 async def test_every_mark_is_served(ui_client):
     for path in sorted(_STANDARD | _ENTERPRISE):
         r = await ui_client.get(path)
