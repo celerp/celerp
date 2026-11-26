@@ -62,6 +62,7 @@ class FakeCloud:
         self.max_in_model = 0
         self.arrived: list[str] = []           # identities in the order the model started them
         self.status_asks: list[list[str]] = []
+        self.finish_reason: str | None = None  # why the model stopped, when the service names it
 
     # ── wiring ────────────────────────────────────────────────────────────────
     async def handle(self, request: httpx.Request) -> httpx.Response:
@@ -118,7 +119,8 @@ class FakeCloud:
         question = body.get("reservation_id") or body.get("operation_id")
         return httpx.Response(200, json={
             "message": self.replies[identity], "model_used": "test-model", "usage": {"credits": 1},
-            "reservation_id": question, "remaining": 9, "operation_credits": 1, "replayed": replayed})
+            "reservation_id": question, "remaining": 9, "operation_credits": 1, "replayed": replayed,
+            **({} if self.finish_reason is None else {"finish_reason": self.finish_reason})})
 
     def _status(self, ids: list[str]) -> httpx.Response:
         self.status_asks.append(list(ids))

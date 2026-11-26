@@ -577,7 +577,8 @@ def setup_ui_routes(app) -> None:
         parts = (
             user_bubble,
             _msg_bubble("ai", result.get("answer", ""), help_pages=result.get("help_pages"),
-                        downloads=result.get("downloads"), lang=lang),
+                        downloads=result.get("downloads"), lang=lang,
+                        extra=_cut_notice(result, conversation_id, lang, offer_continue=True)),
             *groups,
         )
         return _reply(parts, done=True, question_id=question_id, asked_again=asked_again)
@@ -1166,6 +1167,17 @@ def _ask_again(conversation_id: str, question_id: str, query: str, file_ids: lis
                lang: str) -> FT:
     """Ask a question that failed once more, as the same question."""
     return _resend(conversation_id, question_id, query, file_ids, t("ai.ask_again", lang), "ai-msg__again")
+
+
+def _cut_notice(entry: dict, conversation_id: str, lang: str, *, offer_continue: bool) -> FT | None:
+    """Under a reply the AI service cut at its length limit: the notice, and Continue,
+    which asks the assistant to carry on as a new question through the chat's own send.
+    Continue carries on from the end of the conversation, so only its last reply offers it."""
+    if not entry.get("cut"):
+        return None
+    carry_on = [_resend(conversation_id, str(uuid.uuid4()), t("ai.continue_request", lang), None,
+                        t("btn.continue", lang), "ai-msg__continue")] if offer_continue else []
+    return Div(P(t("ai.reply_cut", lang), cls="ai-msg__notice"), *carry_on, cls="ai-msg__cut")
 
 
 def _ask_as_new(conversation_id: str, query: str, file_ids: list[str] | None, lang: str) -> FT:
@@ -2148,7 +2160,7 @@ def _message_parts(entry: dict, conversation_id: str, asked: dict | None, lang: 
                                 asked.get("content") or "", asked.get("file_ids"), lang)
     out = [_msg_bubble("user" if role == "user" else "ai", text, error=error,
                        help_pages=entry.get("help_pages"), downloads=entry.get("downloads"),
-                       lang=lang, extra=again)]
+                       lang=lang, extra=again or _cut_notice(entry, conversation_id, lang, offer_continue=offer_again))]
     actions = entry.get("pending_actions") or []
     if actions:
         out.append(_action_group(conversation_id, str(entry.get("id", "")), actions, lang))

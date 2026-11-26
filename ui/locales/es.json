@@ -6838,6 +6838,8 @@
   "ai.stop": "Detener",
   "ai.question_stopped": "Ha detenido esta pregunta. Vuelva a solicitar su continuación para reanudarla. Sigue contando como una sola pregunta.",
   "ai.question_interrupted": "Esta pregunta se detuvo cuando Celerp se reinició. Vuelva a solicitar su continuación para reanudarla. Sigue contando como una sola pregunta.",
+  "ai.reply_cut": "Esta respuesta alcanzó el límite de longitud y se cortó.",
+  "ai.continue_request": "Continúa tu última respuesta desde donde se cortó.",
   "ai.job_stopped": "Se detuvo tras leer {done} de {total} archivos. Continúe para leer los restantes.",
   "ai.err_read_refused": "El asistente no tuvo permiso para leer los datos que necesita esta pregunta. Cuando tenga acceso a ellos, puede formularla como una pregunta nueva, que contará como una pregunta adicional.",
   "th.unconfirmed": "Aún sin confirmar",

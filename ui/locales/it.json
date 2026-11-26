@@ -6838,6 +6838,8 @@
   "ai.stop": "Interrompi",
   "ai.question_stopped": "Hai interrotto questa domanda. Chiedi di nuovo per riprenderla. Conta comunque come una sola domanda.",
   "ai.question_interrupted": "Questa domanda si è interrotta al riavvio di Celerp. Chiedi di nuovo per riprenderla. Conta comunque come una sola domanda.",
+  "ai.reply_cut": "Questa risposta ha raggiunto il limite di lunghezza ed è stata troncata.",
+  "ai.continue_request": "Continua la tua ultima risposta dal punto in cui è stata troncata.",
   "ai.job_stopped": "Interrotto dopo aver letto {done} file su {total}. Riprendi per leggere i rimanenti.",
   "ai.err_read_refused": "L'assistente non ha avuto l'autorizzazione a leggere i dati necessari a questa domanda. Quando avrai accesso, potrai porla come una nuova domanda, che conterà come una domanda aggiuntiva.",
   "th.unconfirmed": "Non ancora confermato",

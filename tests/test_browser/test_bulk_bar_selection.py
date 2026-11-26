@@ -67,7 +67,8 @@ _BULK_ACTIONS = {
     # Opens the new write-off instead of answering on the list.
     "/api/items/bulk/write-off": ({}, "create_writeoff", {"id": "list:none"}),
 }
-# Run from a connected store's own menu, and answered by a full page refresh.
+# Run from a connected store's own menu, and answered by a full page refresh
+# (test_a_store_action_that_worked_says_so_after_the_page_reloads).
 _STORE_ACTIONS = "/api/items/bulk/channel-sync/{platform}/{action}"
 # Where an action can answer: the bar's result line, a toast, or the page's error banner.
 _OUTCOME = "#bulk-action-result .flash:visible, #toast-container .toast__msg:visible, #global-ui-error:visible"
@@ -138,6 +139,20 @@ def test_a_bulk_action_that_worked_says_so_after_the_bar_hides(page, ui_server, 
     outcome = page.locator(_OUTCOME)
     expect(outcome).to_have_count(1)
     assert outcome.inner_text().strip()
+    expect(page.locator("#toast-container .toast--success")).to_be_visible()
+
+
+def test_a_store_action_that_worked_says_so_after_the_page_reloads(page, ui_server, bulk_items):
+    url = _STORE_ACTIONS.format(platform="teststore", action="publish")
+    _tick_two(page, ui_server, bulk_items)
+    with patch("ui.routes.inventory_channels.channel_for", return_value={"id": "teststore", "label": "Test Store"}), \
+            patch("ui.api_client.set_connector_item_sync", new=AsyncMock(return_value={"updated": 2})):
+        with page.expect_navigation():  # the page reloads itself
+            page.evaluate(_POST_TICKED_JS, [url, {}])
+        page.wait_for_load_state("load")
+    outcome = page.locator(_OUTCOME)
+    expect(outcome).to_have_count(1)
+    assert "Test Store" in outcome.inner_text()
     expect(page.locator("#toast-container .toast--success")).to_be_visible()
 
 

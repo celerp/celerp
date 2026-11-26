@@ -550,16 +550,23 @@ async def find_question(
     return job, asked, None
 
 
-def answer_links(pages: list[str] | None, files: list[str]) -> list[dict]:
+def answer_links(pages: list[str] | None, files: list[str], *, cut: bool = False) -> list[dict]:
     """The record of what an answer links to: the help pages it cites (when it searched
-    help) and the files it offers. Nothing when it links to neither.
+    help) and the files it offers, and that it was cut at the length limit. Nothing when
+    none of these holds.
 
     The record has no ``name``, ``expires_at`` or ``error``, so ``tool_names``,
     ``pending_actions`` and ``message_failure`` all ignore it.
     """
     record = {**({} if pages is None else {"help_pages": list(pages)}),
-              **({"downloads": list(files)} if files else {})}
+              **({"downloads": list(files)} if files else {}),
+              **({"cut": True} if cut else {})}
     return [record] if record else []
+
+
+def answer_cut(tools_called: list | None) -> bool:
+    """True for a stored answer the service cut at its length limit."""
+    return any(isinstance(item, dict) and item.get("cut") is True for item in tools_called or [])
 
 
 def help_pages(tools_called: list | None) -> list[str] | None:

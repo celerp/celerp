@@ -249,3 +249,26 @@ async def test_a_stopped_question_sends_no_further_step_and_ask_again_continues_
     assert state["state"] == "answered"
     assert state["message"]["content"] == "Found 2 suppliers."
     assert cloud.executions[str(qid)] == 1
+
+
+@pytest.mark.parametrize("finish_reason, cut", [("length", True), ("stop", False), (None, False)])
+async def test_a_reply_cut_at_the_length_limit_is_stored_as_cut(client, owner, cloud, finish_reason, cut):
+    """The service names why the model stopped. A reply that stopped at the length limit
+    is stored as cut, and the question's state and the thread both say so; a reply that
+    ended by itself, or one from a service that names no reason, is never marked."""
+    token, *_ = owner
+    conv = await _conversation(client, token)
+    qid = uuid.uuid4()
+    cloud.finish_reason = finish_reason
+    cloud.script = lambda identity, body: answer("The first half of a long")
+
+    assert (await _ask(client, token, conv, qid)).status_code == 202
+    state = await _settled(client, token, conv, qid)
+    assert state["message"]["content"] == "The first half of a long"
+    assert state["message"]["cut"] is cut
+    r = await client.get(f"/ai/conversations/{conv}", headers=AUTH(token))
+    assert r.status_code == 200, r.text
+    assert [m["cut"] for m in r.json()["messages"]] == [False, cut]
+    again = await _ask(client, token, conv, qid)
+    assert again.status_code == 200, again.text
+    assert again.json()["cut"] is cut

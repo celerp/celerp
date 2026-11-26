@@ -6838,6 +6838,8 @@
   "ai.stop": "Stoppen",
   "ai.question_stopped": "Sie haben diese Frage angehalten. Fragen Sie erneut nach, um sie fortzusetzen. Sie zählt weiterhin als eine Frage.",
   "ai.question_interrupted": "Diese Frage wurde beim Neustart von Celerp angehalten. Fragen Sie erneut nach, um sie fortzusetzen. Sie zählt weiterhin als eine Frage.",
+  "ai.reply_cut": "Diese Antwort hat die Längenbegrenzung erreicht und wurde abgeschnitten.",
+  "ai.continue_request": "Setze deine letzte Antwort an der Stelle fort, an der sie abgeschnitten wurde.",
   "ai.job_stopped": "Nach dem Lesen von {done} von {total} Dateien angehalten. Setzen Sie den Auftrag fort, um die übrigen Dateien zu lesen.",
   "ai.err_read_refused": "Der Assistent durfte die Daten, die diese Frage benötigt, nicht lesen. Sobald Sie Zugriff darauf haben, können Sie sie als neue Frage stellen; das zählt als eine weitere Frage.",
   "th.unconfirmed": "Noch nicht bestätigt",

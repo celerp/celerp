@@ -74,6 +74,9 @@ class ModelResult:
     # A first turn's whole charge for its operation, named by the service on every
     # reply to it (a retry included); None from a service that does not name it.
     operation_credits: int | None = None
+    # Why the model stopped, as the service names it ("length": the reply was cut at
+    # the length limit); None from a service that does not name it.
+    finish_reason: str | None = None
 
 
 # Refusals the caller shows as their own states, raised as an HTTPException
@@ -309,6 +312,7 @@ async def complete(
             reservation_id=data.get("reservation_id"),
             remaining=data.get("remaining"),
             operation_credits=_count(data.get("operation_credits")),
+            finish_reason=reason if isinstance(reason := data.get("finish_reason"), str) else None,
         )
 
     detail = _error_detail(resp)

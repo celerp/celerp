@@ -6838,6 +6838,8 @@
   "ai.stop": "Arrêter",
   "ai.question_stopped": "Vous avez arrêté cette question. Demandez à nouveau de la poursuivre. Elle compte toujours comme une seule question.",
   "ai.question_interrupted": "Cette question s'est arrêtée lors du redémarrage de Celerp. Demandez à nouveau de la poursuivre. Elle compte toujours comme une seule question.",
+  "ai.reply_cut": "Cette réponse a atteint la limite de longueur et a été coupée.",
+  "ai.continue_request": "Continue ta dernière réponse à partir de l'endroit où elle a été coupée.",
   "ai.job_stopped": "Arrêt après la lecture de {done} fichiers sur {total}. Reprenez pour lire les fichiers restants.",
   "ai.err_read_refused": "L'assistant n'a pas été autorisé à lire les données dont cette question a besoin. Dès que vous y aurez accès, vous pourrez la poser comme une nouvelle question, qui comptera comme une question supplémentaire.",
   "th.unconfirmed": "Pas encore confirmé",

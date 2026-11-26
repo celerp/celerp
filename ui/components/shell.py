@@ -361,8 +361,9 @@ document.addEventListener('htmx:afterRequest', function(e) {
   if (!hdr) return;
   try {
     var obj = JSON.parse(hdr);
-    // A toast sent with a redirect is shown on the page the redirect opens, not on this one.
-    if (obj.celerpToast && e.detail.xhr.getResponseHeader('HX-Redirect')) _celerpKeepToast(obj.celerpToast);
+    // A toast sent with a redirect or a page refresh is shown on the page that opens, not on this one.
+    var leaves = e.detail.xhr.getResponseHeader('HX-Redirect') || e.detail.xhr.getResponseHeader('HX-Refresh');
+    if (obj.celerpToast && leaves) _celerpKeepToast(obj.celerpToast);
     else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist, obj.celerpToast.action);
     if (obj.celerpRestoreCell) {
       // A refused change made in an always-open control shows the saved value again

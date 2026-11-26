@@ -6838,6 +6838,8 @@
   "ai.stop": "Dừng",
   "ai.question_stopped": "Bạn đã dừng câu hỏi này. Hãy hỏi lại để tiếp tục. Câu hỏi vẫn chỉ được tính là một lượt.",
   "ai.question_interrupted": "Câu hỏi này đã dừng khi Celerp khởi động lại. Hãy hỏi lại để tiếp tục. Câu hỏi vẫn chỉ được tính là một lượt.",
+  "ai.reply_cut": "Câu trả lời này đã đạt giới hạn độ dài và bị cắt ngang.",
+  "ai.continue_request": "Hãy tiếp tục câu trả lời vừa rồi từ chỗ bị cắt ngang.",
   "ai.job_stopped": "Đã dừng sau khi đọc {done} trong tổng số {total} tệp. Tiếp tục để đọc các tệp còn lại.",
   "ai.err_read_refused": "Trợ lý không được phép đọc dữ liệu mà câu hỏi này cần. Khi bạn có quyền truy cập dữ liệu đó, bạn có thể gửi lại dưới dạng câu hỏi mới và sẽ bị tính thêm một lượt hỏi.",
   "th.unconfirmed": "Chưa được xác nhận",

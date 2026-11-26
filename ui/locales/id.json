@@ -6838,6 +6838,8 @@
   "ai.stop": "Hentikan",
   "ai.question_stopped": "Anda menghentikan pertanyaan ini. Ajukan kembali untuk melanjutkannya. Pertanyaan ini tetap dihitung sebagai satu pertanyaan.",
   "ai.question_interrupted": "Pertanyaan ini terhenti ketika Celerp dimulai ulang. Ajukan kembali untuk melanjutkannya. Pertanyaan ini tetap dihitung sebagai satu pertanyaan.",
+  "ai.reply_cut": "Balasan ini mencapai batas panjang dan terpotong.",
+  "ai.continue_request": "Lanjutkan balasan terakhir Anda dari bagian yang terpotong.",
   "ai.job_stopped": "Terhenti setelah membaca {done} dari {total} berkas. Lanjutkan untuk membaca sisanya.",
   "ai.err_read_refused": "Asisten tidak diizinkan membaca data yang diperlukan pertanyaan ini. Setelah Anda memiliki akses ke data tersebut, Anda dapat mengajukannya sebagai pertanyaan baru, yang dihitung sebagai satu pertanyaan tambahan.",
   "th.unconfirmed": "Belum Dikonfirmasi",

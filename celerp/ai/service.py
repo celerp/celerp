@@ -58,6 +58,7 @@ log = logging.getLogger(__name__)
 
 MAX_MODEL_TURNS = 6            # model responses per run (local bound)
 MAX_TOOL_CALLS_PER_TURN = 5
+CUT_AT_LENGTH = "length"  # the finish_reason of a reply that stopped at the length limit
 MAX_TOOL_CALLS_PER_RUN = 12
 MAX_TOOL_CALL_ID_CHARS = 128
 MAX_ARGUMENT_BYTES = 16 * 1024  # per tool call, serialized arguments
@@ -111,6 +112,7 @@ class AgentResult:
     downloads: list[str] = field(default_factory=list)  # links to the files the answer offers
     error_code: str | None = None  # why the run failed; see RETRYABLE_ERRORS
     charge_known: bool = False   # the service named the question's whole charge
+    cut: bool = False            # the answer stopped at the service's length limit
 
 
 @dataclass
@@ -883,6 +885,7 @@ async def _agent_loop(
             return tally.result(
                 answer=content or t("ai.empty_answer"), model_used=model_used,
                 tools_called=tools_called, pending_actions=[],
+                cut=bool(content) and result.get("finish_reason") == CUT_AT_LENGTH,
             )
 
         # Over the per-turn or per-run cap: execute what fits, answer the rest
@@ -1060,7 +1063,7 @@ async def _model_turn(
             raise
         stored = {"message": result.message, "reservation_id": result.reservation_id,
                   "model_used": result.model_used, "credits": int((result.usage or {}).get("credits") or 0),
-                  "operation_credits": result.operation_credits}
+                  "operation_credits": result.operation_credits, "finish_reason": result.finish_reason}
         await journal.ended(key, "done", stored)
     tally.charge(stored["credits"], stored["operation_credits"])
     return stored
