@@ -179,7 +179,7 @@ async def test_a_supplier_credit_note_takes_the_purchasing_taxes(client):
     def note(*lines) -> dict:
         return {"doc_type": "debit_note", "original_doc_id": bill.json()["id"], "line_items": list(lines)}
 
-    for code, rate in (("Input VAT", 10.0), ("WHT 3%", -3.0)):
+    for code, rate in (("Input VAT", 10.0), ("WHT 3%", 3.0)):
         r = await client.post("/docs", headers=h, json=note(line(code, rate)))
         assert r.status_code == 200, (code, r.text)
     r = await client.post("/docs", headers=h, json=note(line("Output VAT", 7.0)))
