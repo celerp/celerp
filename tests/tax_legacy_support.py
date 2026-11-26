@@ -64,29 +64,34 @@ async def _emit_je(session, auth, doc_id: str, ref: str, entries: list[dict]) ->
 
 
 async def old_bill(session, auth, *, doc_type: str = "bill", status: str = "final",
-                   original_doc_id: str | None = None) -> str:
+                   original_doc_id: str | None = None, fund_id: str | None = None) -> str:
     """A supplier document in the earlier shape: input VAT 7% 70 and WHT 3% as rate -3 amount -30 on
     one line of 1000, tax 40, total 1040. A final one carries the entry that version posted
-    (expense 1000 and input 40 against payable 1040; mirrored for a supplier note)."""
+    (expense 1000 and input 40 against payable 1040; mirrored for a supplier note). ``fund_id``
+    puts the line, and so every line of its entry, in that fund."""
     from celerp.accounting_roles import AccountRole as R
     from celerp.services.auto_je import _line
 
+    from celerp.services.journal_accounts import hold_fund_ledger
+
+    await hold_fund_ledger(session, auth["company_id"])  # before the document row: its entry may name a fund
     ref = f"OLD-{doc_type.upper()}-{uuid.uuid4().hex[:6]}"
     doc_id = f"doc:{ref}"
     data = {"doc_type": doc_type, "status": status, "ref_id": ref, "contact_id": SUPPLIER, "issue_date": ISSUE,
             "currency": "USD", "subtotal": G, "tax": 40.0, "total": 1040.0, "amount_paid": 0.0,
             "amount_outstanding": 1040.0 if status == "final" else 0.0,
             "line_items": [{"description": "Service", "quantity": 1, "unit_price": G, "line_total": G,
-                            "taxes": [_old_tax("Input VAT 7%", 7.0, 0), _old_tax("WHT 3%", -3.0, 1)]}]}
+                            "taxes": [_old_tax("Input VAT 7%", 7.0, 0), _old_tax("WHT 3%", -3.0, 1)],
+                            **({"fund_id": fund_id} if fund_id else {})}]}
     if original_doc_id:
         data["original_doc_id"] = original_doc_id
     await _emit_doc(session, auth, doc_id, data)
     if status == "final":
         debit = doc_type == "bill"
-        await _emit_je(session, auth, doc_id, ref, [
+        await _emit_je(session, auth, doc_id, ref, [{**e, **({"fund_id": fund_id} if fund_id else {})} for e in [
             _line("6950", R.GENERAL_EXPENSE, **{"debit" if debit else "credit": G}),
             _line("1150", R.TAX_INPUT, **{"debit" if debit else "credit": 40.0}),
-            _line("2110", R.PAYABLE, **{"credit" if debit else "debit": 1040.0})])
+            _line("2110", R.PAYABLE, **{"credit" if debit else "debit": 1040.0})]])
     await session.commit()
     return doc_id
 

@@ -10,7 +10,7 @@ import uuid
 
 import pytest
 
-from tax_money_support import code, codes, company, doc, finalized, get, line, ok, pay, post, roles
+from tax_money_support import code, codes, company, doc, finalized, get, line, ok, pay, post, role_funds, roles
 
 pytestmark = pytest.mark.asyncio
 
@@ -121,3 +121,44 @@ async def test_cash_basis_cutoff_catchup_confirmed(client, session):
     assert empty["documents"] == [] and "No pending cash-basis tax at" in str(empty)
     r = await _confirm(client, fresh, empty["fingerprint"])
     assert r.status_code == 422, r.text
+
+
+async def test_cash_basis_moves_keep_each_fund(client, session):
+    """With funds on, each fund's pending tax moves with that fund's share of what is still
+    owed, so every fund clears on its own: a bill whose two lines sit in two funds, paid in part,
+    the payment voided, then paid in full; and an old invoice whose remainder posts at the cut-off."""
+    from test_fund_movements import _setup
+
+    buyer, caja = await _cash_company(client, session, "purchase")
+    f = await _setup(client, buyer)
+    bill = await finalized(client, buyer, await doc(client, buyer, "bill", [
+        {**line(1000.0, caja), "fund_id": f["R"]}, {**line(333.33, caja), "fund_id": f["U1"]}]))
+    issued = {f["R"]: 210.0, f["U1"]: 70.0}
+
+    async def pending_follows_owed():
+        state = await get(client, buyer, bill["id"])
+        share = state["amount_outstanding"] / state["total"]
+        held = await role_funds(session, buyer, "tax_input_pending")
+        assert held.keys() <= {("tax_input_pending", fund) for fund in issued}
+        for fund, tax in issued.items():
+            assert held.get(("tax_input_pending", fund), 0) == pytest.approx(tax * share, abs=0.01)
+
+    await pending_follows_owed()
+    ok(await pay(client, buyer, bill["id"], 300.0))
+    await pending_follows_owed()
+    ok(await post(client, buyer, f"/docs/{bill['id']}/void-payment", {"payment_index": 0}))
+    await pending_follows_owed()
+    ok(await pay(client, buyer, bill["id"], (await get(client, buyer, bill["id"]))["amount_outstanding"]))
+    assert await role_funds(session, buyer, "tax_input_pending") == {}
+    assert await role_funds(session, buyer, "tax_input") == {("tax_input", fund): tax for fund, tax in issued.items()}
+
+    seller, sale_caja = await _cash_company(client, session)
+    g = await _setup(client, seller)
+    old = await finalized(client, seller, await doc(client, seller, "invoice", [
+        {**line(1000.0, sale_caja), "fund_id": g["R"]}, {**line(500.0, sale_caja), "fund_id": g["U1"]}],
+        issue_date="2024-03-01"))
+    ok(await pay(client, seller, old["id"], 605.0, date="2024-06-01"))
+    ok(await _confirm(client, seller, (await _preview(client, seller))["fingerprint"]))
+    assert await role_funds(session, seller, "tax_output_pending") == {}
+    assert await role_funds(session, seller, "tax_output") == {("tax_output", g["R"]): -210.0,
+                                                               ("tax_output", g["U1"]): -105.0}

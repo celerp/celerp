@@ -6,8 +6,9 @@ At issue its tax posts to the pending tax role of the document's side (auto_je._
 After every allocation that changes what the document still owes (a payment, a credit note
 applied, a refund, a void of any of them), ``settle`` moves the pending tax to the side's tax
 role so that what stays pending is the tax share of what is still outstanding. Each move is its
-own entry of the document (``cashbasis:{n}``), sized from the ledger, so it never drifts and a
-void needs no reversal of its own: the next settle puts it right. Voiding the document reverses
+own entry of the document (``cashbasis:{n}``), sized from the ledger fund by fund (each fund's
+pending tax against what its issue put there, so every fund clears on its own), so it never
+drifts and a void needs no reversal of its own: the next settle puts it right. Voiding the document reverses
 the moves with its other entries (a recognition family).
 
 At the cut-off the country pack declares (``cash_basis_cutoff``: month, day and years after the
@@ -46,12 +47,17 @@ def _roles(state: dict) -> tuple[R, R]:
     return _ROLES[doc_side(state.get("doc_type"))]
 
 
-async def _pending(session, company_id, doc_id: str, pending: R) -> tuple[Decimal, Decimal, bool]:
+Funds = dict[str | None, Decimal]
+
+
+async def _pending(session, company_id, doc_id: str, pending: R) -> tuple[Funds, Funds, bool]:
     """From the document's posted entries: what its pending tax role holds now and what its
-    issue put there (moves left out), each as a debit balance, and whether a cut-off entry posted."""
+    issue put there (moves left out), each as a debit balance by fund (None: no fund), and
+    whether a cut-off entry posted."""
     settings = await current_settings(session, company_id)
     prefix = f"je:auto:{doc_id}:"
-    now = issued = Decimal(0)
+    now: Funds = {}
+    issued: Funds = {}
     cut = False
     for row in (await session.execute(select(Projection).where(
             Projection.company_id == company_id, Projection.entity_type == "journal_entry",
@@ -63,8 +69,10 @@ async def _pending(session, company_id, doc_id: str, pending: R) -> tuple[Decima
         for e in row.state.get("entries") or []:
             if pending.value in line_roles(settings, e):
                 net = to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)
-                now += net
-                issued += net if family not in (MOVE, CUTOFF) else 0
+                fund = e.get("fund_id") or None
+                now[fund] = now.get(fund, Decimal(0)) + net
+                if family not in (MOVE, CUTOFF):
+                    issued[fund] = issued.get(fund, Decimal(0)) + net
     return now, issued, cut
 
 
@@ -78,26 +86,28 @@ def _targets(state: dict) -> dict[str | None, Decimal]:
     return out
 
 
-async def _move_lines(session, company_id, state: dict, amount: Decimal, currency: str) -> list[dict]:
-    """Lines taking ``amount`` (a debit balance) off the document's pending tax role onto where
-    the tax is due (_targets), in proportion."""
+async def _move_lines(session, company_id, state: dict, amounts: Funds, currency: str) -> list[dict]:
+    """Lines taking each fund's amount in ``amounts`` (a debit balance) off the document's
+    pending tax role onto where the tax is due (_targets), in proportion, every line in that fund."""
     pending, due = _roles(state)
     acc = await resolve_many(session, company_id, [pending, due])
     targets = _targets(state)
-    shares = allocate_pro_rata(abs(amount), list(targets.values()), currency)
-    debit = amount < 0
 
     def side(value: Decimal, is_debit: bool) -> dict:
         return {"debit": to_stored_float(value), "credit": 0.0} if is_debit else \
             {"debit": 0.0, "credit": to_stored_float(value)}
-    lines = [_line(acc[pending], pending, **side(abs(amount), debit))]
-    for account, share in zip(targets, shares):
-        lines.append(_line(acc[due], due, **side(share, not debit)) if account in (None, acc[due])
-                     else {"account": account, **side(share, not debit)})
+    lines = []
+    for fund, amount in amounts.items():
+        debit = amount < 0
+        tag = {"fund_id": fund} if fund else {}
+        lines.append({**_line(acc[pending], pending, **side(abs(amount), debit)), **tag})
+        for account, share in zip(targets, allocate_pro_rata(abs(amount), list(targets.values()), currency)):
+            lines.append({**(_line(acc[due], due, **side(share, not debit)) if account in (None, acc[due])
+                             else {"account": account, **side(share, not debit)}), **tag})
     return lines
 
 
-async def _post(session, company_id, user_id, doc_id: str, state: dict, family: str, amount: Decimal,
+async def _post(session, company_id, user_id, doc_id: str, state: dict, family: str, amounts: Funds,
                 day: str | None, idem: str = "", binding: str | None = None) -> str:
     currency = await company_currency(session, company_id)
     prefix = f"je:auto:{doc_id}:"
@@ -110,16 +120,16 @@ async def _post(session, company_id, user_id, doc_id: str, state: dict, family: 
         idem_create=idem or je_idempotency_key(doc_id, suffix, "c"),
         idem_posted=f"{idem}:p" if idem else je_idempotency_key(doc_id, suffix, "p"),
         memo=f"Cash-basis tax due for {doc_id}", ts=day,
-        entries=await _move_lines(session, company_id, state, amount, currency),
+        entries=await _move_lines(session, company_id, state, amounts, currency),
         metadata_={"trigger": f"doc.{family}", "source_doc": doc_id},
         extra={"binding": request_fingerprint(binding)} if binding else None)
     return f"{prefix}{suffix}"
 
 
 async def settle(session, company_id, user_id, doc_ids, day: str | None) -> None:
-    """Move each document's pending cash-basis tax to where it is due, so what stays pending is
-    its issue's pending tax times the share still outstanding (none once its cut-off posted),
-    dated ``day``. Reads the document after the allocation; a no-op when nothing moves."""
+    """Move each document's pending cash-basis tax to where it is due, so what stays pending in
+    each fund is that fund's issue pending tax times the share still outstanding (none once its
+    cut-off posted), dated ``day``. Reads the document after the allocation; a no-op when nothing moves."""
     currency = await company_currency(session, company_id)
     for doc_id in dict.fromkeys(d for d in doc_ids if d):
         row = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
@@ -128,9 +138,12 @@ async def settle(session, company_id, user_id, doc_ids, day: str | None) -> None
             continue
         now, issued, cut = await _pending(session, company_id, doc_id, _roles(state)[0])
         due, owed = amount_due(state), outstanding_balance(state)
-        target = Decimal(0) if cut or not due or owed is None else round_money(issued * owed / due, currency)
-        if round_money(now - target, currency):
-            await _post(session, company_id, user_id, doc_id, state, MOVE, now - target, day)
+        moves = {fund: held - (Decimal(0) if cut or not due or owed is None
+                               else round_money(issued.get(fund, Decimal(0)) * owed / due, currency))
+                 for fund, held in now.items()}
+        moves = {fund: amount for fund, amount in moves.items() if round_money(amount, currency)}
+        if moves:
+            await _post(session, company_id, user_id, doc_id, state, MOVE, moves, day)
 
 
 def _cutoff(settings: dict, issue_day: str) -> dt.date | None:
@@ -155,9 +168,11 @@ async def _due(session, company_id) -> list[dict]:
             continue
         pending = _roles(state)[0]
         now, _, cut = await _pending(session, company_id, row.entity_id, pending)
+        now = {fund: held for fund, held in now.items() if held}
         if cut or not now:
             continue
-        shown = -now if pending == R.TAX_OUTPUT_PENDING else now
+        total = sum(now.values(), Decimal(0))
+        shown = -total if pending == R.TAX_OUTPUT_PENDING else total
         out.append({"doc_id": row.entity_id, "doc_type": state.get("doc_type"),
                     "number": state.get("doc_number") or row.entity_id.removeprefix("doc:"),
                     "issue_date": state.get("issue_date"), "cutoff": cutoff.isoformat(),

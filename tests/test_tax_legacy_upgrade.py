@@ -14,8 +14,8 @@ from sqlalchemy import select
 
 from celerp.models.projections import Projection
 from tax_legacy_support import ledger_rows, old_bill, old_invoice, old_item, old_shape_company, upgrade
-from tax_money_support import (_key, doc, finalized, get, line, ok, pay, post, rebuild_divergence, roles,
-                               unbalanced_entries)
+from tax_money_support import (_key, doc, finalized, get, line, ok, pay, post, rebuild_divergence, role_funds,
+                               roles, unbalanced_entries)
 from test_company_settings_owners import _user_with_role
 
 _CORRECTIONS = "/settings/taxes/withholding-corrections"
@@ -130,6 +130,23 @@ async def test_legacy_wht_correction_entry_and_undo(client, session):
     assert (await post(client, auth, f"{_CORRECTIONS}/{bill}", {"date": "2026-09-01"})).status_code == 422
     ok(await post(client, auth, f"{_CORRECTIONS}/{bill}", {"date": "2026-11-05"}))
     assert any(f"{bill}:wht-fix:1" in k for k in await _journal(session, auth))
+    await _books_hold(session, auth)
+
+
+async def test_legacy_wht_correction_keeps_the_line_fund(client, session):
+    """With funds on, the correction moves the withholding within the fund of the line that
+    withheld it, as a bill finalized today books its withheld tax, and undo moves it back."""
+    from test_fund_movements import _setup
+
+    auth = await old_shape_company(session)
+    fund = (await _setup(client, auth))["R"]
+    bill = await old_bill(session, auth, fund_id=fund)
+    await upgrade(session, auth)
+    taxes = ("tax_input", "tax_withheld_payable")
+    ok(await post(client, auth, f"{_CORRECTIONS}/{bill}", {"date": "2026-10-15"}))
+    assert await role_funds(session, auth, *taxes) == {("tax_input", fund): 70.0, ("tax_withheld_payable", fund): -30.0}
+    ok(await post(client, auth, f"{_CORRECTIONS}/{bill}/undo"))
+    assert await role_funds(session, auth, *taxes) == {("tax_input", fund): 40.0}
     await _books_hold(session, auth)
 
 

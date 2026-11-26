@@ -5,8 +5,9 @@
 Before tax codes a bill's withholding was a negative tax rate, so its entry debited input tax
 net of the withholding. The upgrade keeps that entry and flags the bill (``legacy_wht_entry``).
 The correction moves the withholding out of input tax into what is owed to the tax office, on a
-date the user picks, and clears the flag; undo reverses it and flags the bill again. The
-correction is a recognition entry of the bill (``wht-fix:{n}``), so voiding the bill reverses it
+date the user picks, and clears the flag; undo reverses it and flags the bill again. Where funds
+are on, both legs are carried by the funds of the lines that withheld the tax (rule LG), as a
+bill finalized now books its withheld tax. The correction is a recognition entry of the bill (``wht-fix:{n}``), so voiding the bill reverses it
 and unvoiding restores it with the rest of the bill's entries."""
 from __future__ import annotations
 
@@ -18,14 +19,16 @@ from sqlalchemy import or_, select
 from celerp.accounting_roles import AccountRole as R, catalog_refusal
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from celerp.services.account_roles import resolve_many
+from celerp.services.account_roles import current_settings, resolve_many
 from celerp.services.auto_je import (
-    _doc_recognition_jes, _emit_auto_posted_je, _ledger_withheld, _line, _recognition_root, _void_je_if_posted,
-    company_currency, finalized_entry_day,
+    _doc_recognition_jes, _document_fund_legs, _emit_auto_posted_je, _ledger_withheld, _line,
+    _recognition_root, _tax_by_line, _void_je_if_posted, company_currency, finalized_entry_day,
 )
 from celerp.services.company_lock import lock_projections
 from celerp.services.je_keys import je_idempotency_key
+from celerp.services.journal_accounts import HEADER
 from celerp.services.posting_dates import correction_day
+from celerp.tax_regimes import withheld_on_document
 
 FIX = "wht-fix"
 
@@ -68,7 +71,8 @@ async def _mark(session, company_id, user_id, doc_id: str, fields: dict, key: st
 async def correct(session, company_id, user_id, doc_id: str, day: date) -> str:
     """Post the correction of a flagged document on ``day`` and clear its flag; the entry's id."""
     state = await _doc(session, company_id, doc_id)
-    withheld = float(_ledger_withheld(state, await company_currency(session, company_id)))
+    currency = await company_currency(session, company_id)
+    withheld = float(_ledger_withheld(state, currency))
     if not state.get("legacy_wht_entry") or not withheld or state.get("status") in (None, "draft", "void"):
         raise HTTPException(status_code=422, detail=catalog_refusal(
             "tax.withholding_correction_not_needed", document=_number(doc_id, state)))
@@ -84,6 +88,8 @@ async def correct(session, company_id, user_id, doc_id: str, day: date) -> str:
         # A supplier credit note's entry credited input tax net of the withholding, so its
         # correction runs the other way.
         entries = [{**e, "debit": e["credit"], "credit": e["debit"]} for e in entries]
+    entries = _document_fund_legs(await current_settings(session, company_id), state, entries,
+                                  [_tax_by_line(state, withheld_on_document)[0] or HEADER] * 2, currency)
     await _emit_auto_posted_je(
         session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"{FIX}:{n}", "c"),
@@ -106,7 +112,8 @@ async def undo(session, company_id, user_id, doc_id: str) -> None:
     prefix = f"je:auto:{doc_id}:"
     root = je_id.removeprefix(prefix)
     for suffix in await _doc_recognition_jes(session, company_id, doc_id):
-        if _recognition_root(suffix) == root:
+        # Change fund posts a copy as ``{root}:fund:{n}``: it stands for the correction too.
+        if _recognition_root(suffix).split(":fund:", 1)[0] == root:
             await _void_je_if_posted(
                 session, company_id=company_id, user_id=user_id, doc_id=doc_id, je_id=f"{prefix}{suffix}",
                 idem_key=f"{prefix}{suffix}:undo", reason="Withholding correction undone",

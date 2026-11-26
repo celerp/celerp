@@ -18,7 +18,7 @@ from test_tax_acceptance_matrix import _books, _moved
 
 __all__ = ["_account_net", "_auth_company", "_moved", "ISSUE", "PAID", "SUPPLIER", "company", "codes",
            "code", "line", "doc", "finalized", "get", "patch_doc", "pay", "post", "ok", "roles", "upload", "contact",
-           "figures", "every_path", "unbalanced_entries", "rebuild_divergence"]
+           "figures", "every_path", "unbalanced_entries", "rebuild_divergence", "role_funds"]
 
 ISSUE = "2026-10-01"
 PAID = "2026-10-20"
@@ -145,6 +145,22 @@ async def unbalanced_entries(session, auth) -> list[str]:
 async def roles(session, auth) -> dict:
     """Debit minus credit of the company's posted journal entries, by account role."""
     return (await _books(session, auth))[0]
+
+
+async def role_funds(session, auth, *names: str) -> dict:
+    """Debit minus credit of the company's posted journal entries on the roles ``names``, by
+    (role, fund); a line with no fund under None."""
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry"))).scalars().all()
+    out: dict = {}
+    for row in rows:
+        if row.state.get("status") == "posted":
+            for e in row.state.get("entries") or []:
+                for role in set(e.get("account_roles") or []) & set(names):
+                    key = (role, e.get("fund_id"))
+                    out[key] = round(out.get(key, 0) + float(e.get("debit") or 0) - float(e.get("credit") or 0), 6)
+    return {k: v for k, v in out.items() if round(v, 2)}
 
 
 async def upload(client, auth, doc_id: str) -> str:
