@@ -1263,7 +1263,8 @@ _LABEL_KEYS = {
     "bank_account_id": "field.bank_id", "answer": "bank.answer_label", "body": "label.message",
     "doc_id": "th.document", "docs": "page.documents", "fund_id": "th.fund", "is_active": "label.is_active",
     "line_id": "th.line", "lines": "bank.th_count", "path": "th.file", "session_id": "acct.source_reconciliation",
-    "splits": "bank.split",
+    "splits": "bank.split", "inclusive": "th.prices_include_tax", "shipping_taxes": "documents.shipping_tax",
+    "withheld": "documents.withheld",
 }
 
 

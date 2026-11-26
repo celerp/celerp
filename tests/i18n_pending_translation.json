@@ -12,7 +12,136 @@
     "th",
     "vi"
   ],
-  "keys": {},
+  "keys": {
+    "tool.confirm_settings_taxes_localization_confirm_post": {
+      "en": "Update the tax list from the company's country pack, as the preview showed it.",
+      "params": []
+    },
+    "tool.dismiss_upgrade_notice_settings_taxes_upgrade_notice_dismiss_post": {
+      "en": "Hide the tax codes upgrade notice for every user of the company; its counts stay on the localization page.",
+      "params": []
+    },
+    "tool.correct_settings_taxes_withholding_corrections__doc_id__post": {
+      "en": "Post a bill's withholding correction on the chosen date, moving its withholding out of input tax into what is owed to the tax office.",
+      "params": []
+    },
+    "tool.correction_undo_settings_taxes_withholding_corrections__doc_id__undo_post": {
+      "en": "Undo a bill's withholding correction, so the bill waits for its correction again.",
+      "params": []
+    },
+    "tool.cash_basis_confirm_settings_taxes_cash_basis_confirm_post": {
+      "en": "Post the cash-basis tax still pending on each listed document as due on its cut-off date, as the preview showed it; undo by voiding the entry.",
+      "params": []
+    },
+    "field.base": {
+      "en": "Taxable amount",
+      "params": []
+    },
+    "field.base_fraction": {
+      "en": "Share of the amount taxed",
+      "params": []
+    },
+    "field.cash_basis": {
+      "en": "Cash basis",
+      "params": []
+    },
+    "field.code_id": {
+      "en": "Tax code",
+      "params": []
+    },
+    "field.component": {
+      "en": "Tax component",
+      "params": []
+    },
+    "field.report_tags": {
+      "en": "Report tags",
+      "params": []
+    },
+    "field.version_from": {
+      "en": "Rate in force from",
+      "params": []
+    },
+    "field.withholding_point": {
+      "en": "Withheld at",
+      "params": []
+    },
+    "field.fingerprint": {
+      "en": "Fingerprint",
+      "params": []
+    },
+    "field.input_account": {
+      "en": "Input tax account",
+      "params": []
+    },
+    "field.output_account": {
+      "en": "Output tax account",
+      "params": []
+    },
+    "field.versions": {
+      "en": "Rates by date",
+      "params": []
+    },
+    "enum.category.standard": {
+      "en": "Standard",
+      "params": []
+    },
+    "enum.category.reduced": {
+      "en": "Reduced",
+      "params": []
+    },
+    "enum.category.zero": {
+      "en": "Zero rated",
+      "params": []
+    },
+    "enum.category.exempt": {
+      "en": "Exempt",
+      "params": []
+    },
+    "enum.category.out_of_scope": {
+      "en": "Out of scope",
+      "params": []
+    },
+    "enum.category.withholding": {
+      "en": "Withholding",
+      "params": []
+    },
+    "enum.category.perception": {
+      "en": "Perception",
+      "params": []
+    },
+    "enum.category.reverse_charge": {
+      "en": "Reverse charge",
+      "params": []
+    },
+    "enum.category.self_assessed_import": {
+      "en": "Self-assessed import",
+      "params": []
+    },
+    "enum.withholding_point.document": {
+      "en": "On the document",
+      "params": []
+    },
+    "enum.withholding_point.payment": {
+      "en": "At payment",
+      "params": []
+    },
+    "tool.undo_settings_taxes_localization_undo_post": {
+      "en": "Undo a tax list update from the country pack, keeping any tax code changed since.",
+      "params": []
+    },
+    "tool.review_apply_settings_taxes_rate_review__operation_id__apply_post": {
+      "en": "Move the chosen items to the tax rate a tax list update suggests.",
+      "params": []
+    },
+    "tool.review_undo_settings_taxes_rate_review__operation_id__undo_post": {
+      "en": "Undo moving items to a suggested tax rate, keeping any item changed since.",
+      "params": []
+    },
+    "field.certificate_file_id": {
+      "en": "Withholding certificate",
+      "params": []
+    }
+  },
   "modules": {
     "celerp-fixed-assets": {},
     "celerp-labels": {}
