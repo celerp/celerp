@@ -116,6 +116,28 @@ _FROM_CODE_FIELDS = ("code", "rate", "base_fraction", "category", "component", "
                      "withholding_point", "cash_basis", "account", "base")
 
 
+def _side_codes(settings: dict, doc_type: str | None) -> dict[str, dict]:
+    """The company tax codes a document of this type can carry (taxes_for), by id."""
+    from celerp.tax_regimes import side_taxes, taxes_for
+    return {code.get("id"): code for code in taxes_for(side_taxes(settings, doc_type), doc_type)}
+
+
+def _code_tax(codes: dict[str, dict], code_id: str, day, side: str) -> dict:
+    """line_tax of the code *code_id* names among *codes* on *day*. Refused (422): a code the
+    document's tax list does not hold, and a code with no rate in force on the day."""
+    from celerp.localization.taxcodes import NoRateInForce
+    from celerp.tax_regimes import TAX_LIST_PAGES, line_tax
+    code = codes.get(code_id)
+    if code is None:
+        raise unreadable_tax_refusal(str(code_id))
+    try:
+        return line_tax(code, day, side)
+    except NoRateInForce as gap:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "documents.err_no_rate_in_force", name=gap.code.name, day=day.isoformat(),
+            url=TAX_LIST_PAGES[side])) from None
+
+
 def build_line_taxes(doc: dict, lines: list, stored_lines: list, settings: dict) -> None:
     """Build in place each tax on a draft's *lines* that names a ``code_id`` into the snapshot
     posting reads (LineTaxSnapshot), so a write never sets what a tax code decides. *doc* is the
@@ -130,13 +152,12 @@ def build_line_taxes(doc: dict, lines: list, stored_lines: list, settings: dict)
     sent one only has its sign checked. Refused (422): a code_id the
     document's tax list does not hold, a code with no rate in force on the day, and a sent
     snapshot field, ``inclusive`` or amount sign that differs from what the code gives."""
-    from celerp.localization.taxcodes import NoRateInForce
-    from celerp.tax_regimes import TAX_LIST_PAGES, doc_side, line_tax, side_taxes, tax_day, taxes_for
+    from celerp.tax_regimes import doc_side, tax_day
 
     doc_type = doc.get("doc_type")
     side = doc_side(doc_type)
     day = tax_day(doc, settings.get("timezone"))
-    codes = {code.get("id"): code for code in taxes_for(side_taxes(settings, doc_type), doc_type)}
+    codes = _side_codes(settings, doc_type)
     stored = {line["line_id"]: line for line in stored_lines or [] if isinstance(line, dict) and line.get("line_id")}
 
     def _reference(line: dict, entry: dict, sent: dict) -> dict:
@@ -146,15 +167,7 @@ def build_line_taxes(doc: dict, lines: list, stored_lines: list, settings: dict)
                          and str(tax.get("version_from")) == str(sent.get("version_from", tax.get("version_from")))), None)
             if kept is not None:
                 return LineTaxSnapshot.model_validate(kept).model_dump(mode="json")
-        code = codes.get(entry["code_id"])
-        if code is None:
-            raise unreadable_tax_refusal(str(entry["code_id"]))
-        try:
-            return line_tax(code, day, side)
-        except NoRateInForce as gap:
-            raise HTTPException(status_code=422, detail=catalog_refusal(
-                "documents.err_no_rate_in_force", name=gap.code.name, day=day.isoformat(),
-                url=TAX_LIST_PAGES[side])) from None
+        return _code_tax(codes, entry["code_id"], day, side)
 
     for line in lines:
         if not isinstance(line, dict) or not isinstance(line.get("taxes"), list):
@@ -179,6 +192,50 @@ def build_line_taxes(doc: dict, lines: list, stored_lines: list, settings: dict)
             built.append({**ref, "amount": 0.0, **{key: merged[key] for key in ("order", "is_compound", "label")
                                                    if key in sent}})
         line["taxes"] = built
+
+
+# The documents a payment can have tax withheld from: the payer keeps it back and pays it to the
+# tax authority, so it settles the document as cash would.
+WITHHOLDING_PAYMENT_DOC_TYPES = ("invoice", "bill")
+
+
+def payment_withheld(doc_state: dict, entries: list[dict], day, settings: dict) -> list[dict]:
+    """The tax a payer withheld from a payment of the document *doc_state* on *day*, as the
+    payment keeps it: for each entry its code, amount, rate in force that day, base (the amount
+    the rate gives it), report tags and certificate file, at the document's currency precision.
+    Refused (422): a document that is not an invoice or bill, a code the document's tax list
+    does not hold or with no rate that day, a code that is not withholding or is withheld on the
+    document already, an amount not above zero, and a certificate that is not one of the
+    document's files. Whether cash and withheld together fit what is owed is the caller's."""
+    from celerp.tax_regimes import doc_side
+    doc_type = doc_state.get("doc_type")
+    if doc_type not in WITHHOLDING_PAYMENT_DOC_TYPES:
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_withheld_doc_type"))
+    currency = str(doc_state.get("currency") or "USD").upper()
+    side = doc_side(doc_type)
+    codes = _side_codes(settings, doc_type)
+    files = {f.get("id") for f in doc_state.get("files") or [] if isinstance(f, dict)}
+    withheld = []
+    for entry in entries:
+        tax = _code_tax(codes, entry["code_id"], day, side)
+        if tax["category"] != "withholding":
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "documents.err_withheld_not_withholding", name=tax["code"]))
+        if withheld_on_document(tax):
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "documents.err_withheld_on_document", name=tax["code"]))
+        amount = round_money(entry["amount"], currency)
+        if amount <= 0:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "documents.err_withheld_amount_positive", name=tax["code"]))
+        certificate = entry.get("certificate_file_id")
+        if certificate is not None and certificate not in files:
+            raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_withheld_certificate"))
+        withheld.append({
+            "code_id": tax["code_id"], "amount": to_stored_float(amount), "rate": tax["rate"],
+            "base": to_stored_float(round_money(amount * 100 / to_decimal(tax["rate"]), currency)),
+            "report_tags": tax["report_tags"], "certificate_file_id": certificate})
+    return withheld
 
 
 def main_supply_taxes(lines: list, currency: str | None) -> list[dict]:

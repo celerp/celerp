@@ -38,7 +38,7 @@ from celerp.models.projections import (
 )
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import (DOC_MONEY_INPUTS, LIST_TOTAL_FIELDS, build_line_taxes, build_shipping_taxes, document_money, document_terms,
+from celerp_docs.doc_money import (DOC_MONEY_INPUTS, payment_withheld, LIST_TOTAL_FIELDS, build_line_taxes, build_shipping_taxes, document_money, document_terms,
                                    drawn_line_money, fixed_discount, list_totals_differ, memo_draws, memo_fixed_amounts, memo_tax_rate_money,
                                    money_from_lines, refuse_malformed_taxes, refuse_unset_line_tax, released_header_money,
                                    unrated_tax)
@@ -613,6 +613,14 @@ class DocUnvoidBody(BaseModel):
     idempotency_key: str | None = None
 
 
+class WithheldEntry(BaseModel):
+    """Tax the payer kept back from a payment, under one withholding code, with the file of its
+    certificate when one is attached to the document."""
+    code_id: str
+    amount: FiniteFloat
+    certificate_file_id: str | None = None
+
+
 class DocPaymentBody(BaseModel):
     amount: FiniteFloat
     payment_date: str  # ISO date (YYYY-MM-DD), always required
@@ -627,6 +635,9 @@ class DocPaymentBody(BaseModel):
     # How the payment settles by fund: fund id (or "unrestricted") -> amount in the
     # document's currency, adding up to the payment. Absent: each fund's open share.
     fund_allocation: dict[str, FiniteFloat] | None = None
+    # Tax the payer withheld: ``amount`` is the cash, and the payment settles the cash plus
+    # every withheld amount (payment_withheld).
+    withheld: list[WithheldEntry] | None = None
 
     _real_date = field_validator("payment_date")(_calendar_date)
 
@@ -4549,6 +4560,21 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
             detail=catalog_refusal("documents.err_payment_too_much", amount=to_stored_float(amount_d),
                      outstanding=to_stored_float(outstanding_d)),
         )
+    withheld_d = Decimal(0)
+    if body.get("withheld"):
+        _settings = (await session.get(Company, company_id)).settings or {}
+        body["withheld"] = payment_withheld(
+            doc_state, body["withheld"], _date.fromisoformat(body["payment_date"]), _settings)
+        withheld_d = sum((to_decimal(w["amount"]) for w in body["withheld"]), Decimal(0))
+        if amount_d + withheld_d > outstanding_d:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "documents.err_withheld_too_much", amount=to_stored_float(amount_d),
+                withheld=to_stored_float(withheld_d), gross=to_stored_float(amount_d + withheld_d),
+                outstanding=to_stored_float(outstanding_d)))
+        # The payment settles the gross: the cash and what the payer kept back for the authority.
+        amount_d += withheld_d
+    else:
+        body.pop("withheld", None)
     amount = to_stored_float(amount_d)
     body["amount"] = amount
     allocation = _fund_allocation(body.get("fund_allocation"), amount_d, doc_currency)
@@ -4607,7 +4633,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         bank_account_code=bank_code, doc_type=doc_state.get("doc_type", "invoice"),
         payment_date=body["payment_date"],
         base_currency=books.base_currency, doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
-        fund_allocation=allocation,
+        fund_allocation=allocation, withheld=to_stored_float(withheld_d),
     )
     from celerp.modules.slots import fire_lifecycle
     await fire_lifecycle(
@@ -4675,9 +4701,17 @@ class RefundBody(BaseModel):
     _real_date = field_validator("payment_date")(_calendar_date)
 
 
+def _withheld_of(payment: dict, currency: str) -> Decimal:
+    """The tax the payer withheld from a payment (payment_withheld): part of its ``amount``
+    that went to the tax authority, never through the bank."""
+    return sum((round_money(w.get("amount") or 0, currency) for w in payment.get("withheld") or []), Decimal(0))
+
+
 def _refundable(payment: dict, currency: str):
-    """What is left of a payment to give back."""
-    return round_money(payment.get("amount") or 0, currency) - round_money(payment.get("refunded") or 0, currency)
+    """What is left of a payment's cash to give back: the tax withheld from it never came
+    through the bank."""
+    return (round_money(payment.get("amount") or 0, currency) - _withheld_of(payment, currency)
+            - round_money(payment.get("refunded") or 0, currency))
 
 
 @dataclass(frozen=True)
@@ -4971,7 +5005,7 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
             bank_account_code=books.bank_account, doc_type=doc_type,
             refund_date=payload.refund_date, base_currency=books.base_currency,
             doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
-            already_given_back=given_back,
+            already_given_back=given_back, withheld=bool(payment.get("withheld")),
         )
         if doc_type == "credit_note":
             await auto_je.void_credit_note_payment_rate(session, company_id=company_id, user_id=user.id,
@@ -5233,7 +5267,8 @@ async def delete_doc_payment(session: AsyncSession, company_id, entity_id: str, 
             amount=to_stored_float(_refundable(payment, str(row.state.get("currency") or "USD").upper())),
             bank_account_code=imported_books.bank_account, doc_type=row.state.get("doc_type", "invoice"),
             refund_date=payment.get("payment_date"), base_currency=imported_books.base_currency,
-            doc_rate=imported_books.doc_rate, settlement_rate=imported_books.settlement_rate)
+            doc_rate=imported_books.doc_rate, settlement_rate=imported_books.settlement_rate,
+            withheld=bool(payment.get("withheld")))
     if row.state.get("doc_type") == "credit_note":
         await auto_je.void_credit_note_payment_rate(session, company_id=company_id, user_id=actor_id,
                                                     doc_id=entity_id, payment_index=payment_index)

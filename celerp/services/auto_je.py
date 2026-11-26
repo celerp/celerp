@@ -592,6 +592,15 @@ def _sale_totals(doc: dict, base_currency: str) -> tuple[float, float, float]:
     return total, tax, to_stored_float(to_decimal(total) - to_decimal(tax))
 
 
+def _ledger_withheld(doc: dict, base_currency: str) -> _Dec:
+    """The tax withheld on a document (its ``withheld``, tax the payer keeps back for the
+    authority), in the books' currency: 0 when none was."""
+    withheld = round_money(to_decimal(doc.get("withheld") or 0), doc.get("currency", "USD"))
+    if not withheld:
+        return _Dec(0)
+    return to_decimal(to_base(to_stored_float(withheld), require_doc_rate(doc, base_currency), base_currency))
+
+
 def _line_allocations(doc: dict, base_currency: str, revenue) -> dict[str, dict]:
     """Each line's share of a sale's net (its total less tax), in the document's currency
     and in the books', keyed by the line's index as a string. The header discount and
@@ -834,9 +843,12 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     # bound lot recognizes at the sibling lots that will actually be drawn.
     cogs_result = await compute_doc_cogs(session, company_id, doc, span_lots=span_lots, doc_id=doc_id)
     cogs = cogs_result.total
+    kept = _ledger_withheld(doc, base_currency)
     roles = [R.RECEIVABLE, R.SALES_REVENUE]
     if tax:
         roles.append(R.TAX_OUTPUT)
+    if kept:
+        roles.append(R.TAX_WITHHELD_CREDIT)
     if cogs > 0:
         roles.append(R.COGS)
     if periods:
@@ -855,11 +867,17 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
               if allocations else HEADER for e in income]
     income, behind = _stamp_gifts(income, behind, [{n: w for n, w in b.items() if n in gifts}
                                                    if isinstance(b, dict) else None for b in behind], base_currency)
-    entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total), *clearing, *income]
+    entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=to_stored_float(to_decimal(total) - kept)),
+               *clearing, *income]
     bases = [CONTROL, *_clearing_bases(doc, allocations, clearing), *behind]
     for code, amount in _sale_tax_lines(doc, acc, tax, base_currency) if tax else []:
         entries.append(_tax_line(acc, R.TAX_OUTPUT, code, credit=amount))
         bases.append(_line_tax_basis(doc))
+    if kept:
+        # The customer keeps the withheld tax back for the authority: a credit against the
+        # company's own tax, not part of what the customer owes.
+        entries.append(_line(acc[R.TAX_WITHHELD_CREDIT], R.TAX_WITHHELD_CREDIT, debit=to_stored_float(kept)))
+        bases.append(_tax_by_line(doc, withheld_on_document)[0] or HEADER)
     if cogs > 0:
         cost = _cogs_lines(settings, acc[R.COGS], cogs_result.by_account, await company_currency(session, company_id))
         entries += cost
@@ -995,7 +1013,9 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
     ar = await party_origin(session, company_id, original, R.RECEIVABLE, settings) if original else None
     sold_on, gift_on = await _revenue_sold_on(session, company_id, original, settings) if original else ([], {})
     roles = [r for r, have in ((R.RECEIVABLE, ar), (R.SALES_REVENUE, sold_on)) if not have]
-    acc = await resolve_many(session, company_id, [*roles, *([R.TAX_OUTPUT] if tax else [])])
+    kept = _ledger_withheld(doc, base_currency)
+    acc = await resolve_many(session, company_id, [*roles, *([R.TAX_OUTPUT] if tax else []),
+                                                   *([R.TAX_WITHHELD_CREDIT] if kept else [])])
 
     def side(amount: float, debit: bool) -> dict:
         debit = (debit != releasing) != (amount < 0)
@@ -1076,8 +1096,12 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
     for code, amount in _sale_tax_lines(doc, acc, tax, base_currency) if tax else []:
         entries.append(_tax_line(acc, R.TAX_OUTPUT, code, **side(amount, True)))
         bases.append(_line_tax_basis(doc))
-    entries.append(_origin_line(settings, ar, R.RECEIVABLE, **side(total, False)) if ar
-                   else _line(acc[R.RECEIVABLE], R.RECEIVABLE, **side(total, False)))
+    if kept:
+        entries.append(_line(acc[R.TAX_WITHHELD_CREDIT], R.TAX_WITHHELD_CREDIT, **side(to_stored_float(kept), False)))
+        bases.append(_tax_by_line(doc, withheld_on_document)[0] or HEADER)
+    owed = to_stored_float(to_decimal(total) - kept)
+    entries.append(_origin_line(settings, ar, R.RECEIVABLE, **side(owed, False)) if ar
+                   else _line(acc[R.RECEIVABLE], R.RECEIVABLE, **side(owed, False)))
     entries = _document_fund_legs(settings, await _note_with_posted_funds(session, company_id, doc), entries,
                                   [*bases, CONTROL], base_currency)
     return entries, allocations, credits
@@ -1165,15 +1189,19 @@ async def release_credit_note_open(session, *, company_id, user_id, doc_id: str,
                                    base_currency: str = "USD") -> None:
     """Take back the part of a credit note's issue entry its open balance holds, once its
     invoice is void: the sale it reversed no longer stands, so the credit nobody used is
-    released (Dr receivable, Cr revenue and output tax, in the issue entry's proportions)
-    and only what it already paid out stays booked. Posts nothing when nothing is open."""
+    released (Dr receivable, Cr revenue, output tax and withheld tax, in the issue entry's
+    proportions) and only what it already paid out stays booked. ``amount`` is part of what
+    the note owes (its total less the tax withheld on it). Posts nothing when nothing is open."""
     currency = doc.get("currency", "USD")
     total = to_decimal(round_money(doc.get("total", 0), currency))
+    owed = total - to_decimal(round_money(doc.get("withheld") or 0, currency))
     amount = to_decimal(round_money(amount or 0, currency))
-    if amount <= 0 or total <= 0:
+    if amount <= 0 or owed <= 0:
         return
-    tax = to_decimal(round_money(to_decimal(doc.get("tax") or 0) * amount / total, currency))
-    share = {**doc, "total": to_stored_float(amount), "tax": to_stored_float(tax)}
+    part = round_money(total * amount / owed, currency)
+    tax = to_decimal(round_money(to_decimal(doc.get("tax") or 0) * amount / owed, currency))
+    share = {**doc, "total": to_stored_float(part), "tax": to_stored_float(tax),
+             "withheld": to_stored_float(part - amount)}
     built = await _credit_note_lines(session, company_id, share, base_currency, releasing=True)
     if not built:
         return
@@ -1488,7 +1516,25 @@ async def payment_bank_fx(session, company_id, doc_id: str, base_currency: str, 
     return lambda code: fx if currencies.get(code) == currency else None
 
 
-async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str | None, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float, fund_allocation: list[tuple[str | None, float]] | None = None) -> None:
+# The roles of the line a payment posts for tax its payer withheld (withheld_payment_line).
+WITHHELD_PAYMENT_ROLES = frozenset({str(R.TAX_WITHHELD_PAYABLE), str(R.TAX_WITHHELD_CREDIT)})
+
+
+async def withheld_payment_line(session, company_id, doc_type: str, ledger_withheld: float) -> list[dict]:
+    """The line a payment posts for the tax its payer withheld, *ledger_withheld* in the
+    books' currency: a bill payment credits withheld tax payable (the company owes it to the
+    authority), a receipt debits withheld tax credit (the customer paid it to the authority
+    for the company). None when nothing was withheld."""
+    if not ledger_withheld:
+        return []
+    if doc_type in _PURCHASE_TYPES:
+        role = R.TAX_WITHHELD_PAYABLE
+        return [_line((await resolve_many(session, company_id, [role]))[role], role, credit=ledger_withheld)]
+    role = R.TAX_WITHHELD_CREDIT
+    return [_line((await resolve_many(session, company_id, [role]))[role], role, debit=ledger_withheld)]
+
+
+async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str | None, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float, fund_allocation: list[tuple[str | None, float]] | None = None, withheld: float = 0.0) -> None:
     """Create JE for a payment.
 
     bank_account_code: chart account the cash moves through. None only for a payment
@@ -1512,13 +1558,21 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
 
     With funds in use the payment settles each fund's open share of the document's balance
     (journal_accounts.fund_open_shares), or the shares of ``fund_allocation`` (fund or None,
-    in the document's currency, adding up to ``amount``), and the entry records the split.
+    withheld: the part of ``amount`` the payer kept back for the tax authority (doc currency).
+    The control line still clears ``amount``; the bank moves the rest, and the withheld part
+    is debited to withheld tax credit on a receipt or credited to withheld tax payable on a
+    bill payment (withheld_payment_line), at the document's rate.
     """
     paid_key = str(payment_index)
-    ledger_amount, bank_amount = payment_amounts(amount=amount, base_currency=base_currency, doc_rate=doc_rate,
-                                                 settlement_rate=settlement_rate)
+    cash = to_stored_float(to_decimal(amount) - to_decimal(withheld))
+    ledger_amount = payment_amounts(amount=amount, base_currency=base_currency, doc_rate=doc_rate,
+                                    settlement_rate=settlement_rate)[0]
+    ledger_cash, bank_amount = payment_amounts(amount=cash, base_currency=base_currency, doc_rate=doc_rate,
+                                               settlement_rate=settlement_rate)
+    kept = await withheld_payment_line(session, company_id, doc_type,
+                                       to_stored_float(to_decimal(ledger_amount) - to_decimal(ledger_cash)))
 
-    bank_fx = await payment_bank_fx(session, company_id, doc_id, base_currency, amount, settlement_rate)
+    bank_fx = await payment_bank_fx(session, company_id, doc_id, base_currency, cash, settlement_rate)
     control_codes: set[str] = set()
 
     def entries_for(control, bank):
@@ -1527,7 +1581,7 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
             control_codes.add(line["account"])
             return line
         return payment_lines(doc_type, control_line, {"account": bank}, ledger_amount, bank_amount,
-                             bank_fx=bank_fx(bank))
+                             bank_fx=bank_fx(bank)) + kept
 
     entries = await _settlement_accounts(
         session, company_id, doc_id=doc_id, control=_control_role(doc_type), bank=bank_account_code,
@@ -1775,27 +1829,40 @@ def _reversal_template(entry: dict) -> dict:
 
 async def payment_return_entries(session, company_id, *, doc_id: str, payment_index: int, doc_type: str,
                                  bank_account_code: str | None, amount: float, already_given_back: float,
-                                 base_currency: str, doc_rate: float, settlement_rate: float) -> list[dict]:
-    """The balanced lines that give back *amount* of a payment after *already_given_back*
-    of it was given back (``payment_amounts``), on the accounts the payment's own entry
-    posted to - its bank, its receivable or payable, and its exchange difference -
-    never on what the company's roles point at today. A payment with no entry of its
-    own (recorded before automatic entries existed) gives back on its document's origin
-    account and *bank_account_code*. A restored piece posts these lines swapped."""
+                                 base_currency: str, doc_rate: float, settlement_rate: float,
+                                 withheld: bool = False) -> list[dict]:
+    """The balanced lines that give back *amount* of a payment's cash after
+    *already_given_back* of it was given back (``payment_amounts``), on the accounts the
+    payment's own entry posted to - its bank, its receivable or payable, and its exchange
+    difference - never on what the company's roles point at today. A payment with no entry
+    of its own (recorded before automatic entries existed) gives back on its document's
+    origin account and *bank_account_code*. A restored piece posts these lines swapped.
+
+    The tax the payer withheld never moved through the bank, so a refund leaves it; with
+    *withheld* (a void) its lines are reversed as posted (WITHHELD_PAYMENT_ROLES) and the
+    receivable or payable gives that much back too."""
     ledger_amount, bank_amount = payment_amounts(
         amount=amount, base_currency=base_currency, doc_rate=doc_rate, settlement_rate=settlement_rate,
         already_given_back=already_given_back)
     outflow = doc_type in _PURCHASE_TYPES or doc_type == "credit_note"
     bank_fx = await payment_bank_fx(session, company_id, doc_id, base_currency, amount, settlement_rate)
 
-    def entries_for(control, bank):
-        bank_line = bank if isinstance(bank, dict) else {"account": bank}
-        return payment_lines(doc_type, control, bank_line, ledger_amount, bank_amount, returning=True,
-                             bank_fx=bank_fx(bank_line["account"]))
-
     paid_id = f"je:auto:{doc_id}:pay:{payment_index}"
     original = await session.get(Projection, {"company_id": company_id, "entity_id": paid_id})
     posted = (original.state or {}).get("entries") or [] if original is not None else []
+    kept = [e for e in posted if set(e.get("account_roles") or ()) & WITHHELD_PAYMENT_ROLES]
+    posted = [e for e in posted if e not in kept]
+    kept_back = [{**_reversal_template(e), "debit": e.get("credit") or 0.0, "credit": e.get("debit") or 0.0}
+                 for e in kept] if withheld else []
+    ledger_kept = to_stored_float(sum((to_decimal(e.get("debit") or 0) + to_decimal(e.get("credit") or 0)
+                                       for e in kept_back), _Dec(0)))
+
+    def entries_for(control, bank):
+        bank_line = bank if isinstance(bank, dict) else {"account": bank}
+        return payment_lines(doc_type, control, bank_line,
+                             to_stored_float(to_decimal(ledger_amount) + to_decimal(ledger_kept)), bank_amount,
+                             returning=True, bank_fx=bank_fx(bank_line["account"])) + kept_back
+
     # One line per account: a payment split by fund wrote each of its lines once per fund.
     distinct = list({(e["account"], tuple(e.get("account_roles") or ())): e for e in posted[::-1]}.values())
     distinct = sorted(distinct, key=posted.index)
@@ -1827,12 +1894,16 @@ async def payment_return_entries(session, company_id, *, doc_id: str, payment_in
         ledger = payment_amounts(amount=given_back, base_currency=base_currency, doc_rate=doc_rate,
                                  settlement_rate=settlement_rate)[0] if given_back else 0
         return allocate_pro_rata(ledger, [share for _, share in shares], base_currency) if shares else []
-    pieces = [after - before for after, before in zip(taken(already_given_back + amount), taken(already_given_back))]
+    if kept_back:
+        # A void gives back each fund's whole part, the withheld share with it.
+        pieces = [share - before for (_, share), before in zip(shares, taken(already_given_back))]
+    else:
+        pieces = [after - before for after, before in zip(taken(already_given_back + amount), taken(already_given_back))]
     return copy_fund_split(entries, [(fund, piece) for (fund, _), piece in zip(shares, pieces) if piece],
                            base_currency, paid_id)
 
 
-async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str | None, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None, already_given_back: float = 0.0) -> None:
+async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str | None, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None, already_given_back: float = 0.0, withheld: bool = False) -> None:
     """Reverse a payment JE, or the refunded share of it, by creating a counter-entry.
 
     The counter-entry posts to the accounts the payment's own entry posted to - its
@@ -1852,7 +1923,9 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         payment is its own entry, reversing `amount` of it at the payment's rates.
     already_given_back: how much of the payment earlier refunds reversed. Each piece
         reverses what the payment's total so far converts to, less what the earlier pieces
-        did, so the pieces add up to exactly what the payment posted.
+        did, so the pieces add up to exactly what the payment posted. Both count cash only.
+    withheld: the payment had tax withheld from it, which a void reverses too
+        (payment_return_entries).
     """
     if refund_number is None:
         kind, key, trigger = "payvoid", f"void_{payment_index}", "doc.payment.voided"
@@ -1865,7 +1938,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
     entries = await payment_return_entries(
         session, company_id, doc_id=doc_id, payment_index=payment_index, doc_type=doc_type,
         bank_account_code=bank_account_code, amount=amount, already_given_back=already_given_back,
-        base_currency=base_currency, doc_rate=doc_rate, settlement_rate=settlement_rate,
+        base_currency=base_currency, doc_rate=doc_rate, settlement_rate=settlement_rate, withheld=withheld,
     )
     await _emit_auto_posted_je(
         session,
@@ -2754,10 +2827,10 @@ async def _bill_entries(session, company_id, doc_id: str, doc: dict,
 
     lines = [(drawn_home(target), a) for target, a in lines]
     _, assessed = _tax_by_line(doc, self_assessed)
-    withheld = round_money(to_decimal(doc.get("withheld") or 0), currency)
+    kept = _ledger_withheld(doc, base_currency)
     acc = await resolve_many(session, company_id, [*(t for t, _ in lines if isinstance(t, AccountRole)), R.PAYABLE,
                                                    *([R.TAX_INPUT, R.TAX_OUTPUT] if assessed else []),
-                                                   *([R.TAX_WITHHELD_PAYABLE] if withheld else [])])
+                                                   *([R.TAX_WITHHELD_PAYABLE] if kept else [])])
     base_total = to_base(to_stored_float(total_d), rate, base_currency)
     debits = _base_debits(parts, base_total, rate, base_currency)
     entries = [_bill_debit_line(acc, target, to_stored_float(d)) for (target, _), d in zip(lines, debits)]
@@ -2767,7 +2840,6 @@ async def _bill_entries(session, company_id, doc_id: str, doc: dict,
                     _line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, credit=to_stored_float(both))]
         sources += [None, None]
         debits = [*debits, both, -both]
-    kept = to_decimal(to_base(to_stored_float(withheld), rate, base_currency)) if withheld else _Dec(0)
     if kept:
         entries.append(_line(acc[R.TAX_WITHHELD_PAYABLE], R.TAX_WITHHELD_PAYABLE, credit=to_stored_float(kept)))
         sources.append(None)

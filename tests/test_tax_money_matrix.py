@@ -262,11 +262,11 @@ async def test_tax_total_readers_by_shape(client, session, shape):
 
     ok(await pay(client, auth, fresh["id"], 500.0, [{"code_id": c["wht_pay"], "amount": 21.4}]))
     lines = _SHAPES[shape][1](c)
-    note = await finalized(client, auth, await doc(client, auth, "credit_note", lines, original_doc_id=fresh["id"],
-                                                   **_SHAPES[shape][2]))
+    # Issued on its own (a note naming its invoice applies itself on finalize), then applied whole.
+    note = await finalized(client, auth, await doc(client, auth, "credit_note", lines, **_SHAPES[shape][2]))
     r = await post(client, auth, f"/docs/{note['id']}/apply-to-invoice", {
         "target_doc_id": fresh["id"], "amount": note["total"], "idempotency_key": uuid.uuid4().hex})
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
     assert (await get(client, auth, fresh["id"]))["amount_outstanding"] >= 0.0
 
 

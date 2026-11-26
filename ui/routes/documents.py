@@ -7800,6 +7800,19 @@ def _header_discount_row(doc: dict, discount: float, currency: str):
                id="doc-header-discount-row", cls="total-row")
 
 
+def _withheld_rows(doc: dict, total: float, currency: str) -> list:
+    """The totals panel's rows for tax withheld on the document (its ``withheld``): what is
+    withheld and what is left to pay, the total less it. None when nothing is withheld."""
+    withheld = float(doc.get("withheld") or 0)
+    if withheld <= 0.005:
+        return []
+    return [Div(Span(t("documents.withheld"), cls="total-label"),
+                Span(f"-{fmt_money(withheld, currency)}", id="doc-withheld", cls="total-value"), cls="total-row"),
+            Div(Span(t("documents.amount_payable"), cls="total-label"),
+                Span(fmt_money(total - withheld, currency), id="doc-amount-payable", cls="total-value"),
+                cls="total-row")]
+
+
 async def _doc_funds(token: str, doc: dict, settings: dict) -> list | None:
     """The company's funds, for the fund controls of a document whose lines post to a fund or
     that came from outside; None with funds off, on any other document, or when they can't be
@@ -11704,6 +11717,7 @@ async function celerpCsvImport(input, entityId) {
             ),
             Span(fmt_money(total_amount, currency), id="doc-total", cls="total-value total-value--final"),
             cls="total-row total-row--final"),
+        *_withheld_rows(doc, total_amount, currency),
         # Conversion note: shown only when doc currency differs from company base currency
         *([Div(
             Span(t("documents.conversion_note", amount=fmt_money(total_amount * float(doc.get('conversion_rate') or 1), company_currency), rate=doc.get('conversion_rate'), base=company_currency, currency=currency), cls="total-label total-label--conversion"),

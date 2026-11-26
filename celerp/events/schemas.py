@@ -793,6 +793,9 @@ class DocPaymentReceived(BaseModel):
     index: int | None = None
     paired_index: int | None = None
     books: PaymentBooks | None = None
+    # Tax the payer kept back and pays to the authority: each entry's code, amount, rate,
+    # base, report tags and certificate file. ``amount`` is the gross it settles.
+    withheld: list[dict] | None = None
 
 
 class PaymentBatchRecorded(BaseModel):
