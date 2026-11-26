@@ -6,7 +6,7 @@
   "routes": ["/settings/cloud", "/settings/connectors/{platform}", "/settings/connectors/{platform}/first-sync"],
   "permission": "manage_integrations",
   "order": 1,
-  "checked": "4700d0ad46d51feca516110edb476770b21a9a1e72968936f33aa1165d622545",
+  "checked": "8e819146af455508352e281a1535915e167b6e4ee396d2a200a14b6b61346cce",
   "steps": [
     {
       "text": "Open {access} from Settings. Celerp Connect adds {website} to bring in orders, products and customers from Shopify and WooCommerce on a schedule.",

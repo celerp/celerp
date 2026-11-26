@@ -24,7 +24,7 @@
       "text": "Click a template to edit it: its name, its size in millimetres and where each field sits on the label.",
       "labels": {},
       "image": "img/settings-3.webp",
-      "capture": {"route": "/settings/labels", "selector": "main", "actions": [], "evidence": ["a.template-list-item--active"]}
+      "capture": {"route": "/settings/labels", "selector": "#label-editor-panel", "actions": [], "evidence": ["#preview-canvas"]}
     },
     {
       "text": "You can also ask the assistant to list, add, change or delete label templates. It shows each change as a card and makes it only when you confirm.",

@@ -1260,8 +1260,6 @@ _SAME_VISUAL = {
     frozenset({"contacts.add-vendor#1", "contacts.add-vendor#2"}): _LIST_INTRO,
     frozenset({"contacts.finance-company-details#1", "contacts.finance-company-details#2"}):
         "the company details card holds every field both steps name",
-    frozenset({"docs.lists-quotations#3", "inventory.import-export#2", "subscriptions.import#1"}):
-        "the same import drop zone starts every import",
     frozenset({"docs.memos#3", "docs.memos#4", "docs.memos#5"}): "one line actions bar holds Set as shipped, Invoice selected and Set as available",
     frozenset({"docs.received#1", "docs.received#2"}): _LIST_INTRO,
     frozenset({"fixed-assets.year-end#1", "fixed-assets.year-end#2"}): "the year-end page holds the checklist and its run button",
@@ -1269,7 +1267,6 @@ _SAME_VISUAL = {
     frozenset({"inventory.add-item#1", "inventory.add-item#2", "inventory.import-export#1"}):
         "the inventory list holds Add item, Export and Import",
     frozenset({"labels.print-labels#1", "labels.print-labels#2"}): "the print page holds the item picker and the template choice",
-    frozenset({"labels.settings#1", "labels.settings#2"}): "the label settings hold the template list and its New button",
     frozenset({f"subscriptions.members#{n}" for n in range(1, 6)}): "the members list shows every standing and New in one table",
     frozenset({"subscriptions.overview#1", "subscriptions.overview#2"}): "the agreements list holds the tabs, New and Import",
     frozenset({"subscriptions.plans#1", "subscriptions.plans#2"}): _LIST_INTRO,
