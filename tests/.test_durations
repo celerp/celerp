@@ -32829,5 +32829,6 @@
     "tests/test_doc_currency_boundary.py::test_the_boundary_keeps_every_document_and_list_in_a_supported_currency[doc]": 0.12640659394674003,
     "tests/test_doc_currency_boundary.py::test_the_boundary_keeps_every_document_and_list_in_a_supported_currency[list]": 0.17989457305520773,
     "tests/test_doc_currency_boundary.py::test_the_document_imports_refuse_an_unsupported_currency": 0.28111295320559293,
-    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_journal_import_destinations.py]": 0.006258037989027798
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_journal_import_destinations.py]": 0.006258037989027798,
+    "tests/test_doc_currency_boundary.py::test_a_payment_event_carries_the_payment_currency_not_the_documents": 0.389307229896076
 }

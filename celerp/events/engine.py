@@ -888,8 +888,10 @@ async def emit_event(
         data = kwargs.get("data") or {}
         changed = data.get("fields_changed") if isinstance(data.get("fields_changed"), dict) else {}
         # The fields the write sets, whether it carries them whole or as changes. A payment
-        # step (doc.payment.*) sets none of them: its currency is the payment's, kept on it.
-        whole = {} if kwargs.get("event_type", "").startswith("doc.payment.") else data
+        # step (PAYMENT_TRIGGER) sets none of them: its currency is the payment's, kept on it.
+        from celerp.services.lot_origin import PAYMENT_TRIGGER
+
+        whole = {} if kwargs.get("event_type", "").startswith(PAYMENT_TRIGGER) else data
         sets = {field: whole[field] for field in ("line_items", "contact_id", "currency") if field in whole}
         sets.update({field: change["new"] for field, change in changed.items()
                      if field in ("line_items", "contact_id", "currency") and isinstance(change, dict)

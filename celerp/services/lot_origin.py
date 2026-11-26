@@ -260,8 +260,8 @@ def uncertain_evidence(settings: dict, entries: list[tuple[str, dict]], codes, c
     return found
 
 
-# The postings that record a payment, by the trigger kept on the entry when it was
-# posted: their lines moved cash, whatever roles their accounts served.
+# The event type of every payment step on a document, kept as the trigger on the postings
+# that record it: their lines moved cash, whatever roles their accounts served.
 PAYMENT_TRIGGER = "doc.payment."
 
 
