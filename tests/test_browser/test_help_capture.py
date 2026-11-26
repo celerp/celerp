@@ -995,11 +995,20 @@ def _evidence_locator(page, entry: str, labels: dict):
         lambda m: _visible_label(labels[m.group(1)]).replace("\\", "\\\\").replace("'", "\\'"), entry))
 
 
+def _evidence_entries(step: dict) -> list[str]:
+    """The step's evidence, then every label its text names that the evidence leaves out: the
+    control a step tells the reader to use is in its picture."""
+    evidence = step["capture"]["evidence"]
+    listed = {m.group(1) for entry in evidence for m in PLACEHOLDER.finditer(entry)}
+    named = dict.fromkeys(m.group(1) for m in PLACEHOLDER.finditer(step.get("text", "")))
+    return [*evidence, *(f"{{{name}}}" for name in named if name not in listed)]
+
+
 def _evidence_missing(page, target, step: dict) -> list[str]:
     """The step's evidence entries with no visible match lying wholly inside the part of
-    ``target`` a picture keeps (its top _MAX_HEIGHT pixels) and on top at its centre: a match
-    elsewhere on the page, hidden, cut by the picture's edge or covered by another element (an
-    open dropdown) does not count. The page is laid out as the picture is taken, the whole kept
+    ``target`` a picture keeps (its top _MAX_HEIGHT pixels) and on top from end to end: a match
+    elsewhere on the page, hidden, cut by the picture's edge or by a scrolling box, or covered
+    by another element (an open dropdown) does not count. The page is laid out as the picture is taken, the whole kept
     part inside the viewport, so a dropdown opens where the picture shows it; the viewport grows
     only by what the kept part overflows, so a screen sized to the viewport keeps its layout."""
     viewport = page.viewport_size
@@ -1016,17 +1025,19 @@ def _evidence_missing(page, target, step: dict) -> list[str]:
             if clip[3] <= page.viewport_size["height"]:
                 break
             page.set_viewport_size({"width": viewport["width"], "height": math.ceil(clip[3])})
-        return [entry for entry in step["capture"]["evidence"]
+        return [entry for entry in _evidence_entries(step)
                 if not _evidence_locator(page, entry, step["labels"]).evaluate_all("""(els, [l, t, r, b]) =>
                     els.some(e => {
                         const box = e.getBoundingClientRect();
                         if (!(e.checkVisibility() && box.width > 0 && box.height > 0 && box.left >= l - 1
                               && box.top >= t - 1 && box.right <= r + 1 && box.bottom <= b + 1)) return false;
-                        // The element hit at the centre of its widest line box (a wrapped
-                        // label's whole box has gaps).
+                        // The element hit at both ends and the centre of its widest line box
+                        // (a wrapped label's whole box has gaps).
                         const line = [...e.getClientRects()].reduce((a, c) => c.width > a.width ? c : a);
-                        const hit = document.elementFromPoint((line.left + line.right) / 2, (line.top + line.bottom) / 2);
-                        return hit !== null && e.contains(hit);
+                        return [line.left + 1, (line.left + line.right) / 2, line.right - 1].every(x => {
+                            const hit = document.elementFromPoint(x, (line.top + line.bottom) / 2);
+                            return hit !== null && e.contains(hit);
+                        });
                     })""", clip)]
     finally:
         page.set_viewport_size(viewport)
@@ -1310,6 +1321,30 @@ def test_a_control_another_element_covers_is_not_evidence_of_the_screen(page):
           <li>Bank account</li></ul></main>""")
     assert _evidence_missing(page, page.locator("#t"), step) == ["{post}", "#t button"]
     page.locator("ul").evaluate("e => e.remove()")
+    assert _evidence_missing(page, page.locator("#t"), step) == []
+
+
+def test_a_control_a_scrolling_table_cuts_is_not_evidence_of_the_screen(page):
+    """A table wider than its scroll box: the button at its far end shows only its first letters
+    in the picture, so it is no evidence until the table fits."""
+    step = {"labels": {"post": "btn.post"}, "capture": {"evidence": ["{post}"]}}
+    page.set_content(f"""<main id='t' style='width:600px'><div style='width:400px;overflow-x:auto'>
+        <table style='border-spacing:0'><tr><td style='padding:0'><div id='wide' style='width:370px'>Line</div></td>
+        <td style='padding:0'><button style='width:40px;padding:0;border:0;font-size:10px'>{_shown("btn.post")}</button></td>
+        </tr></table></div></main>""")
+    assert _evidence_missing(page, page.locator("#t"), step) == ["{post}"]
+    page.locator("#wide").evaluate("e => e.style.width = '100px'")
+    assert _evidence_missing(page, page.locator("#t"), step) == []
+
+
+def test_every_label_a_step_names_is_checked_as_evidence_of_the_screen(page):
+    """The step tells the reader to click {post}; its evidence lists only the heading."""
+    step = {"text": "Under {title}, click {post}.", "labels": {"title": "modules.title", "post": "btn.post"},
+            "capture": {"evidence": ["{title}"]}}
+    page.set_content(f"<main id='t'><h1>{_shown('modules.title')}</h1></main>")
+    assert _evidence_missing(page, page.locator("#t"), step) == ["{post}"]
+    page.locator("#t").evaluate("(e, label) => e.insertAdjacentHTML('beforeend', `<button>${label}</button>`)",
+                                _shown("btn.post"))
     assert _evidence_missing(page, page.locator("#t"), step) == []
 
 
