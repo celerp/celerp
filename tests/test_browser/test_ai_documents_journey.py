@@ -145,7 +145,8 @@ def _call(cap: dict, path: dict | None = None, body: dict | None = None, content
 
 # ── Receipts to bills ─────────────────────────────────────────────────────────
 
-def test_receipts_to_bills_journey(page: Page, ui_server, api):
+def test_receipts_to_bills_journey(page: Page, ui_server, company_with_books):
+    api = company_with_books
     with _fake_read():
         _open_chat(page, ui_server)
         _attach(page, [
@@ -184,10 +185,11 @@ def test_receipts_to_bills_journey(page: Page, ui_server, api):
     assert [v["name"] for v in vendors] == ["Quick Parts Ltd"]
 
 
-def test_receipts_bulk_table_journey(page: Page, ui_server, api):
+def test_receipts_bulk_table_journey(page: Page, ui_server, company_with_books):
     """Past five proposals the thread shows the review table: the flagged bill
     starts unticked, Confirm selected from the bulk toolbar applies the rest,
     and the tally links to exactly the drafts this batch created."""
+    api = company_with_books
     with _fake_read():
         _open_chat(page, ui_server)
         _attach(page, [

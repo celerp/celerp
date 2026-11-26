@@ -194,7 +194,8 @@ def test_sidebar_link_opens_thread(page: Page, ui_server):
     expect(page.locator(".ai-msg--user")).to_contain_text("how is my stock")
 
 
-def test_action_card_confirm_success(page: Page, ui_server, item_create_cap, api):
+def test_action_card_confirm_success(page: Page, ui_server, item_create_cap, company_with_books):
+    api = company_with_books
     _SCRIPT.append(_mutation(
         item_create_cap, {"name": "Agent Widget", "sell_by": "piece"},
         "I'll add that once you confirm.",
@@ -217,7 +218,7 @@ def test_action_card_confirm_success(page: Page, ui_server, item_create_cap, api
     assert "Agent Widget" in names
 
 
-def test_action_card_confirm_twice_shows_expired(page: Page, ui_server, item_create_cap):
+def test_action_card_confirm_twice_shows_expired(page: Page, ui_server, item_create_cap, company_with_books):
     _SCRIPT.append(_mutation(
         item_create_cap, {"name": "Twice Widget", "sell_by": "piece"},
         "Confirm to add it.",
@@ -248,7 +249,7 @@ def test_action_card_confirm_twice_shows_expired(page: Page, ui_server, item_cre
     assert "already handled or has expired" in resp.text()
 
 
-def test_action_card_dismiss_removes_card(page: Page, ui_server, item_create_cap):
+def test_action_card_dismiss_removes_card(page: Page, ui_server, item_create_cap, company_with_books):
     _SCRIPT.append(_mutation(
         item_create_cap, {"name": "Dismissed Widget", "sell_by": "piece"},
         "Confirm to add it.",
@@ -298,7 +299,7 @@ _VIEWPORTS = [(1440, 900), (390, 844)]
 
 
 @pytest.mark.parametrize("width,height", _VIEWPORTS)
-def test_no_horizontal_overflow_at_1440_and_390(page: Page, ui_server, item_create_cap,
+def test_no_horizontal_overflow_at_1440_and_390(page: Page, ui_server, item_create_cap, company_with_books,
                                                  width, height):
     page.set_viewport_size({"width": width, "height": height})
     _SCRIPT.append(_mutation(
@@ -341,7 +342,7 @@ def test_reply_table_renders_inside_its_bubble(page: Page, ui_server, width, hei
     assert overflow <= 0, f"horizontal overflow of {overflow}px at {width}x{height}"
 
 
-def test_action_card_within_message_column(page: Page, ui_server, item_create_cap):
+def test_action_card_within_message_column(page: Page, ui_server, item_create_cap, company_with_books):
     _SCRIPT.append(_mutation(
         item_create_cap, {"name": "Column Widget", "sell_by": "piece"},
         "I'll add that once you confirm.",
@@ -357,7 +358,7 @@ def test_action_card_within_message_column(page: Page, ui_server, item_create_ca
     assert card_box["x"] + card_box["width"] <= main_box["x"] + main_box["width"] + 2
 
 
-def test_a_proposal_card_that_arrives_is_scrolled_into_view_to_its_foot(page: Page, ui_server, item_create_cap):
+def test_a_proposal_card_that_arrives_is_scrolled_into_view_to_its_foot(page: Page, ui_server, item_create_cap, company_with_books):
     """A card lands in the thread at the question's poll; the thread follows it to its foot,
     so Confirm and Dismiss are on screen, not under the composer. A reply that only answers
     keeps the thread at its foot the same way."""
@@ -480,7 +481,7 @@ def test_bulk_card_wide_records_scroll_inside_their_own_box_not_the_page(page: P
     assert overflow <= 0, f"horizontal overflow of {overflow}px"
 
 
-def test_bulk_confirm_updates_only_the_selected_row_whatever_the_call_ids_hold(page: Page, ui_server, item_create_cap,
+def test_bulk_confirm_updates_only_the_selected_row_whatever_the_call_ids_hold(page: Page, ui_server, item_create_cap, company_with_books,
                                                                                agent_caps, monkeypatch):
     """A model may name its tool calls with spaces and selector characters; the review
     table still swaps the outcome into the row that was confirmed and no other."""
