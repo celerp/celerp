@@ -9,7 +9,9 @@ the step is listed in _SHOWS_EMPTY_STATE, nor a record's internal id in place of
 With HELP_CAPTURE_WRITE=1 each step
 is written as a webp of the selector's element (its top 800 pixels when taller) carrying the
 capture marker, the only way a help image is made; the images are put in place when the run ends,
-except where the committed picture already shows the same screen (see _RENDER_NOISE).
+except where the committed picture already shows the same screen (see _RENDER_NOISE). Without it
+each step's picture is taken and compared, read-only, with the committed one (_FRESHNESS_SCALE),
+and a step whose committed picture shows another screen fails, naming the retake.
 """
 from __future__ import annotations
 
@@ -191,10 +193,16 @@ _FREE_EMAIL_QUOTA = 50
 # draw at once the moment its script defines it, in the capture's browser only.
 # A page an action opens in a new tab (a printable list) opens in the capture's own tab instead,
 # so the step pictures it.
+# The app's sans font is pinned to the one every committed picture was taken with, Liberation
+# Sans; its mono list ends in the generic monospace, DejaVu Sans Mono. CI installs both, so a
+# machine with other fonts renders the same picture and the freshness check holds.
 _CAPTURE_PAGE_SCRIPT = """Object.defineProperty(window, "Chart", {configurable: true,
   set(chart) { chart.defaults.animation = false;
                Object.defineProperty(window, "Chart", {value: chart, writable: true, configurable: true}); }});
-window.open = url => { location.assign(url); return null; };"""
+window.open = url => { location.assign(url); return null; };
+document.addEventListener("DOMContentLoaded", () => { const pin = document.createElement("style");
+  pin.textContent = ":root { --font: 'Liberation Sans', sans-serif; }";
+  document.head.append(pin); });"""
 # A step on the assistant's screen is taken with the AI subscription; the two that picture what a
 # company without it sees are listed as None.
 _SUBSCRIBED: dict[str, str | None] = {
@@ -605,7 +613,8 @@ async def seed_manufacturing(client: httpx.AsyncClient, auth: dict) -> None:
 
 async def seed_company_details(client: httpx.AsyncClient, auth: dict, today: date) -> None:
     """The company's own record with its billing and shipping addresses and a document on
-    file, and the opening balance date the tie-out report checks against."""
+    file, its books currency as company setup sets it (the assistant proposes no change
+    without one), and the opening balance date the tie-out report checks against."""
     company = await _ok(await client.get("/companies/me", headers=auth))
     own = company["settings"]["self_contact_id"]
     for kind in ("billing", "shipping"):
@@ -616,7 +625,7 @@ async def seed_company_details(client: httpx.AsyncClient, auth: dict, today: dat
         "file": ("business-registration.txt", b"Example Trading Co business registration\n", "text/plain")})
     assert r.status_code == 200, r.text
     await _ok(await client.patch("/companies/me/books", headers=auth,
-                                 json={"opening_balance_date": f"{today.year}-01-01"}))
+                                 json={"currency": "USD", "opening_balance_date": f"{today.year}-01-01"}))
 
 
 async def seed_ai_usage(company_id: str, user_id: str) -> None:
@@ -1108,12 +1117,22 @@ def _put_pictures_in_place():
 _RENDER_NOISE = 40
 
 
-def _same_picture(committed: bytes, taken: bytes) -> bool:
-    """True when ``taken`` shows what ``committed`` shows, apart from anti-aliasing noise."""
+# The read-only check compares 2x2 pixel averages: a font hinted a shade differently on another
+# machine stays inside _RENDER_NOISE there, while a changed word, number or control does not.
+_FRESHNESS_SCALE = 2
+
+
+def _same_picture(committed: bytes, taken: bytes, scale: int = 1) -> bool:
+    """True when ``taken`` shows what ``committed`` shows, apart from anti-aliasing noise, compared
+    as ``scale`` x ``scale`` pixel averages."""
     from PIL import Image
 
     with Image.open(io.BytesIO(committed)) as old, Image.open(io.BytesIO(taken)) as new:
-        return _same_pixels(old.convert("RGB"), new.convert("RGB"))
+        old, new = old.convert("RGB"), new.convert("RGB")
+        if scale > 1 and old.size == new.size:
+            size = (max(1, old.width // scale), max(1, old.height // scale))
+            old, new = old.resize(size, Image.BOX), new.resize(size, Image.BOX)
+        return _same_pixels(old, new)
 
 
 def _same_pixels(old, new) -> bool:
@@ -1124,7 +1143,8 @@ def _same_pixels(old, new) -> bool:
     return max(high for _, high in ImageChops.difference(old, new).getextrema()) <= _RENDER_NOISE
 
 
-def _write_image(target, path: Path, marker: str) -> None:
+def _picture(target, marker: str) -> bytes:
+    """The help image of ``target``: its top _MAX_HEIGHT pixels as a webp carrying ``marker``."""
     from PIL import Image
 
     with Image.open(io.BytesIO(target.screenshot(animations="disabled"))) as shot:
@@ -1139,9 +1159,7 @@ def _write_image(target, path: Path, marker: str) -> None:
         image.save(buf, "WEBP", quality=quality, method=6, exif=exif)
         if buf.tell() <= MAX_IMAGE_BYTES:
             break
-    # A retake that looks the same keeps the committed file only while it carries this marker.
-    if not (path.is_file() and _same_picture(path.read_bytes(), buf.getvalue()) and image_marker(path) == marker):
-        _TAKEN[path] = buf.getvalue()
+    return buf.getvalue()
 
 
 def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[str]) -> list[str]:
@@ -1173,9 +1191,15 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[s
     only = {"labels": step["labels"], "capture": {"evidence": [f"{{{name}}}" for name in elsewhere]}}
     if shown := sorted(set(only["capture"]["evidence"]) - set(_evidence_missing(demo_page, target, only))):
         return [f"listed in _NAMED_ELSEWHERE, yet in the picture: {shown}"]
+    page_id, n = step_id.rsplit("#", 1)
+    path, marker = help_page.help_dir / step["image"], capture_marker(page_id, int(n), step["capture"])
+    taken = _picture(target, marker)
     if _WRITE:
-        page_id, n = step_id.rsplit("#", 1)
-        _write_image(target, help_page.help_dir / step["image"], capture_marker(page_id, int(n), step["capture"]))
+        # A retake that looks the same keeps the committed file only while it carries this marker.
+        if not (path.is_file() and _same_picture(path.read_bytes(), taken) and image_marker(path) == marker):
+            _TAKEN[path] = taken
+    elif not (path.is_file() and _same_picture(path.read_bytes(), taken, _FRESHNESS_SCALE)):
+        return ["the committed picture no longer shows this screen: retake it with HELP_CAPTURE_WRITE=1"]
     return []
 
 
@@ -1236,6 +1260,9 @@ def test_a_retaken_picture_differing_only_by_anti_aliasing_keeps_the_committed_o
     assert _same_picture(committed, noise)
     assert not _same_picture(committed, changed)
     assert not _same_picture(committed, webp(lambda d: None, height=61))
+    # The read-only freshness check, at its coarser scale, still tells the changed number apart.
+    assert _same_picture(committed, noise, _FRESHNESS_SCALE)
+    assert not _same_picture(committed, changed, _FRESHNESS_SCALE)
 
 
 # Steps whose pictures are one visual (``_same_pixels``), each

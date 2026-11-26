@@ -366,3 +366,15 @@ async def test_ui_chip_bar_single_unit_and_no_pieces(monkeypatch):
         "pieces_total": None, "price_totals": {"Retail": 750}, "price_missing": {"Retail": 0},
     })
     assert chips == ["Items: 2", "Quantity (piece): 5", "Retail: $750.00"]
+
+
+async def test_units_are_reported_in_one_order_whatever_order_the_rows_come_in():
+    # The rows reach the totals in storage order, which an edit to any item changes; the chips
+    # must not swap places when it does.
+    from celerp_inventory.routes import result_aggregates
+
+    rows = [{"sell_by": "piece", "quantity": 3, "weight_unit": "gram", "weight": 1},
+            {"sell_by": "kg", "quantity": 2, "weight_unit": "carat", "weight": 4}]
+    totals = [result_aggregates(order, [], True, "USD", {}) for order in (rows, rows[::-1])]
+    for key in ("quantity_by_unit", "weight_by_unit"):
+        assert list(totals[0][key]) == list(totals[1][key]) == sorted(totals[0][key])

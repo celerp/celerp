@@ -1218,8 +1218,9 @@ def result_aggregates(
                 price_totals[name] += value
     return {
         "item_count": len(result),
-        "quantity_by_unit": {k: _unit_total(v, k, unit_map) for k, v in quantity_by_unit.items()},
-        "weight_by_unit": {k: _unit_total(v, k, unit_map) for k, v in weight_by_unit.items()},
+        # By unit name, never by the rows' storage order (which any item edit changes).
+        "quantity_by_unit": {k: _unit_total(v, k, unit_map) for k, v in sorted(quantity_by_unit.items())},
+        "weight_by_unit": {k: _unit_total(v, k, unit_map) for k, v in sorted(weight_by_unit.items())},
         "pieces_total": None if pieces_total is None else float(pieces_total),
         "price_totals": {k: to_stored_float(v) for k, v in price_totals.items()},
         "price_missing": price_missing,
