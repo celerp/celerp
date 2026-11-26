@@ -174,6 +174,7 @@ ALLOWED_DUPLICATES = {
            'default_modules/celerp-subscriptions/celerp_subscriptions/summary.py::_states'): _QUEUED,
     _group('ui/api_client.py::CallerMiddleware.__init__',
            'ui/app.py::CloseFormMiddleware.__init__',
+           'ui/app.py::CommercialMirrorMiddleware.__init__',
            'ui/app.py::ModuleGateMiddleware.__init__',
            'ui/app.py::NoStorePagesMiddleware.__init__',
            'ui/app.py::TokenRefreshMiddleware.__init__',

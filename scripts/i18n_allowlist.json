@@ -67,21 +67,6 @@
       "reason": "example credential sample (AWS docs value)"
     },
     {
-      "file": "ui/routes/auth.py",
-      "text": "Celerp",
-      "reason": "brand name in the logo image alt text"
-    },
-    {
-      "file": "ui/routes/setup.py",
-      "text": "Celerp",
-      "reason": "brand name in the logo image alt text"
-    },
-    {
-      "file": "ui/components/shell.py",
-      "text": "Celerp",
-      "reason": "brand name in the logo image alt text"
-    },
-    {
       "file": "ui/routes/stars.py",
       "text": "Celerp",
       "reason": "brand name (page title)"
