@@ -76,6 +76,7 @@ def _bare_floats(model) -> list[str]:
             return not any(getattr(m, "allow_inf_nan", None) is False for m in flat)
         return any(bare(arg) for arg in typing.get_args(annotation))
 
+    model.model_rebuild()  # an annotation that does not resolve fails here instead of reading as no float
     own = model.__dict__.get("__annotations__", {})
     if model.model_config.get("allow_inf_nan") is False:
         return []
@@ -124,6 +125,17 @@ def test_the_float_walk_sees_a_bare_float():
         text: str = ""
 
     assert _bare_floats(Line) == ["amount", "share"]
+
+
+def test_the_float_walk_refuses_a_size_it_cannot_resolve():
+    from pydantic import BaseModel
+    from pydantic.errors import PydanticUndefinedAnnotation
+
+    class Label(BaseModel):
+        width_mm: "Unresolved | None" = None  # noqa: F821
+
+    with pytest.raises(PydanticUndefinedAnnotation):
+        _bare_floats(Label)
 
 
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
