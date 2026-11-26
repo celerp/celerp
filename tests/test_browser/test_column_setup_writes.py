@@ -29,13 +29,9 @@ def inventory_key(page, ui_server, api):
 
 
 def _deliver(route, drop=False):
-    """Send a held request on to the server; its answer reaches the page unless ``drop``, or
-    the page has gone (a reset reloads it)."""
+    """Send a held request on to the server; its answer reaches the page unless ``drop``."""
     answer = route.fetch()
-    try:
-        route.abort() if drop else route.fulfill(response=answer)
-    except Exception:
-        pass
+    route.abort() if drop else route.fulfill(response=answer)
 
 
 def _held_until(page, held, n):

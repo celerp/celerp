@@ -6387,7 +6387,7 @@ def _not_applicable_cell(company: dict, item: dict, entity_id: str, field: str, 
     detail = out_of_category_refusal(category, field)
     fix = refusal_fix(detail)
     return not_applicable_cell(entity_id, field, P(
-        refusal_text(detail), *((" ", A(fix["label"], href=fix["href"])) if fix else ()), cls="cell-error"))
+        refusal_text(detail), *((" ", A(fix["label"], href=safe_url(fix["href"]))) if fix else ()), cls="cell-error"))
 
 
 def _resolve_field_def(

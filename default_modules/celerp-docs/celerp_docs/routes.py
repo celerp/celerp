@@ -11509,7 +11509,7 @@ async def _fulfill_lines_impl(
     if preview:
         # A lot carved off is new each time, so the preview names only the lots shipped whole.
         return {"fulfillment_status": doc_fulfillment_status, "taken_from": taken_from, "skipped": left,
-                "fulfilled": sorted(whole)}
+                "fulfilled": [proj.entity_id for _idx, proj, _take, full in shipments if full]}
 
     # A part of a lot ships as its own lot carved off first; a line whose bound lot is
     # carved names the carved part from then on.

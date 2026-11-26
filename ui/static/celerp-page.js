@@ -293,7 +293,7 @@
     if (!Object.keys(found).length) return;
     columnLayouts[table] = Object.assign({}, columnLayouts[table], found);
     Object.keys(found).forEach(function (part) {
-      var change = {}; change[table] = {}; change[table][part] = found[part];
+      var entry = {}, change = {}; entry[part] = found[part]; change[table] = entry;
       postColumns(change).then(function (r) { if (r.ok) localStorage.removeItem(keys[part]); }).catch(function () {});
     });
   }

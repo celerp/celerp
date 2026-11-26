@@ -48,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal_detail
 from celerp.ai.files import XLSX_CONTENT_TYPE
-from celerp.ai.service import PROPOSAL_TTL_S, books_currency_refusal
+from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.agent_markers import agent_excluded
 from celerp.ai.tools import SHOWN_ONCE
 from celerp.config import settings
@@ -1031,6 +1031,7 @@ async def _run_confirmed_action(
         return outcome
     # Held to the rule it was proposed under, before the claim, so the card stays pending
     # and confirms once the currency is set.
+    from celerp.ai.service import books_currency_refusal
     refused = books_currency_refusal(capabilities.get(dependency_record["name"]), company_settings)
     if refused is not None:
         return {"tool_call_id": tool_call_id, "name": dependency_record["name"],

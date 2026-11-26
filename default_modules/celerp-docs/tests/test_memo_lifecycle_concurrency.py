@@ -1030,7 +1030,7 @@ async def test_concurrent_invoice_fulfillment_cannot_double_claim_shared_lot(_db
         guard = asyncio.Lock()
         arrivals = 0
 
-        async def synchronized_lock(session, cid, item_ids):
+        async def synchronized_lock(session, cid, item_ids, **kw):
             nonlocal arrivals
             async with guard:
                 arrivals += 1
@@ -1042,7 +1042,7 @@ async def test_concurrent_invoice_fulfillment_cannot_double_claim_shared_lot(_db
                 await asyncio.wait_for(ready.wait(), timeout=1)
             except TimeoutError:
                 pass
-            return await original_lock(session, cid, item_ids)
+            return await original_lock(session, cid, item_ids, **kw)
 
         monkeypatch.setattr(doc_routes, "_lock_item_sku_lots", synchronized_lock)
         outcomes: dict[str, object] = {}
