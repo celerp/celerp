@@ -79,7 +79,7 @@ from celerp.services.document_lines import (
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
-from celerp.services.currencies import CURRENCY_CODES, require_currency_code
+from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import (
@@ -2141,7 +2141,6 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_credit_over_invoice"))
     bill = await supplier_credit_original(session, company_id, payload.model_dump(), for_update=True)
-    require_currency_code(payload.currency)
 
     _assert_date_order(payload.model_dump(exclude_none=True))
 
@@ -2429,7 +2428,6 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     from celerp.services import auto_je
 
     fields_changed = dict(payload.fields_changed)
-    require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
     refuse_malformed_input({k: (v or {}).get("new") for k, v in fields_changed.items()})
     if scan_runs is not None:
@@ -9500,7 +9498,6 @@ async def create_list_record(payload: ListCreatePayload, company_id, role: str, 
 
     if (done := await _replay()) is not None:
         return done
-    require_currency_code(payload.currency)
     refuse_malformed_input({"line_items": payload.line_items})
     # The contact first, as every contact-reference writer takes it (its lock takes the
     # company lock, then the contact row).
@@ -9563,7 +9560,6 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
                            *, origin: str | None = None) -> dict:
     """Apply a List edit without committing, so an import can make it part of a larger unit."""
     fields_changed = dict(payload.fields_changed)
-    require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
     refuse_malformed_input({k: (v or {}).get("new") for k, v in fields_changed.items()})
     selecting = "contact_id" in fields_changed

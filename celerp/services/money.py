@@ -44,7 +44,7 @@ def round_basis(v: _MoneyInput) -> float:
 
 def currency_dp(currency: str) -> int:
     """Return ISO 4217 decimal places for a currency code. Unknown codes default to 2."""
-    return CURRENCY_DP.get((currency or "").upper(), DEFAULT_DP)
+    return CURRENCY_DP.get(currency.upper(), DEFAULT_DP) if isinstance(currency, str) else DEFAULT_DP
 
 
 def to_decimal(v: _MoneyInput) -> Decimal:

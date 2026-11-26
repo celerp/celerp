@@ -37,7 +37,7 @@ KNOWN_CURRENCY_CODES: frozenset[str] = CURRENCY_CODES | frozenset(HISTORICAL)
 
 def require_currency_code(code: str | None) -> None:
     """Refuse a currency outside the supported list at a write boundary. Empty means no currency."""
-    if code and code not in CURRENCY_CODES:
+    if code and (not isinstance(code, str) or code not in CURRENCY_CODES):
         raise HTTPException(status_code=422, detail=catalog_refusal("error.invalid_currency", value=code))
 
 
