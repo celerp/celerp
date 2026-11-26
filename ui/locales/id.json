@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "Peran Anda tidak dapat melakukan langkah ini di halaman {place}. Minta bantuan seseorang dengan salah satu peran berikut: {roles}.",
   "inventory.also_produces": "Juga menghasilkan",
   "inventory.cost_share": "Porsi biaya (%)",
-  "inventory.main_share": "Produk utama: {share}%"
+  "inventory.main_share": "Produk utama: {share}%",
+  "item.attribute_not_in_category": "Kategori {category} tidak memiliki atribut {attributes}. Tambahkan ke {category} di Pengaturan > Persediaan > Kategori, atau biarkan kosong.",
+  "table.not_applicable": "t/a",
+  "table.not_applicable_hint": "Kategori barang ini tidak memakai atribut ini. Klik dua kali untuk melihat alasannya."
 }

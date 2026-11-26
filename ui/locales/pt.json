@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "Sua função não pode realizar esta etapa na página {place}. Peça a alguém com uma destas funções: {roles}.",
   "inventory.also_produces": "Também produz",
   "inventory.cost_share": "Participação no custo (%)",
-  "inventory.main_share": "Produto principal: {share}%"
+  "inventory.main_share": "Produto principal: {share}%",
+  "item.attribute_not_in_category": "A categoria {category} não tem o atributo {attributes}. Adicione-o a {category} em Configurações > Estoque > Categorias, ou deixe-o vazio.",
+  "table.not_applicable": "n.a.",
+  "table.not_applicable_hint": "A categoria deste item não usa este atributo. Clique duas vezes para ver o motivo."
 }

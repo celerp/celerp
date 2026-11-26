@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "Your role cannot take this step on the {place} page. Ask someone with one of these roles: {roles}.",
   "inventory.also_produces": "Also produces",
   "inventory.cost_share": "Cost share (%)",
-  "inventory.main_share": "Main product: {share}%"
+  "inventory.main_share": "Main product: {share}%",
+  "item.attribute_not_in_category": "The {category} category has no {attributes} attribute. Add it to {category} in Settings > Inventory > Categories, or leave it empty.",
+  "table.not_applicable": "n/a",
+  "table.not_applicable_hint": "This item's category does not use this attribute. Double-click to see why."
 }

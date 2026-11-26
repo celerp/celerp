@@ -57,7 +57,7 @@ from ui.module_slots import (
     connected_connector_ids, module_contribution_visible, required_connectors, visible_slot_contributions,
 )
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, SYSTEM_ITEM_KEYS, builtin_label_keys, cost_columns
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, SYSTEM_ITEM_KEYS, builtin_label_keys, cost_columns, out_of_category_keys, out_of_category_refusal
 from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, price_lists_in, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
@@ -1146,6 +1146,10 @@ def _inventory_table(
         for _it in items:
             if is_draft(_it):
                 _it["_row_editable_keys"] = _draft_unlocked
+    # A category attribute a row's category does not define reads as not applicable there.
+    for _it in items:
+        if _na := out_of_category_keys(_cs, _it.get("category") or ""):
+            _it["_not_applicable_keys"] = _na
     # Derived read-only money columns, appended to the schema whenever their scope is active
     # (the same rule as _export_columns), so the column set follows from the page state alone
     # and a single re-rendered row lines up with the header the page drew:
@@ -2526,6 +2530,8 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                                 cell_type=_f.get("type", "text"), editable=False, domain="item_status")
+        if not_applicable := _not_applicable_cell(company, item, entity_id, field, explain=True):
+            return not_applicable
         if field in _locked_edit_keys(schema, _get_role(request), company.get("settings") or {}, is_draft=is_draft(item)):
             # Amount fields and sell_by (edit_inventory_amounts) and prices
             # (set_inventory_prices): this GET is the single edit-entry chokepoint, so
@@ -2642,6 +2648,8 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
         except APIError as e:
             return P(e.detail, cls="cell-error")
         locations = locs.get("items", [])
+        if not_applicable := _not_applicable_cell(company, item, entity_id, field):
+            return not_applicable
         # ESC restore inherits the same read-only state as the static cell, so a
         # restored gated cell never re-offers click-to-edit without the permission.
         schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=is_draft(item))
@@ -6360,6 +6368,26 @@ def _apply_edit_permission(schema: list[dict], role: str, settings: dict, *, is_
     the restriction, so no gated cell renders as click-to-edit without the permission."""
     locked = _locked_edit_keys(schema, role, settings, is_draft=is_draft)
     return [{**f, "editable": False} if f.get("key") in locked else f for f in schema]
+
+
+def _not_applicable_cell(company: dict, item: dict, entity_id: str, field: str, *, explain: bool = False) -> FT | None:
+    """The not-applicable cell when ``field`` is a category attribute the item's category
+    does not define (field_schema.out_of_category_keys), else None. ``explain`` (the cell
+    opened) holds the refusal a value there gets, with the link to the page that adds the
+    attribute to the category, instead of an editor."""
+    from ui.components.shell import refusal_fix
+    from ui.components.table import not_applicable_cell
+    from ui.i18n import refusal_text
+
+    category = item.get("category") or ""
+    if field not in out_of_category_keys(company.get("settings") or {}, category):
+        return None
+    if not explain:
+        return not_applicable_cell(entity_id, field)
+    detail = out_of_category_refusal(category, field)
+    fix = refusal_fix(detail)
+    return not_applicable_cell(entity_id, field, P(
+        refusal_text(detail), *((" ", A(fix["label"], href=fix["href"])) if fix else ()), cls="cell-error"))
 
 
 def _resolve_field_def(

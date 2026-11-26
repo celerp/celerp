@@ -151,7 +151,7 @@ async def test_existing_custom_category_schema_not_overwritten(client):
     h = await _owner(client)
     custom = [{"key": "my_field", "label": "My field", "type": "text"}]
     await _patch_settings(client, h, {"category_schemas": {"diamond": custom}})
-    await _set(client, h, "gemstones")
+    assert (await _set(client, h, "gemstones")).status_code == 200
     schemas = (await _settings(client, h))["category_schemas"]
     assert [(f["key"], f["label"], f["type"]) for f in schemas["diamond"]] == [("my_field", "My field", "text")]
     assert "ruby" in schemas

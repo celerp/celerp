@@ -599,6 +599,7 @@ async def _item_applied(session, entry: LedgerEntry, transition, held_lot_carve:
     # output, for one); a handler that cannot be resolved fails the event, never skips it.
     for handler in sorted({c["handler"] for c in get_slot("item_lineage_guard")}):
         await resolve_handler(handler)(session=session, entry=entry, transition=transition)
+    await _refuse_out_of_category_attributes(session, entry, transition)
     await _refuse_held_lot_change(session, entry, transition, held_lot_carve)
     if units_leaving(transition.before, transition.after) > 1e-9:
         from celerp.services.auto_je import recognized_cogs, refuse_stranding_set_aside
@@ -629,6 +630,25 @@ async def _item_applied(session, entry: LedgerEntry, transition, held_lot_carve:
     # the caller the event will reach a connected store.
     entry.outbound_queued = await enqueue_item_change(session, entry, previous_state=transition.before)
     await session.flush()
+
+
+async def _refuse_out_of_category_attributes(session, entry: LedgerEntry, transition) -> None:
+    """The item's category attributes after the write, judged against the attributes it
+    held before, or for a new lot those of the lots it was made from (``parent_id`` of a
+    split, transform or carve, ``merged_from`` of a merge), so a copy of a lot never
+    fails on a value the lot already had (field_schema.refuse_out_of_category_attributes)."""
+    from celerp.models.company import Company
+    from celerp.services.field_schema import refuse_out_of_category_attributes
+
+    company = await session.get(Company, entry.company_id)
+    meta = entry.metadata_ or {}
+    sources = [meta.get("parent_id"), *(meta.get("merged_from") or [])]
+    held = [((transition.before or {}).get("attributes") or {})]
+    for source in filter(None, sources):
+        row = await session.get(Projection, (entry.company_id, source))
+        if row is not None:
+            held.append((row.state or {}).get("attributes") or {})
+    refuse_out_of_category_attributes(dict(company.settings or {}) if company else {}, transition.after, held)
 
 
 async def _check_asset_lines(session, kwargs: dict) -> None:

@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "لا يمكن لدورك تنفيذ هذه الخطوة في صفحة {place}. اطلب ذلك من شخص لديه أحد هذه الأدوار: {roles}.",
   "inventory.also_produces": "ينتج أيضًا",
   "inventory.cost_share": "حصة من التكلفة (%)",
-  "inventory.main_share": "المنتج الرئيسي: {share}%"
+  "inventory.main_share": "المنتج الرئيسي: {share}%",
+  "item.attribute_not_in_category": "لا تحتوي الفئة {category} على السمة {attributes}. أضفها إلى {category} من الإعدادات > المخزون > الفئات، أو اتركها فارغة.",
+  "table.not_applicable": "غير منطبق",
+  "table.not_applicable_hint": "فئة هذا الصنف لا تستخدم هذه السمة. انقر نقرًا مزدوجًا لمعرفة السبب."
 }

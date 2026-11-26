@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "Ihre Rolle kann diesen Schritt auf der Seite {place} nicht ausführen. Bitten Sie jemanden mit einer dieser Rollen: {roles}.",
   "inventory.also_produces": "Erzeugt außerdem",
   "inventory.cost_share": "Kostenanteil (%)",
-  "inventory.main_share": "Hauptprodukt: {share}%"
+  "inventory.main_share": "Hauptprodukt: {share}%",
+  "item.attribute_not_in_category": "Die Kategorie {category} hat kein Attribut {attributes}. Fügen Sie es {category} unter Einstellungen > Lager > Kategorien hinzu oder lassen Sie es leer.",
+  "table.not_applicable": "n. z.",
+  "table.not_applicable_hint": "Die Kategorie dieses Artikels verwendet dieses Attribut nicht. Doppelklicken Sie, um den Grund zu sehen."
 }

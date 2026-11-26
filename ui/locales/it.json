@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "Il tuo ruolo non può eseguire questo passaggio nella pagina {place}. Chiedi a qualcuno con uno di questi ruoli: {roles}.",
   "inventory.also_produces": "Produce anche",
   "inventory.cost_share": "Quota di costo (%)",
-  "inventory.main_share": "Prodotto principale: {share}%"
+  "inventory.main_share": "Prodotto principale: {share}%",
+  "item.attribute_not_in_category": "La categoria {category} non ha l'attributo {attributes}. Aggiungilo a {category} in Impostazioni > Magazzino > Categorie, oppure lascialo vuoto.",
+  "table.not_applicable": "n.a.",
+  "table.not_applicable_hint": "La categoria di questo articolo non usa questo attributo. Fai doppio clic per vedere perché."
 }

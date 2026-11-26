@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "Vai trò của bạn không thể thực hiện bước này trên trang {place}. Hãy nhờ người có một trong các vai trò sau: {roles}.",
   "inventory.also_produces": "Cũng tạo ra",
   "inventory.cost_share": "Tỷ lệ chi phí (%)",
-  "inventory.main_share": "Sản phẩm chính: {share}%"
+  "inventory.main_share": "Sản phẩm chính: {share}%",
+  "item.attribute_not_in_category": "Danh mục {category} không có thuộc tính {attributes}. Hãy thêm thuộc tính này vào {category} trong Cài đặt > Tồn kho > Danh mục, hoặc để trống.",
+  "table.not_applicable": "k/á",
+  "table.not_applicable_hint": "Danh mục của mặt hàng này không dùng thuộc tính này. Nhấp đúp để xem lý do."
 }

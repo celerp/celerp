@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "Su rol no puede realizar este paso en la página {place}. Pídaselo a alguien con uno de estos roles: {roles}.",
   "inventory.also_produces": "Produce además",
   "inventory.cost_share": "Participación en el costo (%)",
-  "inventory.main_share": "Producto principal: {share}%"
+  "inventory.main_share": "Producto principal: {share}%",
+  "item.attribute_not_in_category": "La categoría {category} no tiene el atributo {attributes}. Añádalo a {category} en Configuración > Inventario > Categorías, o déjelo vacío.",
+  "table.not_applicable": "no aplica",
+  "table.not_applicable_hint": "La categoría de este artículo no usa este atributo. Haga doble clic para ver por qué."
 }

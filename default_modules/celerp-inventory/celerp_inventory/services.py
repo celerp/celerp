@@ -4161,10 +4161,10 @@ async def import_items(
     bound commit has already made and checked it against its preview, otherwise
     build_import_plan run here. Any row error raises ImportRejected and nothing is
     written. A clean import then creates any missing named locations and fills
-    their ids into the planned records, writes the records in chunks of IMPORT_CHUNK into
-    one Import History entry named by the operation key, merges newly discovered
-    attribute columns into the company's category schemas (gated on
-    manage_company_settings), and commits once. Every item import transport ends
+    their ids into the planned records, merges newly discovered attribute columns into
+    the company's category schemas (gated on manage_company_settings), writes the
+    records in chunks of IMPORT_CHUNK into one Import History entry named by the
+    operation key, and commits once. Every item import transport ends
     here.
 
     The company lock is taken before the plan is made (the bound transports take
@@ -4200,6 +4200,16 @@ async def import_items(
             rec["idempotency_key"] = rec["data"]["idempotency_key"] = key
             rec["entity_id"] = import_created_item_id(company_id, key)
 
+    # Mutating category schemas is a settings change, so the caller's role must
+    # carry manage_company_settings; without it the merge is skipped. It comes before
+    # the writes, so an item may take the attributes its import adds to its category.
+    schema_changed = False
+    if plan.records and role_has_permission(settings, role, "manage_company_settings"):
+        written = [plan.rows[n - 1] for n in plan.record_rows]
+        inferred = _infer_category_schemas(_collect_category_attributes(written))
+        if inferred:
+            schema_changed = await _merge_category_schemas(session, company_id, inferred)
+
     user = SimpleNamespace(id=actor_id)
     outcome = ImportOutcome()
     batch_id: str | None = None
@@ -4217,15 +4227,6 @@ async def import_items(
         batch_id = chunk_batch_id or batch_id
     await recognize_opening_lots(
         session, company_id, [r.entity_id for r in outcome.records if r.status == "created"], actor_id, batch_id)
-
-    # Mutating category schemas is a settings change, so the caller's role must
-    # carry manage_company_settings; without it the merge is skipped.
-    schema_changed = False
-    if plan.records and role_has_permission(settings, role, "manage_company_settings"):
-        written = [plan.rows[n - 1] for n in plan.record_rows]
-        inferred = _infer_category_schemas(_collect_category_attributes(written))
-        if inferred:
-            schema_changed = await _merge_category_schemas(session, company_id, inferred)
 
     counts = outcome.route_counts(cap_rejections=False)
     reversible = await _record_reversible(

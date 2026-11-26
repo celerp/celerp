@@ -501,3 +501,29 @@ async def test_confirming_the_second_card_runs_the_second_change(client, session
     assert (await _record(session, body["id"], "k2"))["status"] == "completed"
     assert (await _record(session, body["id"], "k1")).get("status", "pending") == "pending"
     assert await _location_count(client, admin) == before - 1
+
+
+# -- An item write the item's category does not allow ---------------------------------
+
+@pytest.mark.asyncio
+async def test_an_item_edit_with_another_categorys_attribute_is_refused_on_the_card(client, session, agent_caps, ai_session):
+    """The assistant edits items through the same write as the item screen, so a value for
+    an attribute the item's category does not define is refused with the same message."""
+    ctx = await perm_setup(client, session, currency="USD")
+    admin = ctx["admin_h"]
+    for category, key in (("cat_gems", "origin"), ("cat_boxes", "material")):
+        r = await client.patch(f"/companies/me/category-schema/{category}", headers=admin,
+                               json={"fields": [{"key": key, "label": key.title(), "type": "text"}]})
+        assert r.status_code == 200, r.text
+    r = await client.post("/items", headers=admin, json={
+        "sku": "AI-CAT", "name": "Box", "quantity": 1, "sell_by": "piece", "category": "cat_boxes"})
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    op = _op(agent_caps, "PATCH", "/items/{entity_id}")
+    conv_id, message_id, call_id = await _propose(client, admin, ScriptedModel(_call(op, {
+        "path": {"entity_id": item_id},
+        "body": {"fields_changed": {"origin": {"old": None, "new": "Burma"}}}}, "cat1")))
+    answer = (await _confirm(client, admin, conv_id, message_id, call_id)).json()
+    assert answer["ok"] is False and answer["error"]["message_key"] == "item.attribute_not_in_category", answer
+    item = (await client.get(f"/items/{item_id}", headers=admin)).json()
+    assert "origin" not in (item.get("attributes") or {}) and "origin" not in item

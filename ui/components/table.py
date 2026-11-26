@@ -1402,6 +1402,24 @@ def display_cell(
     )
 
 
+def not_applicable_cell(entity_id: str, field: str, message: FT | str = "") -> FT:
+    """The cell of an attribute the row's category does not define (field_schema.
+    out_of_category_keys): a not-applicable mark that, opened like any cell, shows
+    ``message``, the refusal a value there would get, instead of an editor."""
+    _cell_id = f"cell-{entity_id.replace(':', '-')}-{re.sub(r'[^A-Za-z0-9_-]', '_', field)}"
+    return Td(
+        message or Span(t("table.not_applicable"), cls="cell-na"),
+        id=_cell_id,
+        title=t("table.not_applicable_hint"),
+        hx_get=f"/api/items/{entity_id}/field/{field}/edit",
+        hx_target="this",
+        hx_swap="outerHTML",
+        hx_trigger="dblclick",
+        cls="cell cell--clickable cell--na",
+        data_col=field,
+    )
+
+
 def table_columns(schema: list[dict], show_cols: list[str] | None = None,
                   hidden_fields: set | None = None) -> list[dict]:
     """The columns ``data_table`` renders, in order.
@@ -1535,11 +1553,15 @@ def data_row(
     # that render click-to-edit even when the schema marked them read-only
     # (used for draft items, whose amount fields stay authorable until commit).
     row_editable = set(row.get("_row_editable_keys") or ())
+    # An attribute the row's category does not define shows a not-applicable mark
+    # (_not_applicable_keys, set by the inventory list from field_schema.out_of_category_keys).
+    not_applicable = set(row.get("_not_applicable_keys") or ())
     return Tr(
         *checkbox_td,
         *match_td,
         *[
-            cell_renderers[f["key"]](entity_id, row) if cell_renderers and f["key"] in cell_renderers
+            not_applicable_cell(entity_id, f["key"]) if f["key"] in not_applicable
+            else cell_renderers[f["key"]](entity_id, row) if cell_renderers and f["key"] in cell_renderers
             else display_cell(
                 entity_id=entity_id,
                 field=f["key"],

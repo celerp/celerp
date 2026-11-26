@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "Votre rôle ne permet pas de faire cette étape sur la page {place}. Demandez à une personne ayant l'un de ces rôles : {roles}.",
   "inventory.also_produces": "Produit aussi",
   "inventory.cost_share": "Part de coût (%)",
-  "inventory.main_share": "Produit principal : {share} %"
+  "inventory.main_share": "Produit principal : {share} %",
+  "item.attribute_not_in_category": "La catégorie {category} n'a pas d'attribut {attributes}. Ajoutez-le à {category} dans Paramètres > Stocks > Catégories, ou laissez-le vide.",
+  "table.not_applicable": "s.o.",
+  "table.not_applicable_hint": "La catégorie de cet article n'utilise pas cet attribut. Double-cliquez pour savoir pourquoi."
 }

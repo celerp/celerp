@@ -384,6 +384,8 @@ REFUSAL_FIXES = {
     "error.recon_period_changed": ("/accounting/reconcile/bank/{bank_id}?view=posted", "recon.view_completed",
                                    "manage_accounting"),
     "reconciliation.no_client_user": ("/settings/general?tab=users", "settings.tab_users", "manage_company_settings"),
+    "item.attribute_not_in_category": ("/settings/inventory?tab=categories", "settings.tab_categories",
+                                       "manage_company_settings"),
 }
 # The settings of the company the current request acts in (get_auth_context): who holds a
 # fix page's permission there. Outside a request the registry's default grants answer.

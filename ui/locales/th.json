@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "บทบาทของคุณไม่สามารถทำขั้นตอนนี้ในหน้า {place} ได้ โปรดขอให้ผู้ที่มีบทบาทใดบทบาทหนึ่งต่อไปนี้ดำเนินการ: {roles}",
   "inventory.also_produces": "ผลิตได้ด้วย",
   "inventory.cost_share": "สัดส่วนต้นทุน (%)",
-  "inventory.main_share": "ผลิตภัณฑ์หลัก: {share}%"
+  "inventory.main_share": "ผลิตภัณฑ์หลัก: {share}%",
+  "item.attribute_not_in_category": "หมวดหมู่ {category} ไม่มีคุณสมบัติ {attributes} เพิ่มคุณสมบัตินี้ให้ {category} ได้ที่ การตั้งค่า > สินค้าคงคลัง > หมวดหมู่ หรือเว้นว่างไว้",
+  "table.not_applicable": "ไม่ใช้",
+  "table.not_applicable_hint": "หมวดหมู่ของสินค้านี้ไม่ใช้คุณสมบัตินี้ ดับเบิลคลิกเพื่อดูเหตุผล"
 }

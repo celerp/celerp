@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "あなたのロールでは{place}ページでこの操作を行えません。次のいずれかのロールを持つ人に依頼してください: {roles}。",
   "inventory.also_produces": "併産品",
   "inventory.cost_share": "原価配分 (%)",
-  "inventory.main_share": "主製品: {share}%"
+  "inventory.main_share": "主製品: {share}%",
+  "item.attribute_not_in_category": "カテゴリー {category} には属性 {attributes} がありません。設定 > 在庫 > カテゴリー で {category} に追加するか、空欄のままにしてください。",
+  "table.not_applicable": "対象外",
+  "table.not_applicable_hint": "この品目のカテゴリーはこの属性を使いません。ダブルクリックで理由を表示します。"
 }

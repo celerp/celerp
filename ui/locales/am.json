@@ -9342,5 +9342,8 @@
   "error.fix_ask_roles": "የእርስዎ ሚና ይህን እርምጃ በ{place} ገጽ ላይ መውሰድ አይችልም። ከእነዚህ ሚናዎች አንዱ ያለውን ሰው ይጠይቁ፦ {roles}።",
   "inventory.also_produces": "በተጨማሪ ያመርታል",
   "inventory.cost_share": "የወጪ ድርሻ (%)",
-  "inventory.main_share": "ዋና ምርት: {share}%"
+  "inventory.main_share": "ዋና ምርት: {share}%",
+  "item.attribute_not_in_category": "የ{category} ምድብ {attributes} የሚባል መለያ የለውም። በቅንብሮች > ክምችት > ምድቦች ውስጥ ወደ {category} ያክሉት፣ ወይም ባዶ ይተዉት።",
+  "table.not_applicable": "አይመለከትም",
+  "table.not_applicable_hint": "የዚህ ዕቃ ምድብ ይህን መለያ አይጠቀምም። ምክንያቱን ለማየት ሁለቴ ጠቅ ያድርጉ።"
 }

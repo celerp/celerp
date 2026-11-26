@@ -57,7 +57,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Jasmine rice 25kg bag. Remove before going live.",
             "barcode": "2010010012503",
-            "attributes": {"variety": "Jasmine", "origin": "Thailand", "moisture_pct": "14"},
+            "attributes": {"variety": "Jasmine", "moisture_pct": "14"},
         },
         {
             "sku": "DEMO-AGR-002",
@@ -69,7 +69,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Fresh cherry tomatoes 1kg punnet. Remove before going live.",
             "barcode": "2010020010012",
-            "attributes": {"variety": "Cherry", "grade": "Class I", "origin": "Local"},
+            "attributes": {"grade": "Class I"},
         },
         {
             "sku": "DEMO-AGR-003",
@@ -81,7 +81,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Balanced NPK fertilizer 50kg. Remove before going live.",
             "barcode": "2010030050003",
-            "attributes": {"npk_ratio": "15-15-15", "form": "Granular", "weight_kg": "50"},
+            "attributes": {"npk_ratio": "15-15-15"},
         },
         {
             "sku": "DEMO-AGR-004",
@@ -93,7 +93,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] High-yield sunflower seeds 20kg. Remove before going live.",
             "barcode": "2010040020004",
-            "attributes": {"variety": "High-Oleic", "germination_pct": "95", "weight_kg": "20"},
+            "attributes": {"variety": "High-Oleic", "germination_pct": "95"},
         },
         {
             "sku": "DEMO-AGR-005",
@@ -105,7 +105,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Dairy cattle feed pellets 25kg bag. Remove before going live.",
             "barcode": "2010050025005",
-            "attributes": {"species": "Dairy Cattle", "protein_pct": "18", "weight_kg": "25"},
+            "attributes": {"species_target": "Dairy", "weight_kg": "25"},
         },
     ],
     "artwork": [
@@ -119,7 +119,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Original oil painting on canvas. Remove before going live.",
             "barcode": "2020010001001",
-            "attributes": {"medium": "Oil on Canvas", "dimensions_cm": "90 x 120", "year": "2024"},
+            "attributes": {"medium": "Oil on Canvas", "dimensions_cm": "90 x 120", "year_created": "2024"},
         },
         {
             "sku": "DEMO-ART-002",
@@ -131,7 +131,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Limited edition bronze sculpture. Remove before going live.",
             "barcode": "2020020001002",
-            "attributes": {"material": "Bronze", "edition": "3/12", "height_cm": "45"},
+            "attributes": {"edition": "3/12", "height_cm": "45"},
         },
         {
             "sku": "DEMO-ART-003",
@@ -143,7 +143,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Signed limited edition lithograph. Remove before going live.",
             "barcode": "2020030001003",
-            "attributes": {"technique": "Lithograph", "edition": "5/50", "dimensions_cm": "60 x 80"},
+            "attributes": {"technique": "Lithograph", "edition": "5/50"},
         },
         {
             "sku": "DEMO-ART-004",
@@ -167,7 +167,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Original charcoal drawing on paper. Remove before going live.",
             "barcode": "2020050001005",
-            "attributes": {"medium": "Charcoal on Paper", "dimensions_cm": "40 x 50", "year": "2024"},
+            "attributes": {"medium": "Charcoal on Paper", "dimensions_cm": "40 x 50", "year_created": "2024"},
         },
         {
             "sku": "DEMO-ART-006",
@@ -179,7 +179,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Hand-glazed ceramic decorative vase. Remove before going live.",
             "barcode": "2020060001006",
-            "attributes": {"material": "Glazed Ceramic", "height_cm": "32", "style": "Contemporary"},
+            "attributes": {"height_cm": "32"},
         },
     ],
     "automotive": [
@@ -193,7 +193,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Front brake pad set, fits most sedans. Remove before going live.",
             "barcode": "2030010000015",
-            "attributes": {"grade": "OEM", "position": "Front", "material": "Semi-Metallic"},
+            "attributes": {"position": "Front"},
         },
         {
             "sku": "DEMO-AUTO-002",
@@ -217,7 +217,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] All-season tire 205/55R16. Remove before going live.",
             "barcode": "2030030000037",
-            "attributes": {"size": "205/55R16", "season": "All-Season", "load_index": "91"},
+            "attributes": {"size": "205/55R16", "load_index": "91"},
         },
         {
             "sku": "DEMO-AUTO-004",
@@ -241,7 +241,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Front bumper cover, primed and ready to paint. Remove before going live.",
             "barcode": "2030050000059",
-            "attributes": {"position": "Front", "finish": "Primed", "material": "ABS Plastic"},
+            "attributes": {"position": "Front"},
         },
         {
             "sku": "DEMO-AUTO-006",
@@ -253,7 +253,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] 12V alternator, 120A output. Remove before going live.",
             "barcode": "2030060000060",
-            "attributes": {"voltage": "12V", "output_a": "120", "grade": "Aftermarket"},
+            "attributes": {"output_a": "120"},
         },
         {
             "sku": "DEMO-AUTO-007",
@@ -265,7 +265,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] All-weather rubber floor mat set, 4 pieces. Remove before going live.",
             "barcode": "2030070000071",
-            "attributes": {"pieces": "4", "material": "Rubber", "color": "Black"},
+            "attributes": {"pieces": "4", "color": "Black"},
         },
     ],
     "blank": [
@@ -353,7 +353,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Sports trading card pack, 12 cards. Remove before going live.",
             "barcode": "2050040000047",
-            "attributes": {"sport": "Basketball", "cards_per_pack": "12", "series": "2024"},
+            "attributes": {"cards_per_pack": "12", "series": "2024"},
         },
         {
             "sku": "DEMO-BKS-005",
@@ -389,7 +389,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Graphic novel collected edition. Remove before going live.",
             "barcode": "2050070000078",
-            "attributes": {"format": "Trade Paperback", "publisher": "Independent", "condition": "New"},
+            "attributes": {"publisher": "Independent"},
         },
     ],
     "coins_precious_metals": [
@@ -403,7 +403,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] 1 troy oz gold bar, 999.9 fine. Remove before going live.",
             "barcode": "2060010000015",
-            "attributes": {"purity": "999.9", "weight_oz": "1", "mint": "PAMP Suisse"},
+            "attributes": {"purity": "999.9", "weight_oz": "1", "mint_refinery": "PAMP Suisse"},
         },
         {
             "sku": "DEMO-CPM-002",
@@ -415,7 +415,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] 10 troy oz silver bar, 999 fine. Remove before going live.",
             "barcode": "2060020000022",
-            "attributes": {"purity": "999", "weight_oz": "10", "mint": "Sunshine Mint"},
+            "attributes": {"purity": "999", "weight_oz": "10", "mint_refinery": "Sunshine Mint"},
         },
         {
             "sku": "DEMO-CPM-003",
@@ -475,7 +475,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Bronze commemorative medal. Remove before going live.",
             "barcode": "2060070000077",
-            "attributes": {"material": "Bronze", "theme": "Anniversary", "diameter_mm": "38"},
+            "attributes": {"theme": "Anniversary", "diameter_mm": "38"},
         },
     ],
     "consulting": [
@@ -490,7 +490,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Senior consultant day rate. Remove before going live.",
             "barcode": "2070010000014",
-            "attributes": {"unit": "day", "seniority": "Senior", "discipline": "Strategy"},
+            "attributes": {"rate_unit": "Per Day", "seniority": "Senior", "discipline": "Strategy"},
         },
         {
             "sku": "DEMO-CON-002",
@@ -503,7 +503,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] IT consultant hourly rate. Remove before going live.",
             "barcode": "2070020000021",
-            "attributes": {"unit": "hour", "seniority": "Mid-level", "discipline": "IT"},
+            "attributes": {"rate_unit": "Per Hour", "seniority": "Mid-level", "discipline": "IT"},
         },
         {
             "sku": "DEMO-CON-003",
@@ -516,7 +516,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Fixed-fee project management engagement. Remove before going live.",
             "barcode": "2070030000038",
-            "attributes": {"unit": "project", "duration_weeks": "12", "discipline": "PMO"},
+            "attributes": {"rate_unit": "Per Project", "duration_weeks": "12", "discipline": "PMO"},
         },
     ],
     "cosmetics": [
@@ -542,7 +542,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Long-wear matte liquid lipstick, shade 07 Rose. Remove before going live.",
             "barcode": "2080020000020",
-            "attributes": {"shade": "07 Rose", "finish": "Matte", "volume_ml": "5"},
+            "attributes": {"shade": "07 Rose", "finish": "Matte"},
         },
         {
             "sku": "DEMO-COS-003",
@@ -578,7 +578,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Gel nail polish 15ml. Remove before going live.",
             "barcode": "2080050000051",
-            "attributes": {"finish": "Gloss", "volume_ml": "15", "color": "Rose"},
+            "attributes": {"finish": "Gloss", "color": "Rose"},
         },
         {
             "sku": "DEMO-COS-006",
@@ -602,7 +602,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] 12-piece makeup brush set. Remove before going live.",
             "barcode": "2080070000075",
-            "attributes": {"pieces": "12", "material": "Synthetic Bristle", "use": "Face & Eye"},
+            "attributes": {"pieces": "12", "use": "Face & Eye"},
         },
     ],
     "electronics": [
@@ -616,7 +616,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] 15.6-inch laptop, i7 16GB 512GB SSD. Remove before going live.",
             "barcode": "2090010000018",
-            "attributes": {"cpu": "Intel Core i7", "ram_gb": "16", "storage": "512GB SSD"},
+            "attributes": {"cpu": "Intel Core i7", "ram_gb": "16", "storage_gb": "512"},
         },
         {
             "sku": "DEMO-ELEC-002",
@@ -676,7 +676,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] 10-inch tablet 128GB WiFi. Remove before going live.",
             "barcode": "2090060000063",
-            "attributes": {"storage": "128GB", "connectivity": "WiFi", "screen_in": "10.1"},
+            "attributes": {"storage_gb": "128", "connectivity": "WiFi"},
         },
         {
             "sku": "DEMO-ELEC-007",
@@ -714,7 +714,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Classic white cotton oxford shirt size M. Remove before going live.",
             "barcode": "2100010000015",
-            "attributes": {"size": "M", "material": "100% Cotton", "fit": "Regular"},
+            "attributes": {"size": "M", "material": "100% Cotton"},
         },
         {
             "sku": "DEMO-FSH-002",
@@ -750,7 +750,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Structured tan leather tote bag. Remove before going live.",
             "barcode": "2100040000046",
-            "attributes": {"color": "Tan", "material": "Vegan Leather", "dimensions_cm": "35 x 28 x 12"},
+            "attributes": {"color": "Tan", "material": "Vegan Leather"},
         },
         {
             "sku": "DEMO-FSH-005",
@@ -786,7 +786,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Full grain leather belt. Remove before going live.",
             "barcode": "2100070000077",
-            "attributes": {"size": "90cm", "color": "Brown", "material": "Full Grain Leather"},
+            "attributes": {"color": "Brown", "material": "Full Grain Leather"},
         },
         {
             "sku": "DEMO-FSH-008",
@@ -837,7 +837,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "description": "[DEMO] Dark chocolate 72% cacao 100g bar. Remove before going live.",
             "barcode": "2110020000026",
             "weight": 100, "weight_unit": "gram",
-            "attributes": {"cacao_pct": "72", "origin": "Ecuador"},
+            "attributes": {"cacao_pct": "72"},
         },
         {
             "sku": "DEMO-F&B-003",
@@ -850,7 +850,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "description": "[DEMO] Organic durum wheat penne 500g. Remove before going live.",
             "barcode": "2110030000033",
             "weight": 500, "weight_unit": "gram",
-            "attributes": {"organic": "Yes", "shape": "Penne"},
+            "attributes": {"organic": "Yes"},
         },
         {
             "sku": "DEMO-F&B-004",
@@ -888,7 +888,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] All-purpose flour 25kg sack. Remove before going live.",
             "barcode": "2110060000064",
-            "attributes": {"type": "All-Purpose Flour", "weight_kg": "25", "origin": "Local Mill"},
+            "attributes": {"type": "All-Purpose Flour"},
         },
     ],
     "furniture": [
@@ -938,7 +938,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Arc floor lamp, brushed brass finish. Remove before going live.",
             "barcode": "2120040000049",
-            "attributes": {"finish": "Brushed Brass", "height_cm": "165", "bulb": "E27 LED"},
+            "attributes": {"height_cm": "165", "bulb": "E27 LED"},
         },
         {
             "sku": "DEMO-FRN-005",
@@ -974,7 +974,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Stoneware dinnerware set, 6 place settings. Remove before going live.",
             "barcode": "2120070000070",
-            "attributes": {"pieces": "24", "material": "Stoneware", "color": "White"},
+            "attributes": {"pieces": "24", "material": "Stoneware"},
         },
         {
             "sku": "DEMO-FRN-008",
@@ -986,7 +986,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] 4-seater patio dining set. Remove before going live.",
             "barcode": "2120080000087",
-            "attributes": {"seats": "4", "material": "Powder-Coated Steel", "assembly": "true"},
+            "attributes": {"material": "Powder-Coated Steel", "assembly": "true"},
         },
     ],
     "gemstones": [
@@ -1121,7 +1121,6 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
                 "treatment": "Heat",
                 "clarity": "SI2",
                 "shape": "Mixed",
-                "lot_ref": "LOT-TRM-2024-001",
             },
         },
         {
@@ -1251,7 +1250,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Class E adjustable safety hard hat, white. Remove before going live.",
             "barcode": "2140040000048",
-            "attributes": {"class": "E", "color": "White", "standard": "ANSI Z89.1"},
+            "attributes": {"class": "E", "standard": "ANSI Z89.1"},
         },
         {
             "sku": "DEMO-HW-005",
@@ -1287,7 +1286,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] 13A double socket outlet, white. Remove before going live.",
             "barcode": "2140070000079",
-            "attributes": {"rating": "13A", "gang": "Double", "finish": "White"},
+            "attributes": {"rating": "13A", "gang": "Double"},
         },
     ],
     "property_rental": [
@@ -1315,7 +1314,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Commercial office space 50sqm monthly. Remove before going live.",
             "barcode": "2150020000023",
-            "attributes": {"size_sqm": "50", "floor": "2", "furnished": "Yes"},
+            "attributes": {"floor": "2", "furnished": "Yes"},
         },
         {
             "sku": "DEMO-PROP-003",
@@ -1328,7 +1327,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Covered parking bay monthly rental. Remove before going live.",
             "barcode": "2150030000030",
-            "attributes": {"type": "Covered", "size": "Standard", "access": "24/7"},
+            "attributes": {"bay_type": "Covered", "access": "24/7"},
         },
     ],
     "saas": [
@@ -1343,7 +1342,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Starter SaaS plan, up to 5 users. Remove before going live.",
             "barcode": "2160010000015",
-            "attributes": {"users": "5", "billing": "Monthly", "support": "Email"},
+            "attributes": {"users": "5", "billing": "Monthly"},
         },
         {
             "sku": "DEMO-SAAS-002",
@@ -1356,7 +1355,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Professional plan annual, up to 25 users. Remove before going live.",
             "barcode": "2160020000022",
-            "attributes": {"users": "25", "billing": "Annual", "support": "Priority"},
+            "attributes": {"users": "25", "billing": "Annual"},
         },
         {
             "sku": "DEMO-SAAS-003",
@@ -1446,7 +1445,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Bordeaux red wine, 750ml bottle. Remove before going live.",
             "barcode": "2180010000018",
-            "attributes": {"type": "Red", "region": "Bordeaux, France", "vintage": "2021"},
+            "attributes": {"region": "Bordeaux, France", "vintage": "2021"},
         },
         {
             "sku": "DEMO-W&S-002",
@@ -1458,7 +1457,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] 12-year single malt Scotch whisky 700ml. Remove before going live.",
             "barcode": "2180020000025",
-            "attributes": {"age_years": "12", "region": "Speyside, Scotland", "abv_pct": "43"},
+            "attributes": {"age_years": "12", "abv_pct": "43"},
         },
         {
             "sku": "DEMO-W&S-003",
@@ -1482,7 +1481,7 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Non-vintage Brut Champagne 750ml. Remove before going live.",
             "barcode": "2180040000049",
-            "attributes": {"type": "Sparkling", "region": "Champagne, France", "dosage": "Brut"},
+            "attributes": {"region": "Champagne, France", "dosage": "Brut"},
         },
     ],
     "nonprofit": [
@@ -1932,11 +1931,16 @@ async def seed_demo_items(
     await fire_lifecycle("demo_records", session=session, company_id=company_id, user_id=actor_id)
     # Starter items are written only through the loaded Inventory module.
     if ProjectionEngine.replayable("item.created"):
-        await _seed_items(session, company_id, actor_id, vertical, default_location_id)
+        await _seed_items(session, company_id, actor_id, vertical, default_location_id,
+                          dict(company.settings or {}) if company is not None else {})
 
 
 async def _seed_items(session: AsyncSession, company_id: uuid.UUID, actor_id: uuid.UUID,
-                      vertical: str | None, default_location_id: uuid.UUID | None) -> None:
+                      vertical: str | None, default_location_id: uuid.UUID | None, settings: dict) -> None:
+    """Write the starter items, each with only the attributes its category defines in this
+    company (field_schema.out_of_category_keys), so a category the user customised before
+    choosing the type never refuses the setup."""
+    from celerp.services.field_schema import out_of_category_keys
     from celerp.services.lot_origin import recognize_opening_lots
 
     items = _VERTICAL_ITEMS.get(vertical or "", _GENERIC_ITEMS) if vertical else _GENERIC_ITEMS
@@ -1955,10 +1959,12 @@ async def _seed_items(session: AsyncSession, company_id: uuid.UUID, actor_id: uu
             for pl_name, pv in prices.items()
             if pv is not None
         }
+        category = data.get("category", "General")
+        misfits = out_of_category_keys(settings, category)
         payload = {
             "sku": sku,
             "name": data["name"],
-            "category": data.get("category", "General"),
+            "category": category,
             "inventory_type": data.get("inventory_type"),
             "quantity": data.get("quantity", 1),
             "status": data.get("status", "available"),
@@ -1968,7 +1974,7 @@ async def _seed_items(session: AsyncSession, company_id: uuid.UUID, actor_id: uu
             "description": data.get("description", ""),
             "barcode": data.get("barcode"),
             "allow_splitting": data.get("allow_splitting", True),
-            "attributes": data.get("attributes") or {},
+            "attributes": {k: v for k, v in (data.get("attributes") or {}).items() if k not in misfits},
             **price_fields,
         }
         if default_location_id is not None:
