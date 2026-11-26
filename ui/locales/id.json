@@ -1362,6 +1362,8 @@
   "search.err_too_long": "Pencarian Anda terlalu panjang. Persingkat menjadi {max} karakter atau kurang.",
   "settings._a_restart_is_required_for_module_changes_to_take": "Mulai ulang Celerp untuk menyelesaikan pengaktifan atau penonaktifan modul.",
   "settings._applied": "✓ Diterapkan",
+  "settings.err_column_table_unknown": "\"{table}\" bukan tabel yang memiliki pengaturan kolom, jadi tidak ada yang disimpan. Muat ulang halaman dan ubah kolomnya lagi.",
+  "settings.err_column_tables_full": "Pengaturan kolom Anda disimpan untuk paling banyak {limit} tabel, jadi perubahan ini tidak disimpan. Gunakan \"Atur ulang\" pada daftar yang tidak lagi Anda ubah, lalu coba lagi.",
   "settings._changing_the_database_requires_a_restart_and_data": "Mengubah database memerlukan restart dan migrasi data. Cadangkan dulu.",
   "settings._connected": "✓ Terhubung",
   "settings._cost_price_is_tracked_peritem_from_purchase_docum": "Harga biaya dilacak per item dari dokumen pembelian, bukan sebagai daftar harga.",

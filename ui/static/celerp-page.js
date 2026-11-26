@@ -210,7 +210,10 @@
   // holds, and each change is saved back.
   var columnLayouts = {};
   function celerpColumns(table, saved) {
-    if (!(table in columnLayouts)) columnLayouts[table] = saved || {};
+    if (!(table in columnLayouts)) {
+      columnLayouts[table] = saved || {};
+      importBrowserColumns(table);
+    }
     function put(part, value) {
       var entry = {}; entry[part] = value;
       columnLayouts[table] = Object.assign({}, columnLayouts[table], entry);
@@ -226,11 +229,42 @@
       }
     };
   }
-  function saveColumns(change) {
+  function postColumns(change) {
     return celerpFetch('/column-prefs', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                         body: JSON.stringify(change)})
+                                         body: JSON.stringify(change)});
+  }
+  function saveColumns(change) {
+    return postColumns(change)
       .then(function (r) { if (!r.ok) throw new Error(r.status); return true; })
       .catch(function () { showGlobalUiError(window.__shellI18n.requestFailed); return false; });
+  }
+
+  // Before the setup lived on the server each browser kept its own copy. The first page that
+  // names a table moves this browser's copy into the user's setup, where it replaces the parts
+  // it holds, and then clears it. The copy is cleared once the server has answered: saved, or
+  // refused as a setup it cannot keep. With no answer it stays for the next page load.
+  function importBrowserColumns(table) {
+    var lines = table.indexOf('doc_lines_') === 0;
+    var keys = lines ? {widths: 'celerp_dline_wpct_' + table.slice(10) + '_v2'}
+      : {vis: 'celerp_cols_' + table, order: 'celerp_col_order_' + table, widths: 'celerp_col_widths_' + table};
+    var found = {}, stored = [];
+    try {
+      Object.keys(keys).forEach(function (part) {
+        var raw = localStorage.getItem(keys[part]);
+        if (raw === null) return;
+        stored.push(keys[part]);
+        try {
+          var value = JSON.parse(raw);
+          if (value && typeof value === 'object') found[part] = value;
+        } catch (e) { /* not a setup: cleared with the rest */ }
+      });
+    } catch (e) { return; }  // this browser keeps no storage
+    if (!stored.length) return;
+    function clear() { stored.forEach(function (key) { localStorage.removeItem(key); }); }
+    if (!Object.keys(found).length) return clear();
+    columnLayouts[table] = Object.assign({}, columnLayouts[table], found);
+    var change = {}; change[table] = found;
+    postColumns(change).then(function (r) { if (r.ok || r.status === 422) clear(); }).catch(function () {});
   }
 
   // Forget the saved column setup of the given tables, then reload to show the defaults.

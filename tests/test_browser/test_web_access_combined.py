@@ -70,3 +70,27 @@ def test_web_access_combined_sections(page, ui_server, monkeypatch):
     page.wait_for_selector(_CARD, timeout=8000)
     assert page.locator('#partner-claim-card input[name="claim_token"]').count() == 1
     assert page.locator(".settings-tabs .tab--active").inner_text().strip() == "Implementation partner"
+
+
+def test_every_page_of_the_web_access_row_shows_the_same_tabs(page, ui_server, monkeypatch):
+    """The tab row a user navigates does not change under them: Online Payments is its own page
+    and carries the same tabs, the partner tab included, as the pages it sits beside."""
+    import ui.routes.settings_cloud as sc
+    import celerp.gateway.state as gw_state
+
+    async def _connected(token):
+        return ("connecting", "https://demo.celerp.com", "team", False, True, True, True)
+
+    monkeypatch.setattr(sc, "_relay_state", _connected)
+    monkeypatch.setattr(gw_state, "get_commercial_mode", lambda: "celerp_direct")
+
+    rows = {}
+    for path in ("/settings/cloud", "/settings/cloud?tab=website", "/settings/cloud?tab=accounting",
+                 "/settings/cloud?tab=partner", "/settings/payments"):
+        page.goto(f"{ui_server}{path}", wait_until="domcontentloaded")
+        page.wait_for_selector(".settings-tabs a", timeout=8000)
+        rows[path] = page.locator(".settings-tabs a").evaluate_all("tabs => tabs.map(a => a.getAttribute('href'))")
+        assert page.locator(".settings-tabs .tab--active").count() == 1, path
+    first = rows["/settings/cloud"]
+    assert "/settings/cloud?tab=partner" in first and "/settings/payments" in first
+    assert all(row == first for row in rows.values()), rows

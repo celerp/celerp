@@ -1362,6 +1362,8 @@
   "search.err_too_long": "Ihre Suche ist zu lang. Kürzen Sie sie auf höchstens {max} Zeichen.",
   "settings._a_restart_is_required_for_module_changes_to_take": "Starten Sie Celerp neu, um das Ein- oder Ausschalten von Modulen abzuschließen.",
   "settings._applied": "✓ Angewendet",
+  "settings.err_column_table_unknown": "\"{table}\" ist keine Tabelle mit Spalteneinstellung, daher wurde nichts gespeichert. Laden Sie die Seite neu und ändern Sie die Spalten erneut.",
+  "settings.err_column_tables_full": "Ihre Spalteneinstellung wird für höchstens {limit} Tabellen gespeichert, daher wurde diese Änderung nicht gespeichert. Verwenden Sie „Zurücksetzen“ in einer Liste, die Sie nicht mehr ändern, und versuchen Sie es erneut.",
   "settings._changing_the_database_requires_a_restart_and_data": "Das Ändern der Datenbank erfordert einen Neustart und eine Datenmigration. Bitte zuerst sichern.",
   "settings._connected": "✓ Verbunden",
   "settings._cost_price_is_tracked_peritem_from_purchase_docum": "Der Einstandspreis wird pro Artikel aus Einkaufsdokumenten verfolgt, nicht als Preisliste.",

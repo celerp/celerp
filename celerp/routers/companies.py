@@ -19,7 +19,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail
+from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail, refused
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.importers.results import BatchImportResult, record_refused, row_flag, row_n, row_refusal
@@ -226,7 +226,14 @@ class ColumnLayout(BaseModel):
     model_config = ConfigDict(extra="forbid")
     vis: dict[_ColumnKey, bool] | None = Field(default=None, max_length=200)
     order: list[_ColumnKey] | None = Field(default=None, max_length=200)
-    widths: dict[_ColumnKey, Annotated[str, Field(max_length=20)] | float] | None = Field(default=None, max_length=200)
+    widths: dict[_ColumnKey, Annotated[str, Field(max_length=20)] | FiniteFloat] | None = Field(default=None, max_length=200)
+
+
+# The tables that have a column setup: the item list, the two contact lists, and the lines of
+# each kind of document or list (doc_lines_<kind>). One user keeps at most MAX_COLUMN_TABLES.
+COLUMN_TABLES = frozenset({"inventory", "customers", "vendors"})
+_DOC_LINES_TABLE = re.compile(r"doc_lines_[a-z][a-z_]{0,60}")
+MAX_COLUMN_TABLES = 40
 
 
 class ColumnPrefsPatch(BaseModel):
@@ -1709,8 +1716,12 @@ async def patch_column_prefs(
     for table, layout in payload.prefs.items():
         if layout is None:
             mine.pop(table, None)
-        else:
+        elif table in COLUMN_TABLES or _DOC_LINES_TABLE.fullmatch(table):
             mine[table] = {**mine.get(table, {}), **layout.model_dump(exclude_none=True)}
+        else:
+            raise refused(422, "settings.err_column_table_unknown", table=table)
+    if len(mine) > MAX_COLUMN_TABLES:
+        raise refused(422, "settings.err_column_tables_full", limit=MAX_COLUMN_TABLES)
     every_user[str(user.id)] = mine
     settings["column_prefs"] = every_user
     company.settings = settings

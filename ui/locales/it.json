@@ -1362,6 +1362,8 @@
   "search.err_too_long": "La ricerca è troppo lunga. Accorciala a {max} caratteri o meno.",
   "settings._a_restart_is_required_for_module_changes_to_take": "Riavvia Celerp per completare l'attivazione o la disattivazione dei moduli.",
   "settings._applied": "✓ Applicato",
+  "settings.err_column_table_unknown": "\"{table}\" non è una tabella con un'impostazione delle colonne, quindi non è stato salvato nulla. Ricarica la pagina e modifica di nuovo le colonne.",
+  "settings.err_column_tables_full": "L'impostazione delle colonne viene conservata per {limit} tabelle al massimo, quindi questa modifica non è stata salvata. Usa \"Ripristina\" su un elenco che non modifichi più, poi riprova.",
   "settings._changing_the_database_requires_a_restart_and_data": "La modifica del database richiede un riavvio e una migrazione dei dati. Esegui prima il backup.",
   "settings._connected": "✓ Connesso",
   "settings._cost_price_is_tracked_peritem_from_purchase_docum": "Il prezzo di costo è tracciato per articolo dai documenti di acquisto, non come listino prezzi.",

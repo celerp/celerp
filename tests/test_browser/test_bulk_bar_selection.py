@@ -203,3 +203,38 @@ def test_a_column_change_and_reset_that_save_show_on_the_table(page, ui_server, 
     htmx_idle(page)
     expect(header).to_be_visible()
     expect(page.locator("#global-ui-error")).to_be_hidden()
+
+
+@pytest.mark.parametrize("path,table", [("/inventory", "inventory"), ("/contacts/customers", "customers")])
+def test_the_column_setup_an_older_version_kept_in_the_browser_moves_to_the_user_once(
+        page, ui_server, lists_with_rows, path, table):
+    """The browser copy shows on the first page load, is saved as the user's setup and cleared,
+    so the next load shows it from the server and a later change is not overwritten."""
+    page.goto(f"{ui_server}{path}", wait_until="load")
+    htmx_idle(page)
+    page.click("#col-mgr-btn")
+    key = page.locator("#col-mgr-menu input[type=checkbox]:checked:not(:disabled)").last.get_attribute("value")
+    header = page.locator(f'#data-table thead th[data-key="{key}"], #data-table thead th[data-col="{key}"]').first
+    expect(header).to_be_visible()
+    old_keys = [f"celerp_cols_{table}", f"celerp_col_order_{table}", f"celerp_col_widths_{table}"]
+    page.evaluate("([vis, order, key]) => { localStorage.setItem(vis, JSON.stringify({[key]: false}));"
+                  " localStorage.setItem(order, 'not a setup'); }", [old_keys[0], old_keys[1], key])
+    try:
+        with page.expect_response(lambda r: r.url.endswith("/column-prefs") and r.request.method == "POST") as saved:
+            page.reload(wait_until="load")
+        assert saved.value.ok
+        assert saved.value.request.post_data_json == {table: {"vis": {key: False}}}
+        htmx_idle(page)
+        expect(header).to_be_hidden()
+        assert page.evaluate("keys => keys.map(k => localStorage.getItem(k))", old_keys) == [None, None, None]
+        posts = []
+        page.on("request", lambda r: posts.append(r.url) if r.url.endswith("/column-prefs") else None)
+        page.reload(wait_until="load")
+        htmx_idle(page)
+        expect(header).to_be_hidden()
+        assert not posts, "the browser copy was imported a second time"
+    finally:
+        page.evaluate("keys => keys.forEach(k => localStorage.removeItem(k))", old_keys)
+        page.click("#col-mgr-btn")
+        with page.expect_navigation():
+            page.locator("#col-mgr-menu button").last.click()

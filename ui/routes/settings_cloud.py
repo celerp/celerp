@@ -116,19 +116,40 @@ async def _commercial_state(request: Request) -> dict:
     return state
 
 
+def _is_owner_admin(request: Request) -> bool:
+    return _get_role(request) in ("owner", "admin")
+
+
+def _can_claim_partner(request: Request, token_bound: bool) -> bool:
+    """Every unmanaged install with a cloud identity can adopt a partner, with Web Access on or
+    off; a partner-managed install already has one."""
+    from celerp.gateway.state import get_commercial_mode
+    return (_is_owner_admin(request)
+            and get_commercial_mode() != "partner_managed" and token_bound)
+
+
+async def _partner_tab_shown(request: Request, token) -> bool:
+    """Whether the Web Access tab row carries the partner tab, for a page of the row that does
+    not read the relay state itself."""
+    return _can_claim_partner(request, (await _relay_state(token))[4])
+
+
 def _cloud_tabs(active: str, has_team_features: bool = False, can_claim: bool = False,
-                lang: str = "en") -> FT:
-    tabs = [("status", t("settings.team_url", lang))]
-    if has_team_features:
-        tabs.append(("infrastructure", t("cloud.tab_infrastructure", lang)))
-    # One tab per connector category, labelled by what the sync does for the
-    # customer (same keys as the old in-tab section headings).
-    tabs.append(("website", t("connectors.group_website", lang)))
-    tabs.append(("accounting", t("connectors.group_accounting", lang)))
-    # Payments lives with Web Access: it only works cloud-connected, and a
-    # not-yet-connected visitor lands amid the plans/features pitch instead of
-    # a dead Connect button. Links to its own page (needs live status).
-    tabs.append(("payments", t("nav.payments", lang)))
+                lang: str = "en", connected: bool = True) -> FT:
+    """The Web Access tab row, the same on every page of the row. While Web Access is off
+    (``connected`` False) the row is the page itself and the partner tab."""
+    tabs = [("status", t("settings.team_url" if connected else "settings_cloud.web_access", lang))]
+    if connected:
+        if has_team_features:
+            tabs.append(("infrastructure", t("cloud.tab_infrastructure", lang)))
+        # One tab per connector category, labelled by what the sync does for the
+        # customer (same keys as the old in-tab section headings).
+        tabs.append(("website", t("connectors.group_website", lang)))
+        tabs.append(("accounting", t("connectors.group_accounting", lang)))
+        # Payments lives with Web Access: it only works cloud-connected, and a
+        # not-yet-connected visitor lands amid the plans/features pitch instead of
+        # a dead Connect button. Links to its own page (needs live status).
+        tabs.append(("payments", t("nav.payments", lang)))
     if can_claim:
         tabs.append(("partner", t("settings_cloud.partner_tab", lang)))
     return Div(
@@ -137,25 +158,6 @@ def _cloud_tabs(active: str, has_team_features: bool = False, can_claim: bool = 
               href="/settings/payments" if key == "payments" else f"/settings/cloud?tab={key}",
               cls=f"tab {'tab--active' if key == active else ''}")
             for key, label in tabs
-        ],
-        cls="settings-tabs",
-    )
-
-
-def _unconnected_cloud_tabs(active: str, lang: str = "en") -> FT:
-    """Web Access tabs shown only while partner adoption is available."""
-    tabs = [
-        ("status", t("settings_cloud.web_access", lang), "/settings/cloud"),
-        (
-            "partner",
-            t("settings_cloud.partner_tab", lang),
-            "/settings/cloud?tab=partner",
-        ),
-    ]
-    return Div(
-        *[
-            A(label, href=safe_url(href), cls=f"tab {'tab--active' if key == active else ''}")
-            for key, label, href in tabs
         ],
         cls="settings-tabs",
     )
@@ -938,7 +940,7 @@ def setup_routes(app):
 
         import ui.api_client as _api
         lang = get_lang(request)
-        is_owner_admin = _get_role(request) in ("owner", "admin")
+        is_owner_admin = _is_owner_admin(request)
         relay_status, public_url, tier, disconnected, token_bound, entitlement_known, entitled = await _relay_state(token)
         # Credential presence alone is not proof that the relay accepted it.
         # Non-inactive transport states keep their dedicated status/recovery
@@ -948,15 +950,9 @@ def setup_routes(app):
             relay_status in ("active", "tos_required", "connecting", "error")
             or (token_bound and entitlement_known)))
 
-        # Every unmanaged install with a cloud identity can adopt a partner,
-        # with Web Access on or off; a partner-managed install already has one.
         from celerp.gateway.state import get_commercial_mode
         commercial_mode = get_commercial_mode()
-        can_claim = (
-            is_owner_admin
-            and commercial_mode != "partner_managed"
-            and token_bound
-        )
+        can_claim = _can_claim_partner(request, token_bound)
         catalog: dict = {}
         if commercial_mode == "celerp_direct":
             try:
@@ -979,7 +975,7 @@ def setup_routes(app):
                 _section_breadcrumb(t("settings_cloud.web_access", lang)),
                 page_header(t("settings_cloud.web_access", lang)),
                 *notice_flash,
-                *([_unconnected_cloud_tabs(tab, lang=lang)] if can_claim else []),
+                *([_cloud_tabs(tab, can_claim=True, lang=lang, connected=False)] if can_claim else []),
                 content,
                 title=page_title("settings_cloud.web_access"),
                 nav_active="web-access",
@@ -1055,7 +1051,7 @@ def setup_routes(app):
         """HTMX: proxy to the API to preview the partner behind a claim code.
         Owner/admin only; binds nothing."""
         lang = get_lang(request)
-        if _get_role(request) not in ("owner", "admin"):
+        if not _is_owner_admin(request):
             return _partner_claim_card(lang=lang)
         import ui.api_client as _api
         token = _token(request)
@@ -1077,7 +1073,7 @@ def setup_routes(app):
         if refused := await owner_refusal(request):
             return refused
         lang = get_lang(request)
-        if _get_role(request) not in ("owner", "admin"):
+        if not _is_owner_admin(request):
             return _partner_claim_card(lang=lang)
         import ui.api_client as _api
         token = _token(request)

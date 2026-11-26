@@ -58,7 +58,6 @@ log = logging.getLogger(__name__)
 
 MAX_MODEL_TURNS = 6            # model responses per run (local bound)
 MAX_TOOL_CALLS_PER_TURN = 5
-CUT_AT_LENGTH = "length"  # the finish_reason of a reply that stopped at the length limit
 MAX_TOOL_CALLS_PER_RUN = 12
 MAX_TOOL_CALL_ID_CHARS = 128
 MAX_ARGUMENT_BYTES = 16 * 1024  # per tool call, serialized arguments
@@ -885,7 +884,8 @@ async def _agent_loop(
             return tally.result(
                 answer=content or t("ai.empty_answer"), model_used=model_used,
                 tools_called=tools_called, pending_actions=[],
-                cut=bool(content) and result.get("finish_reason") == CUT_AT_LENGTH,
+                # "length" is the finish_reason of a reply that stopped at the length limit
+                cut=bool(content) and result.get("finish_reason") == "length",
             )
 
         # Over the per-turn or per-run cap: execute what fits, answer the rest

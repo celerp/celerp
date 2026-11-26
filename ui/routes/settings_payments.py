@@ -36,7 +36,7 @@ from ui.components.table import (
 from ui.i18n import t
 from ui.routes.settings import _check_permission, _token
 from ui.routes.settings_cloud import (
-    _cloud_tabs, _commercial_state, _has_team_features, _relay_has_paid_access,
+    _cloud_tabs, _commercial_state, _has_team_features, _partner_tab_shown, _relay_has_paid_access,
 )
 
 
@@ -188,7 +188,7 @@ def _unmatched_refunds(refunds: list[dict]) -> FT | str:
 
 
 def _page(relay_ok: bool, enabled: bool, deposit_account: str,
-          bank_accounts: list[dict], has_team_features: bool, saved: bool = False,
+          bank_accounts: list[dict], has_team_features: bool, can_claim: bool, saved: bool = False,
           state: str | None = None, unmatched: dict | None = None) -> FT:
     if not relay_ok:
         body = upgrade_banner(t("nav.payments"), t("pay.upgrade_desc"), plan="cloud")
@@ -202,7 +202,7 @@ def _page(relay_ok: bool, enabled: bool, deposit_account: str,
         body = _connected_panel(deposit_account, bank_accounts, saved=saved)
     return Div(
         page_header(t("nav.payments")),
-        _cloud_tabs("payments", has_team_features=has_team_features),
+        _cloud_tabs("payments", has_team_features=has_team_features, can_claim=can_claim),
         body,
         _unmatched(unmatched or {}) if relay_ok else "",
     )
@@ -246,7 +246,7 @@ async def _page_with_error(request: Request, token: str, error: APIError):
     has_team = _has_team_features(await _commercial_state(request))
     return await base_shell(
         Div(flash(str(error.detail)),
-            _page(relay_ok, enabled, deposit, banks, has_team, state=state,
+            _page(relay_ok, enabled, deposit, banks, has_team, await _partner_tab_shown(request, token), state=state,
                   unmatched=unmatched)),
         title=page_title("nav.payments"), nav_active="web-access", request=request)
 
@@ -322,7 +322,7 @@ def setup_routes(app):
                                     nav_active="web-access", request=request)
         has_team = _has_team_features(await _commercial_state(request))
         return await base_shell(
-            _page(relay_ok, enabled, deposit, banks, has_team,
+            _page(relay_ok, enabled, deposit, banks, has_team, await _partner_tab_shown(request, token),
                   saved=request.query_params.get("saved") == "1", state=state,
                   unmatched=unmatched),
             title=page_title("nav.payments"), nav_active="web-access", request=request)
