@@ -600,7 +600,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
     from celerp.models.company import Company
     from celerp.models.projections import Projection
     from celerp.services.business_time import business_date_of
-    from celerp.services.money import to_decimal
+    from celerp.services.money import books_currency, to_decimal
     from celerp.services.pick import consolidate_sales_lots, plan_lot_draws, resolve_pick_method
     from celerp.services.units import is_non_stock_line
     from celerp_inventory.projections import FREE_STOCK, OWN_RESERVED, demand_claim, is_item_available
@@ -627,6 +627,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
         _reserve_lines_impl,
         _get_doc,
         apply_doc_payment,
+        require_payment_bank_currency,
     )
     from celerp.services.doc_balance import outstanding_balance
 
@@ -1202,14 +1203,19 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
                     "financial reconciliation is required"
                 )
             # The payment goes to the deposit account only while it can take online
-            # payments; otherwise the order stays unpaid and waits for a person.
+            # payments in the order's currency; otherwise the order stays unpaid and
+            # waits for a person.
             bank_code = await deposit_account(session, cid, override_key=WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY)
             try:
                 await require_online_deposit_account(session, cid, bank_code)
+                company = await session.get(Company, cid)
+                await require_payment_bank_currency(
+                    session, cid, bank_code, doc.state.get("currency"),
+                    books_currency(company.settings or {}))
             except HTTPException as refused:
                 await hold_for_reconciliation(
                     f"WooCommerce order {order.get('number') or order_id} is paid but its "
-                    f"payment cannot be recorded. {refused.detail}"
+                    f"payment cannot be recorded to account {bank_code}. {refused.detail}"
                 )
             payment_date = str(order.get("date_paid"))[:10]
             await apply_doc_payment(
