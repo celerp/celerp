@@ -15,6 +15,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import text
 
 import bank_statement_helpers as B
 from migration_support import auth as bearer
@@ -121,21 +122,16 @@ async def _manual_journal(client, headers, code: str):
 _LINE = {"name": "Cleaning service", "quantity": 1, "unit_price": 40.0}
 
 
-async def _with_line_account(client, headers, doc_type: str, code: str) -> str:
-    """A draft ``doc_type`` whose one line names ``code`` as its own account."""
+async def _bill_line(client, headers, code: str):
+    """A draft bill whose one line is edited onto ``code``: refused when saved, where the
+    account is chosen."""
     r = await client.post("/docs", headers=headers, json={
-        "doc_type": doc_type, "contact_id": "supplier:1", "line_items": [_LINE]})
+        "doc_type": "bill", "contact_id": "supplier:1", "line_items": [_LINE]})
     assert r.status_code == 200, r.text
     doc = r.json()["id"]
-    r = await client.patch(f"/docs/{doc}", headers=headers, json={"expected_version": await doc_version(client, headers, doc), 
+    return await client.patch(f"/docs/{doc}", headers=headers, json={
+        "expected_version": await doc_version(client, headers, doc),
         "fields_changed": {"line_items": {"new": [{**_LINE, "account_code": code}]}}})
-    assert r.status_code == 200, r.text
-    return doc
-
-
-async def _bill_line(client, headers, code: str):
-    return await client.post(f"/docs/{await _with_line_account(client, headers, 'bill', code)}/finalize",
-                             headers=headers)
 
 
 async def _bill_created_with_line(client, headers, code: str):
@@ -217,7 +213,9 @@ async def test_a_stock_write_off_whose_account_was_switched_off_since_it_was_pic
 @pytest.mark.parametrize("why", ["header", "inactive"])
 async def test_an_account_picked_for_a_line_of_a_finalized_bill_is_refused(client, auth, why):
     headers = auth["headers"]
-    bill = await _with_line_account(client, headers, "bill", "6100")
+    r = await _bill_created_with_line(client, headers, "6100")
+    assert r.status_code == 200, r.text
+    bill = r.json()["id"]
     assert (await client.post(f"/docs/{bill}/finalize", headers=headers)).status_code == 200
     code = await _destination(client, headers, why)
     [stored] = (await client.get(f"/docs/{bill}", headers=headers)).json()["line_items"]
@@ -230,10 +228,20 @@ async def test_an_account_picked_for_a_line_of_a_finalized_bill_is_refused(clien
 
 
 @pytest.mark.asyncio
-async def test_a_consignment_converted_to_a_bill_with_a_line_on_a_header_is_refused(client, auth):
+async def test_a_consignment_converted_to_a_bill_with_a_line_on_a_header_is_refused(client, auth, session):
+    """A consignment stored with a line on an account that became a header (data from before
+    the account is checked where it is chosen) is refused when converted to a bill."""
     headers = auth["headers"]
-    doc = await _with_line_account(client, headers, "consignment_in", HEADER)
+    r = await client.post("/docs", headers=headers, json={
+        "doc_type": "consignment_in", "contact_id": "supplier:1", "line_items": [{**_LINE, "account_code": "6100"}]})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
     assert (await client.post(f"/docs/{doc}/finalize", headers=headers)).status_code == 200
+    await session.execute(text(
+        "UPDATE projections SET state = CAST(jsonb_set(CAST(state AS jsonb), '{line_items,0,account_code}', "
+        "to_jsonb(CAST(:code AS text))) AS json) "
+        "WHERE entity_id = :doc"), {"code": HEADER, "doc": doc})
+    await session.commit()
     bills = (await client.get("/docs?doc_type=bill", headers=headers)).json()["items"]
 
     _refused(await client.post(f"/docs/{doc}/convert", headers=headers), "header", HEADER)

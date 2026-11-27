@@ -2493,13 +2493,13 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     is_draft = row.state.get("status") == "draft"
     if not is_draft:
         assert_finalized_edit(row.state, fields_changed)
-        if "line_items" in fields_changed:
-            incoming_lis = (fields_changed["line_items"].get("new") or [])
-            existing_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
-            # A line's own account is checked when it is chosen; finalizing checks every line again.
-            await require_line_destinations(session, company_id, [
-                li for i, li in enumerate(incoming_lis)
-                if isinstance(li, dict) and li.get("account_code") != existing_by_idx.get(i, {}).get("account_code")])
+    if isinstance(_incoming_lines, list):
+        # A line's own account is checked when it is chosen, on a draft or a finalized
+        # document alike; finalizing checks every line again.
+        existing_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
+        await require_line_destinations(session, company_id, [
+            li for i, li in enumerate(_incoming_lines)
+            if isinstance(li, dict) and li.get("account_code") != existing_by_idx.get(i, {}).get("account_code")])
     if {"original_doc_id", "doc_type"} & fields_changed.keys():
         await credit_note_original(session, company_id, {
             **row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}})

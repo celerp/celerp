@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 import bank_statement_helpers as B
 from test_reconciliation_history import admin, bank, match, start
+from test_helpers import doc_version
 from ui.i18n import refusal_text, t
 from shipped_sources import SHIPPED_ROOTS
 
@@ -425,4 +426,9 @@ async def test_a_bill_line_is_never_put_on_a_bank_kept_in_another_currency(clien
     ok = await client.post("/docs", headers=h, json={
         "doc_type": "bill", "contact_id": "supplier:1", "line_items": [{**line, "account_code": "6100"}]})
     assert ok.status_code == 200, ok.text
+    moved = await client.patch(f"/docs/{ok.json()['id']}", headers=h, json={
+        "expected_version": await doc_version(client, h, ok.json()["id"]),
+        "fields_changed": {"line_items": {"new": [{**line, "account_code": code}]}}})
+    assert moved.status_code == 422, moved.text  # the draft's line, edited onto the bank
+    assert moved.json()["detail"]["message_key"] == "posting.destination.foreign_bank", moved.text
     assert (await client.post(f"/docs/{ok.json()['id']}/finalize", headers=h)).status_code == 200
