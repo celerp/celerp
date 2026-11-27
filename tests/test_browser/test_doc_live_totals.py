@@ -193,3 +193,28 @@ def test_a_quotation_shows_the_saved_figures_once_saved(page, api_server, ui_ser
             assert _shown(tab) == stored
         finally:
             ctx.close()
+
+
+def test_prices_that_include_tax_show_the_tax_they_hold_while_edited(page, api_server, ui_server, api):
+    """With prices that include tax, the figure the page works out while a price is edited is the
+    part of the line total the tax makes up, not the rate laid on top of it."""
+    vat = [{"name": "VAT 5%", "rate": 5.0, "tax_type": "both", "is_default": True, "is_compound": False}]
+    with _demo_company(api_server, ui_server, api, "GB", vat) as (company, ui, token, items):
+        r = ui.post("/docs/from-items/new", data={"selected": [items[0]["id"]]})
+        assert r.status_code == 204, r.text
+        doc_id = r.headers["HX-Redirect"].rsplit("/", 1)[-1]
+        r = ui.patch(f"/docs/{doc_id}/field/prices_include_tax", data={"value": "true"})
+        assert r.status_code == 204, r.text
+        doc = company.get(f"/docs/{doc_id}").json()
+        assert doc["prices_include_tax"] is True
+        qty = float(doc["line_items"][0]["quantity"])
+        ctx, tab = _open(page, ui_server, token, doc_id)
+        try:
+            held = _held_saves(tab, doc_id)
+            _type_price(tab, "105")
+            _wait_for(tab, held)
+            tab.locator(_PENDING).wait_for(timeout=3000)
+            # 105.00 a unit holds 5.00 of VAT at 5%, where 5% laid on top would be 5.25.
+            assert _amount(tab.inner_text("#doc-tax-rows .total-value")) == round(5.0 * qty, 2)
+        finally:
+            ctx.close()

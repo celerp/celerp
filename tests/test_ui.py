@@ -3417,6 +3417,28 @@ class TestConvertedQuotationDetail:
             r = await ui_client.get("/lists/list:LST-2")
         assert "Converted to:" not in r.content.decode()
 
+    @pytest.mark.asyncio
+    async def test_draft_quotation_offers_the_codes_in_force_on_its_day(self, ui_client):
+        """A draft quotation's line tax choice offers the company's taxes for its side in force on
+        the quotation's day."""
+        from datetime import date
+        quotation = {
+            "entity_id": "list:LST-3", "list_type": "quotation", "doc_type": "quotation", "status": "draft",
+            "issue_date": "2026-10-24", "currency": "USD", "discount": 0, "tax": 0, "subtotal": 50, "total": 50,
+            "line_items": [{"description": "Service", "quantity": 1, "unit_price": 50, "taxes": []}],
+        }
+        vat = {"id": "tc-gst", "name": "GST Nine", "category": "standard", "rate": 9.0, "versions": [{"rate": 9.0}]}
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=quotation)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(quotation)),
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[vat])) as taxes,
+        ):
+            r = await ui_client.get("/lists/list:LST-3")
+        assert r.status_code == 200
+        assert taxes.await_args.args[1:] == ("quotation", date(2026, 10, 24))
+        assert "GST Nine" in r.content.decode()
+
 
 class TestWriteoffListDetail:
     """A draft write-off list renders qty_out / account / comment as on-page click-to-edit cells
@@ -15784,6 +15806,17 @@ class TestPriceLists:
         args, kwargs = mock_patch.await_args
         assert args[1] == "doc:1" and kwargs["expected_version"] == 9
         assert [li["taxes"] for li in args[2]["line_items"]] == [[{"code_id": "tc-vat"}, manual], [current]]
+        # A refusal stays on the page as a toast; nothing redirects.
+        from ui.api_client import APIError
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
+            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[vat])),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"timezone": "UTC"})),
+            patch("ui.api_client.patch_doc", new=AsyncMock(side_effect=APIError(409, "Changed elsewhere"))),
+        ):
+            r = await ui_client.post("/docs/doc:1/tax-versions")
+        assert r.status_code == 200 and "HX-Redirect" not in r.headers
+        assert "Changed elsewhere" in r.headers["HX-Trigger"]
 
     @pytest.mark.asyncio
     async def test_shipping_tax_choice_saves_code_id(self, ui_client):
@@ -15814,6 +15847,40 @@ class TestPriceLists:
             assert r.status_code == 204
             assert "celerpDocMoney" in r.headers["HX-Trigger"]
             assert mock_patch.await_args.args[1:] == ("doc:1", {"shipping_taxes": sent})
+        # A refusal shows as a toast and the money redraws, putting the stored choice back.
+        from ui.api_client import APIError
+        with patch("ui.api_client.patch_doc", new=AsyncMock(side_effect=APIError(409, "Changed elsewhere"))):
+            r = await ui_client.patch("/docs/doc:1/field/shipping_taxes", data={"value": "tc-vat"})
+        assert r.status_code == 200
+        trigger = json.loads(r.headers["HX-Trigger"])
+        assert "Changed elsewhere" in r.headers["HX-Trigger"] and "celerpDocMoney" in trigger
+        # The stored taxes shown as one option are kept: nothing is sent.
+        with patch("ui.api_client.patch_doc", new=AsyncMock(return_value={})) as mock_patch:
+            r = await ui_client.patch("/docs/doc:1/field/shipping_taxes", data={"value": "|stored"})
+        assert r.status_code == 204 and mock_patch.await_count == 0
+
+    def test_shipping_tax_choice_shows_what_is_held(self):
+        """Read-only, the shipping names its taxes or No Tax. Editable, nothing held selects No
+        Tax, a code in force selects that code, and a tax no code in force matches shows as its
+        own first option, selected."""
+        import re
+        from fasthtml.common import to_xml
+        from ui.routes.documents import _shipping_tax_choice
+        vat = {"id": "tc-vat", "name": "VAT", "category": "standard", "rate": 7.0, "versions": [{"rate": 7.0}]}
+        doc = {"entity_id": "doc:1", "doc_type": "invoice", "issue_date": "2026-01-01", "shipping": 100}
+        held_vat = {**doc, "shipping_taxes": [{"code": "VAT", "code_id": "tc-vat", "rate": 7.0, "amount": 7.0}]}
+        held_old = {**doc, "shipping_taxes": [{"code": "Old", "code_id": "tc-old", "rate": 5.0, "amount": 5.0}]}
+        assert to_xml(_shipping_tax_choice(held_vat, [vat], False)) == '<span class="total-label">VAT (7%)</span>'
+        assert to_xml(_shipping_tax_choice(doc, [vat], False)) == '<span class="total-label">No Tax</span>'
+
+        def chosen(d):
+            html = to_xml(_shipping_tax_choice(d, [vat], True))
+            value = re.search(r'<input type="hidden" name="value"[^>]* value="([^"]*)"', html).group(1)
+            return value, re.findall(r'data-value="([^"]*)" role="option"[^>]*>([^<]*)', html)
+
+        assert chosen(doc) == ("", [("", "No Tax"), ("tc-vat", "VAT (7%)")])
+        assert chosen(held_vat) == ("tc-vat", [("", "No Tax"), ("tc-vat", "VAT (7%)")])
+        assert chosen(held_old) == ("|stored", [("|stored", "Old (5%)"), ("", "No Tax"), ("tc-vat", "VAT (7%)")])
 
     @pytest.mark.asyncio
     async def test_prices_include_tax_choice_saves_a_boolean(self, ui_client):
