@@ -304,6 +304,9 @@ async def test_version_boundary_notice_on_date_move(client):
     [before] = draft["line_items"][0]["taxes"]
     assert before["rate"] == 7.0
     assert _tax_version_notice(draft, [vat]) is None
+    # A code left with no rate on the document's day is noticed too.
+    later_only = {**vat, "versions": [v for v in vat["versions"] if v.get("valid_from") == "2026-07-01"]}
+    assert len(later_only["versions"]) == 1 and _tax_version_notice(draft, [later_only]) is not None
 
     r = await _patch_doc(client, h, draft["id"], "issue_date", "2026-07-15")
     assert r.status_code == 200, r.text
