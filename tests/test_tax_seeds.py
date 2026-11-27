@@ -215,12 +215,14 @@ def _money(doc_taxes: list[dict], lines: list[dict]) -> tuple[float, float]:
 
 def test_a_document_taxed_as_a_whole_keeps_its_taxation_on_a_new_line():
     """While a draft charges a tax as a whole, a new line takes the taxes its lines all carry,
-    copied whole with no amount, never a company default; None (the user sets it) when its lines
+    copied whole with no amount or base (the server computes both for the new line), never a
+    company default; None (the user sets it) when its lines
     differ or it has none. A stored value of another shape is no document tax."""
     th = get_regime("TH")["taxes"]
     compound = {**_LEVY, "order": 1, "is_compound": True, "amount": 5.25}
+    stored = {**compound, "base": 105.0}
     assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_VAT], [], [])) == []
-    assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_VAT], [compound], [compound])) == [{**compound, "amount": 0}]
+    assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_VAT], [stored], [stored])) == [{**compound, "amount": 0, "base": None}]
     assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_VAT])) is None
     assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_LEVY], [_VAT], [])) is None
     assert default_line_taxes(th, "invoice", _DAY, doc=_draft([_LEVY], [_VAT], [{**_VAT, "is_compound": True}])) is None

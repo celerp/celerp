@@ -255,8 +255,8 @@ def default_line_taxes(taxes: list[dict], doc_type: str | None, day: dt.date, *,
     rate in force on `day` that is not zero, in list order (a company may hold two, such as CGST
     9% and SGST 9%), each as line_tax builds it on `day`; a default with no rate that day is left
     out. On a draft that already charges a tax as a whole, its taxation
-    stands: a new line takes the taxes its lines all carry (as line_tax_key), copied whole, never
-    a company default; a line saved with only a rate carries what legacy_line_taxes reads. When
+    stands: a new line takes the taxes its lines all carry (as line_tax_key), copied whole but for
+    the amount and base the server computes for the new line, never a company default; a line saved with only a rate carries what legacy_line_taxes reads. When
     they differ or there are none, None: the line carries no tax of its own until the user sets one
     (the editor shows "--"); so does a line whose tax is itself still to be set or can't be read.
     Stored taxes are never matched by name, so a tax renamed or changed in settings since is never
@@ -268,7 +268,8 @@ def default_line_taxes(taxes: list[dict], doc_type: str | None, day: dt.date, *,
                    or legacy_line_taxes(line, taxes, doc_type, day) for line in lines]
         if not carried or None in carried or len({line_tax_key(each) for each in carried}) != 1:
             return None
-        return [{**tax, "amount": 0} for tax in carried[0]]
+        return [{**{key: None if key == "base" else value for key, value in tax.items()}, "amount": 0}
+                for tax in carried[0]]
     side = doc_side(doc_type)
     return [line_tax(tax, day, side) for tax in taxes_on(taxes_for(taxes, doc_type), day)
             if tax.get("is_default") and tax["rate"]]

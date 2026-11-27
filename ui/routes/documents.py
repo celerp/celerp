@@ -10253,7 +10253,8 @@ function _celerpLineTaxesKey(row) {
 function _celerpApplyDefaultTaxes(cell) {
     // A new line's taxes, by default_line_taxes' rule (celerp/tax_regimes.py) on the page as it
     // stands: the cell comes with the company defaults; while the draft charges a tax as a whole,
-    // the line takes instead the taxes the other lines all carry, copied whole, or "--" for the
+    // the line takes instead the taxes the other lines all carry, copied whole but for the amount
+    // and base the server computes for the new line, or "--" for the
     // user to set when they differ, are themselves still to be set, or there are none.
     const sel = cell.querySelector('[data-name="tax_select"]');
     if (!sel) return;
@@ -10276,7 +10277,7 @@ function _celerpApplyDefaultTaxes(cell) {
             sel.title = unset.title;
             json.value = '[]';
         } else {
-            const taxes = _celerpLineTaxes(lines[0]).map(x => ({...x, amount: 0}));
+            const taxes = _celerpLineTaxes(lines[0]).map(x => ({...x, amount: 0, base: null}));
             json.value = JSON.stringify(taxes);
             if (!taxes.length) {
                 sel.value = '|0';
