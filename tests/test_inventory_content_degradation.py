@@ -281,3 +281,26 @@ async def test_static_failure_after_company_success_shows_error_in_shell(ui_clie
     # a rendered data table dressed up as an empty catalog.
     assert 'id="inventory-content"' in r.text
     assert "empty-state" in r.text
+
+
+@pytest.mark.asyncio
+async def test_tax_code_filter_reaches_the_rows_and_their_counts(monkeypatch):
+    # The link from a refused tax code removal lists the items carrying it: the filter goes to
+    # both the list and its valuation, and no filter sends none.
+    sent: list[dict] = []
+
+    async def _get_valuation(_token, params=None):
+        sent.append(dict(params or {}))
+        return {}
+
+    async def _list_items(_token, params):
+        sent.append(dict(params))
+        return {"items": [], "total": 0}
+
+    monkeypatch.setattr(inv.api, "get_valuation", _get_valuation)
+    monkeypatch.setattr(inv.api, "list_items", _list_items)
+    for codes, expected in (("tc-1,tc-2", "tc-1,tc-2"), ("", None)):
+        sent.clear()
+        await inv._inventory_content("tok", _params(tax_codes=codes), [], {}, {}, _COMPANY, [],
+                                     [{"name": "each"}], {"ring": "Rings"}, lang="en", role="owner")
+        assert len(sent) == 2 and all(s.get("tax_codes") == expected for s in sent)

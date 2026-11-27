@@ -196,6 +196,13 @@ async def test_tax_code_identity_and_lifecycle(client):
                                                      "sell_by": "piece", "tax_codes": [vat["id"]]})
     assert r.status_code == 200, r.text
     item_id = r.json()["id"]
+    r = await client.post("/items", headers=h, json={"sku": f"S-{uuid.uuid4().hex[:6]}", "name": "Untaxed",
+                                                     "sell_by": "piece"})
+    assert r.status_code == 200, r.text
+    # The refusal's link lists only the items carrying the code.
+    r = await client.get("/items", headers=h, params={"tax_codes": f" {vat['id']} ,"})
+    assert r.status_code == 200, r.text
+    assert [row["id"] for row in r.json()["items"]] == [item_id]
     removal = await _save(client, h, [])
     _refused(removal, "1 item", "1 draft", status=409)
     assert f"tax_codes={vat['id']}" in removal.text

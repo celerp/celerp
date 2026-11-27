@@ -100,12 +100,12 @@ async def test_setup_refuses_a_country_without_tax_rates():
     assert company_setup_error("EUR", "blank", "") is None
 
 
-@pytest.mark.parametrize("field,value,stored", [
-    ("country", "TH", {"text": "12 MG Road, Bengaluru", "country": "TH"}),
-    ("address", "1 Silom Road", {"text": "1 Silom Road", "country": "IN"}),
-    ("country", "", {"text": "12 MG Road, Bengaluru"}),
+@pytest.mark.parametrize("field,value,stored,shown", [
+    ("country", "TH", {"text": "12 MG Road, Bengaluru", "country": "TH"}, "Thailand"),
+    ("address", "1 Silom Road", {"text": "1 Silom Road", "country": "IN"}, "1 Silom Road"),
+    ("country", "", {"text": "12 MG Road, Bengaluru"}, "Other country"),
 ])
-async def test_saving_address_or_country_keeps_the_other(ui_client, field, value, stored):
+async def test_saving_address_or_country_keeps_the_other(ui_client, field, value, stored, shown):
     with ExitStack() as stack:
         _stub(stack, "get_locations", return_value={"items": [_LOC]})
         patch_location = _stub(stack, "patch_location", return_value={**_LOC, "address": stored})
@@ -114,6 +114,20 @@ async def test_saving_address_or_country_keeps_the_other(ui_client, field, value
     patch_location.assert_awaited_once()
     assert patch_location.await_args.args[2] == {"address": stored}
     assert "HX-Trigger" not in r.headers
+    # The saved cell shows what was saved.
+    assert re.search(r'<span class="cell-text">([^<]*)</span>', r.text).group(1) == shown
+
+
+async def test_the_company_country_cell_names_the_country():
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _company_display_cell
+
+    def shown(field, value):
+        return re.search(r'<span class="cell-text">([^<]*)</span>', to_xml(_company_display_cell(field, value))).group(1)
+
+    assert shown("country", "TH") == "Thailand"
+    assert shown("country", "") == "Other country"
+    assert shown("name", "TH") == "TH"
 
 
 async def test_the_address_cell_edits_the_text_not_the_record(ui_client):
