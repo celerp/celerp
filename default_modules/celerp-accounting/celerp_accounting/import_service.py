@@ -120,6 +120,11 @@ async def import_journal_records(
         if rec.idempotency_key in existing_keys or rec.entity_id in existing_entities:
             outcome.add(rec.entity_id, "skipped")
             continue
+        if isinstance(found := rec.data.get("entries"), list):
+            # Only these books' own copiers name the posted entry a line copies; an imported line is a
+            # new posting, judged as one whatever the file says.
+            rec = rec.model_copy(update={"data": {**rec.data, "entries": [
+                {k: v for k, v in e.items() if k != "posted_from"} if isinstance(e, dict) else e for e in found]}})
         try:
             # An imported line may name a party. Checked here, at the boundary,
             # because an entry whose contact resolves to nothing would post to a

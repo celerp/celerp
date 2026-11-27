@@ -104,3 +104,44 @@ async def test_a_line_on_the_income_account_of_an_item_in_a_gift_category_posts_
         "entries": [{**line, "fund_id": funds["U1"]} for line in _lines(donor)]})
     assert r.status_code == 200, r.text
     assert await _history_total(client, auth, donor) == 100.0
+
+
+async def test_an_imported_line_never_claims_to_copy_a_posted_entry(client, auth, session):
+    """Only these books' own copiers name ``posted_from``; an import row naming it is a new posting:
+    it stores no such claim, takes the fund the import chose and is classified gift by these books."""
+    funds = await _setup(client, auth)
+    await _account(client, auth, ACCOUNT)
+    donor = await _donor(client, auth, "Transfer Donor")
+    earlier = await _imported(client, auth, donor, funds["U1"])
+    je = f"je:{uuid.uuid4()}"
+    claimed = [{**line, "posted_from": earlier, "gift": True} for line in _lines(donor)]
+    r = await client.post("/accounting/import/batch", headers=auth["headers"], json={
+        "records": [{"entity_id": je, "event_type": "acc.journal_entry.created", "source": "csv",
+                     "idempotency_key": uuid.uuid4().hex,
+                     "data": {"status": "posted", "ts": "2026-03-10", "memo": "Bank transfer", "entries": claimed}}],
+        "fund_choices": {"all": funds["U1"]}})
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == 1, r.text
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    state = (await session.execute(select(Projection.state).where(Projection.entity_id == je))).scalar_one()
+    assert [e.get("posted_from") for e in state["entries"]] == [None, None]
+    assert {e["fund_id"] for e in state["entries"]} == {funds["U1"]}
+    assert [e.get("gift") for e in state["entries"]] == [None, False]
+
+
+async def test_an_imported_line_naming_a_posted_entry_still_has_its_fund_refused(client, auth):
+    """A fund an import row gives itself is refused before the import's choice applies (rule V);
+    naming a posted entry in ``posted_from`` never lets it through as a copy."""
+    funds = await _setup(client, auth)
+    await _account(client, auth, ACCOUNT)
+    donor = await _donor(client, auth, "Transfer Donor")
+    earlier = await _imported(client, auth, donor, funds["U1"])
+    claimed = [{**line, "posted_from": earlier, "fund_id": funds["U2"]} for line in _lines(donor)]
+    r = await client.post("/accounting/import/batch", headers=auth["headers"], json={
+        "records": [{"entity_id": f"je:{uuid.uuid4()}", "event_type": "acc.journal_entry.created", "source": "csv",
+                     "idempotency_key": uuid.uuid4().hex,
+                     "data": {"status": "posted", "ts": "2026-03-10", "memo": "Bank transfer", "entries": claimed}}],
+        "fund_choices": {"all": funds["U1"]}})
+    assert r.status_code == 200 and r.json()["created"] == 0 and r.json()["errors"], r.text
