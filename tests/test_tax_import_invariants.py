@@ -81,6 +81,27 @@ async def test_a_rate_that_is_not_finite_is_refused_per_row(client, endpoint, ra
     assert "Odd Tax" not in names and "Fine Tax" in names, names
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", list(_ENDPOINTS))
+@pytest.mark.parametrize("rate", ["abc", "", None])
+async def test_a_rate_that_is_not_a_number_never_takes_an_earlier_row_rate(client, endpoint, rate):
+    headers = await _register(client)
+    body = await _import(client, headers, endpoint, ("Fine Tax", "5"), ("Odd Tax", rate))
+    assert body["created"] == 1, body
+    assert refusal_keys(body["errors"]) == ["settings.rate_must_be_a_number"], body
+    names = await _names(client, headers, endpoint)
+    assert "Odd Tax" not in names and "Fine Tax" in names, names
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", list(_ENDPOINTS))
+async def test_a_batch_the_list_checks_refuse_creates_nothing(client, endpoint):
+    headers = await _register(client)
+    body = await _import(client, headers, endpoint, ("Fine Tax", "5"), ("Below Zero", -1))
+    assert (body["created"], len(body["errors"])) == (0, 1), body
+    names = await _names(client, headers, endpoint)
+    assert "Fine Tax" not in names and "Below Zero" not in names, names
+
 def _tax_list_writers() -> dict[str, set[str]]:
     """Each function of the companies router that writes a tax list (with_taxes, or a
     settings["taxes"] / settings["purchasing_taxes"] assignment), with the names it uses."""

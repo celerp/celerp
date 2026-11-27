@@ -126,7 +126,7 @@ async def test_other_country_uses_neutral_list_and_says_so(client, auth):
 async def test_company_country_cell_validation(client, auth):
     before = await _company(client, auth)
     taxes = await _taxes(client, auth)
-    r = await _set_country(client, auth, "TH")
+    r = await _set_country(client, auth, " th ")
     assert r.status_code == 200, r.text
     after = await _company(client, auth)
     assert after["settings"]["country"] == "TH"
@@ -138,6 +138,10 @@ async def test_company_country_cell_validation(client, auth):
     assert r.status_code == 422
     assert "XQ" in r.text and "Other country" in r.text
     assert (await _company(client, auth))["settings"]["country"] == "TH"
+
+    r = await _set_country(client, auth, "")
+    assert r.status_code == 200, r.text
+    assert "country" not in (await _company(client, auth))["settings"]
 
 
 async def test_country_explicit_no_address_side_effect(client, auth):
