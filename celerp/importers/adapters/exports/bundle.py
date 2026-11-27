@@ -171,11 +171,9 @@ def _journals(ledger: Ledger, src: Source) -> list[CIFJournalEntry]:
     book = ledger.book
     out = []
     if ledger.opening:
-        def held(p: Posting) -> str | None:
-            currency = book.accounts[p.account].currency
-            return currency if book.is_foreign(currency) else None
         out.append(CIFJournalEntry(**src("Opening balances", ledger.opening_key), entry_date=ledger.cutover,
-                                   narration=OPENING_NARRATION, currency=book.base, lines=_lines(ledger.opening, held)))
+                                   narration=OPENING_NARRATION, currency=book.base,
+                                   lines=_lines(ledger.opening, _held(book))))
     groups: dict[tuple[str, str], list[Posting]] = defaultdict(list)
     for p in ledger.imported_postings():
         if p.part in JOURNAL_PARTS:
@@ -188,8 +186,9 @@ def _journals(ledger: Ledger, src: Source) -> list[CIFJournalEntry]:
             source_type, ref = journal.source, journal.reference
             narration = next((ln.description for ln in journal.lines if ln.description), None) or journal.reference
         else:
-            lines = _lines(postings)
-            source_type, ref = _fallback_type(ledger, record), None
+            source_type, kept = _fallback_record(ledger, record)
+            lines = _lines(postings, _held(book, kept))
+            ref = None
             narration = FALLBACK_NARRATION
         if len(lines) < 2:
             continue
@@ -199,11 +198,22 @@ def _journals(ledger: Ledger, src: Source) -> list[CIFJournalEntry]:
     return out
 
 
-def _fallback_type(ledger: Ledger, record: str) -> str:
-    """The source type of the record a fallback journal belongs to."""
+def _held(book: Book, record_currency: str | None = None):
+    """A posting's foreign currency: that of the account it is on, when the account is kept in a
+    foreign currency (and, for a record's lines, in the record's own)."""
+    def held(p: Posting) -> str | None:
+        currency = book.accounts[p.account].currency
+        return currency if book.is_foreign(currency) and record_currency in (None, currency) else None
+    return held
+
+
+def _fallback_record(ledger: Ledger, record: str) -> tuple[str, str]:
+    """The source type and currency of the record a fallback journal belongs to."""
     if record in ledger.settlements:
-        return ledger.settlements[record].source
-    return ledger.book.documents[record].source_type
+        s = ledger.settlements[record]
+        return s.source, s.currency
+    doc = ledger.book.documents[record]
+    return doc.source_type, doc.currency
 
 
 def _currencies(book: Book, src: Source) -> list[CIFCurrency]:
@@ -245,7 +255,7 @@ def coverage(ledger: Ledger, skipped: dict[str, CoverageClass],
     mapped.update(j.source for j in ledger.journals.values())
     mapped.update(s.source for s in ledger.settlements.values())
     mapped.update("Bank Transfer" for _ in ledger.transfers)
-    fallbacks = Counter(_fallback_type(ledger, record)
+    fallbacks = Counter(_fallback_record(ledger, record)[0]
                         for record in {p.record for p in ledger.postings if p.part == "fallback"})
     rows = [CIFCoverageEntry(source_type=label, count=count, coverage_class=CoverageClass.MAPPED)
             for label, count in mapped.items() if count]

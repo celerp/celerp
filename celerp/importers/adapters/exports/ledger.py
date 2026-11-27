@@ -158,22 +158,31 @@ def _party(book: Book, doc_type: str) -> frozenset[str]:
 
 
 def _actual(book: Book, j: GLJournal, record: str, part: str, document: str | None = None) -> list[Posting]:
-    """A journal's own lines; a customer or supplier balance line names its own contact, else the journal's."""
+    """A journal's own lines; a customer or supplier balance line names its own contact, else the journal's.
+    A line's amount in the journal's currency is the one the source states; a journal kept in the
+    books' currency states it by its base amount, and a foreign line stating none carries none."""
     parties = book.controlled("receivable", "payable")
+    in_base = not book.is_foreign(j.currency)
     return [Posting(record, part, j.date, ln.account, ln.amount,
                     (ln.contact or j.contact) if ln.account in parties else None,
-                    ln.description or None, document, ln.foreign if ln.foreign is not None else ln.amount)
+                    ln.description or None, document,
+                    ln.foreign if ln.foreign is not None else ln.amount if in_base else ZERO)
             for ln in j.lines]
 
 
 def _fallback(actual: list[Posting], predicted: list[Posting], record: str, on: date,
               document: str | None) -> list[Posting]:
-    """The source's lines less what Celerp books for the record, per account and contact."""
+    """The source's lines less what Celerp books for the record, per account and contact; in the
+    record's currency too, where the source states that amount on every line it nets."""
     net: dict[tuple[str, str | None], Decimal] = defaultdict(lambda: ZERO)
+    native: dict[tuple[str, str | None], Decimal] = defaultdict(lambda: ZERO)
+    unstated = {(p.account, p.contact) for p in actual if p.amount and not p.native}
     for sign, postings in ((1, actual), (-1, predicted)):
         for p in postings:
             net[(p.account, p.contact)] += sign * p.amount
-    return [Posting(record, "fallback", on, account, amount, contact, document=document)
+            native[(p.account, p.contact)] += sign * p.native
+    return [Posting(record, "fallback", on, account, amount, contact, document=document,
+                    native=ZERO if (account, contact) in unstated else native[(account, contact)])
             for (account, contact), amount in sorted(net.items(), key=lambda kv: (kv[0][0], kv[0][1] or ""))
             if amount]
 
