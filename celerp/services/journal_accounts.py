@@ -192,7 +192,8 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     """Check every line's account and write its immutable role snapshot in place.
 
     Every line names an account in the chart (a line with none is refused, as an amount on
-    no account would unbalance the books), and the entry balances in the books' currency.
+    no account would unbalance the books) and any foreign currency it is typed in is one
+    Celerp recognises, and the entry balances in the books' currency.
     A line that names roles was chosen for them: its account must be the role's
     current target (then active and of a compatible type) or an account that has
     served the role before (then it only has to exist, as when a payment settles a
@@ -208,6 +209,7 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     lines, whose answers these books gave). Then the fund rules (check_fund_rules), judged on the entry's content and on ``actor_id``, the user
     the event is emitted by, for the entry ``entity_id``.
     """
+    from celerp.services.currencies import require_currency_code
     from celerp.services.money import books_currency, round_money, to_decimal
 
     entries = data.get("entries") or []
@@ -217,6 +219,7 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
         if not entry.get("account"):
             raise HTTPException(status_code=422, detail=refusal(
                 "posting.destination.not_in_chart", _DESTINATION_PROBLEMS["not_in_chart"].format(code=""), code=""))
+        require_currency_code(entry.get("fx_currency"))
     company = await session.get(Company, company_id)
     settings = dict(company.settings or {}) if company is not None else {}
     # Balanced in the books' currency, the gap named: when lines are in different currencies

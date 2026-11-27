@@ -83,3 +83,19 @@ async def test_the_journal_boundary_refuses_a_line_with_no_account_or_an_unbalan
                 actor_id=None, location_id=None, source="test", idempotency_key=uuid.uuid4().hex, metadata_={})
         await session.rollback()
         assert exc.value.status_code == 422 and needle in str(exc.value.detail), exc.value.detail
+
+
+@pytest.mark.parametrize("currency", ["ZZZ", "usd", "978", "<script>"])
+async def test_an_imported_line_in_a_currency_celerp_does_not_recognise_is_refused(client, auth, currency):
+    result = await _import_lines(client, auth, [
+        {"account": "6100", "debit": 10.0, "fx_debit": 3.0, "fx_currency": currency, "fx_rate": 3.3},
+        {"account": "1111", "credit": 10.0}])
+    assert result["created"] == 0 and len(result["errors"]) == 1, result
+    assert result["errors"][0]["params"]["refusal"]["message_key"] == "error.invalid_currency", result
+
+
+async def test_an_imported_line_in_a_withdrawn_currency_is_stored(client, auth):
+    result = await _import_lines(client, auth, [
+        {"account": "6100", "debit": 10.0, "fx_debit": 19.5, "fx_currency": "BGN", "fx_rate": 0.51},
+        {"account": "1111", "credit": 10.0}])
+    assert result["created"] == 1 and not result["errors"], result
