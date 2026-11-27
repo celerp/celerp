@@ -95,3 +95,23 @@ def test_importer_maps_tax_types_to_categories(tmp_path):
     assert errors[1] is None
     names = {row["name"] for row in _all_taxes(company)}
     assert "Zero" in names and "Levy 2%" not in names
+
+
+def test_importer_tax_code_the_tax_list_refuses_is_reported_and_not_added():
+    """A code the tax list cannot hold comes back as the record's refusal and nothing is added:
+    one whose component is too long to store, and any code while the list already holds a cash
+    basis code the company has no cut-off for."""
+    company = _company()
+    before = _all_taxes(company)
+    error = _apply_tax_code(company, _cif("Levy 2%", 2, category="standard", component="x" * 40))
+    assert error and "Levy 2%" in message_text(error) and "2" in message_text(error)
+    assert _all_taxes(company) == before
+
+    cash = {"id": "u-cash00000000", "name": "VAT on receipt", "tax_type": "sales", "category": "standard",
+            "cash_basis": True, "versions": [{"rate": 7.0}], "is_default": False, "is_compound": False,
+            "description": ""}
+    company = Company(settings={"taxes": [cash]})
+    before = _all_taxes(company)
+    error = _apply_tax_code(company, _cif("Zero", 0, category="zero", tax_type="sales"))
+    assert error and "VAT on receipt" in message_text(error)
+    assert _all_taxes(company) == before
