@@ -1110,6 +1110,7 @@
   "fixed_assets.err_enter_replacement_part_s_life_months": "ระบุอายุการใช้งานของชิ้นส่วนอะไหล่เป็นเดือน",
   "fixed_assets.err_allocate_cost_at_least_one_asset": "จัดสรรต้นทุนให้กับสินทรัพย์อย่างน้อยหนึ่งรายการ",
   "fixed_assets.err_choose_account_addition_paid_from_pick": "เลือกบัญชีที่ใช้จ่ายสำหรับส่วนที่เพิ่ม หรือเลือกบรรทัดในใบแจ้งหนี้ผู้ขายของส่วนที่เพิ่มนั้น",
+  "fixed_assets.err_bank_kept_in_currency": "บัญชี {account} เป็นบัญชีธนาคารสกุล {currency} และแบบฟอร์มนี้รับจำนวนเงินในสกุลเงินของสมุดบัญชีเท่านั้น เลือกบัญชีอื่น หรือบันทึกการชำระเงินเป็นรายการสมุดรายวันพร้อมจำนวนเงิน {currency} และอัตราแลกเปลี่ยน แล้วเลือกบรรทัดรายการนั้นที่นี่ หรือลงทะเบียนจาก รายการที่รอลงทะเบียน",
   "fixed_assets.err_choose_what_added_improvement_replacement_part": "เลือกสิ่งที่จะเพิ่มเข้าไป: การปรับปรุงหรือชิ้นส่วนทดแทน",
   "fixed_assets.err_name_each_asset_placed_service": "ระบุชื่อสินทรัพย์แต่ละรายการที่นำไปใช้งาน",
   "fixed_assets.err_name_replacement_part": "ระบุชื่อชิ้นส่วนอะไหล่ที่จะใช้เปลี่ยน",

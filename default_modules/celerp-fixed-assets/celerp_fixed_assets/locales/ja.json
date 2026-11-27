@@ -1110,6 +1110,7 @@
   "fixed_assets.err_enter_replacement_part_s_life_months": "交換部品の耐用年数を月単位で入力してください。",
   "fixed_assets.err_allocate_cost_at_least_one_asset": "費用を少なくとも1つの資産に配分してください。",
   "fixed_assets.err_choose_account_addition_paid_from_pick": "追加分の支払元となる勘定科目を選択するか、仕入請求書の明細を選択してください。",
+  "fixed_assets.err_bank_kept_in_currency": "勘定 {account} は {currency} 建ての銀行口座ですが、このフォームは帳簿の通貨の金額しか受け付けません。別の勘定を選ぶか、支払いを {currency} の金額と為替レート付きの仕訳として記帳し、その仕訳行をここで選ぶか 登録待ちの明細 から登録してください。",
   "fixed_assets.err_choose_what_added_improvement_replacement_part": "追加する内容を選択してください：改良か交換部品か。",
   "fixed_assets.err_name_each_asset_placed_service": "運用を開始した各資産の名称を記載してください。",
   "fixed_assets.err_name_replacement_part": "交換部品の名前を挙げてください。",

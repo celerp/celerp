@@ -1110,6 +1110,7 @@
   "fixed_assets.err_enter_replacement_part_s_life_months": "أدخل العمر الإنتاجي للقطعة البديلة بالأشهر.",
   "fixed_assets.err_allocate_cost_at_least_one_asset": "قم بتخصيص التكلفة لأصل واحد على الأقل.",
   "fixed_assets.err_choose_account_addition_paid_from_pick": "اختر الحساب الذي تُدفع منه الإضافة، أو اختر سطر فاتورة المورد الخاص بها.",
+  "fixed_assets.err_bank_kept_in_currency": "الحساب {account} حساب مصرفي بعملة {currency}، وهذا النموذج يقبل المبالغ بعملة الدفاتر فقط. اختر حسابًا آخر، أو سجّل الدفعة كقيد يومية بمبلغها بعملة {currency} وسعر الصرف، ثم اختر سطر القيد هذا هنا أو سجّله من بنود بانتظار التسجيل.",
   "fixed_assets.err_choose_what_added_improvement_replacement_part": "اختر ما تمت إضافته: تحسين أم قطعة غيار.",
   "fixed_assets.err_name_each_asset_placed_service": "اذكر اسم كل أصل تم وضعه في الخدمة.",
   "fixed_assets.err_name_replacement_part": "اذكر اسم القطعة البديلة.",

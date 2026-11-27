@@ -1110,6 +1110,7 @@
   "fixed_assets.err_enter_replacement_part_s_life_months": "Indiquez la durée de vie de la pièce de rechange en mois.",
   "fixed_assets.err_allocate_cost_at_least_one_asset": "Répartissez le coût sur au moins un actif.",
   "fixed_assets.err_choose_account_addition_paid_from_pick": "Choisissez le compte à partir duquel le paiement est effectué, ou sélectionnez sa ligne de facture.",
+  "fixed_assets.err_bank_kept_in_currency": "Le compte {account} est un compte bancaire tenu en {currency}, et ce formulaire n'accepte que des montants dans la devise de la comptabilité. Choisissez un autre compte, ou passez le paiement en écriture de journal avec son montant en {currency} et son taux de change, puis choisissez cette ligne de journal ici ou enregistrez-la depuis Lignes à enregistrer.",
   "fixed_assets.err_choose_what_added_improvement_replacement_part": "Choisissez ce qui est ajouté : une amélioration ou une pièce de rechange.",
   "fixed_assets.err_name_each_asset_placed_service": "Nommez chaque actif mis en service.",
   "fixed_assets.err_name_replacement_part": "Indiquez la pièce de rechange.",

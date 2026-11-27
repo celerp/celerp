@@ -1110,6 +1110,7 @@
   "fixed_assets.err_enter_replacement_part_s_life_months": "Informe a vida útil da peça de reposição em meses.",
   "fixed_assets.err_allocate_cost_at_least_one_asset": "Atribua o custo a pelo menos um ativo.",
   "fixed_assets.err_choose_account_addition_paid_from_pick": "Selecione a conta pela qual a adição é paga ou escolha a respectiva linha da fatura de fornecedor.",
+  "fixed_assets.err_bank_kept_in_currency": "A conta {account} é uma conta bancária mantida em {currency}, e este formulário só aceita valores na moeda da contabilidade. Escolha outra conta, ou lance o pagamento como lançamento de diário com o valor em {currency} e a taxa de câmbio, depois escolha essa linha de diário aqui ou registre-a em Linhas a registrar.",
   "fixed_assets.err_choose_what_added_improvement_replacement_part": "Escolha o que será adicionado: uma melhoria ou uma peça de substituição.",
   "fixed_assets.err_name_each_asset_placed_service": "Dê o nome de cada ativo colocado em serviço.",
   "fixed_assets.err_name_replacement_part": "Dê um nome à peça de reposição.",

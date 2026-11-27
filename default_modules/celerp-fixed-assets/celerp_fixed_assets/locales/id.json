@@ -1110,6 +1110,7 @@
   "fixed_assets.err_enter_replacement_part_s_life_months": "Masukkan masa manfaat suku cadang pengganti dalam bulan.",
   "fixed_assets.err_allocate_cost_at_least_one_asset": "Alokasikan biaya tersebut ke setidaknya satu aset.",
   "fixed_assets.err_choose_account_addition_paid_from_pick": "Pilih akun tempat penambahan tersebut dibayar, atau pilih baris tagihannya.",
+  "fixed_assets.err_bank_kept_in_currency": "Akun {account} adalah rekening bank dalam {currency}, dan formulir ini hanya menerima jumlah dalam mata uang pembukuan. Pilih akun lain, atau catat pembayaran sebagai entri jurnal dengan jumlah {currency} dan kurs, lalu pilih baris jurnal itu di sini atau daftarkan dari Baris untuk didaftarkan.",
   "fixed_assets.err_choose_what_added_improvement_replacement_part": "Pilih apa yang ditambahkan: peningkatan atau penggantian suku cadang.",
   "fixed_assets.err_name_each_asset_placed_service": "Sebutkan nama setiap aset yang mulai digunakan.",
   "fixed_assets.err_name_replacement_part": "Sebutkan nama suku cadang penggantinya.",

@@ -74,11 +74,14 @@ async def unusable(session, company_id, cls: dict) -> list[dict]:
 
 async def class_refusal(session, company_id, exc: HTTPException) -> HTTPException:
     """A posting refused on an account a class posts to, said as the class's problem with
-    the link to fix it: the operation's form has no account to choose. Any other refusal
-    is returned as it is."""
+    the link to fix it: the operation's form has no account to choose. A chosen bank kept in
+    another currency than the books' is refused with the way out a form taking amounts in the
+    books' currency leaves. Any other refusal is returned as it is."""
     from celerp.accounting_roles import refusal
 
     detail = exc.detail if isinstance(exc.detail, dict) else {}
+    if detail.get("message_key") == "acct.err_je_bank_currency":
+        return refused(422, "fixed_assets.err_bank_kept_in_currency", **detail["params"])
     code = (detail.get("params") or {}).get("code")
     if detail.get("message_key") not in (*PROBLEMS, "posting.continued_account_unusable") or not code:
         return exc

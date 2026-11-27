@@ -1110,6 +1110,7 @@
   "fixed_assets.err_enter_replacement_part_s_life_months": "የተተኪውን ክፍል ዕድሜ በወራት ውስጥ ያስገቡ።",
   "fixed_assets.err_allocate_cost_at_least_one_asset": "ወጪውን ቢያንስ ለአንድ ንብረት ይመድቡ።",
   "fixed_assets.err_choose_account_addition_paid_from_pick": "ተጨማሪው የተከፈለበትን ሒሳብ ይምረጡ ወይም የአቅራቢ ክፍያ መጠየቂያ መስመሩን ይምረጡ።",
+  "fixed_assets.err_bank_kept_in_currency": "ሒሳብ {account} በ{currency} የሚያዝ የባንክ ሒሳብ ነው፣ ይህ ቅጽ ደግሞ በመዝገቡ ገንዘብ ብቻ መጠን ይቀበላል። ሌላ ሒሳብ ይምረጡ፣ ወይም ክፍያውን ከ{currency} መጠኑና ከምንዛሪ ተመኑ ጋር እንደ ጆርናል ግቤት ይመዝግቡ፣ ከዚያ ያንን የጆርናል መስመር እዚህ ይምረጡ ወይም ከለምዝገባ የሚጠብቁ መስመሮች ይመዝግቡት።",
   "fixed_assets.err_choose_what_added_improvement_replacement_part": "የተጨመረውን ይምረጡ፡ ማሻሻያ ወይም ምትክ ክፍል።",
   "fixed_assets.err_name_each_asset_placed_service": "በአገልግሎት ላይ የተመደበውን እያንዳንዱን ንብረት ስም ይስጡ።",
   "fixed_assets.err_name_replacement_part": "የተተኪውን ክፍል ስም ይስጡ።",

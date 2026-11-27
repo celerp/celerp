@@ -1110,6 +1110,7 @@
   "fixed_assets.err_enter_replacement_part_s_life_months": "Inserisci la durata di vita del pezzo di ricambio in mesi.",
   "fixed_assets.err_allocate_cost_at_least_one_asset": "Assegna il costo ad almeno un cespite.",
   "fixed_assets.err_choose_account_addition_paid_from_pick": "Seleziona il conto da cui viene pagata l'aggiunta oppure scegli la relativa riga della fattura fornitore.",
+  "fixed_assets.err_bank_kept_in_currency": "Il conto {account} è un conto bancario tenuto in {currency}, e questo modulo accetta importi solo nella valuta della contabilità. Scegli un altro conto, oppure registra il pagamento come scrittura contabile con l'importo in {currency} e il tasso di cambio, poi scegli qui quella riga di giornale o registrala da Righe da registrare.",
   "fixed_assets.err_choose_what_added_improvement_replacement_part": "Scegli cosa aggiungere: un miglioramento o un pezzo di ricambio.",
   "fixed_assets.err_name_each_asset_placed_service": "Indica il nome di ciascun cespite messo in servizio.",
   "fixed_assets.err_name_replacement_part": "Indica il nome del pezzo di ricambio.",
