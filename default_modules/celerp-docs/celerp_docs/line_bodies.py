@@ -43,7 +43,7 @@ class LineItem(BaseModel):
     weight: FiniteFloat | None = None
     # Purchasing: what the received lot records about the goods.
     attributes: dict | None = None
-    # Purchasing: the chart account the line posts to; checked when the bill is finalized.
+    # Purchasing: the chart account the line posts to; checked when the document is saved.
     account_code: str | None = None
     # Selling a fixed asset: the asset the line sells (an invoice) or credits (a credit note).
     asset_id: str | None = None
