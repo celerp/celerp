@@ -27,7 +27,7 @@ def _line(item: dict, price: float, **tax) -> dict:
 
 def test_one_save_with_compound_taxes_and_a_rate_only_line_charges_what_the_invoice_charges(
         page, api_server, ui_server, api):
-    with _demo_company(api_server, ui_server, api, "GB", _COMPOUND_AFTER_VAT) as (company, ui, token, items):
+    with _demo_company(api_server, ui_server, api, "AU", _COMPOUND_AFTER_VAT) as (company, ui, token, items):
         r = company.post("/lists", json={"list_type": "quotation", "line_items": [
             _line(items[0], 50.0, taxes=[_VAT, _LEVY]), _line(items[1], 40.0, tax_rate=7.0)]})
         assert r.status_code == 200, r.text

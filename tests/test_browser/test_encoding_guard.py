@@ -40,7 +40,7 @@ def _tab(page, ui_server, token):
 
 
 def _taxed_company(api_server, ui_server, api, name):
-    return _demo_company(api_server, ui_server, api, "GB", [
+    return _demo_company(api_server, ui_server, api, "AU", [
         {"name": name, "rate": 7.0, "tax_type": "both", "is_default": True}])
 
 
@@ -83,7 +83,7 @@ def test_tax_name_shown_as_text_on_document_totals(page, api_server, ui_server, 
 
 
 def test_sell_by_unit_shown_as_text_in_batch_split(page, api_server, ui_server, api):
-    with _demo_company(api_server, ui_server, api, "GB") as (company, ui, token, items):
+    with _demo_company(api_server, ui_server, api, "AU") as (company, ui, token, items):
         item_id = _split_item(company)
         ctx, tab = _tab(page, ui_server, token)
         try:
@@ -154,7 +154,7 @@ def test_contact_replies_written_as_text(page, api):
 
 
 def test_column_labels_encoded_in_column_manager(page, api_server, ui_server, api):
-    with _demo_company(api_server, ui_server, api, "GB") as (company, ui, token, items):
+    with _demo_company(api_server, ui_server, api, "AU") as (company, ui, token, items):
         fields = company.get("/companies/me/item-schema").json()
         fields.append({"key": "guard_note", "label": _BREAK, "type": "text", "editable": True,
                        "show_in_table": True, "position": 99})

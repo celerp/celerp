@@ -291,11 +291,13 @@ def test_a_tax_changed_in_settings_is_not_charged_again_on_a_draft_that_holds_it
         assert r.status_code in (200, 201), r.text
         doc_id = r.json()["id"]
         for kind in ("taxes", "purchasing-taxes"):
-            taxes = [{**tax, **change} if tax["name"] == "VAT 7%" else tax
-                     for tax in company.get(f"/companies/me/{kind}").json()]
+            current = company.get(f"/companies/me/{kind}").json()
+            # A new rate replaces the row's versions with one open version at that rate.
+            taxes = [{**{k: v for k, v in tax.items() if not ("rate" in change and k == "versions")}, **change}
+                     if tax["name"] == "VAT 7%" else tax for tax in current]
             # Purchasing taxes the company never saved mirror its sales taxes, already changed.
             assert any(tax["name"] == change.get("name", "VAT 7%") and tax["is_default"] for tax in taxes), taxes
-            r = company.patch(f"/companies/me/{kind}", json={"taxes": taxes})
+            r = company.patch(f"/companies/me/{kind}", json=tax_list_body(current, taxes))
             assert r.status_code == 200, r.text
         _add_line(path, page, ui_server, company, ui, token, doc_id, items[1])
         doc = _each_line_at_100(company, doc_id)

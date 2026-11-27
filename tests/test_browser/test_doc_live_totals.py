@@ -83,7 +83,7 @@ def _draft(company, ui, item: dict, doc_taxes: list | None = None) -> str:
 
 
 def test_a_compound_line_tax_shows_the_saved_figures_once_saved(page, api_server, ui_server, api):
-    with _demo_company(api_server, ui_server, api, "GB", _COMPOUND_AFTER_VAT) as (company, ui, token, items):
+    with _demo_company(api_server, ui_server, api, "AU", _COMPOUND_AFTER_VAT) as (company, ui, token, items):
         r = ui.post("/docs/from-items/new", data={"selected": [items[0]["id"]]})
         assert r.status_code == 204, r.text
         doc_id = r.headers["HX-Redirect"].rsplit("/", 1)[-1]
@@ -113,7 +113,7 @@ def test_a_compound_line_tax_shows_the_saved_figures_once_saved(page, api_server
 
 
 def test_a_whole_document_tax_follows_a_line_edit_once_saved(page, api_server, ui_server, api):
-    with _demo_company(api_server, ui_server, api, "GB", []) as (company, ui, token, items):
+    with _demo_company(api_server, ui_server, api, "AU", []) as (company, ui, token, items):
         doc_id = _draft(company, ui, items[0], [_LEVY_WHOLE])
         ctx, tab = _open(page, ui_server, token, doc_id)
         try:
@@ -132,7 +132,7 @@ def test_a_whole_document_tax_follows_a_line_edit_once_saved(page, api_server, u
 
 
 def test_a_failed_save_puts_the_stored_figures_back(page, api_server, ui_server, api):
-    with _demo_company(api_server, ui_server, api, "GB", _COMPOUND_AFTER_VAT) as (company, ui, token, items):
+    with _demo_company(api_server, ui_server, api, "AU", _COMPOUND_AFTER_VAT) as (company, ui, token, items):
         doc_id = _draft(company, ui, items[0])
         before = _stored(company, doc_id)
         ctx, tab = _open(page, ui_server, token, doc_id)
@@ -149,7 +149,7 @@ def test_a_failed_save_puts_the_stored_figures_back(page, api_server, ui_server,
 
 
 def test_escape_on_an_edited_price_puts_the_stored_figures_back(page, api_server, ui_server, api):
-    with _demo_company(api_server, ui_server, api, "GB", _COMPOUND_AFTER_VAT) as (company, ui, token, items):
+    with _demo_company(api_server, ui_server, api, "AU", _COMPOUND_AFTER_VAT) as (company, ui, token, items):
         doc_id = _draft(company, ui, items[0])
         before = _stored(company, doc_id)
         ctx, tab = _open(page, ui_server, token, doc_id)
@@ -172,7 +172,7 @@ def test_escape_on_an_edited_price_puts_the_stored_figures_back(page, api_server
 
 
 def test_a_quotation_shows_the_saved_figures_once_saved(page, api_server, ui_server, api):
-    with _demo_company(api_server, ui_server, api, "GB", []) as (company, ui, token, items):
+    with _demo_company(api_server, ui_server, api, "AU", []) as (company, ui, token, items):
         item = items[0]
         r = company.post("/lists", json={"list_type": "quotation", "line_items": [
             {"item_id": item["id"], "sku": item["sku"], "name": item.get("name") or item["sku"],
@@ -199,7 +199,7 @@ def test_prices_that_include_tax_show_the_tax_they_hold_while_edited(page, api_s
     """With prices that include tax, the figure the page works out while a price is edited is the
     part of the line total the tax makes up, not the rate laid on top of it."""
     vat = [{"name": "VAT 5%", "rate": 5.0, "tax_type": "both", "is_default": True, "is_compound": False}]
-    with _demo_company(api_server, ui_server, api, "GB", vat) as (company, ui, token, items):
+    with _demo_company(api_server, ui_server, api, "AU", vat) as (company, ui, token, items):
         r = ui.post("/docs/from-items/new", data={"selected": [items[0]["id"]]})
         assert r.status_code == 204, r.text
         doc_id = r.headers["HX-Redirect"].rsplit("/", 1)[-1]
