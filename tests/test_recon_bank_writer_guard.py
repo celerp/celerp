@@ -271,3 +271,22 @@ async def test_a_migrated_foreign_bank_line_without_its_amount_is_refused(client
     status = {rec.entity_id: (rec.status, str(rec.message)) for rec in outcome.records}
     assert status[bare.entity_id][0] == "failed" and want in status[bare.entity_id][1], status
     assert status[carried.entity_id][0] == "created", status
+
+
+async def test_a_line_in_one_of_two_foreign_banks_sharing_an_account_is_stored(client, session):
+    """Two banks in different foreign currencies on one ledger account: a line with its amount in
+    either one's currency is read by that bank's reconciliation, so it is not refused."""
+    from celerp.events.engine import emit_event
+    from celerp_accounting.models import BankAccount
+
+    co, code, _ = await _eur_bank(client)
+    session.add(BankAccount(company_id=uuid.UUID(co["company_id"]), chart_account_code=code, bank_name="Pound Bank",
+                            account_number="****0002", bank_type="checking", currency="GBP"))
+    await session.commit()
+    lines = [dict(_books_only_lines(code)[0], fx_debit=13.89, fx_currency="EUR", fx_rate=1.08),
+             _books_only_lines(code)[1]]
+    await emit_event(session, company_id=uuid.UUID(co["company_id"]), entity_id=f"je:{uuid.uuid4()}",
+                     entity_type="journal_entry", event_type="acc.journal_entry.created",
+                     data={"ts": DAY, "memo": "shared account", "status": "posted", "entries": lines},
+                     actor_id=None, location_id=None, source="test", idempotency_key=uuid.uuid4().hex, metadata_={})
+    await session.commit()

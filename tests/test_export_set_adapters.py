@@ -431,6 +431,30 @@ async def test_quickbooks_and_xero_adapters(real_engine, monkeypatch, tmp_path, 
                     or (f"{m.source_type} (journal fallback)", "mapped_with_loss") in coverage), m.source_type
 
 
+@pytest.mark.parametrize("source", ["quickbooks_online", "xero"])
+def test_a_cutover_opening_carries_each_balance_in_its_own_currency_too(tmp_path, source):
+    """The cutover opening plus the records carried after it hold, per account and contact, what
+    full history holds, in the books' currency and in the record's own (a foreign bank's opening
+    is its balance in the bank's currency)."""
+    from celerp.importers.adapters.exports.ledger import build_ledger
+
+    adapter, files = (_qbo_adapter(), _qbo()) if source == "quickbooks_online" else (_adapter(), _xero())
+    cutover = MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUTOVER)
+    book = adapter._book(_set(tmp_path, files), cutover)
+
+    def position(postings) -> dict:
+        out: dict = {}
+        for p in postings:
+            amount, native = out.get((p.account, p.contact), (Decimal(0), Decimal(0)))
+            out[(p.account, p.contact)] = (amount + p.amount, native + p.native)
+        return {key: sums for key, sums in out.items() if any(sums)}
+
+    ledger = build_ledger(book, cutover)
+    assert any(p.date > CUTOVER for p in ledger.imported_postings())
+    assert position(ledger.opening + ledger.imported_postings()) == position(
+        build_ledger(book, MigrationDecisions(mode=CIFMode.FULL_HISTORY)).postings)
+
+
 def test_a_document_number_is_found_only_on_its_own_contacts_document():
     from celerp.importers.adapters.exports.book import Book, Document
     from celerp.importers.adapters.exports.ledger import find_document
