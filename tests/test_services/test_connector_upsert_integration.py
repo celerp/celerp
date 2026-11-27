@@ -123,6 +123,16 @@ async def test_woocommerce_order_creates_doc(use_test_session):
 
 
 @pytest.mark.asyncio
+async def test_a_woocommerce_order_not_yet_paid_owes_its_total(use_test_session):
+    session = use_test_session
+    cid = await _seed_company(session, "WooOwed")
+    order = {"id": 56, "number": "1002", "status": "on-hold",
+             "line_items": [{"name": "Widget", "quantity": 2, "price": "5.00", "total": "10.00"}], "total": "10.00"}
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    st = await _state(session, cid, "woocommerce:order:56")
+    assert (st["total"], st["amount_paid"], st["amount_outstanding"]) == (10.0, 0.0, 10.0)
+
+
 async def test_woocommerce_order_with_a_held_number_needs_attention(use_test_session, monkeypatch):
     """WOO- plus the order number is a number Celerp composes, so it is checked like every number
     Celerp issues: an order whose number another record holds lands on the attention list with

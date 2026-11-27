@@ -62,7 +62,9 @@ async def test_sales_withholding_on_invoice(client, session):
     vat, irpf = saved["VAT"]["id"], saved["IRPF"]["id"]
 
     before = await roles(session, auth)
-    inv = await finalized(client, auth, await doc(client, auth, "invoice", [line(1000.0, vat, irpf)]))
+    draft = await get(client, auth, await doc(client, auth, "invoice", [line(1000.0, vat, irpf)]))
+    assert (draft["total"], draft["amount_outstanding"]) == (1070.0, 920.0)
+    inv = await finalized(client, auth, draft["id"])
     assert (inv["tax"], inv["total"], inv["withheld"]) == (70.0, 1070.0, 150.0)
     snap = next(t for t in inv["line_items"][0]["taxes"] if t["code_id"] == irpf)
     assert (snap["category"], snap["amount"]) == ("withholding", 150.0)

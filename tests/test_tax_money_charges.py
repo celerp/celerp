@@ -88,6 +88,11 @@ async def test_shipping_taxed_main_supply_code(client, session):
     changed = await get(client, auth, inv["id"])
     assert (changed["tax"], changed["total"]) == (7.0, 117.0)
 
+    chosen = await get(client, auth, await doc(client, auth, "invoice", [line(107.0, vat)], shipping=10.0,
+                                               prices_include_tax=True, shipping_taxes=[{"code_id": zero}]))
+    assert [(t["code_id"], t["amount"]) for t in chosen["shipping_taxes"]] == [(zero, 0.0)]
+    assert (chosen["tax"], chosen["total"]) == (7.0, 117.0)
+
     r = await patch_doc(client, auth, inv["id"], "shipping_taxes", [{"code_id": vat}])
     assert r.status_code == 200, r.text
     before = await roles(session, auth)
