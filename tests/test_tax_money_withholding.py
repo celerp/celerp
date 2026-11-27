@@ -187,6 +187,20 @@ async def test_withheld_above_outstanding_refused(client, session):
     assert not (await get(client, auth, inv)).get("payments")
 
 
+async def test_withheld_on_a_payment_of_a_credit_note_refused(client, session):
+    """Only an invoice or a bill can have tax withheld from its payment: a refund of a customer
+    credit note with withholding is refused and posts nothing."""
+    auth = await company(session)
+    _inv, saved = await _invoice_1070(client, auth)
+    note = await finalized(client, auth, await doc(client, auth, "credit_note", [line(100.0, saved["VAT"]["id"])]))
+    assert note["amount_outstanding"] == 107.0
+    before = await roles(session, auth)
+    r = await pay(client, auth, note["id"], 50.0, [{"code_id": saved["EWT 2"]["id"], "amount": 2.0}])
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "documents.err_withheld_doc_type"
+    assert await roles(session, auth) == before
+
+
 async def test_withheld_certificate_must_belong_to_document(client, session):
     auth = await company(session)
     inv, saved = await _invoice_1070(client, auth)

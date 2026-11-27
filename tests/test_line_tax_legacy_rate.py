@@ -172,3 +172,14 @@ def test_every_reader_of_a_lines_tax_reads_its_taxes_list_before_its_rate(curren
     assert line_tax_rate(line) == 15
     shown = _fields_changed_summary({"line_items": {"old": [{**line, "taxes": []}], "new": [line]}}, currency, docs_on=True)
     assert "Tax 7% → 15%" in shown
+
+
+@pytest.mark.parametrize("state, line_rate", [({"prices_include_tax": True}, 7), ({"prices_include_tax": True, "tax_rate": 7}, 0)])
+def test_a_rate_on_prices_that_include_tax_is_the_part_of_the_price_that_is_tax(state, line_rate):
+    """A line or header rate on prices that include tax takes the tax out of the price, never
+    adds it on top."""
+    from celerp_docs.doc_money import document_money
+
+    line = {"description": "Service", "quantity": 1, "unit_price": 107.0, "tax_rate": line_rate}
+    money = document_money(state, [line], "USD", keep_unrated_tax=True)
+    assert (money["subtotal"], money["tax"], money["total"]) == (100.0, 7.0, 107.0)

@@ -365,6 +365,10 @@ async def test_line_snapshot_fields_server_built(client):
         r = await _patch_doc(client, h, draft["id"], "line_items", [{**line, "taxes": [{**snap, field: value}]}])
         _refused(r, _FROM_CODE)
         assert (await _doc(client, h, draft["id"]))["line_items"][0]["taxes"] == [snap], field
+    for field, value in (("rate", "seven"), ("order", "first")):
+        r = await _patch_doc(client, h, draft["id"], "line_items", [{**line, "taxes": [{**snap, field: value}]}])
+        _refused(r, "documents.err_tax_unreadable")
+        assert (await _doc(client, h, draft["id"]))["line_items"][0]["taxes"] == [snap], field
     r = await _patch_doc(client, h, draft["id"], "line_items", [{**line, "taxes": [snap]}])
     assert r.status_code == 200, r.text
     assert (await _doc(client, h, draft["id"]))["line_items"][0]["taxes"] == [snap]
