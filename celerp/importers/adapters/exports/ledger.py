@@ -478,10 +478,13 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
 
     if cutover is not None:
         balance: dict[tuple[str, str | None], Decimal] = defaultdict(lambda: ZERO)
+        native: dict[tuple[str, str | None], Decimal] = defaultdict(lambda: ZERO)
         for sign, postings in ((1, ledger.postings), (-1, ledger.imported_postings())):
             for p in postings:
                 balance[(p.account, p.contact)] += sign * p.amount
-        ledger.opening = [Posting(ledger.opening_key, "opening", cutover, account, amount, contact)
+                native[(p.account, p.contact)] += sign * p.native
+        ledger.opening = [Posting(ledger.opening_key, "opening", cutover, account, amount, contact,
+                                  native=native[(account, contact)])
                           for (account, contact), amount in sorted(balance.items(),
                                                                    key=lambda kv: (kv[0][0], kv[0][1] or ""))
                           if amount]

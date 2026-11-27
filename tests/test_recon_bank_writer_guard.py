@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 import bank_statement_helpers as B
 from test_reconciliation_history import admin, bank, match
-from ui.i18n import refusal_text
+from ui.i18n import refusal_text, t
 from shipped_sources import SHIPPED_ROOTS
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -93,7 +93,6 @@ async def _dispute(session, tok: str, doc_id: str, currency: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("currency", ["EUR", "JPY"])
 async def test_every_bank_writer_posts_in_the_bank_currency_and_the_account_reconciles(client, session, currency):
-    from ui.i18n import t
     tok, h = await admin(client)
     rate = RATES[currency]
     b = await bank(client, h, currency=currency, opening=1000, rate=rate)
@@ -176,8 +175,6 @@ _BANK_WRITERS: dict[tuple[str, str], str] = {
     ("default_modules/celerp-accounting/celerp_accounting/projections.py", "apply_accounting_event"):
         "applies stored events to projections; posts nothing",
     ("default_modules/celerp-accounting/celerp_accounting/routes.py", "write_off_difference"): "_bank_entries",
-    ("default_modules/celerp-accounting/celerp_accounting/routes.py", "create_manual_journal_entry"):
-        "the author enters the line in the account's currency; refused otherwise (acct.err_je_bank_currency)",
     ("celerp/services/auto_je.py", "create_for_doc_payment"): "payment_bank_fx",
     ("celerp/services/auto_je.py", "void_for_doc_payment"): "payment_return_entries -> payment_bank_fx",
     ("default_modules/celerp-docs/celerp_docs/routes.py", "reverse_payment_refund"):
@@ -218,3 +215,59 @@ def test_every_function_posting_to_a_bank_account_is_reviewed_here():
         "the amount in the account's currency (accounting _bank_entries, auto_je.payment_bank_fx "
         "or bank_fx_fields), cover it in the walk above, then list it in _BANK_WRITERS.")
     assert set(_BANK_WRITERS) - found == set(), "a reviewed writer is gone; drop it from _BANK_WRITERS"
+
+
+# The rule above lives at the journal boundary every writer passes (the accounting module's
+# guard_journal_change, run by emit_event), so a line in books currency only on a EUR bank is
+# refused with the manual entry's message whoever writes it: emitted directly, imported, or
+# brought in by a migration.
+def _books_only_lines(code: str) -> list[dict]:
+    return [{"account": code, "debit": 15.0, "credit": 0.0}, {"account": "4100", "debit": 0.0, "credit": 15.0}]
+
+
+async def _eur_bank(client) -> tuple[dict, str, str]:
+    co = await B.company(client)
+    eur = await B.bank(client, co["h"], currency="EUR", name="Euro Bank")
+    return co, eur["chart_account_code"], t("acct.err_je_bank_currency", account=eur["chart_account_code"],
+                                            currency="EUR")
+
+
+async def test_the_journal_boundary_refuses_a_foreign_bank_line_without_its_amount(client, session):
+    from fastapi import HTTPException
+
+    from celerp.events.engine import emit_event
+
+    co, code, want = await _eur_bank(client)
+    with pytest.raises(HTTPException) as e:
+        await emit_event(session, company_id=uuid.UUID(co["company_id"]), entity_id=f"je:{uuid.uuid4()}",
+                         entity_type="journal_entry", event_type="acc.journal_entry.created",
+                         data={"ts": DAY, "memo": "any writer", "status": "posted", "entries": _books_only_lines(code)},
+                         actor_id=None, location_id=None, source="test", idempotency_key=uuid.uuid4().hex,
+                         metadata_={})
+    await session.rollback()
+    assert e.value.status_code == 422 and refusal_text(e.value.detail) == want
+
+
+async def test_an_imported_foreign_bank_line_without_its_amount_is_refused(client, session):
+    co, code, want = await _eur_bank(client)
+    r = await client.post("/accounting/import/batch", headers=co["h"], json={"records": [{
+        "entity_id": f"je:{uuid.uuid4()}", "event_type": "acc.journal_entry.created", "source": "csv",
+        "idempotency_key": uuid.uuid4().hex,
+        "data": {"status": "posted", "ts": DAY, "memo": "import", "entries": _books_only_lines(code)}}]})
+    assert r.status_code == 200 and r.json()["created"] == 0 and want in str(r.json()["errors"]), r.text
+
+
+async def test_a_migrated_foreign_bank_line_without_its_amount_is_refused(client, session):
+    from celerp_accounting.import_service import AccImportRecord, import_journal_records
+
+    co, code, want = await _eur_bank(client)
+    kept = dict(_books_only_lines(code)[0], fx_debit=13.89, fx_currency="EUR", fx_rate=1.08)
+    bare, carried = (AccImportRecord(entity_id=f"je:{uuid.uuid4()}", event_type="acc.journal_entry.created",
+                                     source="migration", idempotency_key=uuid.uuid4().hex,
+                                     data={"status": "posted", "ts": DAY, "memo": "Migrated", "entries": lines})
+                     for lines in (_books_only_lines(code), [kept, _books_only_lines(code)[1]]))
+    outcome = await import_journal_records(session, co["company_id"], co["user_id"], [bare, carried], origin="migration")
+    await session.commit()
+    status = {rec.entity_id: (rec.status, str(rec.message)) for rec in outcome.records}
+    assert status[bare.entity_id][0] == "failed" and want in status[bare.entity_id][1], status
+    assert status[carried.entity_id][0] == "created", status

@@ -18,7 +18,8 @@ leaves the books-currency figure as it was is a change too. Two rules refuse it:
   has no period, since any day read into it would be a guess.
 
 Before both, a bank whose label and entries disagree (``refuse_mislabelled_bank``) takes no
-new or changed row.
+new or changed row, and a new or changed line on a bank kept in another currency than the
+books' carries its amount in that currency (``acct.err_je_bank_currency``).
 
 Everything else passes: journals without a bank line, postings after every completed
 period, other bank accounts, and a repeat of a change already applied.
@@ -30,6 +31,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
+from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -164,6 +166,14 @@ async def guard_journal_change(
     for bank in judged:
         if any(key[1] == bank.chart_account_code and key in rows_after for key in changed):
             await refuse_mislabelled_bank(session, company_id, bank)
+    # A new or changed line on a bank kept only in other currencies than the books' carries its
+    # amount in that currency, so the account's reconciliation can read it.
+    for key in changed:
+        kept_in = currencies[key[1]]
+        if key in rows_after and base not in kept_in and any(
+                all(a is None for a in amounts) for amounts in rows_after[key][1]):
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_je_bank_currency", account=key[1], currency=kept_in[0]))
     cancelled = event_type == "acc.journal_entry.voided" and bool(changed)
     held_ids = {row_id for row_id, _ in changed}
     if cancelled:
