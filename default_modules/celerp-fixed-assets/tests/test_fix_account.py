@@ -206,3 +206,26 @@ async def test_a_class_account_is_never_a_bank_kept_in_another_currency(fa):
     assert detail["params"] == {"code": code, "currency": "EUR"} and refusal_text(detail) == detail["message"]
     assert "Choose an account that is not a bank" in detail["message"], detail
     await fa.ok(await fa.post("/classes", {**body, "name": "Banked at home", "asset_account": "1111"}))
+
+
+async def test_a_class_account_that_became_a_bank_kept_in_another_currency_links_the_class_fix(fa):
+    """A class chose its account before a bank kept in EUR was added on it: posting through
+    the class is refused naming the class and the account, with the link to the class's fix,
+    as any other account the chart no longer takes postings on."""
+    await _managed(fa)
+    await _account(fa, "1221", "Accumulated depreciation - vehicles", "asset", "1200")
+    class_id = (await _vehicles(fa))["id"]
+    await fa.ok(await fa.patch(f"/classes/{class_id}", {"accumulated_depreciation_account": "1221"}))
+    car = await _contributed(fa)
+    await _run(fa, "2026-01")
+    await fa.ok(await fa.client.post("/accounting/bank-accounts", headers=fa.h, json={
+        "bank_name": "Euro Bank", "account_number": "0009", "bank_type": "checking", "currency": "EUR",
+        "opening_balance": 0, "account_code": "1221"}))
+    fix = f"/fixed-assets/classes/{class_id}/fix-account?field=accumulated_depreciation_account"
+    (problem,) = (await _vehicles(fa))["account_problems"]
+    assert problem["problem"] == "foreign_bank" and problem["href"] == fix, problem
+    r = await fa.post(f"/assets/{car}/dispose", {"date": "2026-03-15", "reason": "scrapped", "preview": True,
+                                                 "op_key": "fb-review"})
+    detail = r.json()["detail"]
+    assert r.status_code == 422 and detail["message_key"] == "fixed_assets.class_account_foreign_bank", r.text
+    assert detail["params"]["href"] == fix and refusal_text(detail) == detail["message"], detail
