@@ -29,7 +29,8 @@ async def test_cash_basis_pending_moves_with_allocations(client, session):
     """After every allocation the pending output tax is the tax share of what is still
     outstanding (21/121 of it), and pending plus recognized output tax is the tax of the
     invoices less the tax of the credit notes, whether applied or issued against the invoice.
-    An advance is a payment dated before its invoice. The last payments clear the pending tax to zero. A bill does the same with
+    An advance is a payment dated before its invoice. A payment too small to move a cent of tax
+    posts no tax entry. The last payments clear the pending tax to zero. A bill does the same with
     input tax."""
     auth, caja = await _cash_company(client, session)
     open_docs: list[str] = []
@@ -62,6 +63,8 @@ async def test_cash_basis_pending_moves_with_allocations(client, session):
     open_docs.append(advance["id"])
     ok(await pay(client, auth, advance["id"], 242.0, date="2026-09-01"))
     await check(399.0)
+    ok(await pay(client, auth, advance["id"], 0.01))
+    await check(399.0)
     await finalized(client, auth, await doc(client, auth, "credit_note", [line(100.0, caja)],
                                             original_doc_id=advance["id"]))
     await check(378.0)
@@ -69,6 +72,7 @@ async def test_cash_basis_pending_moves_with_allocations(client, session):
         ok(await pay(client, auth, d, (await get(client, auth, d))["amount_outstanding"]))
     await check(378.0)
     assert (await roles(session, auth)).get("tax_output_pending", 0) == 0
+    assert await _moves_nothing(session, auth) == []
 
     buyer, input_caja = await _cash_company(client, session, "purchase")
     bill = await finalized(client, buyer, await doc(client, buyer, "bill", [line(1000.0, input_caja)]))
@@ -76,6 +80,22 @@ async def test_cash_basis_pending_moves_with_allocations(client, session):
     ok(await pay(client, buyer, bill["id"], 1210.0))
     books = await roles(session, buyer)
     assert (books.get("tax_input_pending", 0), books.get("tax_input")) == (0, 210.0)
+
+
+async def _moves_nothing(session, auth) -> list[str]:
+    """The cash-basis tax entries that move no money: an allocation that leaves the pending tax
+    where it was posts no entry at all."""
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry",
+        Projection.entity_id.contains(":cashbasis:")))).scalars().all()
+    return sorted(row.entity_id for row in rows
+                  if not any(float(e.get("debit") or 0) or float(e.get("credit") or 0)
+                             for e in row.state.get("entries") or []))
 
 
 async def _preview(client, auth) -> dict:
@@ -114,6 +134,7 @@ async def test_cash_basis_cutoff_catchup_confirmed(client, session):
     assert (await roles(session, auth)).get("tax_output_pending") == pytest.approx(-294.0, abs=0.01)
     binding, key = (await _preview(client, auth))["fingerprint"], uuid.uuid4().hex
     first = ok(await _confirm(client, auth, binding, key))
+    assert first == {"entry_ids": [f"je:auto:{old['id']}:cashcutoff:0"]}
     assert (await roles(session, auth)).get("tax_output_pending") == pytest.approx(-210.0, abs=0.01)
     books = await roles(session, auth)
     assert ok(await _confirm(client, auth, binding, key)) == first
