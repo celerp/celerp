@@ -210,7 +210,7 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     the event is emitted by, for the entry ``entity_id``.
     """
     from celerp.services.currencies import require_currency_code
-    from celerp.services.money import books_currency, round_money, to_decimal
+    from celerp.services.money import books_currency, round_money, to_decimal, to_stored_float
 
     entries = data.get("entries") or []
     if not entries:
@@ -223,15 +223,25 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     company = await session.get(Company, company_id)
     settings = dict(company.settings or {}) if company is not None else {}
     # Balanced in the books' currency, the gap named: when lines are in different currencies
-    # it is the exchange difference the author still has to post.
+    # it is the exchange difference the author still has to post. Each line is kept at the
+    # books' precision, so what is stored is what was checked, and the entry balances exactly
+    # both as given and as kept: a gap smaller than the books' smallest unit is still a gap,
+    # and many of them add up.
     base = books_currency(settings)
-    debits = sum((to_decimal(e.get("debit") or 0) for e in entries), Decimal(0))
-    credits = sum((to_decimal(e.get("credit") or 0) for e in entries), Decimal(0))
-    if round_money(debits - credits, base):
-        raise HTTPException(status_code=422, detail=catalog_refusal(
-            "acct.err_je_unbalanced_credit" if debits > credits else "acct.err_je_unbalanced_debit",
-            base=base, debits=round_money(debits, base), credits=round_money(credits, base),
-            gap=round_money(abs(debits - credits), base)))
+    given = {"debit": Decimal(0), "credit": Decimal(0)}
+    kept = {"debit": Decimal(0), "credit": Decimal(0)}
+    for entry in entries:
+        for side in kept:
+            if entry.get(side) is not None:
+                amount = to_decimal(entry[side])
+                given[side] += amount
+                kept[side] += (rounded := round_money(amount, base))
+                entry[side] = to_stored_float(rounded)
+    for debits, credits in ((kept["debit"], kept["credit"]), (given["debit"], given["credit"])):
+        if debits != credits:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_je_unbalanced_credit" if debits > credits else "acct.err_je_unbalanced_debit",
+                base=base, debits=debits, credits=credits, gap=abs(debits - credits)))
     current = role_map(settings)
     accounts = await lock_accounts(session, company_id, {e["account"] for e in entries})
     for entry in entries:

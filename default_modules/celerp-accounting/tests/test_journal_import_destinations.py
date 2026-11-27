@@ -44,14 +44,22 @@ async def test_an_imported_journal_posts_only_to_active_leaf_accounts(client, se
     assert stored
 
 
-async def _import_lines(client, auth, lines):
-    je = f"je:{uuid.uuid4()}"
+async def _import_lines(client, auth, lines, copies: int = 1, entity_id: str | None = None):
     r = await client.post("/accounting/import/batch", headers=auth["headers"], json={"records": [{
-        "entity_id": je, "event_type": "acc.journal_entry.created", "source": "csv",
+        "entity_id": entity_id or f"je:{uuid.uuid4()}", "event_type": "acc.journal_entry.created", "source": "csv",
         "idempotency_key": uuid.uuid4().hex,
-        "data": {"status": "posted", "ts": "2026-03-01", "memo": "import", "entries": lines}}]})
+        "data": {"status": "posted", "ts": "2026-03-01", "memo": "import", "entries": [dict(e) for e in lines]}}
+        for _ in range(copies)]})
     assert r.status_code == 200, r.text
     return r.json()
+
+
+async def _keep_books_in(session, company_id, currency: str) -> None:
+    from celerp.services.company_lock import locked_company
+
+    company = await locked_company(session, uuid.UUID(str(company_id)))
+    company.settings = {**(company.settings or {}), "currency": currency}
+    await session.commit()
 
 
 async def _trial_balance_balanced(client, auth) -> bool:
@@ -99,3 +107,30 @@ async def test_an_imported_line_in_a_withdrawn_currency_is_stored(client, auth):
         {"account": "6100", "debit": 10.0, "fx_debit": 19.5, "fx_currency": "BGN", "fx_rate": 0.51},
         {"account": "1111", "credit": 10.0}])
     assert result["created"] == 1 and not result["errors"], result
+
+
+@pytest.mark.parametrize("books, lines", [
+    ("USD", [{"account": "6100", "debit": 10.004}, {"account": "6200", "credit": 10.0}]),
+    ("JPY", [{"account": "6100", "debit": 100.49}, {"account": "6200", "credit": 100.0}]),
+    # Balanced as typed, but not once each line is kept at cents: 10.01 against 5.00 + 5.00.
+    ("USD", [{"account": "6100", "debit": 10.005}, {"account": "6200", "credit": 5.0025},
+             {"account": "6300", "credit": 5.0025}]),
+])
+async def test_an_imported_journal_off_by_less_than_the_books_smallest_unit_is_refused(client, session, auth, books, lines):
+    """300 entries each off by a fraction of a cent would leave the trial balance off by their
+    sum, so each is refused, however small its gap. (Expense accounts only: a bank keeps the
+    currency it was opened in, so a books-currency switch would leave it mislabelled.)"""
+    await _keep_books_in(session, auth["company_id"], books)
+    result = await _import_lines(client, auth, lines, copies=300)
+    assert result["created"] == 0 and result["errors"], result
+    assert "doesn't balance" in str(result["errors"][0]), result
+    assert await _trial_balance_balanced(client, auth)
+
+
+async def test_an_imported_journal_is_stored_at_the_books_precision(client, session, auth):
+    je = f"je:{uuid.uuid4()}"
+    result = await _import_lines(client, auth, [{"account": "6100", "debit": 10.004}, {"account": "1111", "credit": 10.004}],
+                                 entity_id=je)
+    assert result["created"] == 1 and not result["errors"], result
+    stored = (await session.get(Projection, (auth["company_id"], je))).state["entries"]
+    assert [(e.get("debit"), e.get("credit")) for e in stored] == [(10.0, None), (None, 10.0)], stored
