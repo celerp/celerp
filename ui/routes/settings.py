@@ -406,8 +406,6 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
     def _make_version_patch(pfx, gname, pname):
         async def version_field_patch(request: Request, idx: int, v: int, field: str):
             token = _token(request)
-            if not token:
-                return P(t("error.session_expired"), cls="cell-error")
             form = await request.form()
             raw = str(form.get("value", "")).strip()
             if field == "rate":
@@ -444,8 +442,6 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
         async def add_version(request: Request, idx: int):
             from starlette.responses import Response as _R
             token = _token(request)
-            if not token:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             try:
                 taxes = await getattr(api, gname)(token)
                 if 0 <= idx < len(taxes):

@@ -3797,8 +3797,6 @@ def setup_routes(app):
         its code id alone, so the server rebuilds it from the code on the document's day."""
         from starlette.responses import Response as _R
         token = _token(request)
-        if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
             doc = await api.get_doc(token, entity_id)
             side = doc_side(doc.get("doc_type"))

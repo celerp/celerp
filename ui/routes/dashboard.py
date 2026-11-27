@@ -837,11 +837,8 @@ def setup_routes(app):
     async def dismiss_tax_upgrade(request: Request):
         """Close the tax codes upgrade banner for every user of the company. Undo is not
         offered: each outcome it lists stays on the settings page it linked to."""
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         try:
-            await api.dismiss_tax_upgrade_notice(token)
+            await api.dismiss_tax_upgrade_notice(_token(request))
         except APIError as e:
             return Div(e.detail, cls="error-banner", id="tax-upgrade-banner")
         return ""

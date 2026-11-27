@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from fasthtml.common import to_xml
+from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
 
 from ui.routes.dashboard import _tax_upgrade_banner
 
@@ -27,3 +28,20 @@ def test_banner_hidden_when_dismissed_empty_or_below_admin():
     assert _tax_upgrade_banner({"upgrade_notice": zero}, "admin") == ""
     assert _tax_upgrade_banner({}, "admin") == ""
     assert _tax_upgrade_banner({"upgrade_notice": NOTICE}, "operator") == ""
+
+
+async def test_dismiss_closes_the_banner_or_shows_the_refusal_in_its_place(ui_client):
+    from unittest.mock import AsyncMock, patch
+
+    from ui.api_client import APIError
+
+    url = "/settings/taxes/upgrade-notice/dismiss"
+    dismiss = AsyncMock(return_value={"ok": True})
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.dismiss_tax_upgrade_notice", new=dismiss):
+        closed = await ui_client.post(url)
+        with patch("ui.api_client.dismiss_tax_upgrade_notice", new=AsyncMock(side_effect=APIError(403, "Admins only"))):
+            refused = await ui_client.post(url)
+    dismiss.assert_awaited_once()
+    assert closed.status_code == 200 and closed.text == ""
+    assert 'id="tax-upgrade-banner"' in refused.text and "Admins only" in refused.text

@@ -374,6 +374,9 @@ _WRITERS = {
     ("celerp/events/engine.py", "transition = await ProjectionEngine.apply_event(session, entry)"): "emit_event, the hold check itself",
     ("celerp/routers/ledger.py", "await ProjectionEngine.rebuild(session, company_id=company_id)"): "rebuild from the judged ledger",
     ("celerp/services/company_backup.py", "await ProjectionEngine.rebuild(session, company_id)"): "whole-company restore",
+    ("celerp/localization/upgrade.py",
+     '"UPDATE projections SET state = CAST(:s AS json), version = version + 1, updated_at = now() "'):
+        "the tax codes upgrade, which writes the ledger event for each change beside it",
     ("celerp/services/company_backup.py", "proj.state = state"):
         "a restored line without a line id gets the id a replay of its record derives",
     ("celerp/services/dev_release_guard.py", "await ProjectionEngine.rebuild(session)"): "rebuild from the judged ledger",

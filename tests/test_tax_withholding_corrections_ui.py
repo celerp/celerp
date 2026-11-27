@@ -52,3 +52,27 @@ async def test_undo_reverses_each_ticked_bill(ui_client):
     await _send(ui_client, "POST", f"{_URL}/undo", {"bills": [_BILL], "corrected": []},
                 data={"selected": ["doc:b2"]}, withholding_correction_undo=undo)
     assert [c.args[1] for c in undo.await_args_list] == ["doc:b2"]
+
+
+async def test_page_keeps_the_permission_refusal(ui_client):
+    from starlette.responses import RedirectResponse
+
+    ui_client.cookies.update(_authed())
+    refused = AsyncMock(return_value=RedirectResponse("/settings/general", status_code=303))
+    view = AsyncMock(return_value={"bills": [], "corrected": []})
+    with patch("ui.routes.settings_sales._check_permission", new=refused), \
+         patch("ui.api_client.withholding_corrections", new=view):
+        r = await ui_client.get(_URL, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/settings/general"
+    view.assert_not_awaited()
+
+
+async def test_page_offers_the_company_business_day_as_the_posting_date(ui_client):
+    from celerp.services.business_time import business_today
+
+    ui_client.cookies.update(_authed())
+    with patch("ui.routes.settings_sales._get_company", new=AsyncMock(return_value={"timezone": "Pacific/Kiritimati"})), \
+         patch("ui.routes.settings_sales._check_permission", new=AsyncMock(return_value=None)), \
+         patch("ui.api_client.withholding_corrections", new=AsyncMock(return_value={"bills": [_BILL], "corrected": []})):
+        r = await ui_client.get(_URL)
+    assert f'value="{business_today("Pacific/Kiritimati").isoformat()}"' in r.text

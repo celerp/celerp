@@ -163,11 +163,8 @@ def setup_routes(app):
     async def _localization_call(request: Request, call):
         """Run one localization API call for the card's panel: a refusal shows in the panel,
         success reloads the page so the card and the tax table both show the result."""
-        token = _token(request)
-        if not token:
-            return P(t("error.session_expired"), cls="cell-error")
         try:
-            return await call(token, await request.form())
+            return await call(_token(request), await request.form())
         except ValueError as exc:
             return P(str(exc), cls="cell-error")
         except APIError as e:
@@ -235,8 +232,6 @@ def setup_routes(app):
     @app.get(_CORRECTIONS)
     async def withholding_corrections_page(request: Request):
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         if (r := await _check_permission(request, "manage_accounting")):
             return r
         try:

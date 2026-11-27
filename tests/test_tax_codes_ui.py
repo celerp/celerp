@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import re
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -219,3 +220,48 @@ async def test_remove_rate_version(ui_client, prefix, gname, pname):
          patch(f"ui.api_client.{pname}", new=refused):
         r = await ui_client.delete(f"/settings/{prefix}/0/versions/1", params={"fingerprint": shown})
     assert r.status_code != 204
+
+
+@pytest.mark.parametrize("prefix, gname, pname", _PREFIXES)
+async def test_version_cell_opens_for_edit_and_cancels_back(ui_client, prefix, gname, pname):
+    """Clicking a version cell opens it with its value (a rate as a plain number, an open end as
+    empty) saving to that version; Escape draws the cell again. A version or field that is not
+    there is refused in the cell."""
+    ui_client.cookies.update(_authed())
+    base = f"/settings/{prefix}/0/versions"
+    with patch(f"ui.api_client.{gname}", new=AsyncMock(return_value=_rows())):
+        rate = await ui_client.get(f"{base}/1/rate/edit")
+        start = await ui_client.get(f"{base}/1/valid_from/edit")
+        open_end = await ui_client.get(f"{base}/1/valid_to/edit")
+        shown = await ui_client.get(f"{base}/0/valid_to/display")
+        missing = await ui_client.get(f"{base}/2/rate/edit")
+        no_field = await ui_client.get(f"{base}/1/name/display")
+    assert 'value="7"' in rate.text and f'hx-patch="{base}/1/rate"' in rate.text
+    assert f'{base}/1/rate/display' in rate.text and "cell--number" in rate.text
+    assert 'value="2021-01-01"' in start.text and "cell--number" not in start.text
+    assert re.search(r'<input[^>]*name="value"[^>]*value=""', open_end.text), open_end.text
+    assert f'id="{prefix}-0-v0-valid_to"' in shown.text and "2020-12-31" in shown.text
+    for refused in (missing, no_field):
+        assert "cell-error" in refused.text and "<input" not in refused.text
+
+
+@pytest.mark.parametrize("prefix, gname, pname", _PREFIXES)
+async def test_version_cell_save_refuses_a_rate_that_is_no_number(ui_client, prefix, gname, pname):
+    from ui.i18n import t
+
+    ui_client.cookies.update(_authed())
+    saved = AsyncMock(return_value={})
+    with patch(f"ui.api_client.{gname}", new=AsyncMock(return_value=_rows())), \
+         patch(f"ui.api_client.{pname}", new=saved):
+        r = await ui_client.patch(f"/settings/{prefix}/0/versions/1/rate", data={"value": "nine"})
+    assert "cell-error" in r.text and t("settings.rate_must_be_a_number") in r.text
+    saved.assert_not_awaited()
+
+
+@pytest.mark.parametrize("prefix, gname, pname", _PREFIXES)
+async def test_add_rate_version_shows_the_refusal(ui_client, prefix, gname, pname):
+    ui_client.cookies.update(_authed())
+    with patch(f"ui.api_client.{gname}", new=AsyncMock(return_value=_rows())), \
+         patch(f"ui.api_client.{pname}", new=AsyncMock(side_effect=APIError(409, _STALE))):
+        r = await ui_client.post(f"/settings/{prefix}/0/versions", data={"fingerprint": "f"})
+    assert r.status_code == 409 and _STALE in r.text
