@@ -188,13 +188,15 @@ async def add_account(session: AsyncSession, company_id, code: str, name: str, a
 
 
 async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *, restored: bool = False,
-                                keep_gifts: bool = False, actor_id=None, entity_id=None) -> None:
+                                keep_gifts: bool = False, books_currency: str | None = None,
+                                actor_id=None, entity_id=None) -> None:
     """Check every line's account and write its immutable role snapshot in place.
 
     Every line names an account in the chart (a line with none is refused, as an amount on
     no account would unbalance the books) and any foreign currency it is typed in is one
     Celerp recognises; each line is a positive amount on one side, and the entry balances in
-    the books' currency.
+    the books' currency (*books_currency* when an automatic posting names the books it is
+    written on, else the company's).
     A line that names roles was chosen for them: its account must be the role's
     current target (then active and of a compatible type) or an account that has
     served the role before (then it only has to exist, as when a payment settles a
@@ -211,7 +213,8 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     the event is emitted by, for the entry ``entity_id``.
     """
     from celerp.services.currencies import require_currency_code
-    from celerp.services.money import books_currency, round_money, to_decimal, to_stored_float
+    from celerp.services import money
+    from celerp.services.money import round_money, to_decimal, to_stored_float
 
     entries = data.get("entries") or []
     if not entries:
@@ -230,7 +233,7 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     # and many of them add up.
     # Each line is a positive amount on one side, in the books' currency and in any currency it
     # was typed in.
-    base = books_currency(settings)
+    base = (books_currency or money.books_currency(settings)).upper()
     given = {"debit": Decimal(0), "credit": Decimal(0)}
     kept = {"debit": Decimal(0), "credit": Decimal(0)}
     for entry in entries:

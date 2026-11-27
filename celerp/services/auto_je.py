@@ -305,6 +305,7 @@ async def _emit_auto_posted_je(
         idempotency_key=idem_create,
         metadata_=metadata_,
         keep_gifts=True,
+        books_currency=currency,
     )
     await emit_event(
         session,

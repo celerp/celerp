@@ -1957,7 +1957,7 @@ ALLOWED_DUPLICATES = {
            'default_modules/celerp-accounting/celerp_accounting/routes.py::account_ledger x2',
            'default_modules/celerp-accounting/celerp_accounting/routes.py::cash_flow',
            'default_modules/celerp-accounting/celerp_accounting/routes.py::close_fiscal_year x3',
-           'default_modules/celerp-accounting/celerp_accounting/routes.py::create_manual_journal_entry x4',
+           'default_modules/celerp-accounting/celerp_accounting/routes.py::create_manual_journal_entry x2',
            'default_modules/celerp-accounting/celerp_accounting/routes.py::general_ledger',
            'default_modules/celerp-accounting/celerp_accounting/routes.py::opening_tie_out x3',
            'default_modules/celerp-accounting/celerp_accounting/routes.py::post_opening',

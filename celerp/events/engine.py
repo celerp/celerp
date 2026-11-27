@@ -742,12 +742,15 @@ async def _stamp_items_at_sale(session, kwargs: dict) -> None:
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False,
     memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None,
-    origin: str | None = None, fund_grant: FundChoiceGrant | None = None, keep_gifts: bool = False, **kwargs
+    origin: str | None = None, fund_grant: FundChoiceGrant | None = None, keep_gifts: bool = False,
+    books_currency: str | None = None, **kwargs
 ) -> LedgerEntry:
     # ``origin``: only an arrival writer passes it (peer_lines.ORIGINS), marking the record and
     # the lines it brings; ``fund_grant``: the fund keys this write may set (peer_lines);
     # ``keep_gifts``: the journal's lines carry the gift answers these books gave them (a
-    # document's posting, or a copy of posted lines), so the boundary keeps them.
+    # document's posting, or a copy of posted lines), so the boundary keeps them;
+    # ``books_currency``: the books an automatic posting is written on when it reverses a payment
+    # on the books that payment kept (None: the company's), the precision the boundary keeps.
     fund_choices_cleared: dict = {}
     # A backup represents a clean point in time: while one is building, pause writes
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.
@@ -867,7 +870,8 @@ async def emit_event(
             mark_journal(kwargs["data"], origin)
 
         await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring,
-                                    keep_gifts=keep_gifts, actor_id=kwargs.get("actor_id"),
+                                    keep_gifts=keep_gifts, books_currency=books_currency,
+                                    actor_id=kwargs.get("actor_id"),
                                     entity_id=kwargs["entity_id"])
 
     # Enforce the line rules on every document and List write. Extract the post-change
