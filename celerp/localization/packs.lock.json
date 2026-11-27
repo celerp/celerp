@@ -108,5 +108,435 @@
     "version": "2026.2",
     "schema_version": 2,
     "sha256": "065df06a2ccee73c90fb9e8325c49de4b70c84119e7264a861cea2bd2d0f86c5"
+  },
+  "AF": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "17adf03ed61a2a5bbde2fa896d2a25e4625c9b4fce05ddbd959a1c7c84814053"
+  },
+  "AM": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "ad06df71205cbbbfee1facb105a43222b391519aeca6dd50838caa01ab66f937"
+  },
+  "AO": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "736e227e2870538abed6613b6fd2bf6b2bf55f85e33a266911e22fdafa82d33b"
+  },
+  "AR": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "3c36c2e62e8aa287d5f5502401c1534fab66d039e39a15cd1b492e02fdbf3f87"
+  },
+  "AT": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "05bb8fafb7cf18bcc8d3ca0506cda6fbe3195ec90f28bac81802a363868cf750"
+  },
+  "BD": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "cc3606d86df0fc24a82b6d346c919661aad15a476d3cadc94baf4aa3821480d4"
+  },
+  "BE": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "d0d640f9089427aab85781561442821455e6c2c1b6d87ecad468a7065450794e"
+  },
+  "BG": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "6525a16d38a0568ee870710ab90580965429be5f8db17d1ea574eba626d368a8"
+  },
+  "BH": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "2d5a3c664971e168504a597a3df8dae6598060ed3274407243b38d2fed20b092"
+  },
+  "BO": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "a4788a701e04210d9386bc4d7e2f6d2df0f249bd89f66cc0a8f91477f7a8cf83"
+  },
+  "BR": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "767aa6d15500761f5bcb0a7eb9f86509caac7d83b1123a619ec941e3b1f4f4aa"
+  },
+  "CD": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "5e9407146d85ffbc44540115c37fa3d0510a241304a52e81e2f695dbf1d06a58"
+  },
+  "CG": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "ecb02c1a1b86e0eb35cb30388b4f5a6342eadf30f7c518a4ad541ceecd8d9877"
+  },
+  "CH": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "24a5cc58f6b64cb52c414203bf2027e4592497c4b44636e4b1a257b158163739"
+  },
+  "CI": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "1d2525d34542fbde8defb26c0fcb35788126bf25e37cb3a22750dbc589c39901"
+  },
+  "CL": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "e3e4d8dcc4f956d0f34a2676c39b381c1f2b127fa449f01cb240c5823e260f4c"
+  },
+  "CN": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "0a0ff401fd55f71eebfda441923e718a0d80850e1248d5cf734b0424043ffba2"
+  },
+  "CO": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "cd9f1bc8cef57f8f20a98d51e03ded95cf628f69d8f45ae52454a4e798320658"
+  },
+  "CR": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "8ce215a7bbd6e6b60a7f19826205d5ca49fd2b8d7c09b075336438e9b16fb63f"
+  },
+  "CU": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "f5f0d8b10b5439c3a3faa05b71675fefd83bdfdcff4e4bad549d15fbae28e28c"
+  },
+  "CY": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "3aaecc61ff1def6b8c0668c2ceab78d12200d11134efadc2042290782150e64d"
+  },
+  "CZ": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "3bbc9e2b9a87dfc746b0042daccee4212970149ec6ab911d68715dba6f05152c"
+  },
+  "DJ": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "23fbec8421700b063a13b7df4940c28e2f519bd50ba3ee98840734fa805cb52e"
+  },
+  "DK": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "25ffd5792e927a495dad7fbfaf129a50d1d978b2e9db7e5743c039388ab949e5"
+  },
+  "DO": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "e607a3c26add6d063141a21f060540026155e7cb1ae8b131209ff1b1a9884366"
+  },
+  "DZ": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "bfd6bc479b180d83cb7ecc80fc682d216f5a74814936ce300a59139f35b63825"
+  },
+  "EC": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "0ff7fc5deb24b1cbfd89d37fe087749c93c6543f3d9a0e39238a295a823db331"
+  },
+  "EE": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "8aaa9a5be1933912ec64ed645001532115585e8c2b7fbe930506d2d9dd4545dd"
+  },
+  "EG": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "faf9c9be1703d5c837d665cf5972f51a8305fc5d8cba666c6d5577774f94f28b"
+  },
+  "GH": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "ad4d67389bfb16e65ff236ca7f935432e0912950263ca75321bb0f4d37b4d100"
+  },
+  "GN": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "8ab14fa05875ca633ade142da9b12f0765641fa5b69974cacc06c2e14660b44e"
+  },
+  "GR": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "133a57fb1743425435285d5e37a6a954e4b2d351c94bb15fc1373a890e9428fd"
+  },
+  "GT": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "a4694157bd29120fa73fe0a717a3ef73d15c32017858a79c6b0a3de1b128412c"
+  },
+  "HN": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "5336fde656d9a93c922ebf10b4963703a7f6ffc9ce5a2f7d586e27aba551f681"
+  },
+  "HT": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "0d7339225acea1222646bd8c735d8f3df7ec719875bedcd0aa735b2860fca2da"
+  },
+  "HU": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "f0197dd75ac0d3848a8c88d9c222f58cee943fcf650f7dcb02174088285cc149"
+  },
+  "IE": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "e447d02503c8adf01254d7ff77ac35dd89979deed8e6ed230b1fbf5233c4cc1d"
+  },
+  "IL": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "0641a0324aa41b01034ec65635edb87bb396d7fa82f764cc53de1babd5a5cb9c"
+  },
+  "IQ": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "7f9646042c078a4598f5fbcd9dc079901d9f2bb0271b5d05b1d3e605da988ab3"
+  },
+  "IR": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "f7161b6f195e08fea3c7fd0788a48d21064de34713f1c1d4dbaf2c1255e77096"
+  },
+  "JM": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "13fc2a6e471e84cc6a0d8398d4573a7e07debd618a1de7e5e1f43f3674c76e11"
+  },
+  "JO": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "b57112ceee11f21cbbb42039efaf629f303076c88a1f3c6535d111b6ed124ec9"
+  },
+  "KE": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "ded36ebf5e1cdd81bb94585110d250f9c0851daf8c60ce3d072b2420aecbf1c5"
+  },
+  "KG": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "372316bc37972439936a9d0514713dcda0b7baca444f36c4ac925f2049cb9b8e"
+  },
+  "KR": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "5715cc60aa80b64319cb8e0f526b5878d21f12344f192e9bd912a1605042adbe"
+  },
+  "LB": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "03e92260786b9905a1613b6bbcfa18281b74abede853d78623b9cdf94ef21135"
+  },
+  "LK": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "f90cb57fa91cce34e4e9a731a734956002873a01c17c641bfb0ccbaa8dfa4789"
+  },
+  "LS": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "074fc3dff960b4127d8de8eee912e9eef242857893631e6c17eb74d1573b0116"
+  },
+  "LV": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "89287619212a8ef705d6fdb376ae97e42fb84327f1208a813c771a8d2c42936f"
+  },
+  "LY": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "57629c36c35c5be76bf29f1199701dc1c9d0ae258fafbaa3eddb7d6826953882"
+  },
+  "MA": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "4179d99ace3c380fe11a5c89604f98fe972fa95a4a0367c1a127e23e5803de16"
+  },
+  "MG": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "a5fa3e340e3a807c7a027c87a321753ce8761b01a761bd49d44f7a19373828f6"
+  },
+  "MK": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "d31aa1d5cba427b000f13ff10970a74274574f51d4ccf12ceb8c07196a270c1c"
+  },
+  "ML": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "8cb07d31590b414f435bbd12201669969153b04af26649944430f2987497a9e1"
+  },
+  "MT": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "e2a1fcca35de962da55a3ca7c5361e15c7b9caabb733b16354ca7f8f538b33be"
+  },
+  "NG": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "a5d1a8b898a6ffb9549880084f504b275a06b92465503a456f924b4519d7ed9a"
+  },
+  "NI": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "0d45c1ab3eb5f50694315d53f40d419aa71ebd392c49d653c808e27a32d7e4d2"
+  },
+  "NL": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "678812bd49a1f2b0a31c9996e1a13a55fdacbe75468c3d427978859487ff7c1e"
+  },
+  "OM": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "304324d492e0e458a0963724a2b7438521c39429c17bdf5fc170091af3fc0632"
+  },
+  "PA": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "d5100639a6982e3e119c46c588e3cb9711ecdb8b0f8f96233f8a6714de52275e"
+  },
+  "PE": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "308c5ead31eda39358a62230136c09b70b3fc704484d2dc78bd5c56b1fc4da03"
+  },
+  "PK": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "0c1cd364876f5f02beb0da06f893715e9f53ea921b5ec3e0f1c8a5157e76c699"
+  },
+  "PL": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "ae1d78d7f27edde876b426d0768fc0bb24abf7b1b56c9884bd2a3cb07d0bfa70"
+  },
+  "PR": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "3670095f237c19f23517ab85bedb32373ea9d0c23c54a89546d7bae08462efd3"
+  },
+  "PS": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "b21103d58b08f54bb2a39a61d6d3be360e1b142c21aa92d80cf0e75aaf56f575"
+  },
+  "PY": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "8d7f69112d50ed95000b6b8a7f2effe27c505207c36f259f9483dd1bd9519a10"
+  },
+  "RO": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "ccd5abd8f488be2ee2ba9ea3256db8568e2f38e4d9f302ebb1a22516e983519c"
+  },
+  "RU": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "ef91dc429c68c273e2ad1d51a96a162235252c06ff2a4b134c236073e510b0c8"
+  },
+  "RW": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "e6ef078d99a81c33145cfacbd66a451ac1c940ab654ed8792f0c6d583c47eee1"
+  },
+  "SD": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "679c747a9b0a5084dc4556bb823e36e31072946afaff3fbfafd6cc5d08454e81"
+  },
+  "SK": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "cca753b9932b0f34d0c216c9c46f39bfc244b7db65004fed9e94a67d2138dee3"
+  },
+  "SN": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "d0dc82e6a0bd9b2754dd6b8d962152e1c791f1509cac7c41616336e830e100bb"
+  },
+  "SV": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "fc1796c5c1031293a18abfbf323803069edf72e7c1f9a3804f943d6b4a85a342"
+  },
+  "SY": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "4258417c7cd0a5afd3e17969244b33478724cf9e3f970b52a6c34b52e09cddfe"
+  },
+  "TN": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "026024e4986882351f78795bd1930eeb299fb72c0153578040b5ce237fc34286"
+  },
+  "TR": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "df4851ee132cb15d4b54f2bf0334645be4d3c3b1827d6133566ccb66cde7deac"
+  },
+  "TW": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "c245aed7bcbaeef2fecea8457dca1f889a1c7f0b3b707f1241014eb538c13496"
+  },
+  "UA": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "4faef6bb977da30bcbba57dea819f2bbcfe0562170bf3ec3f3d3c68357e49393"
+  },
+  "UG": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "3ea21b3e73668f937183235ef6bc0b8d46639892ebbf6c75282dce8988ea526b"
+  },
+  "UY": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "3caad08bd995c578fe70f4aa4080cce023f9d11dd04be98857e2b91a7a58a535"
+  },
+  "UZ": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "4114a539f4afab39831698175413d721cfc2786f611b71ab7d837987b6d4b440"
+  },
+  "VE": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "2f9dbe5c17fa327b3938aa5b63425daaf60a7203ccf9209cff98cb45d9b76ee5"
+  },
+  "YE": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "baeeac4638d00d590056a8536a549ca8aed514fba6b33e4ada8e604c669aaf59"
+  },
+  "ZA": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "bbbea4974031cb2777769224591e4811ff5657ef802bb6c2291f8d06cc224aa5"
+  },
+  "ZM": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "d24a0342e7156f05ec81223c8a6fa6d272e6f6d290426fca944fec30c3566dda"
+  },
+  "ZW": {
+    "version": "2026.1",
+    "schema_version": 2,
+    "sha256": "24f4bccde5f937b2965bcdbf9b7bdbd5cee45ba1db03078ecf59bcc9d908acce"
   }
 }

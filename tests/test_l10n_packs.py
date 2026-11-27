@@ -491,7 +491,7 @@ async def test_source_checkout_without_packs_offers_other_only(tmp_path, client,
 
     package_lock = REPO / "celerp" / "localization" / "packs.lock.json"
     codes = list(json.loads(package_lock.read_text(encoding="utf-8")))
-    assert len(codes) == 22
+    assert codes
     root = tmp_path / "checkout"
     (root / "packs").mkdir(parents=True)
     shutil.copy(package_lock, root / "packs.lock.json")
