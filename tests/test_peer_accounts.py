@@ -85,14 +85,14 @@ def _lines(state: dict) -> set[tuple]:
     return {(l["account"], l["debit"], l["credit"]) for l in state["entries"]}
 
 
-async def _bill(client, tok: str, lines: list[dict], key: str) -> str:
+async def _bill(client, tok: str, lines: list[dict], key: str, **fields) -> str:
     """A finalized bill from a supplier, its lines posting to the accounts they name."""
     vendor = await client.post("/crm/contacts", json={"name": f"Supplier {key}", "contact_type": "vendor"},
                                headers=auth(tok))
     assert vendor.status_code in (200, 201), vendor.text
     r = await client.post("/docs", json={
         "doc_type": "bill", "contact_id": vendor.json()["id"], "date": ADJUSTED,
-        "line_items": lines, "idempotency_key": key}, headers=auth(tok))
+        "line_items": lines, "idempotency_key": key, **fields}, headers=auth(tok))
     assert r.status_code in (200, 201), r.text
     doc_id = r.json()["id"]
     done = await client.post(f"/docs/{doc_id}/finalize", headers=auth(tok))
@@ -506,6 +506,32 @@ async def test_a_tax_code_crosses_with_its_document(real_client, real_engine, mo
     tax_input = [s for eid, s in (await _journals(real_engine, firm_company)).items() if eid in posted]
     assert any(l["account"] == "1150" and l["debit"] == 11.0 for s in tax_input for l in s["entries"])
 
+
+
+async def test_document_and_shipping_tax_codes_cross_with_their_document(real_client, real_engine, monkeypatch):
+    """AC36 / A13: a tax the whole bill carries and a tax on its shipping, neither on any
+    line, are added to the receiver's purchase taxes at the sender's rate, each with a notice."""
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    firm_company = _company_of(firm_tok)
+    stamp = {"name": "Stamp duty", "rate": 1.0, "tax_type": "purchase"}
+    freight = {"name": "Freight levy", "rate": 2.0, "tax_type": "purchase"}
+    r = await save_taxes(real_client, auth(tok), [stamp, freight], "purchase")
+    assert r.status_code == 200, r.text
+    await _bill(real_client, tok, [
+        {"name": "Crates", "quantity": 1, "unit_price": 100.0, "line_total": 100.0,
+         "account_code": "6800", "receive_as": "expense"}], "doc-taxed-bill", shipping=50.0,
+        doc_taxes=[{"code": "Stamp duty", "rate": 1.0, "order": 1, "is_compound": False, "label": "Stamp duty"}],
+        shipping_taxes=[{"code": "Freight levy", "rate": 2.0, "amount": 1.0}])
+    _route_to_app(monkeypatch, [])
+    results = await _two_way(client_company, credential)
+    assert results["documents_out"].ok, results["documents_out"].errors
+
+    taxes = {x["name"]: x for x in (await real_client.get("/companies/me/purchasing-taxes",
+                                                          headers=auth(firm_tok))).json()}
+    assert (rate_today(taxes["Stamp duty"]), rate_today(taxes["Freight levy"])) == (1.0, 2.0)
+    notices = await _notices(real_engine, firm_company)
+    for name in ("Stamp duty", "Freight levy"):
+        assert len([n for n in notices if name in n[1]]) == 1, notices
 
 # ---- AC38 hierarchy --------------------------------------------------------------------
 
