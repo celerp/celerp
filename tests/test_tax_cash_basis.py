@@ -126,7 +126,8 @@ async def test_cash_basis_cutoff_catchup_confirmed(client, session):
 async def test_cash_basis_moves_keep_each_fund(client, session):
     """With funds on, each fund's pending tax moves with that fund's share of what is still
     owed, so every fund clears on its own: a bill whose two lines sit in two funds, paid in part,
-    the payment voided, then paid in full; and an old invoice whose remainder posts at the cut-off."""
+    the payment voided, then paid in full; and an old invoice whose remainder posts at the cut-off,
+    a payment after it moving none of that back."""
     from test_fund_movements import _setup
 
     buyer, caja = await _cash_company(client, session, "purchase")
@@ -159,6 +160,10 @@ async def test_cash_basis_moves_keep_each_fund(client, session):
         issue_date="2024-03-01"))
     ok(await pay(client, seller, old["id"], 605.0, date="2024-06-01"))
     ok(await _confirm(client, seller, (await _preview(client, seller))["fingerprint"]))
+    assert await role_funds(session, seller, "tax_output_pending") == {}
+    assert await role_funds(session, seller, "tax_output") == {("tax_output", g["R"]): -210.0,
+                                                               ("tax_output", g["U1"]): -105.0}
+    ok(await pay(client, seller, old["id"], 100.0))
     assert await role_funds(session, seller, "tax_output_pending") == {}
     assert await role_funds(session, seller, "tax_output") == {("tax_output", g["R"]): -210.0,
                                                                ("tax_output", g["U1"]): -105.0}
