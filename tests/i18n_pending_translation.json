@@ -140,6 +140,350 @@
     "field.certificate_file_id": {
       "en": "Withholding certificate",
       "params": []
+    },
+    "country.AF": {
+      "en": "Afghanistan",
+      "params": []
+    },
+    "country.AM": {
+      "en": "Armenia",
+      "params": []
+    },
+    "country.AO": {
+      "en": "Angola",
+      "params": []
+    },
+    "country.AR": {
+      "en": "Argentina",
+      "params": []
+    },
+    "country.AT": {
+      "en": "Austria",
+      "params": []
+    },
+    "country.BD": {
+      "en": "Bangladesh",
+      "params": []
+    },
+    "country.BE": {
+      "en": "Belgium",
+      "params": []
+    },
+    "country.BG": {
+      "en": "Bulgaria",
+      "params": []
+    },
+    "country.BH": {
+      "en": "Bahrain",
+      "params": []
+    },
+    "country.BO": {
+      "en": "Bolivia",
+      "params": []
+    },
+    "country.BR": {
+      "en": "Brazil",
+      "params": []
+    },
+    "country.CD": {
+      "en": "Democratic Republic of the Congo",
+      "params": []
+    },
+    "country.CG": {
+      "en": "Republic of the Congo",
+      "params": []
+    },
+    "country.CH": {
+      "en": "Switzerland",
+      "params": []
+    },
+    "country.CI": {
+      "en": "Côte d'Ivoire",
+      "params": []
+    },
+    "country.CL": {
+      "en": "Chile",
+      "params": []
+    },
+    "country.CN": {
+      "en": "China",
+      "params": []
+    },
+    "country.CO": {
+      "en": "Colombia",
+      "params": []
+    },
+    "country.CR": {
+      "en": "Costa Rica",
+      "params": []
+    },
+    "country.CU": {
+      "en": "Cuba",
+      "params": []
+    },
+    "country.CY": {
+      "en": "Cyprus",
+      "params": []
+    },
+    "country.CZ": {
+      "en": "Czechia",
+      "params": []
+    },
+    "country.DJ": {
+      "en": "Djibouti",
+      "params": []
+    },
+    "country.DK": {
+      "en": "Denmark",
+      "params": []
+    },
+    "country.DO": {
+      "en": "Dominican Republic",
+      "params": []
+    },
+    "country.DZ": {
+      "en": "Algeria",
+      "params": []
+    },
+    "country.EC": {
+      "en": "Ecuador",
+      "params": []
+    },
+    "country.EE": {
+      "en": "Estonia",
+      "params": []
+    },
+    "country.EG": {
+      "en": "Egypt",
+      "params": []
+    },
+    "country.GH": {
+      "en": "Ghana",
+      "params": []
+    },
+    "country.GN": {
+      "en": "Guinea",
+      "params": []
+    },
+    "country.GR": {
+      "en": "Greece",
+      "params": []
+    },
+    "country.GT": {
+      "en": "Guatemala",
+      "params": []
+    },
+    "country.HN": {
+      "en": "Honduras",
+      "params": []
+    },
+    "country.HT": {
+      "en": "Haiti",
+      "params": []
+    },
+    "country.HU": {
+      "en": "Hungary",
+      "params": []
+    },
+    "country.IE": {
+      "en": "Ireland",
+      "params": []
+    },
+    "country.IL": {
+      "en": "Israel",
+      "params": []
+    },
+    "country.IQ": {
+      "en": "Iraq",
+      "params": []
+    },
+    "country.IR": {
+      "en": "Iran",
+      "params": []
+    },
+    "country.JM": {
+      "en": "Jamaica",
+      "params": []
+    },
+    "country.JO": {
+      "en": "Jordan",
+      "params": []
+    },
+    "country.KE": {
+      "en": "Kenya",
+      "params": []
+    },
+    "country.KG": {
+      "en": "Kyrgyzstan",
+      "params": []
+    },
+    "country.KR": {
+      "en": "South Korea",
+      "params": []
+    },
+    "country.LB": {
+      "en": "Lebanon",
+      "params": []
+    },
+    "country.LK": {
+      "en": "Sri Lanka",
+      "params": []
+    },
+    "country.LS": {
+      "en": "Lesotho",
+      "params": []
+    },
+    "country.LV": {
+      "en": "Latvia",
+      "params": []
+    },
+    "country.LY": {
+      "en": "Libya",
+      "params": []
+    },
+    "country.MA": {
+      "en": "Morocco",
+      "params": []
+    },
+    "country.MG": {
+      "en": "Madagascar",
+      "params": []
+    },
+    "country.MK": {
+      "en": "North Macedonia",
+      "params": []
+    },
+    "country.ML": {
+      "en": "Mali",
+      "params": []
+    },
+    "country.MT": {
+      "en": "Malta",
+      "params": []
+    },
+    "country.NG": {
+      "en": "Nigeria",
+      "params": []
+    },
+    "country.NI": {
+      "en": "Nicaragua",
+      "params": []
+    },
+    "country.NL": {
+      "en": "Netherlands",
+      "params": []
+    },
+    "country.OM": {
+      "en": "Oman",
+      "params": []
+    },
+    "country.PA": {
+      "en": "Panama",
+      "params": []
+    },
+    "country.PE": {
+      "en": "Peru",
+      "params": []
+    },
+    "country.PK": {
+      "en": "Pakistan",
+      "params": []
+    },
+    "country.PL": {
+      "en": "Poland",
+      "params": []
+    },
+    "country.PR": {
+      "en": "Puerto Rico",
+      "params": []
+    },
+    "country.PS": {
+      "en": "Palestine",
+      "params": []
+    },
+    "country.PY": {
+      "en": "Paraguay",
+      "params": []
+    },
+    "country.RO": {
+      "en": "Romania",
+      "params": []
+    },
+    "country.RU": {
+      "en": "Russia",
+      "params": []
+    },
+    "country.RW": {
+      "en": "Rwanda",
+      "params": []
+    },
+    "country.SD": {
+      "en": "Sudan",
+      "params": []
+    },
+    "country.SK": {
+      "en": "Slovakia",
+      "params": []
+    },
+    "country.SN": {
+      "en": "Senegal",
+      "params": []
+    },
+    "country.SV": {
+      "en": "El Salvador",
+      "params": []
+    },
+    "country.SY": {
+      "en": "Syria",
+      "params": []
+    },
+    "country.TN": {
+      "en": "Tunisia",
+      "params": []
+    },
+    "country.TR": {
+      "en": "Türkiye",
+      "params": []
+    },
+    "country.TW": {
+      "en": "Taiwan",
+      "params": []
+    },
+    "country.UA": {
+      "en": "Ukraine",
+      "params": []
+    },
+    "country.UG": {
+      "en": "Uganda",
+      "params": []
+    },
+    "country.UY": {
+      "en": "Uruguay",
+      "params": []
+    },
+    "country.UZ": {
+      "en": "Uzbekistan",
+      "params": []
+    },
+    "country.VE": {
+      "en": "Venezuela",
+      "params": []
+    },
+    "country.YE": {
+      "en": "Yemen",
+      "params": []
+    },
+    "country.ZA": {
+      "en": "South Africa",
+      "params": []
+    },
+    "country.ZM": {
+      "en": "Zambia",
+      "params": []
+    },
+    "country.ZW": {
+      "en": "Zimbabwe",
+      "params": []
     }
   },
   "modules": {
