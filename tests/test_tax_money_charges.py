@@ -53,6 +53,32 @@ async def test_inclusive_back_calculation_rounding(client, session):
     assert (await get(client, auth, on_list["id"]))["prices_include_tax"] is True
 
 
+async def test_a_customer_on_a_price_list_that_includes_tax_sets_the_flag_unless_chosen(client, session):
+    """A customer whose price list holds prices that include tax turns the flag on for a document
+    made out to them, unless the document says itself whether its prices include tax."""
+    auth = await company(session)
+    h = auth["headers"]
+    vat = (await codes(client, auth, [code("VAT", 7)]))["VAT"]["id"]
+    lists = (await client.get("/companies/me/price-lists", headers=h)).json()
+    r = await client.patch("/companies/me/price-lists", headers=h,
+                           json={"price_lists": [*lists, {"name": "Shop", "prices_include_tax": True}]})
+    assert r.status_code == 200, r.text
+    r = await client.post("/crm/contacts", headers=h,
+                          json={"name": "Walk-in shop", "contact_type": "customer"})
+    assert r.status_code in (200, 201), r.text
+    shop = r.json()["id"]
+    r = await client.patch(f"/crm/contacts/{shop}", headers=h,
+                           json={"fields_changed": {"price_list": {"old": None, "new": "Shop"}}})
+    assert r.status_code == 200, r.text
+
+    follows = await get(client, auth, await doc(client, auth, "invoice", [line(107.0, vat)], contact_id=shop))
+    assert (follows["price_list"], follows["prices_include_tax"]) == ("Shop", True)
+    assert (follows["tax"], follows["total"]) == (7.0, 107.0)
+    chosen = await get(client, auth, await doc(client, auth, "invoice", [line(107.0, vat)], contact_id=shop,
+                                               prices_include_tax=False))
+    assert (chosen["price_list"], chosen["prices_include_tax"]) == ("Shop", False)
+    assert (chosen["tax"], chosen["total"]) == (7.49, 114.49)
+
 async def test_inclusive_toggle_then_line_save(client, session):
     """Turning a draft's Prices include tax off and saving a line with the taxes the reloaded
     page holds is accepted, and the stored taxes follow the new flag."""
