@@ -106,12 +106,14 @@ async def test_legacy_wht_correction_entry_and_undo(client, session):
     assert [row["doc_id"] for row in listed["bills"]] == [bill]
 
     before = await roles(session, auth)
-    ok(await post(client, auth, f"{_CORRECTIONS}/{bill}", {"date": "2026-10-15"}))
+    posted = ok(await post(client, auth, f"{_CORRECTIONS}/{bill}", {"date": "2026-10-15"}))
     after = await roles(session, auth)
     assert round(after["tax_input"] - before["tax_input"], 2) == 30.0
     assert round(after["tax_withheld_payable"] - before.get("tax_withheld_payable", 0), 2) == -30.0
     entries = {k: v for k, v in (await _journal(session, auth)).items() if f"{bill}:wht-fix:0" in k}
     assert len(entries) == 1 and next(iter(entries.values()))["ts"].startswith("2026-10-15")
+    assert posted == {"entry_id": next(iter(entries))}
+    assert next(iter(entries.values()))["memo"] == f"Withholding correction for {_ref(bill)}"
     state = await get(client, auth, bill)
     assert not state.get("legacy_wht_entry") and state["withholding_correction"] == next(iter(entries))
 
@@ -130,6 +132,23 @@ async def test_legacy_wht_correction_entry_and_undo(client, session):
     assert (await post(client, auth, f"{_CORRECTIONS}/{bill}", {"date": "2026-09-01"})).status_code == 422
     ok(await post(client, auth, f"{_CORRECTIONS}/{bill}", {"date": "2026-11-05"}))
     assert any(f"{bill}:wht-fix:1" in k for k in await _journal(session, auth))
+    await _books_hold(session, auth)
+
+
+async def test_legacy_wht_correction_of_a_supplier_credit_note_runs_the_other_way(client, session):
+    """A supplier credit note's old entry credited input tax net of the withholding, so its
+    correction takes the withholding back out of input tax and off what is owed to the tax
+    office; undo puts both back."""
+    auth = await old_shape_company(session)
+    note = await old_bill(session, auth, doc_type="debit_note")
+    await upgrade(session, auth)
+    before = await roles(session, auth)
+    ok(await post(client, auth, f"{_CORRECTIONS}/{note}", {"date": "2026-10-15"}))
+    after = await roles(session, auth)
+    assert round(after["tax_input"] - before["tax_input"], 2) == -30.0
+    assert round(after["tax_withheld_payable"] - before.get("tax_withheld_payable", 0), 2) == 30.0
+    ok(await post(client, auth, f"{_CORRECTIONS}/{note}/undo"))
+    assert await roles(session, auth) == before
     await _books_hold(session, auth)
 
 

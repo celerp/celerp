@@ -177,3 +177,16 @@ async def test_a_stopped_accounting_module_no_longer_answers_for_the_chart(clien
     assert await lock_accounts(session, cid, {"1120"}) is not None
     monkeypatch.setitem(loader._load_errors, "celerp-accounting", "UI setup failed")
     assert await lock_accounts(session, cid, {"1120"}) is None
+
+
+@pytest.mark.asyncio
+async def test_turning_on_a_role_with_accounting_stopped_is_refused(client, session, monkeypatch):
+    from celerp.accounting_roles import AccountRole
+    from celerp.services.account_roles import map_added_role
+
+    cid = await _register(client)
+    monkeypatch.setitem(loader._load_errors, "celerp-accounting", "UI setup failed")
+    with pytest.raises(HTTPException) as refused:
+        await map_added_role(session, cid, {}, AccountRole.TAX_WITHHELD_CREDIT, None, "tax.turn_on_role_unmapped")
+    assert refused.value.status_code == 409
+    assert refused.value.detail["message_key"] == "posting.needs_accounting"
