@@ -126,6 +126,22 @@ async def test_new_roles_mapped_or_refused_never_invented(client, session):
     assert mapped.get("tax_withheld_credit") is None and "1180" not in chart
 
 
+async def test_sale_tax_line_posts_only_the_tax_role_on_a_shared_account(client, session):
+    """When the withheld-tax payable role is pointed at the output tax account too, a sale's
+    tax line on that account still posts for output tax alone: the posted role is the one
+    the line was booked for, never every role the account serves."""
+    auth = await company(session)
+    sale = await codes(client, auth, [code("VAT", 7, "sales")])
+    mapped, _ = await _posting_roles(client, auth)
+    r = await client.put("/accounting/posting-accounts/tax_withheld_payable", headers=auth["headers"],
+                         json={"code": mapped["tax_output"]})
+    assert r.status_code == 200, r.text
+    await finalized(client, auth, await doc(client, auth, "invoice", [line(100, sale["VAT"]["id"])]))
+    books = await roles(session, auth)
+    assert books["tax_output"] == -7.0
+    assert books.get("tax_withheld_payable", 0) == 0
+
+
 # ── readers by shape ────────────────────────────────────────────────────────────
 
 _G = 1000.0

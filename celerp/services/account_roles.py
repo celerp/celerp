@@ -691,11 +691,8 @@ async def map_tax_roles(session: AsyncSession, company_id, settings: dict, user_
     now need: an added role at the account Celerp adds for it (map_added_role), refused on a
     chart from elsewhere or a taken number; a seeded role left unmapped is refused, never
     invented. The refusal names the role and where to choose its account."""
-    from celerp.services.company_lock import locked_company
-
     for role in sorted(tax_roles(settings), key=lambda r: r.value):
         if role in ADDED_WHEN_TURNED_ON:
             await map_added_role(session, company_id, settings, role, user_id, "tax.turn_on_role_unmapped")
-            settings = (await locked_company(session, company_id)).settings or {}
         elif not role_map(settings).get(role.value):
             raise HTTPException(status_code=422, detail=catalog_refusal("tax.turn_on_role_unmapped", role=role.value))

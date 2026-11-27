@@ -58,7 +58,7 @@ async def _roles(session, company_id) -> dict:
 
 @pytest.mark.asyncio
 async def test_every_role_shows_its_account_and_that_it_is_ready(client, auth):
-    from celerp.accounting_roles import AccountRole
+    from celerp.accounting_roles import ADDED_WHEN_TURNED_ON, AccountRole
 
     panel = await _panel(client, auth)
     assert [row["role"] for row in panel["roles"]] == [r.value for r in AccountRole]
@@ -67,9 +67,10 @@ async def test_every_role_shows_its_account_and_that_it_is_ready(client, auth):
     assert (receivable["code"], receivable["status"]) == ("1120", "ready")
     assert receivable["name"]
     assert receivable["earlier"] == []
-    # Restricted net assets has no account until the company first turns funds on, and
-    # Suspense none until a bank line is first posted there.
-    later = {"restricted_net_assets", "suspense"}
+    # A role added when its feature is turned on (funds, a first suspense line, a withholding
+    # or cash-basis tax code) has no account until then.
+    later = {role.value for role in ADDED_WHEN_TURNED_ON}
+    assert {"restricted_net_assets", "suspense", "tax_withheld_credit"} <= later
     assert {_row(panel, role)["status"] for role in later} == {"unused"}
     assert all(row["status"] == "ready" for row in panel["roles"] if row["role"] not in later)
 
