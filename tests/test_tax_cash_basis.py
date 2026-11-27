@@ -82,16 +82,17 @@ async def _preview(client, auth) -> dict:
     return ok(await post(client, auth, "/settings/taxes/cash-basis/preview"))
 
 
-async def _confirm(client, auth, binding: str):
+async def _confirm(client, auth, binding: str, key: str | None = None):
     return await post(client, auth, "/settings/taxes/cash-basis/confirm",
-                      {"binding": binding, "idempotency_key": uuid.uuid4().hex})
+                      {"binding": binding, "idempotency_key": key or uuid.uuid4().hex})
 
 
 async def test_cash_basis_cutoff_catchup_confirmed(client, session):
     """The catch-up lists the tax still pending on documents whose cut-off has passed and moves
     nothing until confirmed. A preview made stale by a later payment is refused, as is a
     cut-off inside a locked period; the confirmed move leaves documents whose cut-off is still ahead alone. With nothing past its cut-off the preview
-    says so and there is nothing to confirm."""
+    says so and there is nothing to confirm, an old document paid in full included. A confirm
+    retried with the same key answers as the first and posts nothing more."""
     auth, caja = await _cash_company(client, session)
     old = await finalized(client, auth, await doc(client, auth, "invoice", [line(1000.0, caja)],
                                                   issue_date="2024-03-01"))
@@ -111,12 +112,19 @@ async def test_cash_basis_cutoff_catchup_confirmed(client, session):
     assert r.status_code == 422, r.text
     ok(await post(client, auth, "/accounting/period-lock", {"lock_date": None}))
     assert (await roles(session, auth)).get("tax_output_pending") == pytest.approx(-294.0, abs=0.01)
-    ok(await _confirm(client, auth, (await _preview(client, auth))["fingerprint"]))
+    binding, key = (await _preview(client, auth))["fingerprint"], uuid.uuid4().hex
+    first = ok(await _confirm(client, auth, binding, key))
     assert (await roles(session, auth)).get("tax_output_pending") == pytest.approx(-210.0, abs=0.01)
+    books = await roles(session, auth)
+    assert ok(await _confirm(client, auth, binding, key)) == first
+    assert await roles(session, auth) == books
     assert (await get(client, auth, recent["id"]))["amount_outstanding"] == 1210.0
 
     fresh, caja2 = await _cash_company(client, session)
     await finalized(client, fresh, await doc(client, fresh, "invoice", [line(1000.0, caja2)]))
+    settled = await finalized(client, fresh, await doc(client, fresh, "invoice", [line(1000.0, caja2)],
+                                                       issue_date="2024-03-01"))
+    ok(await pay(client, fresh, settled["id"], 1210.0, date="2024-06-01"))
     empty = await _preview(client, fresh)
     assert empty["documents"] == [] and "No pending cash-basis tax at" in str(empty)
     r = await _confirm(client, fresh, empty["fingerprint"])
