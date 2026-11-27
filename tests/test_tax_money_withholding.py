@@ -16,7 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
 from tax_money_support import (ISSUE, PAID, _moved, code, codes, company, contact, doc, figures, finalized,
-                               get, line, pay, post, roles, upload)
+                               get, line, pay, post, role_funds, roles, upload)
 
 pytestmark = pytest.mark.asyncio
 
@@ -147,6 +147,28 @@ async def test_sales_withholding_at_payment_credit_asset(client, session):
     assert r.status_code == 200, r.text
     assert _moved(before, await roles(session, auth)) == {}
     assert (await _paid_state(client, auth, inv))[1] == 0.0
+
+
+async def test_withheld_payment_void_gives_back_each_fund(client, session):
+    """With funds on, voiding a payment the customer withheld tax from gives back each fund's
+    whole part of it, the withheld share with it, so every fund's books return to before."""
+    from test_fund_movements import _setup
+
+    auth = await company(session)
+    f = await _setup(client, auth)
+    saved = await codes(client, auth, [code("VAT", 7, "sales"), _wht("EWT 2", 2, "sales", "payment")])
+    inv = (await finalized(client, auth, await doc(client, auth, "invoice", [
+        {**line(1000.0, saved["VAT"]["id"]), "fund_id": f["R"]},
+        {**line(500.0, saved["VAT"]["id"]), "fund_id": f["U1"]}])))["id"]
+    books = ("receivable", "default_deposit", "tax_withheld_credit")
+    before = await role_funds(session, auth, *books)
+    r = await pay(client, auth, inv, 1575.0, [{"code_id": saved["EWT 2"]["id"], "amount": 30.0}])
+    assert r.status_code == 200, r.text
+    assert await role_funds(session, auth, *books) != before
+    state = await get(client, auth, inv)
+    r = await post(client, auth, f"/docs/{inv}/void-payment", {"payment_index": state["payments"][0]["index"]})
+    assert r.status_code == 200, r.text
+    assert await role_funds(session, auth, *books) == before
 
 
 async def test_withheld_above_outstanding_refused(client, session):
