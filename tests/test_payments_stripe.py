@@ -418,11 +418,11 @@ async def test_a_payment_clears_to_the_deposit_account_its_page_opened_with(clie
 
 # ── where online payments are deposited ──────────────────────────────────────
 
-async def _bank(client: AsyncClient, tok: str, *, active: bool = True) -> str:
-    """A bank account's chart code; deactivated when not *active*."""
+async def _bank(client: AsyncClient, tok: str, *, active: bool = True, currency: str = "USD") -> str:
+    """A bank account's chart code, kept in *currency*; deactivated when not *active*."""
     r = await client.post("/accounting/bank-accounts", json={
         "bank_name": "Harbor Bank", "account_number": "0001", "bank_type": "checking",
-        "currency": "USD"}, headers=_h(tok))
+        "currency": currency}, headers=_h(tok))
     assert r.status_code == 200, r.text
     bank = r.json()
     if not active:
@@ -527,6 +527,27 @@ async def test_a_payment_whose_deposit_account_is_not_cash_or_an_active_bank_is_
     assert await _pay_je_entities(session, _company_id(tok), eid) == []
     r = await client.get("/payments/unmatched", headers=_h(tok))
     assert [p["reference"] for p in r.json()["items"]] == ["pi_dep"]
+
+
+@pytest.mark.asyncio
+async def test_a_payment_to_a_bank_kept_in_a_third_currency_is_kept_among_the_unmatched(client, session, payments_on):
+    """A USD invoice paid online into a EUR bank on USD books: the bank line could carry no
+    amount in the bank's own currency, so the invoice refuses it and the paid payment is kept
+    whole among the unmatched for a person to record, never lost."""
+    from celerp.services.payments import receive_payment
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    code = await _bank(client, tok, currency="EUR")
+    delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_eur",
+                "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                "context": {**BOOKS, "deposit_account": code}, "managed": True}
+
+    assert await receive_payment(delivery) is True
+
+    doc = await _doc_state(client, tok, eid)
+    assert not doc.get("payments") and doc["status"] != "paid"
+    r = await client.get("/payments/unmatched", headers=_h(tok))
+    assert [p["reference"] for p in r.json()["items"]] == ["pi_eur"]
 
 
 @pytest.mark.asyncio
