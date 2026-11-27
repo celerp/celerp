@@ -173,6 +173,29 @@ async def test_withheld_payment_void_gives_back_each_fund(client, session):
     assert await role_funds(session, auth, *books) == before
 
 
+async def test_withheld_payment_void_at_another_rate_reverses_every_account(client, session):
+    """Voiding a payment of a foreign currency invoice, taken at another rate with tax withheld,
+    reverses each line on the account it posted to: the exchange difference on its own account,
+    never on the withheld tax."""
+    auth = await company(session)
+    saved = await codes(client, auth, [code("VAT", 7, "sales"), _wht("EWT 2", 2, "sales", "payment")])
+    inv = (await finalized(client, auth, await doc(client, auth, "invoice", [line(1000.0, saved["VAT"]["id"])],
+                                                   currency="EUR", conversion_rate=1.1)))["id"]
+    before = await roles(session, auth)
+    r = await post(client, auth, f"/docs/{inv}/payment", {
+        "amount": 1050.0, "payment_date": PAID, "bank_account": "1111", "conversion_rate": 1.2,
+        "idempotency_key": "pay-fx-wht", "withheld": [{"code_id": saved["EWT 2"]["id"], "amount": 20.0}]})
+    assert r.status_code == 200, r.text
+    paid = await roles(session, auth)
+    assert paid["tax_withheld_credit"] - before.get("tax_withheld_credit", 0) == 22.0
+    assert len(paid.keys() - before.keys()) >= 2, paid
+    state = await get(client, auth, inv)
+    r = await post(client, auth, f"/docs/{inv}/void-payment", {"payment_index": state["payments"][0]["index"]})
+    assert r.status_code == 200, r.text
+    after = await roles(session, auth)
+    assert {k: v for k, v in after.items() if v} == {k: v for k, v in before.items() if v}
+
+
 async def test_withheld_above_outstanding_refused(client, session):
     auth = await company(session)
     inv, saved = await _invoice_1070(client, auth)
