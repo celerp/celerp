@@ -238,7 +238,7 @@ def setup_routes(app):
             view = await api.withholding_corrections(token)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             view, refused = {}, [_refusal(e)]
         else:
             refused = []

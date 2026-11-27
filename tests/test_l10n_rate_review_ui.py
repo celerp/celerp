@@ -103,3 +103,10 @@ async def test_undo_reshows_the_list_and_names_the_items_kept(ui_client):
     assert r.status_code == 200, r.text
     assert undone.await_args.args[1:] == (_OP,)
     assert "Kept as you changed them: Item i-1" in r.text and "Black tea" in r.text
+
+
+async def test_cancel_empties_the_panel(ui_client):
+    """The panel's Cancel swaps the panel for nothing: an empty answer, not a page or an error."""
+    ui_client.cookies.update(_authed())
+    r = await ui_client.get("/settings/sales/localization/close")
+    assert r.status_code == 200 and r.text == ""

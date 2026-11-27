@@ -76,3 +76,12 @@ async def test_page_offers_the_company_business_day_as_the_posting_date(ui_clien
          patch("ui.api_client.withholding_corrections", new=AsyncMock(return_value={"bills": [_BILL], "corrected": []})):
         r = await ui_client.get(_URL)
     assert f'value="{business_today("Pacific/Kiritimati").isoformat()}"' in r.text
+
+
+async def test_page_with_a_session_the_server_no_longer_accepts_signs_in_again(ui_client):
+    ui_client.cookies.update(_authed())
+    expired = AsyncMock(side_effect=APIError(401, "Session expired"))
+    with patch("ui.routes.settings_sales._check_permission", new=AsyncMock(return_value=None)), \
+         patch("ui.api_client.withholding_corrections", new=expired):
+        r = await ui_client.get(_URL, follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"].startswith("/login")
