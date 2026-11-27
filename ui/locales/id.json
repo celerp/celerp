@@ -5781,6 +5781,7 @@
   "posting.problem.wrong_type": "{role} diatur ke akun {code} dengan tipe {type}; tipenya harus {types}.",
   "posting.problem.header": "{role} diatur ke akun {code}, sebuah akun induk; pilih akun di bawahnya.",
   "posting.problem.holds_inventory": "{role} tidak dapat diatur ke akun {code}: akun itu menyimpan persediaan. Pilih akun yang tidak menyimpan stok.",
+  "posting.problem.foreign_bank": "{role} diatur ke akun {code}, rekening bank yang dicatat dalam {currency}, mata uang selain mata uang pembukuan. Pilih akun yang bukan rekening bank yang dicatat dalam mata uang lain.",
   "posting.problem.not_inventory": "{role} tidak dapat diatur ke akun {code}: akun itu menyimpan kas, jadi bukan akun persediaan. Pilih akun persediaan.",
   "posting.refused": "{problems} Orang yang mengelola akuntansi harus memilih akunnya di Pengaturan > Akuntansi > Default Accounts; mereka sudah diberi tahu.",
   "posting.continued_account_unusable": "Saldo ini dicatat pada akun {code}, yang saat ini tidak dapat menerimanya: {problem} Aktifkan kembali akun tersebut di bagan akun.",

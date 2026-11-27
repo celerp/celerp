@@ -5781,6 +5781,7 @@
   "posting.problem.wrong_type": "{role} está asignada a la cuenta {code}, de tipo {type}; debe ser de tipo {types}.",
   "posting.problem.header": "{role} está asignada a la cuenta {code}, una cuenta de agrupación; elija una cuenta dentro de ella.",
   "posting.problem.holds_inventory": "{role} no se puede asignar a la cuenta {code}: esa cuenta guarda inventario. Elija una cuenta sin existencias.",
+  "posting.problem.foreign_bank": "{role} está asignado a la cuenta {code}, una cuenta bancaria llevada en {currency}, una moneda distinta de la de los libros. Elija una cuenta que no sea una cuenta bancaria llevada en otra moneda.",
   "posting.problem.not_inventory": "{role} no se puede asignar a la cuenta {code}: esa cuenta guarda efectivo, así que no es una cuenta de inventario. Elija una cuenta de inventario.",
   "posting.refused": "{problems} Quien gestiona la contabilidad debe elegir la cuenta en Ajustes > Contabilidad > Default Accounts; ya se le ha avisado.",
   "posting.continued_account_unusable": "Este saldo se lleva en la cuenta {code}, que ahora no puede recibirlo: {problem} Vuelva a habilitar esa cuenta en el plan de cuentas.",

@@ -512,7 +512,10 @@ def target_problem(role: str, role_map: dict[str, str], account: dict | None) ->
     when it can.
 
     ``account`` is the chart row as {"code", "account_type", "is_active",
-    "has_children"}, or None when the company has no such account."""
+    "has_children", "foreign_bank"}, or None when the company has no such account. A role
+    other than the cash roles never takes a bank account kept in another currency than the
+    books' (``foreign_bank``): its automatic postings carry books-currency amounts only, so
+    the journal boundary would refuse each one with nothing the writer's form could change."""
     code = role_map.get(str(role))
     role = AccountRole(role)
     label = ROLE_LABELS[role]
@@ -530,6 +533,11 @@ def target_problem(role: str, role_map: dict[str, str], account: dict | None) ->
                        f"{label} is set to account {code}, of type {account.get('account_type')}; "
                        f"it must be of type {type_list(types)}.",
                        role=role.value, code=code, type=account.get("account_type"), types=sorted(types))
+    if account.get("foreign_bank") and role not in (R.CASH_AND_EQUIVALENTS, R.DEFAULT_DEPOSIT):
+        return refusal("posting.problem.foreign_bank",
+                       f"{label} is set to account {code}, a bank account kept in {account['foreign_bank']}, another "
+                       "currency than the books'. Choose an account that is not a bank account kept in another currency.",
+                       role=role.value, code=code, currency=account["foreign_bank"])
     if role in POSTABLE_ROLES and account.get("has_children"):
         return refusal("posting.problem.header",
                        f"{label} is set to account {code}, a header account; choose an account under it.",

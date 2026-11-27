@@ -29,6 +29,7 @@ from celerp.services.account_roles import current_settings, role_map, scope_code
 from celerp.services.company_lock import lock_company
 from celerp.services.journal_accounts import CATEGORY_INCOME_ACCOUNTS
 from celerp.services.lot_origin import account_balances
+from celerp.services.money import books_currency
 from celerp_accounting.ledger_accounts import check_account_change
 from celerp_accounting.models import Account, BankAccount
 
@@ -117,7 +118,10 @@ async def lock_accounts(session: AsyncSession, company_id: uuid.UUID, codes: set
     """The company's accounts among ``codes``, held as read until the transaction ends
     by the company lock.
 
-    The core journal boundary's view of the chart (``ChartAccess.lock_accounts``)."""
+    The core journal boundary's view of the chart (``ChartAccess.lock_accounts``).
+    ``foreign_bank`` is the currency the account's bank accounts are kept in when none of
+    them is kept in the books' currency, so no books-currency line on it is readable by a
+    bank (recon_guard); None for any other account."""
     if not codes:
         return {}
     await lock_company(session, company_id)
@@ -132,10 +136,16 @@ async def lock_accounts(session: AsyncSession, company_id: uuid.UUID, codes: set
             Account.company_id == company_id, Account.parent_code.in_([r.code for r in rows]),
         )
     )).scalars().all())
+    kept: dict[str, set[str]] = {}
+    for code, currency in (await session.execute(select(BankAccount.chart_account_code, BankAccount.currency).where(
+            BankAccount.company_id == company_id, BankAccount.chart_account_code.in_([r.code for r in rows])))).all():
+        kept.setdefault(code, set()).add(currency)
+    books = books_currency(await current_settings(session, company_id)) if kept else None
     return {
         r.code: {
             "code": r.code, "account_type": r.account_type,
             "is_active": r.is_active, "has_children": r.code in parents,
+            "foreign_bank": min(kept[r.code]) if r.code in kept and books not in kept[r.code] else None,
         }
         for r in rows
     }

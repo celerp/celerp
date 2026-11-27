@@ -365,3 +365,46 @@ async def test_a_fund_movement_on_a_foreign_bank_posts_and_the_bank_still_reads_
     sid = (await start(client, h, eur["id"], "2026-09-30", 500)).json()["id"]
     recon = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
     assert [(e["je_id"] == moved, e["amount"]) for e in recon["unreconciled_entries"]] == [(False, 500.0)], recon
+
+
+async def _finalized_invoice(client, h):
+    d = await client.post("/docs", headers=h, json={
+        "doc_type": "invoice", "contact_name": "Buyer",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100, "line_total": 100}],
+        "subtotal": 100, "tax": 0, "total": 100})
+    assert d.status_code == 200, d.text
+    return await client.post(f"/docs/{d.json()['id']}/finalize", headers=h)
+
+
+async def test_a_role_is_never_pointed_at_a_bank_kept_in_another_currency(client):
+    """An automatic posting on a role carries amounts in the books' currency only, so the
+    mapping is refused with the way out (another account); the cash roles may hold such a
+    bank, and a bank kept in the books' currency may hold any role its type allows."""
+    co, code, _ = await _eur_bank(client)
+    h = co["h"]
+    r = await client.put("/accounting/posting-accounts/receivable", headers=h, json={"code": code})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "posting.problem.foreign_bank"
+    assert r.json()["detail"]["params"] == {"role": "receivable", "code": code, "currency": "EUR"}
+    assert (await client.put("/accounting/posting-accounts/default_deposit", headers=h,
+                             json={"code": code})).status_code == 200
+    assert (await client.put("/accounting/posting-accounts/suspense", headers=h,
+                             json={"code": "1111"})).status_code == 200
+    assert (await _finalized_invoice(client, h)).status_code == 200
+
+
+async def test_a_bank_kept_in_another_currency_added_on_a_role_account_stops_the_role_by_name(client):
+    """The other order: the role already holds the account when the bank is added on it. The
+    next posting on the role is refused naming the role, its account and the way out, never
+    asking for a foreign amount the invoice cannot carry."""
+    co = await B.company(client)
+    h = co["h"]
+    roles = (await client.get("/accounting/posting-accounts", headers=h)).json()["roles"]
+    receivable = next(r["code"] for r in roles if r["role"] == "receivable")
+    eur = await client.post("/accounting/bank-accounts", headers=h, json={
+        "bank_name": "Euro Bank", "account_number": "****0001", "bank_type": "checking", "currency": "EUR",
+        "opening_balance": 0.0, "account_code": receivable})
+    assert eur.status_code == 200 and eur.json()["chart_account_code"] == receivable, eur.text
+    r = await _finalized_invoice(client, h)
+    assert r.status_code in (409, 422), r.text
+    assert "posting.problem.foreign_bank" in r.text and receivable in r.text, r.text

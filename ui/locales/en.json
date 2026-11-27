@@ -5868,6 +5868,7 @@
   "posting.problem.wrong_type": "{role} is set to account {code}, of type {type}; it must be of type {types}.",
   "posting.problem.header": "{role} is set to account {code}, a header account; choose an account under it.",
   "posting.problem.holds_inventory": "{role} cannot be set to account {code}: that account holds inventory. Choose an account that holds no stock.",
+  "posting.problem.foreign_bank": "{role} is set to account {code}, a bank account kept in {currency}, another currency than the books'. Choose an account that is not a bank account kept in another currency.",
   "posting.problem.not_inventory": "{role} cannot be set to account {code}: that account holds cash, so it is not an inventory account. Choose an inventory account.",
   "posting.refused": "{problems} Someone who manages accounting must choose the account in Settings > Accounting > Default Accounts; they have been notified.",
   "posting.continued_account_unusable": "This balance is kept on account {code}, which cannot take it now: {problem} Make that account usable again in the chart of accounts.",

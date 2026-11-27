@@ -65,7 +65,7 @@ class ChartAccess:
     """The accounting module's chart, as core reads and extends it.
 
     lock_accounts(session, company_id, codes) -> {code: {"code", "account_type",
-    "is_active", "has_children"}}, held as read by the company lock; list_accounts(session, company_id) ->
+    "is_active", "has_children", "foreign_bank"}}, held as read by the company lock; list_accounts(session, company_id) ->
     the chart's rows, each with its id, code, name, account_type, parent_code,
     cash_flow_category, is_active, has_children and currency (a bank account's, else
     None); add_account(session, company_id, *, code, name, account_type, parent_code=None,
@@ -153,8 +153,8 @@ def chart_access() -> ChartAccess | None:
 async def lock_accounts(session: AsyncSession, company_id, codes) -> dict[str, dict] | None:
     """The company's accounts among ``codes``, held as read until the transaction ends.
 
-    Each value is {"code", "account_type", "is_active", "has_children"}; a code the
-    chart does not hold is absent. None when the accounting module is not running.
+    Each value is {"code", "account_type", "is_active", "has_children", "foreign_bank"};
+    a code the chart does not hold is absent. None when the accounting module is not running.
     """
     chart = chart_access()
     if chart is None:
