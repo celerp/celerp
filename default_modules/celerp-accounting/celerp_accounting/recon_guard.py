@@ -19,7 +19,10 @@ leaves the books-currency figure as it was is a change too. Two rules refuse it:
 
 Before both, a bank whose label and entries disagree (``refuse_mislabelled_bank``) takes no
 new or changed row, and a new or changed line on a bank kept in another currency than the
-books' carries its amount in that currency (``acct.err_je_bank_currency``).
+books' carries its amount in that currency (``acct.err_je_bank_currency``). An entry's lines
+on one bank with no amount in its currency that net to zero in the books' currency between
+them (money moved between funds on the one account) change nothing the bank holds, so they
+are no bank row at all (``routes._moves_on_bank``).
 
 Everything else passes: journals without a bank line, postings after every completed
 period, other bank accounts, and a repeat of a change already applied.
@@ -43,7 +46,7 @@ from celerp.services.journal_accounts import ReconciledHistoryChanged
 from celerp.services.ledger_rows import entry_rows
 from celerp.services.permissions import _authority_for, read_authority, role_has_permission
 from celerp_accounting.models import BankAccount, ReconciliationSession, holding_any
-from celerp_accounting.routes import (_bank_amounts, _base_currency, _line_amounts, _opening_je_id,
+from celerp_accounting.routes import (_bank_amounts, _base_currency, _line_amounts, _moves_on_bank, _opening_je_id,
                                      refuse_mislabelled_bank)
 from ui.i18n import list_text
 
@@ -67,12 +70,15 @@ def _bank_rows(entity_id: str, state: dict, currencies: dict[str, list[str]], ba
     accounts kept on it (*currencies*, by code), in a stable order."""
     lines: dict[tuple[str, str], tuple[str, list[LineAmounts]]] = {}
     for row_id, row_state, day in entry_rows(entity_id, state):
+        on_banks: dict[str, list[dict]] = {}
         for line in row_state.get("entries") or []:
-            code = line.get("account")
-            if code not in currencies or _line_amounts(line) is None:
-                continue
-            lines.setdefault((row_id, code), (day, []))[1].append(
-                tuple(_bank_amounts(line, currency, base) for currency in currencies[code]))
+            if line.get("account") in currencies and _line_amounts(line) is not None:
+                on_banks.setdefault(line["account"], []).append(line)
+        for code, on_bank in on_banks.items():
+            read = {id(line): tuple(_bank_amounts(line, currency, base) for currency in currencies[code])
+                    for line in on_bank}
+            for line in _moves_on_bank(on_bank, lambda e: None if all(a is None for a in read[id(e)]) else e):
+                lines.setdefault((row_id, code), (day, []))[1].append(read[id(line)])
     return {key: (day, tuple(sorted(amounts, key=repr))) for key, (day, amounts) in lines.items()}
 
 

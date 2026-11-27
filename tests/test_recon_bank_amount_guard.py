@@ -104,7 +104,6 @@ BOOKS_CURRENCY_READERS = {
     ("routes.py", "opening_tie_out"): "opening balances against the books, books currency",
     ("routes.py", "statement_of_account"): "a contact's statement, books currency",
     ("routes.py", "_carries_foreign_amount"): "whether a line carries a foreign amount, not how much",
-    ("routes.py", "_bank_lines"): "which lines sit on the account, not how much they move",
     ("routes.py", "set_bank_currency"): "whether the account has lines and whether any carries a foreign amount",
     ("routes.py", "refuse_mislabelled_bank"): "whether the account's entries disagree with its label, as set_bank_currency reads them",
     ("routes.py", "transfer_entries"): "a writer reading back the source line it just built",

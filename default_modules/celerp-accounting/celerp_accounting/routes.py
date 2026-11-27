@@ -2801,7 +2801,7 @@ async def _bank_dicts(
     out = []
     for b in banks:
         net: Decimal | None = Decimal(0)
-        lines = _bank_lines(rows, b)
+        lines = _bank_lines(rows, b, base)
         for je_id, entry in lines:
             amounts = _bank_line_amounts(b, base, je_id, entry)
             net = None if net is None or amounts is None else net + amounts[0] - amounts[1]
@@ -2957,10 +2957,24 @@ def _carries_foreign_amount(entry: dict) -> bool:
     return bool(entry.get("fx_currency") and (entry.get("fx_debit") or entry.get("fx_credit")))
 
 
-def _bank_lines(rows: list, bank: BankAccount) -> list[tuple[str, dict]]:
-    """(entry id, line) of every posted line on the account's ledger account."""
-    return [(je_id, entry) for je_id, state, _ts in rows for entry in state.get("entries", [])
-            if entry.get("account") == bank.chart_account_code and _line_amounts(entry) is not None]
+def _moves_on_bank(lines: list[dict], read) -> list[dict]:
+    """Of one entry's *lines* on a bank's ledger account, those that move the bank. *read*
+    gives a line's amounts in the bank's currency (None: the bank cannot read it). Lines the
+    bank cannot read that net to zero in the books' currency between them change nothing the
+    bank holds (money moved between funds on the one account), so they are left out; any
+    other unread line stays, for the caller to refuse or show as unknown."""
+    unread = [line for line in lines if read(line) is None]
+    if unread and sum((d - c for d, c in map(_line_amounts, unread)), Decimal(0)) == 0:
+        return [line for line in lines if read(line) is not None]
+    return lines
+
+
+def _bank_lines(rows: list, bank: BankAccount, base: str) -> list[tuple[str, dict]]:
+    """(entry id, line) of every posted line on the account's ledger account that moves
+    the bank (``_moves_on_bank``)."""
+    return [(je_id, entry) for je_id, state, _ts in rows for entry in _moves_on_bank(
+        [e for e in state.get("entries", []) if e.get("account") == bank.chart_account_code
+         and _line_amounts(e) is not None], lambda e, je_id=je_id: _bank_line_amounts(bank, base, je_id, e))]
 
 
 def _relabel_to(bank: BankAccount, base: str, lines: list[tuple[str, dict]]) -> str | None:
@@ -2990,7 +3004,7 @@ async def refuse_mislabelled_bank(session: AsyncSession, company_id: uuid.UUID, 
     base = await _base_currency(session, company_id)
     if bank.currency == base:
         return
-    lines = _bank_lines(await journal_rows(session, company_id, account=bank.chart_account_code), bank)
+    lines = _bank_lines(await journal_rows(session, company_id, account=bank.chart_account_code), bank, base)
     relabel = _mislabelled_as(bank, base, lines)
     if relabel:
         raise HTTPException(status_code=422, detail=catalog_refusal(
@@ -3009,13 +3023,13 @@ async def set_bank_currency(session: AsyncSession, company_id: uuid.UUID, bank: 
     account would be read again in another currency."""
     if target == bank.currency:
         return None
-    lines = _bank_lines(await journal_rows(session, company_id, account=bank.chart_account_code), bank)
+    base = await _base_currency(session, company_id)
+    lines = _bank_lines(await journal_rows(session, company_id, account=bank.chart_account_code), bank, base)
     statuses = set((await session.execute(select(ReconciliationSession.status).where(
         ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id,
     ))).scalars())
     relabelled_from = None
     if lines or statuses:
-        base = await _base_currency(session, company_id)
         correction = target == _relabel_to(bank, base, lines)
         undo = (bank.currency == base and target == bank.relabelled_from
                 and not any(_carries_foreign_amount(e) for _, e in lines))
@@ -3520,22 +3534,21 @@ async def _je_entries_for_account(
     amount the bank moved."""
     base = await _base_currency(session, company_id)
     rows: dict[tuple, dict] = {}
-    for je_id, state, _ in await journal_rows(session, company_id, account=bank.chart_account_code, days=days,
-                                              entry_ids=entry_ids, skip_ids=skip_ids):
-        for entry in state.get("entries", []):
-            if entry.get("account") == bank.chart_account_code:
-                if _line_amounts(entry) is None:
-                    continue
-                amounts = _bank_line_amounts(bank, base, je_id, entry)
-                inflow = None if amounts is None else amounts[0] > amounts[1]
-                row = rows.setdefault((je_id, inflow), {
-                    "je_id": je_id,
-                    "ts": state.get("ts") or state.get("created_at") or "",
-                    "memo": state.get("memo", ""),
-                    "amounts": (Decimal(0), Decimal(0)),
-                })
-                row["amounts"] = None if amounts is None or row["amounts"] is None else (
-                    row["amounts"][0] + amounts[0], row["amounts"][1] + amounts[1])
+    posted = await journal_rows(session, company_id, account=bank.chart_account_code, days=days,
+                                entry_ids=entry_ids, skip_ids=skip_ids)
+    states = {je_id: state for je_id, state, _ in posted}
+    for je_id, entry in _bank_lines(posted, bank, base):
+        state = states[je_id]
+        amounts = _bank_line_amounts(bank, base, je_id, entry)
+        inflow = None if amounts is None else amounts[0] > amounts[1]
+        row = rows.setdefault((je_id, inflow), {
+            "je_id": je_id,
+            "ts": state.get("ts") or state.get("created_at") or "",
+            "memo": state.get("memo", ""),
+            "amounts": (Decimal(0), Decimal(0)),
+        })
+        row["amounts"] = None if amounts is None or row["amounts"] is None else (
+            row["amounts"][0] + amounts[0], row["amounts"][1] + amounts[1])
     result = []
     for row in rows.values():
         amounts = row.pop("amounts")

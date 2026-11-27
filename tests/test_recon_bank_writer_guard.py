@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import select
 
 import bank_statement_helpers as B
-from test_reconciliation_history import admin, bank, match
+from test_reconciliation_history import admin, bank, match, start
 from ui.i18n import refusal_text, t
 from shipped_sources import SHIPPED_ROOTS
 
@@ -290,3 +290,78 @@ async def test_a_line_in_one_of_two_foreign_banks_sharing_an_account_is_stored(c
                      data={"ts": DAY, "memo": "shared account", "status": "posted", "entries": lines},
                      actor_id=None, location_id=None, source="test", idempotency_key=uuid.uuid4().hex, metadata_={})
     await session.commit()
+
+
+# Lines on a foreign bank with no amount in its currency that net to zero in the books'
+# currency between them change nothing the bank holds (money moved between funds on the one
+# account), so the boundary stores them and every bank reader leaves them out; an unread line
+# that does move the bank is still refused.
+async def _emit_lines(session, co, lines):
+    from celerp.events.engine import emit_event
+
+    await emit_event(session, company_id=uuid.UUID(co["company_id"]), entity_id=f"je:{uuid.uuid4()}",
+                     entity_type="journal_entry", event_type="acc.journal_entry.created",
+                     data={"ts": DAY, "memo": "any writer", "status": "posted", "entries": lines},
+                     actor_id=None, location_id=None, source="test", idempotency_key=uuid.uuid4().hex, metadata_={})
+
+
+async def test_the_boundary_stores_unread_bank_lines_that_net_to_zero_and_refuses_the_rest(client, session):
+    from fastapi import HTTPException
+
+    co, code, want = await _eur_bank(client)
+    await _emit_lines(session, co, [{"account": code, "debit": 40.0, "credit": 0.0},
+                                    {"account": code, "debit": 0.0, "credit": 40.0}])
+    await session.commit()
+    with pytest.raises(HTTPException) as e:
+        await _emit_lines(session, co, [{"account": code, "debit": 40.0, "credit": 0.0},
+                                        {"account": code, "debit": 0.0, "credit": 30.0},
+                                        {"account": "4100", "debit": 0.0, "credit": 10.0}])
+    await session.rollback()
+    assert e.value.status_code == 422 and refusal_text(e.value.detail) == want
+
+
+async def _fund_bank(client, h, code: str) -> dict[str, str]:
+    """Funds on: two restricted funds with one purpose (R1, R2) and two unrestricted (U1, U2)."""
+    assert (await client.put("/accounting/funds/setting", headers=h, json={"enabled": True})).status_code == 200
+    ids = {}
+    for name in ("R1", "R2", "U1", "U2"):
+        r = await client.post("/accounting/funds", headers=h, json={
+            "request_key": uuid.uuid4().hex, "name": name, "restricted": name[0] == "R", "purpose": "Roof"})
+        assert r.status_code == 200, r.text
+        ids[name] = r.json()["id"]
+    return ids
+
+
+@pytest.mark.parametrize("kind,giver,receiver", [("transfer", "U1", "U2"), ("release", "R1", "U1"),
+                                                 ("reallocate", "R1", "R2"), ("opening", None, "U1")])
+async def test_a_fund_movement_on_a_foreign_bank_posts_and_the_bank_still_reads_in_its_currency(
+        client, session, kind, giver, receiver):
+    co, code, _ = await _eur_bank(client)
+    h = co["h"]
+    ids = await _fund_bank(client, h, code)
+    held = {"fund_id": ids[giver]} if giver else {}
+    r = await client.post("/accounting/journal-entries", headers=h, json={
+        "ts": DAY, "memo": "Gift", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": code, "debit": 500.0, "credit": 0.0, "currency": "EUR", "rate": 1.1, **held},
+                    {"account": "4100", "debit": 0.0, "credit": 550.0, **held}]})
+    assert r.status_code == 200, r.text
+    # The roof spending a release pays for, paid from the books' own bank on no fund.
+    cost = await client.post("/accounting/journal-entries", headers=h, json={
+        "ts": DAY, "memo": "Roof", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": "6200", "debit": 100.0, "credit": 0.0}, {"account": "1111", "debit": 0.0, "credit": 100.0}]})
+    assert cost.status_code == 200, cost.text
+    move = {"request_key": uuid.uuid4().hex, "date": DAY, "reason": "Board minute 12"}
+    leg = {"from_fund": ids.get(giver), "to_fund": ids[receiver], "amount": 100, "account": code}
+    move |= {"transfer": leg, "reallocate": {**leg, "donor_authorization": "Letter of 1 May"},
+             "release": {"fund": ids.get(giver), "to_fund": ids[receiver], "account": code,
+                         "backing": [{"je_id": cost.json()["je_id"], "line_index": 0, "amount": 100}]},
+             "opening": {"assignments": [{"account": code, "fund": ids[receiver], "amount": 100}]}}[kind]
+    r = await client.post(f"/accounting/funds/{kind}", headers=h, json=move)
+    assert r.status_code == 200, r.text
+    moved = r.json()["je_id"]
+    eur = next(b for b in (await client.get("/accounting/bank-accounts", headers=h)).json()["items"]
+               if b["chart_account_code"] == code)
+    assert eur["balance"] == 500.0 and eur["relabel_to"] is None, eur
+    sid = (await start(client, h, eur["id"], "2026-09-30", 500)).json()["id"]
+    recon = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
+    assert [(e["je_id"] == moved, e["amount"]) for e in recon["unreconciled_entries"]] == [(False, 500.0)], recon
