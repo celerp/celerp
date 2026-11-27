@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import catalog_refusal
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
+from celerp.services.peer_lines import copy_posted_lines
 from celerp_accounting.models import BankAccount, BankStatementLine, ReconciliationSession, holding_any
 
 # Request fields that name a record, by the kind ``scoped`` resolves them as.
@@ -354,21 +355,19 @@ async def post_parts(db: AsyncSession, *, company_id: uuid.UUID, actor_id, bank:
 async def reclassify(db: AsyncSession, *, company_id: uuid.UUID, actor_id, line: BankStatementLine, account: str,
                      contact: str | None, suspense: str, key: str) -> str:
     """Move a line's Suspense posting to ``account``: each Suspense line of its entry is
-    reversed and posted again on ``account`` with the same amounts and fund."""
+    copied reversed and copied again on ``account`` (copy_posted_lines), with the same
+    amounts and fund."""
     from celerp_accounting import import_service
     from celerp_accounting.routes import require_destinations
 
     await require_destinations(db, company_id, {account})
-    row = await db.get(Projection, {"company_id": company_id, "entity_id": line.matched_je_ids[0]})
+    first = line.matched_je_ids[0]
+    row = await db.get(Projection, {"company_id": company_id, "entity_id": first})
+    held = [{k: e[k] for k in _MOVED_FIELDS if k in e}
+            for e in ((row.state or {}).get("entries", []) if row is not None else []) if e.get("account") == suspense]
     entries: list[dict] = []
-    for e in (row.state or {}).get("entries", []) if row is not None else []:
-        if e.get("account") != suspense:
-            continue
-        money = {k: e[k] for k in _MOVED_FIELDS if k in e}
-        back = {**money, "debit": e.get("credit"), "credit": e.get("debit")}
-        if "fx_debit" in e:
-            back.update({"fx_debit": e.get("fx_credit"), "fx_credit": e.get("fx_debit")})
-        entries += [back, {**money, "account": account, **({"contact": contact} if contact else {})}]
+    for back, again in zip(copy_posted_lines(first, held, reverse=True), copy_posted_lines(first, held, reverse=False)):
+        entries += [back, {**again, "account": account, **({"contact": contact} if contact else {})}]
     if not entries:
         raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_entry_gone"))
     await import_service.check_line_contacts(db, company_id, entries)

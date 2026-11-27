@@ -890,7 +890,8 @@ async def test_reclassify_moves_suspense_to_answer(client, session):
     await _one_month(client, co, bk, [("2026-01-05", "WITHDRAWAL", "-50.00")])
     line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
     r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "suspense"}])
-    suspense_je = await B.journal(session, co, r.json()["results"][0]["je_ids"][0])
+    r_suspense = r.json()["results"][0]["je_ids"][0]
+    suspense_je = await B.journal(session, co, r_suspense)
     suspense_leg = next(e for e in suspense_je["entries"] if e["account"] != bk["chart_account_code"])
     assert (await B.groups(client, co, bk["id"]))["suspense_count"] == 1
     r = await client.post(f"{B.API}/lines/{line['id']}/reclassify", json={"account_code": "5100", "idempotency_key": B.key()},
@@ -903,6 +904,8 @@ async def test_reclassify_moves_suspense_to_answer(client, session):
     assert answer_leg["debit"] == suspense_leg["debit"] and answer_leg["credit"] == suspense_leg["credit"]
     reversal_leg = next(e for e in reclass_je["entries"] if e["account"] == suspense_leg["account"])
     assert reversal_leg["debit"] == suspense_leg["credit"] and reversal_leg["credit"] == suspense_leg["debit"]
+    # Both legs are copies of the posted Suspense line (copy_posted_lines), naming the entry they copy.
+    assert {e.get("posted_from") for e in reclass_je["entries"]} == {r_suspense}
 
 
 # ── Rules ───────────────────────────────────────────────────────────────────
