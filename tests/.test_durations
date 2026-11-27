@@ -32874,5 +32874,13 @@
     "tests/test_recon_bank_writer_guard.py::test_a_fund_movement_on_a_foreign_bank_posts_and_the_bank_still_reads_in_its_currency[release-R1-U1]": 0.36030044697690755,
     "tests/test_recon_bank_writer_guard.py::test_a_fund_movement_on_a_foreign_bank_posts_and_the_bank_still_reads_in_its_currency[transfer-U1-U2]": 0.3612004340393469,
     "tests/test_recon_bank_writer_guard.py::test_a_role_is_never_pointed_at_a_bank_kept_in_another_currency": 0.26260131504386663,
-    "tests/test_recon_bank_writer_guard.py::test_the_boundary_stores_unread_bank_lines_that_net_to_zero_and_refuses_the_rest": 0.15095795097295195
+    "tests/test_recon_bank_writer_guard.py::test_the_boundary_stores_unread_bank_lines_that_net_to_zero_and_refuses_the_rest": 0.15095795097295195,
+    "default_modules/celerp-accounting/tests/test_bank_statements.py::test_a_bank_kept_in_another_currency_is_refused_where_a_statement_line_or_rule_chooses_it": 1.2549513010308146,
+    "default_modules/celerp-fixed-assets/tests/test_fix_account.py::test_a_class_account_is_never_a_bank_kept_in_another_currency": 0.6612180740339682,
+    "default_modules/celerp-fixed-assets/tests/test_fix_account.py::test_a_class_account_that_became_a_bank_kept_in_another_currency_links_the_class_fix": 1.6604287239024416,
+    "tests/test_gift_classification_kept.py::test_an_imported_line_naming_a_posted_entry_still_has_its_fund_refused": 0.22414723399560899,
+    "tests/test_gift_classification_kept.py::test_an_imported_line_never_claims_to_copy_a_posted_entry": 0.23058764298912138,
+    "tests/test_payments_stripe.py::test_a_payment_to_a_bank_kept_in_a_third_currency_is_kept_among_the_unmatched": 0.2978822949808091,
+    "tests/test_recon_bank_writer_guard.py::test_a_bill_line_is_never_put_on_a_bank_kept_in_another_currency": 0.2586684519192204,
+    "tests/test_services/test_connector_upsert_integration.py::test_woocommerce_payment_waits_for_a_person_when_its_deposit_account_cannot_take_it[third_currency]": 0.1555958801181987
 }
