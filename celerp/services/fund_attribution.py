@@ -269,7 +269,6 @@ FUND_COPIES: dict[str, str] = {
     "celerp_accounting.fund_reports:check_fund_reconciliation": READ,
     "celerp_accounting.funds:_default_items": STANDING,
     "celerp_accounting.funds:_leg_lines.line": JOURNAL_LINE,
-    "celerp_accounting.funds:post_fund_movement": JOURNAL_LINE,
     "celerp_accounting.funds:set_connection_default": STANDING,
     "celerp_accounting.recognition:_leg_keys": JOURNAL_LINE,
     "celerp_accounting.recognition:dependents": _SCHEDULES,

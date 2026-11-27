@@ -96,7 +96,6 @@ BOOKS_CURRENCY_READERS = {
     ("routes.py", "_build_balances"): "trial balance and balance sheet, books currency, every account",
     ("routes.py", "_journal_payload"): "the journal, books currency with each line's own currency beside it",
     ("routes.py", "journal_by_doc"): "one document's entries from the journal payload, totalled in books currency",
-    ("funds.py", "post_fund_movement"): "a reversal swapping the books-currency sides of the movement it undoes",
     ("funds.py", "journal_funds"): "a journal's lines in the Change fund panel, books currency as the journal shows them",
     ("routes.py", "account_ledger"): "one account's ledger in books currency, with foreign amounts beside them",
     ("routes.py", "trial_balance"): "books currency, every account",

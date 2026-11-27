@@ -187,6 +187,21 @@ async def add_account(session: AsyncSession, company_id, code: str, name: str, a
     await chart.add_account(session, company_id, code=code, name=name, account_type=account_type)
 
 
+async def _posted_amounts(session: AsyncSession, company_id, entries: list[dict]) -> dict[str, set[Decimal]]:
+    """The debits and credits stored on each posted entry of these books that ``entries``
+    name in ``posted_from``, by entry id (none for an id that is no journal entry here)."""
+    from celerp.models.projections import Projection
+    from celerp.services.money import to_decimal
+
+    out: dict[str, set[Decimal]] = {}
+    for source_id in {line.get("posted_from") for line in entries} - {None}:
+        row = await session.get(Projection, (company_id, source_id))
+        lines = (row.state or {}).get("entries") or [] if row is not None and row.entity_type == "journal_entry" else []
+        out[source_id] = {to_decimal(amount) for line in lines if isinstance(line, dict)
+                          for amount in (line.get("debit"), line.get("credit")) if amount}
+    return out
+
+
 async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *, restored: bool = False,
                                 keep_gifts: bool = False, books_currency: str | None = None,
                                 actor_id=None, entity_id=None) -> None:
@@ -234,6 +249,9 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     # Each line is a positive amount on one side, in the books' currency and in any currency it
     # was typed in.
     base = (books_currency or money.books_currency(settings)).upper()
+    # A line copying a posted entry of these books (``posted_from``) keeps an amount that entry
+    # stored: it was kept at the books it was posted on, which may have had a finer unit.
+    posted = await _posted_amounts(session, company_id, entries)
     given = {"debit": Decimal(0), "credit": Decimal(0)}
     kept = {"debit": Decimal(0), "credit": Decimal(0)}
     for entry in entries:
@@ -247,7 +265,8 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
             if entry.get(side) is not None:
                 amount = to_decimal(entry[side])
                 given[side] += amount
-                kept[side] += (rounded := round_money(amount, base))
+                copied = amount in posted.get(entry.get("posted_from"), ())
+                kept[side] += (rounded := amount if copied else round_money(amount, base))
                 entry[side] = to_stored_float(rounded)
     for debits, credits in ((kept["debit"], kept["credit"]), (given["debit"], given["credit"])):
         if debits != credits:

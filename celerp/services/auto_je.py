@@ -266,7 +266,7 @@ async def _emit_auto_posted_je(
 ) -> None:
     """Post an automatic JE. The one place its amounts become money: every line is rounded
     to the company currency (*currency* when the producer already holds the books it posts
-    on), and an entry that does not balance after rounding is refused, so producers build
+    on), except a copy of a posted line, which the boundary keeps as posted, and an entry that does not balance after rounding is refused, so producers build
     their lines to balance once rounded. *record_id* names the record the entry posts for
     (a document, a List, an item, an order; None for an entry of no record), so the boundary
     judges the entry by where that record came from; the gift answers on its lines (_stamp_gifts)
@@ -274,12 +274,13 @@ async def _emit_auto_posted_je(
     with the entry (a module journal's source and request hash). A line that moves nothing
     once rounded (``line_moves``) is not written, so no producer can post one."""
     currency = currency or await company_currency(session, company_id)
-    rounded = (
-        {**e,
-         "debit": to_stored_float(round_money(e.get("debit") or 0, currency)),
-         "credit": to_stored_float(round_money(e.get("credit") or 0, currency))}
-        for e in entries
-    )
+    # A copy of a posted line (``posted_from``) is left as posted: the boundary keeps an amount
+    # its source stored and rounds any other (journal_accounts.prepare_journal_entry).
+    def kept(e: dict, side: str) -> float:
+        amount = e.get(side) or 0
+        return to_stored_float(to_decimal(amount) if e.get("posted_from") else round_money(amount, currency))
+
+    rounded = ({**e, "debit": kept(e, "debit"), "credit": kept(e, "credit")} for e in entries)
     entries = [e for e in rounded if line_moves(e)]
     debits = sum((to_decimal(e["debit"]) for e in entries), _Dec(0))
     credits = sum((to_decimal(e["credit"]) for e in entries), _Dec(0))
