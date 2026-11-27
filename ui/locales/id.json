@@ -5995,6 +5995,7 @@
   "posting.destination.not_in_chart": "Tidak ada akun {code} di bagan akun Anda. Pilih akun dari daftar, atau tambahkan {code} di Pengaturan akuntansi, Bagan akun.",
   "posting.destination.inactive": "Akun {code} tidak aktif. Pilih akun yang aktif.",
   "posting.destination.header": "Akun {code} adalah akun induk. Pilih salah satu akun di bawahnya.",
+  "posting.destination.foreign_bank": "Akun {code} adalah rekening bank yang dicatat dalam {currency}, mata uang selain mata uang pembukuan. Pilih akun yang bukan rekening bank yang dicatat dalam mata uang lain.",
   "posting.destination.not_money": "Akun {code} bertipe {type}. Pembayaran dan pengembalian dana melalui akun aset, seperti bank atau akun kliring.",
   "posting.destination.not_write_off": "Akun {code} bertipe {type}. Penghapusan dicatat ke akun beban atau ekuitas.",
   "docs.receive_draft_bill": "Tagihan ini masih draf, jadi belum membukukan barang ini. Selesaikan tagihan terlebih dahulu, lalu terima barangnya.",

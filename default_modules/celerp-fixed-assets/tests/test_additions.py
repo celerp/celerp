@@ -151,21 +151,22 @@ async def test_u7_a_header_account_is_refused_at_review_and_not_offered(fa):
 
 async def test_a_foreign_bank_paying_from_a_form_without_its_amount_is_refused_with_the_way_out(fa):
     """The add, contributed and register forms take amounts in the books' currency only, so a
-    bank kept in EUR is refused at Review naming what the user can do: choose another account,
-    or post the payment as a journal entry in EUR and pick its line, which then adds the cost."""
+    bank kept in EUR is refused at Review naming the account, its currency and the way out
+    (another account). A payment from that bank posts as a journal entry in EUR, and its line
+    picked here then adds the cost."""
     await _managed_from(fa)
     car = await _contributed(fa)
     bank = await fa.ok(await fa.client.post("/accounting/bank-accounts", headers=fa.h, json={
         "bank_name": "Euro Bank", "account_number": "0009", "bank_type": "checking", "currency": "EUR",
         "opening_balance": 0}))
-    code, want = bank["chart_account_code"], "fixed_assets.err_bank_kept_in_currency"
+    code, want = bank["chart_account_code"], "posting.destination.foreign_bank"
     moves = len(await _movements(fa, car))
 
     def refused(r) -> None:
         detail = r.json()["detail"]
         assert r.status_code == 422 and detail["message_key"] == want, r.text
-        assert detail["params"] == {"account": code, "currency": "EUR"}, detail
-        assert refusal_text(detail) == detail["message"] and "journal entry" in detail["message"], detail
+        assert detail["params"] == {"code": code, "currency": "EUR"}, detail
+        assert refusal_text(detail) == detail["message"], detail
 
     refused(await fa.post(f"/assets/{car}/add", {"kind": "improvement", "date": "2026-07-01", "amount": "1080",
                                                  "credit_account": code, "preview": True, "op_key": "eur-add"}))
@@ -178,7 +179,7 @@ async def test_a_foreign_bank_paying_from_a_form_without_its_amount_is_refused_w
                                         "preview": True, "op_key": "eur-reg"}))
     assert len(await _movements(fa, car)) == moves and await fa.balance(code) == 0
 
-    # The way out the message names: the payment as a journal entry in EUR, its line picked here.
+    # A payment from the EUR bank: a journal entry in EUR, its line picked here.
     je = await fa.journal("2026-07-01", [
         {"account": vehicles["asset_account"], "debit": 1080.0},
         {"account": code, "credit": 1000.0, "currency": "EUR", "rate": 1.08}])

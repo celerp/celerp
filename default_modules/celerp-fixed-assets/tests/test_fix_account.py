@@ -189,3 +189,20 @@ async def test_u6_a_class_account_the_chart_no_longer_takes_is_refused_at_review
     assert (await _vehicles(fa))["account_problems"] == []
     await fa.ok(await fa.post(f"/assets/{car}/dispose", {**body, "op_key": "u6-again"}))
     assert 'id="fa-class-accounts"' not in (await fa.page("/fixed-assets")).text
+
+
+async def test_a_class_account_is_never_a_bank_kept_in_another_currency(fa):
+    """A class's postings carry amounts in the books' currency only, so a bank kept in EUR is
+    refused when it is chosen as a class account, naming the account, its currency and the way
+    out (another account); a bank kept in the books' currency is taken."""
+    eur = await fa.ok(await fa.client.post("/accounting/bank-accounts", headers=fa.h, json={
+        "bank_name": "Euro Bank", "account_number": "0009", "bank_type": "checking", "currency": "EUR",
+        "opening_balance": 0}))
+    code = eur["chart_account_code"]
+    body = {"name": "Banked", "kind": "tangible", "method": "straight_line", "life_months": 60}
+    r = await fa.post("/classes", {**body, "asset_account": code})
+    detail = r.json()["detail"]
+    assert r.status_code == 422 and detail["message_key"] == "posting.destination.foreign_bank", r.text
+    assert detail["params"] == {"code": code, "currency": "EUR"} and refusal_text(detail) == detail["message"]
+    assert "Choose an account that is not a bank" in detail["message"], detail
+    await fa.ok(await fa.post("/classes", {**body, "name": "Banked at home", "asset_account": "1111"}))

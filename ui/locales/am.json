@@ -5993,6 +5993,7 @@
   "posting.destination.not_in_chart": "በሂሳብ ሰንጠረዥዎ ውስጥ {code} የሚባል ሂሳብ የለም። ከዝርዝሩ ሂሳብ ይምረጡ፣ ወይም {code}ን በሂሳብ ቅንብሮች፣ የሂሳብ ሰንጠረዥ ውስጥ ያክሉ።",
   "posting.destination.inactive": "መለያ {code} ንቁ አይደለም። ንቁ መለያ ይምረጡ።",
   "posting.destination.header": "መለያ {code} የራስጌ መለያ ነው። ከስሩ ካሉት መለያዎች አንዱን ይምረጡ።",
+  "posting.destination.foreign_bank": "ሂሳብ {code} ከመዝገቡ ገንዘብ በተለየ በ{currency} የሚያዝ የባንክ ሂሳብ ነው። በሌላ ገንዘብ የሚያዝ የባንክ ሂሳብ ያልሆነ ሂሳብ ይምረጡ።",
   "posting.destination.not_money": "መለያ {code} የ{type} ዓይነት ነው። ክፍያ እና ተመላሽ የሚደረገው በንብረት መለያ በኩል ነው፣ ለምሳሌ ባንክ ወይም የማጣሪያ መለያ።",
   "posting.destination.not_write_off": "መለያ {code} የ{type} ዓይነት ነው። የሚሰረዝ ዕቃ ወደ ወጪ ወይም የባለቤትነት መለያ ይመዘገባል።",
   "docs.receive_draft_bill": "ይህ የአቅራቢ ክፍያ መጠየቂያ ገና ረቂቅ ነው፣ ስለዚህ እነዚህን ዕቃዎች አልመዘገበም። መጀመሪያ መጠየቂያውን ይጨርሱ፣ ከዚያ ዕቃዎቹን ይቀበሉ።",

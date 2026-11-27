@@ -408,3 +408,21 @@ async def test_a_bank_kept_in_another_currency_added_on_a_role_account_stops_the
     r = await _finalized_invoice(client, h)
     assert r.status_code in (409, 422), r.text
     assert "posting.problem.foreign_bank" in r.text and receivable in r.text, r.text
+
+
+async def test_a_bill_line_is_never_put_on_a_bank_kept_in_another_currency(client):
+    """A bill line carries its amount in the books' currency only, so a bank kept in EUR is
+    refused when it is chosen for the line, naming the account, its currency and the way out
+    (another account); the same bill on an expense account saves and finalizes."""
+    co, code, _ = await _eur_bank(client)
+    h = co["h"]
+    line = {"name": "Cleaning service", "quantity": 1, "unit_price": 40.0}
+    r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill", "contact_id": "supplier:1", "line_items": [{**line, "account_code": code}]})
+    detail = r.json()["detail"]
+    assert r.status_code == 422 and detail["message_key"] == "posting.destination.foreign_bank", r.text
+    assert detail["params"] == {"code": code, "currency": "EUR"} and refusal_text(detail) == detail["message"]
+    ok = await client.post("/docs", headers=h, json={
+        "doc_type": "bill", "contact_id": "supplier:1", "line_items": [{**line, "account_code": "6100"}]})
+    assert ok.status_code == 200, ok.text
+    assert (await client.post(f"/docs/{ok.json()['id']}/finalize", headers=h)).status_code == 200

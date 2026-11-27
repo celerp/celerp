@@ -6082,6 +6082,7 @@
   "posting.destination.not_in_chart": "There is no account {code} in your chart of accounts. Choose an account from the list, or add {code} in Accounting settings, Chart of accounts.",
   "posting.destination.inactive": "Account {code} is inactive. Choose an active account.",
   "posting.destination.header": "Account {code} is a header account. Choose one of the accounts under it.",
+  "posting.destination.foreign_bank": "Account {code} is a bank account kept in {currency}, another currency than the books'. Choose an account that is not a bank account kept in another currency.",
   "posting.destination.not_money": "Account {code} is of type {type}. Money is paid or refunded through an asset account, such as a bank or a clearing account.",
   "posting.destination.not_write_off": "Account {code} is of type {type}. A write-off goes to an expense or equity account.",
   "docs.receive_draft_bill": "This bill is still a draft, so it has not booked these goods. Finalize the bill first, then receive them.",

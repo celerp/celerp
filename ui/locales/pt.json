@@ -5995,6 +5995,7 @@
   "posting.destination.not_in_chart": "Não existe a conta {code} no seu plano de contas. Escolha uma conta da lista ou adicione {code} em Configurações contábeis, Plano de contas.",
   "posting.destination.inactive": "A conta {code} está inativa. Escolha uma conta ativa.",
   "posting.destination.header": "A conta {code} é uma conta sintética. Escolha uma das contas abaixo dela.",
+  "posting.destination.foreign_bank": "A conta {code} é uma conta bancária mantida em {currency}, uma moeda diferente da dos livros. Escolha uma conta que não seja uma conta bancária mantida em outra moeda.",
   "posting.destination.not_money": "A conta {code} é do tipo {type}. Pagamentos e reembolsos passam por uma conta de ativo, como um banco ou uma conta transitória.",
   "posting.destination.not_write_off": "A conta {code} é do tipo {type}. Uma baixa vai para uma conta de despesa ou de patrimônio líquido.",
   "docs.receive_draft_bill": "Esta fatura ainda é um rascunho, então não registrou estas mercadorias. Finalize a fatura primeiro e depois receba-as.",

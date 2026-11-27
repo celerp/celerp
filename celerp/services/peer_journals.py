@@ -347,7 +347,7 @@ async def _client_lines(session: AsyncSession, grant, journal: _Journal) -> list
         firm=True)
     for stored in entries:
         stored["account"] = placed[stored["account"]]
-    await require_destinations(session, company_id, {e["account"] for e in entries})
+    await require_destinations(session, company_id, {e["account"] for e in entries}, foreign_amounts=True)
     return entries
 
 
@@ -564,7 +564,7 @@ async def _place_firm_journal(session: AsyncSession, company: Company, firm: str
             record=f"the journal {item.get('memo') or 'entry'}", firm=False)
         for line in entries:
             line["account"] = placed[line.get("account")]
-        await require_destinations(session, company.id, {line.get("account") for line in entries})
+        await require_destinations(session, company.id, {line.get("account") for line in entries}, foreign_amounts=True)
     except HTTPException as exc:
         return _Placed(entries, keyed_reason(exc), getattr(exc, "fix", None))
     return _Placed(entries)

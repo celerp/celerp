@@ -5995,6 +5995,7 @@
   "posting.destination.not_in_chart": "No hay ninguna cuenta {code} en su plan de cuentas. Elija una cuenta de la lista o añada {code} en Ajustes de contabilidad, Plan de cuentas.",
   "posting.destination.inactive": "La cuenta {code} está inactiva. Elija una cuenta activa.",
   "posting.destination.header": "La cuenta {code} es una cuenta de agrupación. Elija una de las cuentas que dependen de ella.",
+  "posting.destination.foreign_bank": "La cuenta {code} es una cuenta bancaria llevada en {currency}, una moneda distinta de la de los libros. Elija una cuenta que no sea una cuenta bancaria llevada en otra moneda.",
   "posting.destination.not_money": "La cuenta {code} es de tipo {type}. Los pagos y reembolsos se hacen a través de una cuenta de activo, como un banco o una cuenta puente.",
   "posting.destination.not_write_off": "La cuenta {code} es de tipo {type}. Una baja se registra en una cuenta de gastos o de patrimonio.",
   "docs.receive_draft_bill": "Esta factura aún es un borrador, así que no ha contabilizado estos bienes. Finalice primero la factura y luego recíbalos.",

@@ -133,7 +133,7 @@ async def import_journal_records(
                 # with nothing under it, as a manual journal does. A line naming no account
                 # is checked as one: it is not in the chart.
                 await require_destinations(session, company_id, {
-                    a if isinstance(a := e.get("account"), str) else "" for e in lines})
+                    a if isinstance(a := e.get("account"), str) else "" for e in lines}, foreign_amounts=True)
             data, grant = await _with_fund_choices(session, company_id, rec, fund_choices, origin)
             entry = await emit_event(
                 session,

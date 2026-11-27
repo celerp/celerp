@@ -1864,7 +1864,7 @@ async def create_manual_journal_entry(
     await import_service.check_line_contacts(
         session, company_id, [{"contact": line.contact} for line in payload.entries])
 
-    await require_destinations(session, company_id, {line.account for line in payload.entries})
+    await require_destinations(session, company_id, {line.account for line in payload.entries}, foreign_amounts=True)
 
     base = await _base_currency(session, company_id)
     # Every posting is stored in base currency (the journal boundary checks the entry
@@ -3123,7 +3123,8 @@ async def transfer_entries(session: AsyncSession, company_id: uuid.UUID, from_ba
     for bank in (from_bank, to_bank):
         await refuse_mislabelled_bank(session, company_id, bank)
     money_value(amount, from_bank.currency)
-    await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code})
+    await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code},
+                               foreign_amounts=True)
     base = await _base_currency(session, company_id)
     to_fields = {"account": to_bank.chart_account_code}
     entries = _bank_entries(from_bank, base, _bank_rate(from_bank, base, rate), [(to_fields, amount)], inflow=False)

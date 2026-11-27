@@ -2145,6 +2145,7 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
     _assert_date_order(payload.model_dump(exclude_none=True))
 
     _reject_line_attributes(payload.line_items)
+    await require_line_destinations(session, company_id, [li.model_dump() for li in payload.line_items or []])
     # Validate line item quantities against sell_by unit precision
     if payload.line_items:
         unit_map = await _get_unit_map(session, company_id)
@@ -2495,11 +2496,10 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         if "line_items" in fields_changed:
             incoming_lis = (fields_changed["line_items"].get("new") or [])
             existing_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
-            if row.state.get("doc_type") in _BILL_POSTED:
-                # A line moved to another account posts there if the bill is reverted and finalized again.
-                await require_line_destinations(session, company_id, [
-                    li for i, li in enumerate(incoming_lis)
-                    if isinstance(li, dict) and li.get("account_code") != existing_by_idx.get(i, {}).get("account_code")])
+            # A line's own account is checked when it is chosen; finalizing checks every line again.
+            await require_line_destinations(session, company_id, [
+                li for i, li in enumerate(incoming_lis)
+                if isinstance(li, dict) and li.get("account_code") != existing_by_idx.get(i, {}).get("account_code")])
     if {"original_doc_id", "doc_type"} & fields_changed.keys():
         await credit_note_original(session, company_id, {
             **row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}})

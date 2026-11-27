@@ -1291,9 +1291,13 @@ def unrestricted_label() -> str:
     return t("posting.fund.unrestricted")
 
 
-async def require_destinations(session: AsyncSession, company_id, codes) -> dict[str, dict] | None:
+async def require_destinations(session: AsyncSession, company_id, codes, *,
+                               foreign_amounts: bool = False) -> dict[str, dict] | None:
     """Refuse a new posting a user directed to any of ``codes`` unless each is an account
-    in the chart, active, with nothing under it (a header only sums the accounts below it).
+    in the chart, active, with nothing under it (a header only sums the accounts below it),
+    and not a bank kept in another currency than the books' unless the form it was chosen on
+    carries each line's amount in that currency and its rate (``foreign_amounts``): any
+    other form posts books-currency amounts the bank could never read.
 
     The accounts stay as read until the transaction ends (the company lock), so switching one off or
     putting an account under it waits for the posting, and a posting that waited for such
@@ -1307,17 +1311,27 @@ async def require_destinations(session: AsyncSession, company_id, codes) -> dict
     if accounts is None:
         return None
     for code in sorted(set(codes)):
-        problem = _destination_problem(accounts.get(code))
+        problem = _destination_problem(accounts.get(code), foreign_amounts=foreign_amounts)
         if problem is not None:
-            raise HTTPException(status_code=422, detail=refusal(
-                f"posting.destination.{problem}", _DESTINATION_PROBLEMS[problem].format(code=code), code=code))
+            raise HTTPException(status_code=422, detail=destination_refusal(problem, code, accounts.get(code)))
     return accounts
+
+
+def destination_refusal(problem: str, code: str, account: dict | None, /, **params) -> dict:
+    """The refusal for ``problem`` (a key of _DESTINATION_PROBLEMS) on account ``code``;
+    ``params`` add what the caller's page names (such as the role)."""
+    if problem == "foreign_bank":
+        params["currency"] = account["foreign_bank"]
+    return refusal(f"posting.destination.{problem}",
+                   _DESTINATION_PROBLEMS[problem].format(code=code, **params), code=code, **params)
 
 
 _DESTINATION_PROBLEMS = {
     "not_in_chart": "Account {code} is not in the chart of accounts.",
     "inactive": "Account {code} is inactive. Choose an active account.",
     "header": "Account {code} is a header account. Choose one of the accounts under it.",
+    "foreign_bank": "Account {code} is a bank account kept in {currency}, another currency than the books'. "
+                    "Choose an account that is not a bank account kept in another currency.",
 }
 
 _INCOME_ACCOUNT_PROBLEMS = {
@@ -1328,7 +1342,7 @@ _INCOME_ACCOUNT_PROBLEMS = {
 }
 
 
-def _destination_problem(account: dict | None) -> str | None:
+def _destination_problem(account: dict | None, *, foreign_amounts: bool = False) -> str | None:
     """Why ``require_destinations`` refuses an account (a key of _DESTINATION_PROBLEMS),
     or None when a new posting may go to it."""
     if account is None:
@@ -1337,6 +1351,8 @@ def _destination_problem(account: dict | None) -> str | None:
         return "inactive"
     if account["has_children"]:
         return "header"
+    if account.get("foreign_bank") and not foreign_amounts:
+        return "foreign_bank"
     return None
 
 
@@ -1363,11 +1379,11 @@ async def require_income_account(session: AsyncSession, company_id, code: str, *
         return
     account = accounts.get(code)
     problem = _destination_problem(account)
-    if problem is None and account["account_type"] not in ROLE_TYPES[AccountRole.SALES_REVENUE]:
+    if problem in (None, "foreign_bank") and account["account_type"] not in ROLE_TYPES[AccountRole.SALES_REVENUE]:
         problem = "not_revenue"
     if problem is None:
         return
-    if item is not None:
+    if item is not None and problem in _INCOME_ACCOUNT_PROBLEMS:
         detail = refusal(f"posting.income_account.{problem}",
                          _INCOME_ACCOUNT_PROBLEMS[problem].format(item=item, code=code), item=item, code=code)
     elif problem == "not_revenue":
@@ -1375,7 +1391,7 @@ async def require_income_account(session: AsyncSession, company_id, code: str, *
                          f"Account {code} is of type {account['account_type']}. Sales are credited to a revenue account.",
                          code=code, type=account["account_type"])
     else:
-        detail = refusal(f"posting.destination.{problem}", _DESTINATION_PROBLEMS[problem].format(code=code), code=code)
+        detail = destination_refusal(problem, code, account)
     raise HTTPException(status_code=422, detail=detail)
 
 
@@ -1394,7 +1410,7 @@ async def require_settlement_account(session: AsyncSession, company_id, code: st
     Only a new settlement is checked. Giving back money already recorded posts
     through the account it came in through, even if that account is now inactive.
     """
-    accounts = await require_destinations(session, company_id, {code})
+    accounts = await require_destinations(session, company_id, {code}, foreign_amounts=True)
     account_type = (accounts or {}).get(code, {}).get("account_type")
     if accounts is not None and account_type != "asset":
         raise HTTPException(status_code=422, detail=refusal(

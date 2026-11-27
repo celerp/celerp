@@ -5995,6 +5995,7 @@
   "posting.destination.not_in_chart": "In Ihrem Kontenplan gibt es kein Konto {code}. Wählen Sie ein Konto aus der Liste oder legen Sie {code} unter Buchhaltungseinstellungen, Kontenplan an.",
   "posting.destination.inactive": "Konto {code} ist inaktiv. Wählen Sie ein aktives Konto.",
   "posting.destination.header": "Konto {code} ist ein Sammelkonto. Wählen Sie eines der Konten darunter.",
+  "posting.destination.foreign_bank": "Konto {code} ist ein Bankkonto, das in {currency} geführt wird, einer anderen Währung als der der Bücher. Wählen Sie ein Konto, das kein in einer anderen Währung geführtes Bankkonto ist.",
   "posting.destination.not_money": "Konto {code} ist vom Typ {type}. Zahlungen und Erstattungen laufen über ein Aktivkonto, etwa ein Bank- oder Verrechnungskonto.",
   "posting.destination.not_write_off": "Konto {code} ist vom Typ {type}. Eine Abschreibung wird auf ein Aufwands- oder Eigenkapitalkonto gebucht.",
   "docs.receive_draft_bill": "Diese Rechnung ist noch ein Entwurf und hat diese Waren nicht gebucht. Schließen Sie die Rechnung zuerst ab und nehmen Sie die Waren dann an.",
