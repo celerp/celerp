@@ -32859,5 +32859,20 @@
     "tests/test_recon_bank_writer_guard.py::test_a_migrated_foreign_bank_line_without_its_amount_is_refused": 0.15808332106098533,
     "tests/test_recon_bank_writer_guard.py::test_an_imported_foreign_bank_line_without_its_amount_is_refused": 0.1603361648740247,
     "tests/test_recon_bank_writer_guard.py::test_the_journal_boundary_refuses_a_foreign_bank_line_without_its_amount": 0.12597591301891953,
-    "tests/test_refusal_way_out.py::test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[default_modules/celerp-accounting/celerp_accounting/recon_guard.py]": 0.0079384739510715
+    "tests/test_refusal_way_out.py::test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[default_modules/celerp-accounting/celerp_accounting/recon_guard.py]": 0.0079384739510715,
+    "default_modules/celerp-fixed-assets/tests/test_additions.py::test_a_foreign_bank_paying_from_a_form_without_its_amount_is_refused_with_the_way_out": 2.4719639307586476,
+    "tests/test_copied_lines_precision.py::test_a_fund_reversal_keeps_the_cents_its_movement_posted_with_after_the_books_move_to_yen": 0.41045454889535904,
+    "tests/test_copied_lines_precision.py::test_a_fund_reversal_on_a_foreign_bank_keeps_the_amount_in_the_bank_currency": 0.35683914204128087,
+    "tests/test_copied_lines_precision.py::test_a_line_naming_a_posted_entry_it_does_not_copy_is_kept_at_the_books_precision[absent]": 0.16008360497653484,
+    "tests/test_copied_lines_precision.py::test_a_line_naming_a_posted_entry_it_does_not_copy_is_kept_at_the_books_precision[stored]": 0.15824140887707472,
+    "tests/test_copied_lines_precision.py::test_an_automatic_copy_of_posted_lines_keeps_their_cents_after_the_books_move_to_yen": 0.1785655990242958,
+    "tests/test_export_set_adapters.py::test_a_foreign_line_carries_the_amount_the_source_states_in_its_currency_and_never_a_made_up_one[None-fx1]": 0.005359263974241912,
+    "tests/test_export_set_adapters.py::test_a_foreign_line_carries_the_amount_the_source_states_in_its_currency_and_never_a_made_up_one[bank_eur0-fx0]": 0.00424286921042949,
+    "tests/test_recon_bank_writer_guard.py::test_a_bank_kept_in_another_currency_added_on_a_role_account_stops_the_role_by_name": 0.20783466310240328,
+    "tests/test_recon_bank_writer_guard.py::test_a_fund_movement_on_a_foreign_bank_posts_and_the_bank_still_reads_in_its_currency[opening-None-U1]": 0.3497947659343481,
+    "tests/test_recon_bank_writer_guard.py::test_a_fund_movement_on_a_foreign_bank_posts_and_the_bank_still_reads_in_its_currency[reallocate-R1-R2]": 0.36559675401076674,
+    "tests/test_recon_bank_writer_guard.py::test_a_fund_movement_on_a_foreign_bank_posts_and_the_bank_still_reads_in_its_currency[release-R1-U1]": 0.36030044697690755,
+    "tests/test_recon_bank_writer_guard.py::test_a_fund_movement_on_a_foreign_bank_posts_and_the_bank_still_reads_in_its_currency[transfer-U1-U2]": 0.3612004340393469,
+    "tests/test_recon_bank_writer_guard.py::test_a_role_is_never_pointed_at_a_bank_kept_in_another_currency": 0.26260131504386663,
+    "tests/test_recon_bank_writer_guard.py::test_the_boundary_stores_unread_bank_lines_that_net_to_zero_and_refuses_the_rest": 0.15095795097295195
 }
