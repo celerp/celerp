@@ -186,6 +186,25 @@ async def test_refund_and_payment_void_keep_receipt_fund(client, session, auth):
     assert _by_fund(rows[0].state["entries"], "receivable") == {f["R"]: 40.0, None: 20.0}
 
 
+async def test_each_refund_gives_back_its_cumulative_fund_part(client, session, auth):
+    """Refunds of a receipt split a third to a fund give back, together, each fund's part of
+    what has been refunded so far: of two refunds of 1.00 the first returns 0.33 to the fund
+    and the second 0.34, so the fund has 0.67 back, its share of 2.00."""
+    f = await _setup(client, auth)
+    doc = await _gift_and_ticket(client, auth, f, gift_amount=100, ticket_amount=200)
+    assert (await _pay(client, auth, doc, 100)).status_code == 200
+    for _ in range(2):
+        r = await client.post(f"/docs/{doc}/refund", headers=auth["headers"], json={
+            "payment_index": 0, "amount": 1, "payment_date": "2026-03-04", "idempotency_key": uuid.uuid4().hex})
+        assert r.status_code == 200, r.text
+    session.expire_all()
+    rows = (await session.execute(Projection.__table__.select().where(
+        Projection.company_id == auth["company_id"],
+        Projection.entity_id.startswith(f"je:auto:{doc}:payrefund:")))).all()
+    pieces = sorted(_by_fund(row.state["entries"], "receivable")[f["R"]] for row in rows)
+    assert pieces == [0.33, 0.34]
+
+
 async def test_note_application_matched_by_fund(client, session, auth):
     """A credit note of R 50 applied to an invoice open U 80 / R 20: at most 20 applies,
     all of it R's; more is refused naming the fund. The note never moves value between

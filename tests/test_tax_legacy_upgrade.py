@@ -133,6 +133,20 @@ async def test_legacy_wht_correction_entry_and_undo(client, session):
     await _books_hold(session, auth)
 
 
+async def test_correction_of_a_foreign_draft_with_no_rate_is_refused_as_not_needed(client, session):
+    """A draft bill in another currency with no exchange rate yet withheld nothing, so asking
+    for its withholding correction is refused as not needed, never for the missing rate."""
+    from ui.i18n import refusal_text
+
+    auth = await old_shape_company(session)
+    await upgrade(session, auth)
+    bill = await doc(client, auth, "bill", [line(100)], currency="EUR")
+    assert not (await get(client, auth, bill)).get("conversion_rate")
+    r = await post(client, auth, f"{_CORRECTIONS}/{bill}", {"date": "2026-10-15"})
+    assert r.status_code == 422, r.text
+    assert "has no withholding correction to post" in refusal_text(r.json()["detail"])
+
+
 async def test_legacy_wht_correction_keeps_the_line_fund(client, session):
     """With funds on, the correction moves the withholding within the fund of the line that
     withheld it, as a bill finalized today books its withheld tax, and undo moves it back."""
