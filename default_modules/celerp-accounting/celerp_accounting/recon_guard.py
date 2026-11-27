@@ -17,6 +17,9 @@ leaves the books-currency figure as it was is a change too. Two rules refuse it:
   statement date. A stored statement date that is not an ISO date bounds nothing and
   has no period, since any day read into it would be a guess.
 
+Before both, a bank whose label and entries disagree (``refuse_mislabelled_bank``) takes no
+new or changed row.
+
 Everything else passes: journals without a bank line, postings after every completed
 period, other bank accounts, and a repeat of a change already applied.
 """
@@ -38,7 +41,8 @@ from celerp.services.journal_accounts import ReconciledHistoryChanged
 from celerp.services.ledger_rows import entry_rows
 from celerp.services.permissions import _authority_for, read_authority, role_has_permission
 from celerp_accounting.models import BankAccount, ReconciliationSession, holding_any
-from celerp_accounting.routes import _bank_amounts, _base_currency, _line_amounts, _opening_je_id
+from celerp_accounting.routes import (_bank_amounts, _base_currency, _line_amounts, _opening_je_id,
+                                     refuse_mislabelled_bank)
 from ui.i18n import list_text
 
 # {(row id, bank chart code): (day, the row's lines on it)}, each line its (debit, credit)
@@ -154,6 +158,12 @@ async def guard_journal_change(
     judged = [b for b in accounts if b.chart_account_code in banks]
 
     changed = {key for key in rows_before.keys() | rows_after.keys() if rows_before.get(key) != rows_after.get(key)}
+    # A bank whose label and entries disagree takes no new or changed row, whoever writes it:
+    # every amount on it would be read in the wrong currency. Removing a row stays open, as
+    # the way out of a history that mixes both.
+    for bank in judged:
+        if any(key[1] == bank.chart_account_code and key in rows_after for key in changed):
+            await refuse_mislabelled_bank(session, company_id, bank)
     cancelled = event_type == "acc.journal_entry.voided" and bool(changed)
     held_ids = {row_id for row_id, _ in changed}
     if cancelled:

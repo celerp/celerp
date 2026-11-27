@@ -844,8 +844,9 @@ async def emit_event(
         await held_fund_ledger(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
         await hold_movement_actor(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
 
-    # Every journal entry change, whoever produced it, is judged against the bank
-    # reconciliations: one that would change what a reconciliation counts is refused.
+    # Every journal entry change, whoever produced it, is judged against the bank accounts:
+    # one that would change what a reconciliation counts, or add a row to a bank whose label
+    # and entries disagree, is refused.
     if kwargs["event_type"] in _JOURNAL_CHANGES:
         from celerp.services import journal_accounts
 

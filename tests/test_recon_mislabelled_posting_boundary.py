@@ -2,14 +2,15 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Nothing moves onto or off a bank account whose label and entries disagree.
 
-The rule lives where every transfer between two of the company's banks is built
-(``transfer_entries``), for both accounts, so the first test calls it directly, as any
-writer could; then one test per path that reaches it: a direct transfer (the assistant's
-transfer is the same route), a reconciliation transfer in both directions and a cash
-withdrawal. A correctly kept foreign account still posts, a repeat of a transfer made
-before the label went wrong still answers, and an account whose history mixes
-books-currency and foreign entries keeps its way out: voiding the foreign entries
-brings the correction back."""
+The rule lives at the journal boundary every journal change passes (the accounting
+module's ``guard_journal_change``, run by ``emit_event``), so the first test emits a journal
+line onto such an account directly, as any writer could; then one test per door that writes
+one: a direct transfer (the assistant's transfer is the same route), a reconciliation
+transfer in both directions, a cash withdrawal, a manual journal (the assistant's confirmed
+journal is the same route), a journal import and a payment of a foreign invoice into the
+account. A correctly kept foreign account still posts, a repeat of a transfer made before the
+label went wrong still answers, and an account whose history mixes books-currency and foreign
+entries keeps its way out: voiding the foreign entries brings the correction back."""
 from __future__ import annotations
 
 import uuid
@@ -59,18 +60,18 @@ async def _transfer(client, co, src, dst, **extra):
         "amount": 50.0, "date": DAY, **extra})
 
 
-@pytest.mark.parametrize("side", ["from", "to"])
-async def test_the_transfer_boundary_refuses_a_mislabelled_account_on_either_side(client, session, side):
-    from celerp_accounting.models import BankAccount
-    from celerp_accounting.routes import transfer_entries
+async def test_the_journal_boundary_refuses_a_line_on_a_mislabelled_account_from_any_writer(client, session):
+    from celerp.events.engine import emit_event
     co = await B.company(client)
     bad = await _mislabelled(client, session, co, name="Old default")
-    good = await B.bank(client, co["h"], name="Home")
-    rows = {str(b.id): b for b in (await session.execute(select(BankAccount).where(
-        BankAccount.id.in_([uuid.UUID(bad["id"]), uuid.UUID(good["id"])])))).scalars()}
-    src, dst = (rows[bad["id"]], rows[good["id"]]) if side == "from" else (rows[good["id"]], rows[bad["id"]])
     with pytest.raises(HTTPException) as e:
-        await transfer_entries(session, uuid.UUID(co["company_id"]), src, dst, 50, DAY, rate=0.03, to_amount=1700)
+        await emit_event(session, company_id=uuid.UUID(co["company_id"]), entity_id=f"je:{uuid.uuid4()}",
+                         entity_type="journal_entry", event_type="acc.journal_entry.created",
+                         data={"ts": DAY, "memo": "any writer", "status": "posted", "entries": [
+                             {"account": bad["chart_account_code"], "debit": 30.0, "credit": 0.0},
+                             {"account": "4100", "debit": 0.0, "credit": 30.0}]},
+                         actor_id=None, location_id=None, source="test", idempotency_key=uuid.uuid4().hex,
+                         metadata_={})
     assert e.value.status_code == 422 and refusal_text(e.value.detail) == _want()
 
 
@@ -136,15 +137,64 @@ async def test_a_repeat_of_a_transfer_made_before_the_label_went_wrong_still_ans
 
 
 async def test_a_mixed_history_account_keeps_its_way_out(client, session):
-    """A foreign entry posted onto a mislabelled account by a path outside the transfer
-    boundary (a manual entry in the label's currency) mixes its history: the label can't
-    be corrected while the foreign entry is there, and voiding that entry brings the correction back."""
+    """A foreign entry posted before the label went wrong mixes the account's history: the
+    label can't be corrected while the foreign entry is there, and voiding that entry (a removal
+    the boundary lets through) brings the correction back."""
     co = await B.company(client)
-    bad = await _mislabelled(client, session, co, name="Old default")
-    je = await fx_deposit(client, co["h"], bad, 3400, 0.0294, 99.96, day="2026-03-04")
+    bad = await B.bank(client, co["h"], name="Old default")
+    await deposit(client, co["h"], bad, "2026-03-02", 300.0)
+    je = await fx_deposit(client, co["h"], {**bad, "currency": "THB"}, 3400, 0.0294, 99.96, day="2026-03-04")
+    await _relabel(session, bad, "THB")
     assert (await B.bank_row(client, co["h"], bad["id"]))["relabel_to"] is None
     r = await client.post(f"/accounting/journal-entries/{je}/void", headers=co["h"], json={})
     assert r.status_code == 200, r.text
     assert (await B.bank_row(client, co["h"], bad["id"]))["relabel_to"] == "USD"
     r = await client.patch(f"/accounting/bank-accounts/{bad['id']}", headers=co["h"], json={"currency": "USD"})
     assert r.status_code == 200, r.text
+
+
+def _thb_line(bad: dict) -> dict:
+    return {"account": bad["chart_account_code"], "debit": 30.0, "credit": 0.0,
+            "fx_debit": 1000.0, "fx_credit": None, "fx_currency": "THB", "fx_rate": 0.03}
+
+
+async def test_a_manual_journal_onto_a_mislabelled_account_is_refused_and_the_correction_stays(client, session):
+    co = await B.company(client)
+    bad = await _mislabelled(client, session, co, name="Old default")
+    r = await client.post("/accounting/journal-entries", headers=co["h"], json={
+        "ts": DAY, "memo": "baht", "idempotency_token": uuid.uuid4().hex, "entries": [
+            {"account": bad["chart_account_code"], "debit": 1000, "credit": 0, "currency": "THB", "rate": 0.03},
+            {"account": "4100", "debit": 0, "credit": 30}]})
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == _want(), r.text
+    r = await client.patch(f"/accounting/bank-accounts/{bad['id']}", headers=co["h"], json={"currency": "USD"})
+    assert r.status_code == 200, r.text
+
+
+async def test_a_journal_import_onto_a_mislabelled_account_is_refused(client, session):
+    co = await B.company(client)
+    bad = await _mislabelled(client, session, co, name="Old default")
+    before = await _entries_on(session, co, bad["chart_account_code"])
+    r = await client.post("/accounting/import/batch", headers=co["h"], json={"records": [{
+        "entity_id": f"je:{uuid.uuid4()}", "event_type": "acc.journal_entry.created", "source": "csv",
+        "idempotency_key": uuid.uuid4().hex, "data": {"status": "posted", "ts": DAY, "memo": "import", "entries": [
+            _thb_line(bad), {"account": "4100", "debit": 0.0, "credit": 30.0}]}}]})
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert result["created"] == 0 and _want() in str(result["errors"]), result
+    assert await _entries_on(session, co, bad["chart_account_code"]) == before
+
+
+async def test_a_payment_of_a_foreign_invoice_into_a_mislabelled_account_is_refused(client, session):
+    co = await B.company(client)
+    bad = await _mislabelled(client, session, co, name="Old default")
+    r = await client.post("/docs", headers=co["h"], json={
+        "doc_type": "invoice", "currency": "THB", "conversion_rate": 0.03, "total": 1000.0,
+        "line_items": [{"name": "X", "quantity": 1, "unit_price": 1000.0, "line_total": 1000.0}]})
+    assert r.status_code == 200, r.text
+    inv = r.json()["id"]
+    assert (await client.post(f"/docs/{inv}/finalize", headers=co["h"])).status_code == 200
+    before = await _entries_on(session, co, bad["chart_account_code"])
+    r = await client.post(f"/docs/{inv}/payment", headers=co["h"], json={
+        "amount": 1000.0, "payment_date": DAY, "conversion_rate": 0.03, "bank_account": bad["chart_account_code"]})
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == _want(), r.text
+    assert await _entries_on(session, co, bad["chart_account_code"]) == before

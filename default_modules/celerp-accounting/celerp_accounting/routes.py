@@ -2986,14 +2986,21 @@ def _relabel_to(bank: BankAccount, base: str, lines: list[tuple[str, dict]]) -> 
 
 def _mislabelled_as(bank: BankAccount, base: str, lines: list[tuple[str, dict]]) -> str | None:
     """The correction the account's entries call for (``_relabel_to``). An account with no
-    entries has nothing that disagrees with its label, so none is called for."""
-    return _relabel_to(bank, base, lines) if lines else None
+    entries, or with only its opening balance (read as the figure typed for it in the
+    account's currency, ``_bank_line_amounts``), has nothing that disagrees with its label, so
+    none is called for."""
+    opening = _opening_je_id(bank.id)
+    return _relabel_to(bank, base, lines) if any(je_id != opening for je_id, _ in lines) else None
 
 
 async def refuse_mislabelled_bank(session: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> None:
     """Refuse a write that imports onto or posts from *bank* while its label and its entries
     disagree (``_mislabelled_as``): every amount on it would be read in the wrong currency, so
-    nothing goes through until the account is set to the books' currency."""
+    nothing goes through until the account is set to the books' currency. Every journal change
+    meets it at the journal boundary (``recon_guard.guard_journal_change``). A transfer and an
+    opening balance call it first too, before they ask for an exchange rate the correction makes
+    moot, and a statement import and its decisions, which read the account's lines without
+    posting, call it themselves."""
     base = await _base_currency(session, company_id)
     if bank.currency == base:
         return
