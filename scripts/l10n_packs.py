@@ -86,7 +86,7 @@ def check(root: Path, lock_file: Path | None = None) -> list[str]:
     return defects
 
 
-def _pack_defects(code: str, data: bytes, locked: dict | None, pack_schema) -> list[str]:
+def _pack_defects(code: str, data: bytes, locked: dict | None, pack_schema, chart: frozenset[str]) -> list[str]:
     try:
         pack = json.loads(data)
     except ValueError:
@@ -116,31 +116,26 @@ def _pack_defects(code: str, data: bytes, locked: dict | None, pack_schema) -> l
         defects += [f"country {code}: {_ROW_NOUN[field]} row {i} is invalid ({', '.join(sorted(fields))})"
                     for (field, i), fields in sorted(rows.items())]
     else:
-        chart = _default_chart()
         defects += [f"country {code}: tax row {i}: {field} {tax[field]} is not an account of the default chart"
                     for i, tax in enumerate(pack["taxes"]) for field in _ACCOUNT_FIELDS
                     if field in tax and tax[field] not in chart]
     return defects
 
 
-def _default_chart() -> frozenset[str]:
-    """The account codes of the chart Celerp seeds a company with."""
-    sys.path.insert(0, str(REPO_ROOT / "default_modules" / "celerp-accounting"))
-    from celerp_accounting.routes import DEFAULT_CHART_OF_ACCOUNTS
-    return frozenset(entry["code"] for entry in DEFAULT_CHART_OF_ACCOUNTS)
-
-
 def validate(root: Path, *, against_lock: bool = True) -> list[str]:
     """Each pack file's fields (the CountryPack schema) and the accounts its taxes name (the
     default chart); with ``against_lock`` its version must equal its lock entry."""
     sys.path.insert(0, str(REPO_ROOT))
+    sys.path.insert(0, str(REPO_ROOT / "default_modules" / "celerp-accounting"))
     from celerp.routers.companies import CountryPack
+    from celerp_accounting.routes import DEFAULT_CHART_OF_ACCOUNTS
 
+    chart = frozenset(entry["code"] for entry in DEFAULT_CHART_OF_ACCOUNTS)
     lock = _read_lock(root) or {}
     defects = []
     for code, path in _pack_files(root).items():
         locked = lock.get(code) if against_lock else None
-        defects += _pack_defects(code, path.read_bytes(), locked, CountryPack)
+        defects += _pack_defects(code, path.read_bytes(), locked, CountryPack, chart)
     return defects
 
 
