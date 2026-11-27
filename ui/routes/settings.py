@@ -456,8 +456,6 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
         async def remove_version(request: Request, idx: int, v: int):
             from starlette.responses import Response as _R
             token = _token(request)
-            if not token:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             try:
                 taxes = await getattr(api, gname)(token)
                 if 0 <= idx < len(taxes) and 0 <= v < len(taxes[idx]["versions"]):
