@@ -690,9 +690,35 @@ async def map_tax_roles(session: AsyncSession, company_id, settings: dict, user_
     """Map every role the company's tax codes (``settings``, as just written to the company)
     now need: an added role at the account Celerp adds for it (map_added_role), refused on a
     chart from elsewhere or a taken number; a seeded role left unmapped is refused, never
-    invented. The refusal names the role and where to choose its account."""
+    invented. The refusal names the role and where to choose its account. A company keeping
+    no books (Accounting off for it or not running) posts nothing, so nothing is asked: turning
+    Accounting on maps them then (map_tax_roles_on_books)."""
+    from celerp.modules.registry import uses_module
+    from celerp.services.journal_accounts import chart_access
+
+    if chart_access() is None or not uses_module(settings, "celerp-accounting"):
+        return
     for role in sorted(tax_roles(settings), key=lambda r: r.value):
         if role in ADDED_WHEN_TURNED_ON:
             await map_added_role(session, company_id, settings, role, user_id, "tax.turn_on_role_unmapped")
         elif not role_map(settings).get(role.value):
             raise HTTPException(status_code=422, detail=catalog_refusal("tax.turn_on_role_unmapped", role=role.value))
+
+
+async def map_tax_roles_on_books(session: AsyncSession, company_id) -> None:
+    """When a company's books start to be kept, give the added roles its tax codes need
+    (map_added_role) their accounts. One that cannot be added (a chart from elsewhere, a
+    taken number) is left unmapped for the posting-account notice to ask for; the attempt
+    is rolled back whole."""
+    from celerp.modules.registry import uses_module
+
+    settings = await current_settings(session, company_id)
+    if not uses_module(settings, "celerp-accounting"):
+        return
+    for role in sorted(tax_roles(settings) & set(ADDED_WHEN_TURNED_ON), key=lambda r: r.value):
+        try:
+            async with session.begin_nested():
+                await map_added_role(session, company_id, await current_settings(session, company_id), role, None,
+                                     "tax.turn_on_role_unmapped")
+        except HTTPException:
+            continue

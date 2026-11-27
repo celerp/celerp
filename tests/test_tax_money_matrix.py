@@ -132,6 +132,41 @@ async def test_new_roles_mapped_or_refused_never_invented(client, session):
     assert mapped.get("tax_withheld_credit") is None and "1180" not in chart
 
 
+async def test_withholding_codes_save_without_books_and_map_when_accounting_comes_on(client, session):
+    """A company that keeps no books (Accounting off, as a first-run setup with a blank
+    business type leaves it) saves sales and purchase withholding codes: nothing posts, so no
+    account is asked for or made. Turning Accounting on maps them: the seeded payable by the
+    reconcile, the withheld-tax credit at the account 1180 Celerp adds for it."""
+    from celerp.accounting_roles import ROLES_KEY
+    from celerp.modules.registry import company_modules, set_enabled
+    from celerp.services.account_roles import role_map
+    from celerp.services.company_lock import locked_company
+    from celerp.services.journal_accounts import lock_accounts
+    from test_helpers import save_taxes
+
+    books = await company(session)
+    cid = books["company_id"]
+    row = await locked_company(session, cid)
+    kept = {k: v for k, v in role_map(row.settings).items() if k != "tax_withheld_payable"}
+    row.settings = set_enabled({**row.settings, ROLES_KEY: kept}, company_modules(row.settings) - {"celerp-accounting"})
+    await session.commit()
+
+    r = await save_taxes(client, books["headers"], [_wht("WHT", 3, "purchase", "payment")], "purchase")
+    assert r.status_code == 200, r.text
+    r = await save_taxes(client, books["headers"], [code("VAT", 7, "sales"), _wht("IRPF", 15, "sales", "document")])
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    row = await locked_company(session, cid)
+    assert {"tax_withheld_payable", "tax_withheld_credit"}.isdisjoint(role_map(row.settings))
+    assert "1180" not in (await lock_accounts(session, cid, {"1180"}) or {})
+    await session.commit()
+
+    ok(await client.post("/companies/me/modules/celerp-accounting/enable", headers=books["headers"]))
+    mapped, chart = await _posting_roles(client, books)
+    assert (mapped.get("tax_withheld_payable"), mapped.get("tax_withheld_credit")) == ("2130", "1180")
+    assert "1180" in chart
+
+
 async def test_sale_tax_line_posts_only_the_tax_role_on_a_shared_account(client, session):
     """When the withheld-tax payable role is pointed at the output tax account too, a sale's
     tax line on that account still posts for output tax alone: the posted role is the one

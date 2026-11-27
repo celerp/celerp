@@ -873,7 +873,8 @@ async def place_company_stock(session: AsyncSession, company_id, *, claim=frozen
     start, and by every writer that brings such lots in while Celerp runs (a batch import
     of another system's items, a backup restored as a new company, a finalized
     migration). Its posting accounts are first reconciled with its chart
-    (account_roles.reconcile_company, ``claim`` there), and a company left without an
+    (account_roles.map_tax_roles_on_books for the accounts its tax codes add, then
+    account_roles.reconcile_company, ``claim`` there), and a company left without an
     account its workflows need gets one notice pointing at the fix. Only a company
     running Accounting is placed: until then its books are not kept. An upgraded
     company has its unplaced stock placed (place_older_stock); one whose chart was
@@ -884,9 +885,10 @@ async def place_company_stock(session: AsyncSession, company_id, *, claim=frozen
     when the user tries again (place_unplaced_stock). Running it again changes nothing. Returns whether it
     placed or marked anything."""
     from celerp.modules.registry import uses_module
-    from celerp.services.account_roles import reconcile_company
+    from celerp.services.account_roles import map_tax_roles_on_books, reconcile_company
     from celerp.services.posting_readiness import notify_unmapped
 
+    await map_tax_roles_on_books(session, company_id)
     if await reconcile_company(session, company_id, claim):
         await notify_unmapped(session, company_id)
     settings = await current_settings(session, company_id)
