@@ -132,6 +132,13 @@ async def test_a_woocommerce_order_not_yet_paid_owes_its_total(use_test_session)
     st = await _state(session, cid, "woocommerce:order:56")
     assert (st["total"], st["amount_paid"], st["amount_outstanding"]) == (10.0, 0.0, 10.0)
 
+    # Synced again with a changed total, the order owes the new total.
+    order = {**order, "line_items": [{"name": "Widget", "quantity": 3, "price": "5.00", "total": "15.00"}],
+             "total": "15.00"}
+    await u.upsert_order_from_woocommerce(str(cid), order)
+    st = await _state(session, cid, "woocommerce:order:56")
+    assert (st["total"], st["amount_paid"], st["amount_outstanding"]) == (15.0, 0.0, 15.0)
+
 
 async def test_woocommerce_order_with_a_held_number_needs_attention(use_test_session, monkeypatch):
     """WOO- plus the order number is a number Celerp composes, so it is checked like every number

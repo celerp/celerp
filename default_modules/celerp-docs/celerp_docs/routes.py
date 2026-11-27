@@ -2250,8 +2250,8 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
             kind="doc", contact_id=payload.contact_id, contact=contact, client_values=data, chosen=chosen,
         ))
 
+    # What it owes is computed when the doc.created event is applied (apply_documents_event).
     data["amount_paid"] = 0.0
-    data["amount_outstanding"] = to_stored_float(amount_due(data))
 
     entry = await emit_event(
         session,

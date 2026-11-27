@@ -628,3 +628,18 @@ async def test_compute_tax_amounts_unit(client):
     assert result[2].amount == pytest.approx(-30.0, abs=0.01)      # WHT: 1000 * -3%
 
 
+def test_compute_tax_amounts_inclusive_rounding_remainder():
+    """Taxes a price already holds add up to that price exactly: the last charged tax takes the
+    rounding remainder, and a price holding only a self-assessed tax keeps its net whole."""
+    from celerp.localization.taxcodes import LineTaxSnapshot
+    from celerp_docs.taxes import compute_tax_amounts
+
+    two = [LineTaxSnapshot(code="A", rate=5.0, order=0), LineTaxSnapshot(code="B", rate=5.0, order=1)]
+    result = compute_tax_amounts(two, base=1.0, inclusive=True)
+    assert [(r.base, r.amount) for r in result] == [(0.91, 0.05), (0.91, 0.04)]
+
+    rc = [LineTaxSnapshot(code="RC", rate=5.0, category="reverse_charge")]
+    [only] = compute_tax_amounts(rc, base=1.0, inclusive=True)
+    assert (only.base, only.amount) == (1.0, 0.05)
+
+

@@ -100,6 +100,19 @@ async def test_shipping_taxed_main_supply_code(client, session):
     assert _moved(before, await roles(session, auth))["tax_output"] == -7.7
 
 
+async def test_shipping_taxes_chosen_at_creation_keep_the_codes_order_and_compounding(client, session):
+    """Shipping taxes named by code alone when a document is created take each code's saved
+    calculation order and compounding, as a line's taxes do."""
+    auth = await company(session)
+    saved = await codes(client, auth, [code("VAT", 7), code("Surcharge", 2, is_compound=True, default_order=1)])
+    vat, surcharge = saved["VAT"]["id"], saved["Surcharge"]["id"]
+    inv = await get(client, auth, await doc(client, auth, "invoice", [line(100.0)], shipping=100.0,
+                                            shipping_taxes=[{"code_id": vat}, {"code_id": surcharge}]))
+    assert [(t["code_id"], t["order"], t["is_compound"], t["amount"]) for t in inv["shipping_taxes"]] == [
+        (vat, 0, False, 7.0), (surcharge, 1, True, 2.14)]
+    assert (inv["tax"], inv["total"]) == (9.14, 209.14)
+
+
 async def test_reverse_charge_posts_output_and_input_balanced(client, session):
     auth = await company(session)
     rc = (await codes(client, auth, [code("Reverse charge", 7, "purchase", "reverse_charge")],
