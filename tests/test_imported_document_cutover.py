@@ -243,6 +243,40 @@ async def test_imported_bill_not_received_receive_then_undo(client, session, aut
     await _step(client, session, auth, [bill], "void", "post", VOID, json={})
 
 
+async def test_voiding_an_imported_bill_takes_out_its_reverse_charge_and_tax_withheld(client, session, auth):
+    """A bill imported with a reverse charge and tax withheld on it is held in the opening
+    balances with both: the input and output tax it self-assessed and the tax it kept back for
+    the authority. Voiding it takes each of them out on its own account, and the payable only
+    by what is owed, its total less the tax withheld."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    total, assessed, withheld = PRICE * 5, 4.9, 2.1
+    data = _snapshot(lot, "bill", 5, 0)
+    data["line_items"][0]["taxes"] = [
+        {"code": "Reverse charge", "rate": 7.0, "amount": assessed, "category": "reverse_charge"},
+        {"code": "WHT 3", "rate": 3.0, "amount": withheld, "category": "withholding", "withholding_point": "document"}]
+    data.update(withheld=withheld, amount_outstanding=total - withheld)
+    bill = f"doc:{uuid.uuid4()}"
+    r = await client.post("/accounting/journal-entries", headers=auth["headers"], json={
+        "ts": "2026-01-01", "memo": "Opening balances", "idempotency_token": uuid.uuid4().hex, "entries": [
+            {"account": AP, "credit": total - withheld}, {"account": "2130", "credit": withheld},
+            {"account": IN_TRANSIT, "debit": total}]})
+    assert r.status_code == 200, r.text
+    r = await client.post("/docs/import", headers=auth["headers"], json={
+        "entity_id": bill, "event_type": "doc.created", "source": "test",
+        "idempotency_key": uuid.uuid4().hex, "data": data})
+    assert r.status_code == 200, r.text
+    r = await client.post(VOID.format(d=bill), headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    (reversal,) = (st for key, st in (await _doc_jes(session, auth, bill)).items() if key.startswith("imported-rev:"))
+    net: dict[str, float] = {}
+    for e in reversal["entries"]:
+        for role in e.get("account_roles") or []:
+            net[role] = round(net.get(role, 0.0) + float(e["debit"]) - float(e["credit"]), 2)
+    assert {role: net.get(role.value) for role in (R.TAX_INPUT, R.TAX_OUTPUT, R.TAX_WITHHELD_PAYABLE, R.PAYABLE)} == {
+        R.TAX_INPUT: -assessed, R.TAX_OUTPUT: assessed, R.TAX_WITHHELD_PAYABLE: withheld,
+        R.PAYABLE: total - withheld}
+
+
 async def test_undoing_goods_received_before_the_import_is_refused(client, session, auth):
     lot = await _item(client, auth, _OPENING, qty=10)
     bill = await _import(client, auth, lot, doc_type="bill")
