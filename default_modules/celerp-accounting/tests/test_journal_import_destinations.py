@@ -75,6 +75,29 @@ async def test_an_imported_journal_that_does_not_balance_is_refused(client, auth
     assert await _trial_balance_balanced(client, auth)
 
 
+# Each line is a positive amount on one side, in the books' currency and in any it was typed in.
+_ONE_SIDED_POSITIVE = {
+    "can't be negative": [
+        [{"account": "6100", "debit": -10.0}, {"account": "1111", "credit": -10.0}],
+        [{"account": "6100", "debit": 10.0, "credit": -10.0}, {"account": "1111", "credit": 0.0}],
+        [{"account": "6100", "debit": 10.0, "fx_debit": -1500.0, "fx_currency": "JPY", "fx_rate": 0.0067},
+         {"account": "1111", "credit": 10.0}],
+    ],
+    "not both": [
+        [{"account": "6100", "debit": 10.0, "credit": 5.0}, {"account": "1111", "credit": 5.0}],
+        [{"account": "6100", "debit": 10.0, "fx_debit": 1500.0, "fx_credit": 1.0, "fx_currency": "JPY",
+          "fx_rate": 0.0067}, {"account": "1111", "credit": 10.0}],
+    ],
+}
+
+
+@pytest.mark.parametrize("needle, lines", [(n, lines) for n, cases in _ONE_SIDED_POSITIVE.items() for lines in cases])
+async def test_an_imported_line_that_is_negative_or_on_both_sides_is_refused(client, auth, needle, lines):
+    result = await _import_lines(client, auth, lines)
+    assert result["created"] == 0 and needle in str(result["errors"]), result
+    assert await _trial_balance_balanced(client, auth)
+
+
 async def test_the_journal_boundary_refuses_a_line_with_no_account_or_an_unbalanced_entry(session, auth):
     """The rules live at the boundary every journal writer passes, not in a route."""
     from fastapi import HTTPException
@@ -82,7 +105,8 @@ async def test_the_journal_boundary_refuses_a_line_with_no_account_or_an_unbalan
     from celerp.events.engine import emit_event
 
     for lines, needle in (([{"debit": 10.0}, {"account": "1111", "credit": 10.0}], "is not in the chart"),
-                          ([{"account": "6100", "debit": 10.0}, {"account": "1111", "credit": 9.0}], "doesn't balance")):
+                          ([{"account": "6100", "debit": 10.0}, {"account": "1111", "credit": 9.0}], "doesn't balance"),
+                          *((lines, needle) for needle, cases in _ONE_SIDED_POSITIVE.items() for lines in cases)):
         with pytest.raises(HTTPException) as exc:
             await emit_event(
                 session, company_id=uuid.UUID(str(auth["company_id"])), entity_id=f"je:{uuid.uuid4()}",

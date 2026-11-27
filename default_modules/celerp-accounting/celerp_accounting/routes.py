@@ -1873,14 +1873,10 @@ async def create_manual_journal_entry(
     # first, then converted; a line without one is already base currency.
     entries: list[dict] = []
     for index, line in enumerate(payload.entries):
-        if line.debit < 0 or line.credit < 0:
-            raise HTTPException(status_code=422, detail=t("acct.err_je_negative"))
         line_fx = _validated_line_fx(base, line, index)
         amount_currency = line_fx[0] if line_fx else base
         d = round_money(line.debit, amount_currency)
         c = round_money(line.credit, amount_currency)
-        if d > 0 and c > 0:
-            raise HTTPException(status_code=422, detail=t("acct.err_je_both_sides"))
         if d == 0 and c == 0:
             raise HTTPException(status_code=422, detail=t("acct.err_je_no_amount"))
         if line_fx:

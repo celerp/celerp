@@ -193,7 +193,8 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
 
     Every line names an account in the chart (a line with none is refused, as an amount on
     no account would unbalance the books) and any foreign currency it is typed in is one
-    Celerp recognises, and the entry balances in the books' currency.
+    Celerp recognises; each line is a positive amount on one side, and the entry balances in
+    the books' currency.
     A line that names roles was chosen for them: its account must be the role's
     current target (then active and of a compatible type) or an account that has
     served the role before (then it only has to exist, as when a payment settles a
@@ -227,10 +228,18 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     # books' precision, so what is stored is what was checked, and the entry balances exactly
     # both as given and as kept: a gap smaller than the books' smallest unit is still a gap,
     # and many of them add up.
+    # Each line is a positive amount on one side, in the books' currency and in any currency it
+    # was typed in.
     base = books_currency(settings)
     given = {"debit": Decimal(0), "credit": Decimal(0)}
     kept = {"debit": Decimal(0), "credit": Decimal(0)}
     for entry in entries:
+        for prefix, currency in (("", base), ("fx_", entry.get("fx_currency") or base)):
+            sides = [to_decimal(entry[prefix + side]) for side in kept if entry.get(prefix + side) is not None]
+            if any(amount < 0 for amount in sides):
+                raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_negative"))
+            if len(sides) == 2 and all(round_money(amount, currency) > 0 for amount in sides):
+                raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_both_sides"))
         for side in kept:
             if entry.get(side) is not None:
                 amount = to_decimal(entry[side])
