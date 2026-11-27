@@ -139,11 +139,10 @@ async def _bill_line(client, headers, code: str):
 
 
 async def _bill_created_with_line(client, headers, code: str):
-    """A bill whose line names its account from the start, as an API client creates one."""
-    r = await client.post("/docs", headers=headers, json={
+    """A bill whose line names its account from the start, as an API client creates one:
+    refused when saved, where the account is chosen."""
+    return await client.post("/docs", headers=headers, json={
         "doc_type": "bill", "contact_id": "supplier:1", "line_items": [{**_LINE, "account_code": code}]})
-    assert r.status_code == 200, r.text
-    return await client.post(f"/docs/{r.json()['id']}/finalize", headers=headers)
 
 
 def _bill_snapshot(code: str) -> dict:

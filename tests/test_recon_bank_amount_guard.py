@@ -106,7 +106,6 @@ BOOKS_CURRENCY_READERS = {
     ("routes.py", "set_bank_currency"): "whether the account has lines and whether any carries a foreign amount",
     ("routes.py", "refuse_mislabelled_bank"): "whether the account's entries disagree with its label, as set_bank_currency reads them",
     ("routes.py", "transfer_entries"): "a writer reading back the source line it just built",
-    ("statement_lines.py", "reclassify"): "a Suspense reversal swapping the sides of each line it moves, amounts as posted",
     ("routes.py", "cash_flow"): "the cash flow statement, books currency over every cash account",
     ("routes.py", "matches"): "journal search matching a typed figure against books-currency amounts",
     ("routes.py", "_line_party"): "which side of a note application a control line is on, not how much",
