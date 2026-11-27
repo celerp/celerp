@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from tax_money_support import (_account_net, _moved, code, codes, company, doc, finalized, get, line, patch_doc, roles)
+from tax_money_support import (_account_net, _moved, code, codes, company, doc, finalized, get, line, patch_doc, role_funds, roles)
 
 pytestmark = pytest.mark.asyncio
 
@@ -113,6 +113,23 @@ async def test_reverse_charge_posts_output_and_input_balanced(client, session):
     assert sale["total"] == 100.0
     moved = _moved(before, await roles(session, auth))
     assert moved["receivable"] == 100.0 and "tax_output" not in moved
+
+
+async def test_reverse_charge_keeps_each_line_fund(client, session):
+    """With funds on, a reverse charge bill books the tax both ways in the fund of the line it
+    was charged on, and each fund's payable is that fund's lines alone."""
+    from test_fund_movements import _setup
+
+    auth = await company(session)
+    f = await _setup(client, auth)
+    rc = (await codes(client, auth, [code("Reverse charge", 7, "purchase", "reverse_charge")],
+                      "purchase"))["Reverse charge"]["id"]
+    await finalized(client, auth, await doc(client, auth, "bill", [
+        {**line(1000.0, rc), "fund_id": f["R"]}, {**line(500.0, rc), "fund_id": f["U1"]}]))
+    assert await role_funds(session, auth, "payable", "tax_input", "tax_output") == {
+        ("payable", f["R"]): -1000.0, ("payable", f["U1"]): -500.0,
+        ("tax_input", f["R"]): 70.0, ("tax_input", f["U1"]): 35.0,
+        ("tax_output", f["R"]): -70.0, ("tax_output", f["U1"]): -35.0}
 
 
 async def test_perception_added_charge(client, session):

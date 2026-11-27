@@ -80,7 +80,8 @@ async def test_new_roles_mapped_or_refused_never_invented(client, session):
     Celerp seeded gets it mapped there by the reconcile. The first sales withholding code adds
     the withheld-tax credit account 1180 and the first cash-basis code adds the pending input
     and output accounts 1155 and 2125. On a chart restored from elsewhere saving such a code
-    is refused, naming the role and where to choose its account, and no account is made."""
+    is refused, naming the role and where to choose its account, and no account is made; so is
+    a purchase withholding code while the seeded payable role has no account."""
     from celerp.accounting_roles import ROLES_KEY
     from celerp.services.account_roles import reconcile_company, role_map
     from celerp.services.company_lock import locked_company
@@ -97,6 +98,11 @@ async def test_new_roles_mapped_or_refused_never_invented(client, session):
     row.settings = {**row.settings, ROLES_KEY: kept}
     await session.commit()
     assert (await _posting_roles(client, upgraded))[0].get("tax_withheld_payable") is None
+    from test_helpers import save_taxes
+    r = await save_taxes(client, upgraded["headers"], [_wht("WHT", 3, "purchase", "payment")], "purchase")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "tax.turn_on_role_unmapped", r.text
+    assert "withheld" in refusal_text(r.json()["detail"]).lower()
     await reconcile_company(session, upgraded["company_id"])
     await session.commit()
     assert (await _posting_roles(client, upgraded))[0].get("tax_withheld_payable") == "2130"
