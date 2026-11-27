@@ -32842,5 +32842,22 @@
     "tests/test_recon_mislabelled_posting_boundary.py::test_a_journal_import_onto_a_mislabelled_account_is_refused": 0.23838447395246476,
     "tests/test_recon_mislabelled_posting_boundary.py::test_a_manual_journal_onto_a_mislabelled_account_is_refused_and_the_correction_stays": 0.27374782401602715,
     "tests/test_recon_mislabelled_posting_boundary.py::test_a_payment_of_a_foreign_invoice_into_a_mislabelled_account_is_refused": 0.35636440897360444,
-    "tests/test_recon_mislabelled_posting_boundary.py::test_the_journal_boundary_refuses_a_line_on_a_mislabelled_account_from_any_writer": 0.21287266805302352
+    "tests/test_recon_mislabelled_posting_boundary.py::test_the_journal_boundary_refuses_a_line_on_a_mislabelled_account_from_any_writer": 0.21287266805302352,
+    "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_journal_is_stored_at_the_books_precision": 0.8161237110616639,
+    "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_journal_off_by_less_than_the_books_smallest_unit_is_refused[JPY-lines1]": 0.9779703279491514,
+    "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_journal_off_by_less_than_the_books_smallest_unit_is_refused[USD-lines0]": 0.9642785839969292,
+    "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_journal_off_by_less_than_the_books_smallest_unit_is_refused[USD-lines2]": 0.972878718865104,
+    "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_line_that_is_negative_or_on_both_sides_is_refused[can't be negative-lines0]": 0.07684483996126801,
+    "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_line_that_is_negative_or_on_both_sides_is_refused[can't be negative-lines1]": 0.0746641750447452,
+    "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_line_that_is_negative_or_on_both_sides_is_refused[can't be negative-lines2]": 0.07235161494463682,
+    "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_line_that_is_negative_or_on_both_sides_is_refused[not both-lines3]": 0.08378978993277997,
+    "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_line_that_is_negative_or_on_both_sides_is_refused[not both-lines4]": 0.08270598202943802,
+    "tests/test_doc_currency_boundary.py::test_a_document_patch_refuses_a_currency_that_is_not_a_code": 0.23143820103723556,
+    "tests/test_export_set_adapters.py::test_a_cutover_opening_carries_each_balance_in_its_own_currency_too[quickbooks_online]": 1.2518158440943807,
+    "tests/test_export_set_adapters.py::test_a_cutover_opening_carries_each_balance_in_its_own_currency_too[xero]": 0.43292595900129527,
+    "tests/test_recon_bank_writer_guard.py::test_a_line_in_one_of_two_foreign_banks_sharing_an_account_is_stored": 0.13930428982712328,
+    "tests/test_recon_bank_writer_guard.py::test_a_migrated_foreign_bank_line_without_its_amount_is_refused": 0.15808332106098533,
+    "tests/test_recon_bank_writer_guard.py::test_an_imported_foreign_bank_line_without_its_amount_is_refused": 0.1603361648740247,
+    "tests/test_recon_bank_writer_guard.py::test_the_journal_boundary_refuses_a_foreign_bank_line_without_its_amount": 0.12597591301891953,
+    "tests/test_refusal_way_out.py::test_every_refusal_a_file_raises_says_why_in_the_reader_language_and_keeps_its_way_out[default_modules/celerp-accounting/celerp_accounting/recon_guard.py]": 0.0079384739510715
 }
