@@ -4054,10 +4054,8 @@ async def create_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    from celerp_accounting.statement_lines import chart_account
-
     await lock_company(db, company_id)
-    await chart_account(db, company_id, payload.target_account_code)
+    await require_destinations(db, company_id, {payload.target_account_code})
     if payload.bank_account_id is not None:
         bank = (await db.execute(select(BankAccount.id).where(
             BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
@@ -4109,11 +4107,9 @@ async def patch_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    from celerp_accounting.statement_lines import chart_account
-
     rule = await _locked_rule(db, company_id, rule_id)
     if payload.target_account_code is not None:
-        await chart_account(db, company_id, payload.target_account_code)
+        await require_destinations(db, company_id, {payload.target_account_code})
     for field in ("match_field", "match_pattern", "match_type", "target_account_code",
                   "contact_id", "default_memo", "is_active"):
         val = getattr(payload, field)

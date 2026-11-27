@@ -166,18 +166,6 @@ async def _entry_names(session: AsyncSession, company_id: uuid.UUID, settings: d
     return out
 
 
-async def chart_account(db: AsyncSession, company_id: uuid.UUID, code: str) -> None:
-    """Refuse ``code`` unless it is an active account in the company's chart."""
-    from celerp_accounting.models import Account
-
-    active = (await db.execute(select(Account.is_active).where(
-        Account.company_id == company_id, Account.code == code))).scalar_one_or_none()
-    if active is None:
-        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_account_unknown", code=code))
-    if not active:
-        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_account_archived", code=code))
-
-
 def suggestion_value(suggestion: dict) -> dict:
     """``suggestion`` as stored: a contact stays only when its evidence names the record that
     names that contact (an open document, a person's or an answer's rule, a read receipt,
