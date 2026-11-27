@@ -5781,7 +5781,6 @@
   "posting.problem.wrong_type": "{role} được đặt là tài khoản {code}, loại {type}; tài khoản phải thuộc loại {types}.",
   "posting.problem.header": "{role} được đặt là tài khoản {code}, một tài khoản tổng hợp; hãy chọn một tài khoản bên dưới nó.",
   "posting.problem.holds_inventory": "Không thể đặt {role} là tài khoản {code}: tài khoản này giữ hàng tồn kho. Hãy chọn một tài khoản không giữ hàng.",
-  "posting.problem.foreign_bank": "{role} được đặt cho tài khoản {code}, một tài khoản ngân hàng ghi bằng {currency}, khác với đơn vị tiền tệ của sổ sách. Hãy chọn một tài khoản không phải là tài khoản ngân hàng ghi bằng đơn vị tiền tệ khác.",
   "posting.problem.not_inventory": "Không thể đặt {role} là tài khoản {code}: tài khoản này giữ tiền mặt, nên không phải tài khoản hàng tồn kho. Hãy chọn một tài khoản hàng tồn kho.",
   "posting.refused": "{problems} Người quản lý kế toán phải chọn tài khoản trong Cài đặt > Kế toán > Default Accounts; họ đã được thông báo.",
   "posting.continued_account_unusable": "Số dư này được giữ trên tài khoản {code}, hiện không thể nhận số dư: {problem} Hãy cho phép dùng lại tài khoản đó trong hệ thống tài khoản.",

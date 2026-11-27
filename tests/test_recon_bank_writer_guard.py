@@ -384,7 +384,7 @@ async def test_a_role_is_never_pointed_at_a_bank_kept_in_another_currency(client
     h = co["h"]
     r = await client.put("/accounting/posting-accounts/receivable", headers=h, json={"code": code})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"]["message_key"] == "posting.problem.foreign_bank"
+    assert r.json()["detail"]["message_key"] == "posting.destination.foreign_bank"
     assert r.json()["detail"]["params"] == {"role": "receivable", "code": code, "currency": "EUR"}
     assert (await client.put("/accounting/posting-accounts/default_deposit", headers=h,
                              json={"code": code})).status_code == 200
@@ -407,7 +407,7 @@ async def test_a_bank_kept_in_another_currency_added_on_a_role_account_stops_the
     assert eur.status_code == 200 and eur.json()["chart_account_code"] == receivable, eur.text
     r = await _finalized_invoice(client, h)
     assert r.status_code in (409, 422), r.text
-    assert "posting.problem.foreign_bank" in r.text and receivable in r.text, r.text
+    assert "posting.destination.foreign_bank" in r.text and receivable in r.text, r.text
 
 
 async def test_a_bill_line_is_never_put_on_a_bank_kept_in_another_currency(client):

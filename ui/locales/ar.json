@@ -5781,7 +5781,6 @@
   "posting.problem.wrong_type": "{role} مضبوط على الحساب {code} من النوع {type}؛ ويجب أن يكون من النوع {types}.",
   "posting.problem.header": "{role} مضبوط على الحساب {code}، وهو حساب رئيسي؛ اختر حسابًا تحته.",
   "posting.problem.holds_inventory": "لا يمكن ضبط {role} على الحساب {code}: هذا الحساب يحتفظ بالمخزون. اختر حسابًا لا يحتفظ بمخزون.",
-  "posting.problem.foreign_bank": "تم تعيين {role} إلى الحساب {code}، وهو حساب بنكي مُمسك بعملة {currency}، وهي عملة غير عملة الدفاتر. اختر حسابًا ليس حسابًا بنكيًا مُمسكًا بعملة أخرى.",
   "posting.problem.not_inventory": "لا يمكن ضبط {role} على الحساب {code}: هذا الحساب يحتفظ بالنقد، لذا فهو ليس حساب مخزون. اختر حساب مخزون.",
   "posting.refused": "{problems} يجب على من يدير المحاسبة اختيار الحساب من إعدادات > محاسبة > Default Accounts، وقد تم إشعاره.",
   "posting.continued_account_unusable": "يُحتفظ بهذا الرصيد في الحساب {code}، الذي لا يمكنه استقباله الآن: {problem} أعد تفعيل هذا الحساب في دليل الحسابات.",

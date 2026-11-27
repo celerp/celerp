@@ -5781,7 +5781,6 @@
   "posting.problem.wrong_type": "{role} est défini sur le compte {code}, de type {type} ; il doit être de type {types}.",
   "posting.problem.header": "{role} est défini sur le compte {code}, un compte de regroupement ; choisissez un compte en dessous.",
   "posting.problem.holds_inventory": "{role} ne peut pas être défini sur le compte {code} : ce compte contient du stock. Choisissez un compte sans stock.",
-  "posting.problem.foreign_bank": "{role} est associé au compte {code}, un compte bancaire tenu en {currency}, une autre devise que celle des livres. Choisissez un compte qui n'est pas un compte bancaire tenu dans une autre devise.",
   "posting.problem.not_inventory": "{role} ne peut pas être défini sur le compte {code} : ce compte contient de la trésorerie, ce n'est donc pas un compte de stock. Choisissez un compte de stock.",
   "posting.refused": "{problems} Une personne qui gère la comptabilité doit choisir le compte dans Paramètres > Comptabilité > Default Accounts ; elle a été prévenue.",
   "posting.continued_account_unusable": "Ce solde est tenu sur le compte {code}, qui ne peut pas le recevoir pour l'instant : {problem} Rendez ce compte à nouveau utilisable dans le plan comptable.",

@@ -534,10 +534,9 @@ def target_problem(role: str, role_map: dict[str, str], account: dict | None) ->
                        f"it must be of type {type_list(types)}.",
                        role=role.value, code=code, type=account.get("account_type"), types=sorted(types))
     if account.get("foreign_bank") and role not in (R.CASH_AND_EQUIVALENTS, R.DEFAULT_DEPOSIT):
-        return refusal("posting.problem.foreign_bank",
-                       f"{label} is set to account {code}, a bank account kept in {account['foreign_bank']}, another "
-                       "currency than the books'. Choose an account that is not a bank account kept in another currency.",
-                       role=role.value, code=code, currency=account["foreign_bank"])
+        from celerp.services.journal_accounts import destination_refusal
+
+        return destination_refusal("foreign_bank", code, account, role=role.value)
     if role in POSTABLE_ROLES and account.get("has_children"):
         return refusal("posting.problem.header",
                        f"{label} is set to account {code}, a header account; choose an account under it.",
