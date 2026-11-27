@@ -191,6 +191,8 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
                                 keep_gifts: bool = False, actor_id=None, entity_id=None) -> None:
     """Check every line's account and write its immutable role snapshot in place.
 
+    Every line names an account in the chart (a line with none is refused, as an amount on
+    no account would unbalance the books), and the entry balances in the books' currency.
     A line that names roles was chosen for them: its account must be the role's
     current target (then active and of a compatible type) or an account that has
     served the role before (then it only has to exist, as when a payment settles a
@@ -206,19 +208,34 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     lines, whose answers these books gave). Then the fund rules (check_fund_rules), judged on the entry's content and on ``actor_id``, the user
     the event is emitted by, for the entry ``entity_id``.
     """
-    entries = [e for e in (data.get("entries") or []) if isinstance(e, dict) and e.get("account")]
+    from celerp.services.money import books_currency, round_money, to_decimal
+
+    entries = data.get("entries") or []
     if not entries:
         return
+    for entry in entries:
+        if not entry.get("account"):
+            raise HTTPException(status_code=422, detail=refusal(
+                "posting.destination.not_in_chart", _DESTINATION_PROBLEMS["not_in_chart"].format(code=""), code=""))
     company = await session.get(Company, company_id)
     settings = dict(company.settings or {}) if company is not None else {}
+    # Balanced in the books' currency, the gap named: when lines are in different currencies
+    # it is the exchange difference the author still has to post.
+    base = books_currency(settings)
+    debits = sum((to_decimal(e.get("debit") or 0) for e in entries), Decimal(0))
+    credits = sum((to_decimal(e.get("credit") or 0) for e in entries), Decimal(0))
+    if round_money(debits - credits, base):
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_je_unbalanced_credit" if debits > credits else "acct.err_je_unbalanced_debit",
+            base=base, debits=round_money(debits, base), credits=round_money(credits, base),
+            gap=round_money(abs(debits - credits), base)))
     current = role_map(settings)
     accounts = await lock_accounts(session, company_id, {e["account"] for e in entries})
     for entry in entries:
         code = entry["account"]
         if accounts is not None and code not in accounts:
             raise HTTPException(status_code=422, detail=refusal(
-                "posting.destination.not_in_chart",
-                f"Account {code} is not in the chart of accounts.", code=code))
+                "posting.destination.not_in_chart", _DESTINATION_PROBLEMS["not_in_chart"].format(code=code), code=code))
         roles = entry.get("account_roles")
         if roles is None:
             if SCHEMA_KEY in settings and not restored:

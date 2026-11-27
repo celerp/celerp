@@ -248,14 +248,15 @@ async def test_accounting_pnl_date_filter(client):
 @pytest.mark.asyncio
 async def test_accounting_balance_sheet_retained_earnings(client):
     """Balance sheet: retained earnings derived when assets != liabilities + explicit equity (lines 499-501).
-    Uses pre-seeded: 1111 (asset), 3100 (equity). Deliberately unbalanced JE to force derivation."""
+    Uses pre-seeded: 1111 (asset), 3100 (equity), 4100 (revenue): the year's earnings are
+    no equity account's balance, so the balance sheet derives them."""
     tok = await _reg(client)
 
-    # Post a JE that credits equity less than debits asset → retained earnings gap
+    # Assets rise 1000 against 600 of equity and 400 of revenue → retained earnings 400
     await _post_je(client, tok, [
         {"account": "1111", "debit": 1000},
         {"account": "3100", "credit": 600},
-        # Deliberately missing 400 → retained earnings = 1000 - 0 - 600 = 400 >= 0.01
+        {"account": "4100", "credit": 400},
     ])
 
     r = await client.get("/accounting/balance-sheet", headers=_h(tok))
@@ -311,36 +312,28 @@ async def test_accounting_trial_balance_skips_non_posted(client):
 
 
 @pytest.mark.asyncio
-async def test_accounting_trial_balance_skips_entry_without_account(client):
-    """Trial balance skips entries with no 'account' key (lines 314, 362)."""
+@pytest.mark.parametrize("line", [{"debit": 100}, {"account": "", "debit": 100}, {"account": None, "debit": 100}])
+async def test_accounting_import_refuses_a_line_on_no_account_and_the_trial_balance_stays_balanced(client, line):
+    """A line must name the account it posts to, as on a manual journal: an amount on no
+    account would leave the trial balance out of balance."""
     tok = await _reg(client)
-
-    # Import a posted JE where one entry has no 'account' field
     entity_id = f"je:{uuid.uuid4()}"
     r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
         "entity_id": entity_id,
         "event_type": "acc.journal_entry.created",
-        "data": {
-            "status": "posted",
-            "ts": "2026-01-15",
-            "entries": [
-                {"account": "1111", "debit": 100},      # valid
-                {"debit": 100},                           # no 'account' key → skipped
-                {"account": "", "credit": 100},           # empty account → also skipped by falsy check
-            ],
-        },
+        "data": {"status": "posted", "ts": "2026-01-15", "entries": [{"account": "1111", "credit": 100}, line]},
         "source": "test",
         "idempotency_key": str(uuid.uuid4()),
     }]})
     assert r.status_code == 200
+    result = r.json()
+    assert result["created"] == 0 and len(result["errors"]) == 1, result
+    assert "Account  is not in the chart of accounts." in str(result["errors"][0]), result
 
     r_tb = await client.get("/accounting/trial-balance", headers=_h(tok))
     assert r_tb.status_code == 200
-    # Should process without error; entry without account is silently skipped
-    lines = r_tb.json()["lines"]
-    # Only 1111 entry should appear (the one with a valid account code)
-    codes = {l["code"] for l in lines}
-    assert "1111" in codes
+    assert r_tb.json()["balanced"] is True
+    assert "1111" not in {l["code"] for l in r_tb.json()["lines"]}
 
 
 # ── Period Lock + Close Year tests ───────────────────────────────────────────

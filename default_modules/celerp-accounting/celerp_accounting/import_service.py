@@ -130,9 +130,10 @@ async def import_journal_records(
                 lines = [e for e in entries if isinstance(e, dict)]
                 await check_line_contacts(session, company_id, lines)
                 # An imported journal is a new posting: each line goes to an active account
-                # with nothing under it, as a manual journal does.
+                # with nothing under it, as a manual journal does. A line naming no account
+                # is checked as one: it is not in the chart.
                 await require_destinations(session, company_id, {
-                    a for e in lines if isinstance(a := e.get("account"), str) and a})
+                    a if isinstance(a := e.get("account"), str) else "" for e in lines})
             data, grant = await _with_fund_choices(session, company_id, rec, fund_choices, origin)
             entry = await emit_event(
                 session,

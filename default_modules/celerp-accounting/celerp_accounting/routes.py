@@ -1867,12 +1867,10 @@ async def create_manual_journal_entry(
     await require_destinations(session, company_id, {line.account for line in payload.entries})
 
     base = await _base_currency(session, company_id)
-    # Every posting is stored in base currency, so the entry is balanced there,
-    # on the same converted figures the author is looking at while typing. A line
-    # in a foreign currency is validated and rounded at that currency's precision
+    # Every posting is stored in base currency (the journal boundary checks the entry
+    # balances there, on the same converted figures the author sees while typing). A
+    # line in a foreign currency is validated and rounded at that currency's precision
     # first, then converted; a line without one is already base currency.
-    total_debit = Decimal(0)
-    total_credit = Decimal(0)
     entries: list[dict] = []
     for index, line in enumerate(payload.entries):
         if line.debit < 0 or line.credit < 0:
@@ -1901,8 +1899,6 @@ async def create_manual_journal_entry(
         else:
             bd, bc = d, c
             stored = {"account": line.account, "debit": to_stored_float(bd), "credit": to_stored_float(bc)}
-        total_debit += bd
-        total_credit += bc
         # Only lines that name a party carry the key, so an entry with no party
         # stores exactly what it stored before.
         if line.contact:
@@ -1911,16 +1907,6 @@ async def create_manual_journal_entry(
             stored["fund_id"] = line.fund_id
         entries.append(stored)
 
-    if total_debit != total_credit:
-        # The gap is named, not just the two totals: when lines are in different
-        # currencies the difference is the exchange difference the author still
-        # has to post, and it is the figure they need rather than one to work out.
-        gap = abs(total_debit - total_credit)
-        raise HTTPException(
-            status_code=422,
-            detail=t("acct.err_je_unbalanced_credit" if total_debit > total_credit else "acct.err_je_unbalanced_debit",
-                     base=base, debits=total_debit, credits=total_credit, gap=gap),
-        )
     # A line on a bank account kept in another currency than the books' carries its
     # amount in that currency, so the account's reconciliation can read it.
     from celerp.services.journal_accounts import bank_currencies

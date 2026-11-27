@@ -1440,8 +1440,7 @@ async def test_batch_import_tolerates_null_amounts(client):
         "event_type": "acc.journal_entry.created",
         "data": {"status": "posted", "ts": "2026-01-15", "entries": [
             {"account": "1111", "debit": 10.0, "credit": None},
-            {"account": None, "debit": None, "credit": None},
-            {"account": "4100", "debit": None, "credit": 10.0},
+            {"account": "4100", "debit": None, "credit": 10.0, "fx_rate": None, "fund_id": None},
         ]},
         "source": "test",
         "idempotency_key": str(uuid.uuid4()),
@@ -1452,9 +1451,7 @@ async def test_batch_import_tolerates_null_amounts(client):
     bank = [l for l in tb["lines"] if l["code"] == "1111"]
     assert bank and abs(bank[0]["total_debit"] - 10.0) < 0.01
 
-    # The journal renders the same entry with the account-less line skipped
-    # rather than crashing. This endpoint did not exist before this change, so
-    # the assertion is red against the pre-change tree.
+    # The journal renders the same entry, its null amounts read as zero.
     entries = [e for e in (await _journal(client, tok))["entries"] if e not in start["entries"]]
     assert len(entries) == 1
     assert [l["account"] for l in entries[0]["lines"]] == ["1111", "4100"]
