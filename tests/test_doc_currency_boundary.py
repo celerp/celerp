@@ -72,6 +72,21 @@ async def test_the_boundary_keeps_every_document_and_list_in_a_recognised_curren
 
 
 
+async def test_a_document_patch_refuses_a_currency_that_is_not_a_code(client, session):
+    """A value that is not a currency code is refused as one, falsy or not; only an empty
+    code or none means "no currency"."""
+    headers, _ = await _sink_context(client, session, _no_attachments)
+    r = await client.post("/docs", headers=headers, json={"doc_type": "invoice", "line_items": [], "currency": "EUR"})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    for bad in (0, False, [], {}):
+        r = await client.patch(f"/docs/{doc}", headers=headers, json={"fields_changed": {"currency": {"new": bad}}})
+        assert r.status_code == 422 and r.json()["detail"]["message_key"] == _REFUSAL, (bad, r.text)
+        await session.rollback()
+    r = await client.patch(f"/docs/{doc}", headers=headers, json={"fields_changed": {"currency": {"new": "GBP"}}})
+    assert r.status_code == 200, r.text
+
+
 async def test_a_payment_event_carries_the_payment_currency_not_the_documents(client, session):
     """A payment step keeps the currency the payment service reported (Stripe sends it in
     lower case) on the payment; it sets no currency of the document, so the boundary
