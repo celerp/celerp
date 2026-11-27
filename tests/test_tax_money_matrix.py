@@ -136,12 +136,14 @@ async def test_withholding_codes_save_without_books_and_map_when_accounting_come
     """A company that keeps no books (Accounting off, as a first-run setup with a blank
     business type leaves it) saves sales and purchase withholding codes: nothing posts, so no
     account is asked for or made. Turning Accounting on maps them: the seeded payable by the
-    reconcile, the withheld-tax credit at the account 1180 Celerp adds for it."""
+    reconcile, the withheld-tax credit at the account 1180 Celerp adds for it. A start while the books
+    are off adds no account."""
     from celerp.accounting_roles import ROLES_KEY
     from celerp.modules.registry import company_modules, set_enabled
     from celerp.services.account_roles import role_map
     from celerp.services.company_lock import locked_company
     from celerp.services.journal_accounts import lock_accounts
+    from celerp.services.lot_origin import place_company_stock
     from test_helpers import save_taxes
 
     books = await company(session)
@@ -158,6 +160,11 @@ async def test_withholding_codes_save_without_books_and_map_when_accounting_come
     session.expire_all()
     row = await locked_company(session, cid)
     assert {"tax_withheld_payable", "tax_withheld_credit"}.isdisjoint(role_map(row.settings))
+    await session.commit()
+    await place_company_stock(session, cid)  # as at every start
+    session.expire_all()
+    row = await locked_company(session, cid)
+    assert "tax_withheld_credit" not in role_map(row.settings)
     assert "1180" not in (await lock_accounts(session, cid, {"1180"}) or {})
     await session.commit()
 
