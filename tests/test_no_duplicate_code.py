@@ -849,7 +849,7 @@ ALLOWED_DUPLICATES = {
            'default_modules/celerp-contacts/celerp_contacts/routes.py::create_contact',
            'default_modules/celerp-contacts/celerp_contacts/routes.py::merge_contacts_service x2',
            'default_modules/celerp-contacts/celerp_contacts/services.py::<module> x2',
-           'default_modules/celerp-contacts/celerp_contacts/services.py::require_contact_fields x3',
+           'default_modules/celerp-contacts/celerp_contacts/services.py::require_contact_fields',
            'default_modules/celerp-dashboard/celerp_dashboard/routes.py::get_kpis',
            'default_modules/celerp-docs/celerp_docs/consignment_buy.py::buy_consignment x2',
            'default_modules/celerp-docs/celerp_docs/doc_money.py::<module> x2',
