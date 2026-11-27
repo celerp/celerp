@@ -899,7 +899,7 @@ async def emit_event(
                      and "new" in change})
         line_set = sets.get("line_items") if isinstance(sets.get("line_items"), list) else None
         sets["line_items"] = line_set
-        # A document or List is kept only in a supported currency, whichever writer sets it.
+        # A document or List is kept only in a recognised currency, whichever writer sets it.
         from celerp.services.currencies import require_currency_code
 
         require_currency_code(sets.get("currency"))

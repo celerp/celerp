@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""A document or List is kept only in a supported currency, whichever path writes it.
+"""A document or List is kept only in a currency Celerp recognises, whichever path writes it:
+a current ISO 4217 code or one ISO has since withdrawn that records made before still carry.
 
 The rule lives at the event boundary (emit_event's doc/list branch), so the first test
 writes the record directly, as any writer could; the others drive the writers that build
@@ -36,18 +37,21 @@ async def _emit(session, company_id, entity_id: str, event_type: str, data: dict
 
 
 @pytest.mark.parametrize("entity", ["doc", "list"])
-async def test_the_boundary_keeps_every_document_and_list_in_a_supported_currency(client, session, entity):
+async def test_the_boundary_keeps_every_document_and_list_in_a_recognised_currency(client, session, entity):
     headers, context = await _sink_context(client, session, _no_attachments)
     cid = context.company_id
     created = {"doc": ("doc.created", {"doc_type": "invoice", "status": "draft", "line_items": []}),
                "list": ("list.created", {"list_type": "quotation", "status": "draft", "line_items": []})}
     event, base = created[entity]
     updated, patched = f"{entity}.updated", f"{entity}.patched"
-    for bad in ("ZZZ", "usd", "ANG"):
+    for bad in ("ZZZ", "usd", "978", "<script>"):
         with pytest.raises(HTTPException) as refused:
             await _emit(session, cid, f"{entity}:{uuid.uuid4().hex[:8]}", event, {**base, "currency": bad})
         assert _refused(refused.value), (bad, refused.value.detail)
         await session.rollback()
+    # A withdrawn code a record made before carries is recognised and kept.
+    withdrawn = f"{entity}:{uuid.uuid4().hex[:8]}"
+    await _emit(session, cid, withdrawn, event, {**base, "currency": "ANG"})
     kept = f"{entity}:{uuid.uuid4().hex[:8]}"
     await _emit(session, cid, kept, event, {**base, "currency": "EUR"})
     for empty in ("", None):
@@ -112,6 +116,45 @@ async def test_the_document_imports_refuse_an_unsupported_currency(client, sessi
     assert r.json()["created"] == 1 and len(r.json()["errors"]) == 1, r.text
     assert await _stored_currency(session, cid, bad["entity_id"]) is None
     assert await _stored_currency(session, cid, good["entity_id"]) == "EUR"
+
+
+async def test_a_past_invoice_in_a_withdrawn_currency_imports_and_unknown_codes_stay_refused(client, session):
+    """Books brought in from 2025 carry the Bulgarian lev and the Croatian kuna, which ISO has
+    since withdrawn: the import stores them. A code Celerp does not recognise is still refused
+    per record with the named message."""
+    headers, context = await _sink_context(client, session, _no_attachments)
+    cid = context.company_id
+    past = {code: _import_record(code) for code in ("BGN", "HRK")}
+    unknown = {code: _import_record(code) for code in ("ZZZ", "eur", "978", "<script>")}
+    r = await client.post("/docs/import/batch", headers=headers,
+                          json={"records": [*past.values(), *unknown.values()]})
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == len(past) and len(r.json()["errors"]) == len(unknown), r.text
+    assert all(error["params"]["refusal"]["message_key"] == _REFUSAL for error in r.json()["errors"]), r.text
+    for code, record in past.items():
+        assert await _stored_currency(session, cid, record["entity_id"]) == code
+    for record in unknown.values():
+        assert await _stored_currency(session, cid, record["entity_id"]) is None
+
+
+async def test_a_stored_quotation_in_a_withdrawn_currency_converts(client, session):
+    """A quotation an earlier version stored in the lev converts like any other: the invoice it
+    becomes keeps the quotation's currency."""
+    headers, context = await _sink_context(client, session, _no_attachments)
+    cid = context.company_id
+    record = _import_record("EUR")
+    record["data"].update(doc_type="quotation", line_items=[
+        {"name": "Service", "quantity": 1, "unit_price": 100, "line_total": 100, "tax_rate": 0}],
+        subtotal=100, tax=0, total=100)
+    r = await client.post("/docs/import", headers=headers, json=record)
+    assert r.status_code == 200, r.text
+    row = await session.get(Projection, (cid, record["entity_id"]), populate_existing=True)
+    row.state = {**row.state, "currency": "BGN"}
+    await session.commit()
+    r = await client.post(f"/docs/{record['entity_id']}/convert", headers=headers,
+                          json={"idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    assert await _stored_currency(session, cid, r.json()["target_doc_id"]) == "BGN"
 
 
 async def test_a_migration_refuses_a_document_in_an_unsupported_currency(client, session):
