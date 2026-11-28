@@ -275,10 +275,12 @@
       return out;
     }
   };
-  function importBrowserColumns(table) {
-    var lines = table.indexOf('doc_lines_') === 0;
-    var keys = lines ? {widths: 'celerp_dline_wpct_' + table.slice(10) + '_v2'}
+  function browserColumnKeys(table) {
+    return table.indexOf('doc_lines_') === 0 ? {widths: 'celerp_dline_wpct_' + table.slice(10) + '_v2'}
       : {vis: 'celerp_cols_' + table, order: 'celerp_col_order_' + table, widths: 'celerp_col_widths_' + table};
+  }
+  function importBrowserColumns(table) {
+    var keys = browserColumnKeys(table);
     var found = {};
     try {
       Object.keys(keys).forEach(function (part) {
@@ -298,12 +300,23 @@
     });
   }
 
-  // Forget the saved column setup of the given tables, then reload to show the defaults.
+  // Forget the saved column setup of the given tables, then reload to show the defaults. A
+  // reset the server kept also clears this browser's old copy of those tables, which a move
+  // that failed or got no answer left behind and the next load would otherwise bring back.
   // A save that failed changed nothing, so the page stays and keeps its error on screen.
   function celerpResetColumns(tables) {
     var change = {};
     tables.forEach(function (t) { change[t] = null; });
-    saveColumns(change).then(function (saved) { if (saved) location.reload(); });
+    saveColumns(change).then(function (saved) {
+      if (!saved) return;
+      try {
+        tables.forEach(function (t) {
+          var keys = browserColumnKeys(t);
+          Object.keys(keys).forEach(function (part) { localStorage.removeItem(keys[part]); });
+        });
+      } catch (e) { /* this browser keeps no storage */ }
+      location.reload();
+    });
   }
 
   // An inline panel's Cancel, or Escape on it (given ev), removes the element it sits in.

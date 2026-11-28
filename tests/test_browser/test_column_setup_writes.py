@@ -115,3 +115,18 @@ def test_a_refused_part_of_the_browser_copy_stays_for_the_next_load(page, ui_ser
     page.wait_for_timeout(300)
     stored = page.evaluate("ks => ks.map(k => localStorage.getItem(k))", list(keys))
     assert stored == [None, keys["celerp_col_widths_inventory"]]
+
+
+def test_a_reset_after_a_move_that_got_no_answer_holds_on_reload(page, ui_server, inventory_key, api):
+    key = "celerp_cols_inventory"
+    _browser_copy(page, {key: f'{{"{inventory_key}": false}}'})
+    page.route(_PREFS, lambda route: route.abort())
+    page.reload(wait_until="load")
+    page.wait_for_timeout(300)
+    assert page.evaluate("k => localStorage.getItem(k)", key) is not None
+    page.unroute(_PREFS)
+    with page.expect_navigation(wait_until="load"):
+        page.evaluate("celerpResetColumns(['inventory'])")
+    page.wait_for_timeout(500)  # a copy the reset left behind would be moved back by now
+    assert page.evaluate("k => localStorage.getItem(k)", key) is None
+    assert saved_column_layout(api, "inventory", lambda l: bool(l)) == {}
