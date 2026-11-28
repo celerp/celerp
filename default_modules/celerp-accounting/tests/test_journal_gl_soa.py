@@ -2269,33 +2269,33 @@ async def test_void_manual_je_preserves_the_stored_line_fx(client):
 
 async def test_an_entry_posted_before_per_line_currency_still_reads_back(client, session):
     """Stored events are immutable, so an entry recorded when the currency and
-    rate belonged to the whole entry has to render now. Its lines inherit it."""
-    from celerp.events.engine import emit_event
+    rate belonged to the whole entry has to render now. Its lines inherit it. The
+    event is written as an older release stored it, and the records rebuilt from it:
+    posted today, its lines would be judged as a new entry's."""
+    import json
+
+    from sqlalchemy import text
+
+    from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
 
     tok = await _reg(client)
     await _thb(client, tok)
     company_id, _ = _ids(tok)
     je_id = f"je:manual:{uuid.uuid4().hex}"
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=je_id,
-        entity_type="journal_entry",
-        event_type="acc.journal_entry.created",
-        data={
+    await lock_company(session, company_id)
+    await session.execute(text(
+        "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
+        "VALUES (:c, :e, 'journal_entry', 'acc.journal_entry.created', CAST(:d AS json), 'test', :k)"), {
+        "c": company_id, "e": je_id, "k": uuid.uuid4().hex, "d": json.dumps({
             "ts": "2026-01-15", "memo": "Historic", "status": "posted", "je_type": "manual",
             "entries": [
                 {"account": "1111", "debit": 350.0, "credit": 0.0, "fx_debit": 10.0},
                 {"account": "4100", "debit": 0.0, "credit": 350.0, "fx_credit": 10.0},
             ],
             "fx": {"currency": "USD", "rate": 35.0},
-        },
-        actor_id=None,
-        location_id=None,
-        source="test",
-        idempotency_key=uuid.uuid4().hex,
-        metadata_={},
-    )
+        })})
+    await ProjectionEngine.rebuild(session, company_id)
     await session.commit()
 
     entry = next(e for e in (await _journal(client, tok))["entries"] if e["je_id"] == je_id)

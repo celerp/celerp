@@ -133,3 +133,38 @@ async def test_an_automatic_copy_of_posted_lines_keeps_their_cents_after_the_boo
     await session.commit()
     stored = await _state(session, co, je_id)
     assert sorted((e["debit"], e["credit"]) for e in stored["entries"]) == [(0.0, 10.55), (10.55, 0.0)]
+
+
+async def test_a_movement_posted_before_the_line_rule_reverses_as_it_was_posted(client, session):
+    """A movement stored before every foreign line had to carry its foreign amount, and before a
+    line in the books' own currency dropped its rate, still reverses: the reversal copies what
+    was posted, line for line, and is not judged again as a person's new entry."""
+    from celerp_accounting.funds import post_fund_movement
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from celerp.models.projections import Projection
+
+    co = await B.company(client)
+    h = co["h"]
+    code = (await B.bank(client, h, currency="EUR", name="Euro Bank"))["chart_account_code"]
+    ids = await _fund_bank(client, h, code)
+    await _given(client, h, code, 500.0, ids["U1"], currency="EUR", rate=1.1)
+    plain = (await _state(session, co, await _transfer(client, h, ids, code, 110.0)))["entries"]
+    lines = [{**e, "fx_currency": "EUR", **({"fx_debit": 100.0} if e["debit"] else {"fx_credit": 100.0})}
+             if e["account"] == code else e for e in plain]
+    moved = (await post_fund_movement(
+        session, uuid.UUID(co["company_id"]), ts=date.fromisoformat(DAY), reason="Set aside",
+        actor=uuid.UUID(co["user_id"]), request_key=uuid.uuid4().hex, kind="fund_transfer", entries=lines))["je_id"]
+    await session.commit()
+    row = await session.get(Projection, (uuid.UUID(co["company_id"]), moved))
+    older = [e if e["account"] == code else e | ({"fx_currency": "EUR", "fx_rate": 1.1} if e["debit"] else
+                                                  {"fx_currency": "USD", "fx_rate": 2.0, "fx_credit": e["credit"] / 2})
+             for e in row.state["entries"]]
+    row.state = {**row.state, "entries": older}
+    flag_modified(row, "state")
+    await session.commit()
+    reversal = await _state(session, co, await _reverse(client, h, moved))
+    keys = ("fx_currency", "fx_rate", "fx_debit", "fx_credit")
+    got = [(e["account"], *(e.get(k) for k in keys)) for e in reversal["entries"]]
+    want = [(e["account"], e.get("fx_currency"), e.get("fx_rate"), e.get("fx_credit"), e.get("fx_debit")) for e in older]
+    assert sorted(got, key=repr) == sorted(want, key=repr)

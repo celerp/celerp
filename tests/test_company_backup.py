@@ -694,6 +694,26 @@ async def test_backup_from_before_lines_knew_their_bank_restores_them_on_their_b
     assert rule_origin == "user"
 
 
+async def test_a_journal_posted_before_the_line_rule_restores_as_posted(real_engine, real_client, tmp_path, monkeypatch):
+    """A backup holds journals as their books posted them. One written before every foreign line
+    had to carry its foreign amount, and before a line in the books' own currency dropped its
+    rate, comes back exactly as stored: a restore copies the books, it does not post again."""
+    _bk_local(monkeypatch, tmp_path)
+    _, cid, tok = await _bk_setup(real_engine)
+    lines = [{"account": "1111", "debit": 110.0, "credit": 0.0, "fx_currency": "EUR", "fx_rate": 1.1},
+             {"account": "4100", "debit": 0.0, "credit": 110.0, "fx_currency": "USD", "fx_rate": 2.0, "fx_credit": 55.0}]
+    await _bk_sql(real_engine, "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, "
+                  "idempotency_key) VALUES (:c, 'je:older-fx', 'journal_entry', 'acc.journal_entry.created', "
+                  "CAST(:d AS json), 'api', 'k-older-fx')", c=cid, d=json.dumps(
+                      {"ts": "2026-01-15", "memo": "older", "status": "posted", "entries": lines}))
+    await settle(real_engine, cid)
+    new = uuid.UUID(await _bk_restore_new(real_client, tok, await download(real_client, tok)))
+    async with maker(real_engine)() as s:
+        state = await s.scalar(text("SELECT state FROM projections WHERE company_id = :c AND entity_id = 'je:older-fx'"),
+                               {"c": new})
+    assert [{k: line[k] for k in lines[i]} for i, line in enumerate(state["entries"])] == lines
+
+
 def test_older_bank_line_whose_statement_is_missing_is_refused_as_damaged():
     """An older backup's line is put on its statement's bank: a line naming a statement the
     backup does not hold has no bank to go on, so the backup is refused as damaged."""
