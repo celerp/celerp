@@ -2136,21 +2136,21 @@ async def test_manual_je_nothing_is_posted_to_the_difference_account_on_its_own(
     assert all(l["account"] != "6960" for l in entry["lines"])
 
 
-async def test_manual_je_line_converts_as_typed_and_keeps_its_own_currency_decimal_places(client):
-    """A typed yen line converts as typed, the books' amount an importer would send for it,
-    and its yen amount is kept at whole yen, the place the currency itself uses."""
+async def test_manual_je_line_keeps_its_own_currency_decimal_places_before_it_converts(client):
+    """A typed yen line is kept at whole yen, the place the currency itself uses, and the
+    books' amount is that stored yen amount at its rate, so the line means one figure."""
     tok = await _reg(client)
     await _thb(client, tok)
     r = await _post_manual_je(client, tok, [
         _fx({"account": "1111", "debit": 100.5, "credit": 0}, "JPY", 0.25),
-        {"account": "4100", "debit": 0, "credit": 25.13},
+        {"account": "4100", "debit": 0, "credit": 25.25},
     ])
     assert r.status_code == 200, r.text
 
     line = next(l for l in (await _journal(client, tok))["entries"][0]["lines"]
                 if l["account"] == "1111")
-    # 100.5 yen at 0.25 is 25.125, 25.13 in the books; the yen amount keeps whole yen.
-    assert line["fx_debit"] == 101.0 and line["debit"] == 25.13
+    # 100.5 yen keeps whole yen, 101, and 101 yen at 0.25 is 25.25 in the books.
+    assert line["fx_debit"] == 101.0 and line["debit"] == 25.25
 
 
 async def test_manual_je_token_reuse_with_a_different_rate_conflicts(client):
