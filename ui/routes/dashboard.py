@@ -1136,7 +1136,7 @@ def _secondary_kpi_grid(cfg: dict, values: dict, role: str = "owner", settings: 
 # Charts
 # ---------------------------------------------------------------------------
 
-_CHARTJS = "/static/vendor/chart.js/chart.umd.min.js"
+_CHARTJS = "/static/vendor/chartjs/chart.umd.min.js"
 
 
 _MONTH_ABBR = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
