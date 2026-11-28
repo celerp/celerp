@@ -1387,6 +1387,14 @@ def _shown(key: str) -> str:
     return re.sub(r"\{[^}]*\}", "7", t(key, "en"))
 
 
+def test_text_drawn_in_a_font_outside_the_pin_is_refused(page):
+    page.set_content(f"""<style>{_FONT_PIN}</style><main id='t' style='font-family: var(--font)'>
+      <p>Pinned text \U0001F4E6 <code style='font-family: var(--font-mono)'>1,234.50</code></p>
+      <p style="font-family: 'Liberation Serif'">Serif text</p></main>""")
+    assert _unpinned_fonts(page, page.locator("#t")) == ["Liberation Serif"]
+    assert _unpinned_fonts(page, page.locator("#t p").first) == []
+
+
 def test_a_label_named_in_a_sentence_is_not_evidence_of_the_screen(page):
     labels, evidence = _bare_label_evidence()
     step = {"labels": labels, "capture": {"evidence": evidence}}
