@@ -194,18 +194,21 @@ _FREE_EMAIL_QUOTA = 50
 # draw at once the moment its script defines it, in the capture's browser only.
 # A page an action opens in a new tab (a printable list) opens in the capture's own tab instead,
 # so the step pictures it.
-# The app's sans font is pinned to the one every committed picture was taken with, Liberation
-# Sans, then FreeSans for the symbols Liberation lacks (an info mark, a menu's dots), which
-# would otherwise fall back to whatever font the machine has; its mono list ends in the generic
-# monospace, DejaVu Sans Mono. CI installs all three, so a machine with other fonts renders
-# the same picture and the freshness check holds.
+# The app's fonts are pinned to the ones every committed picture was taken with: Liberation
+# Sans, then FreeSans for the symbols Liberation lacks (an info mark, a menu's dots), then Noto
+# Color Emoji for the emoji; DejaVu Sans Mono for figures. CI installs all four. A glyph none of
+# them has would fall back to whatever font the machine has, so a step whose screen draws any
+# text in another font is refused (_unpinned_fonts) and a local picture renders as CI's does.
+_FONT_PIN = (":root { --font: 'Liberation Sans', 'FreeSans', 'Noto Color Emoji', sans-serif;"
+             " --font-mono: 'DejaVu Sans Mono', monospace; }")
+_PINNED_FONTS = frozenset(re.findall(r"'([^']+)'", _FONT_PIN))
 _CAPTURE_PAGE_SCRIPT = """Object.defineProperty(window, "Chart", {configurable: true,
   set(chart) { chart.defaults.animation = false;
                Object.defineProperty(window, "Chart", {value: chart, writable: true, configurable: true}); }});
 window.open = url => { location.assign(url); return null; };
 document.addEventListener("DOMContentLoaded", () => { const pin = document.createElement("style");
-  pin.textContent = ":root { --font: 'Liberation Sans', 'FreeSans', sans-serif; }";
-  document.head.append(pin); });"""
+  pin.textContent = %s;
+  document.head.append(pin); });""" % json.dumps(_FONT_PIN)
 # A step on the assistant's screen is taken with the AI subscription; the two that picture what a
 # company without it sees are listed as None.
 _SUBSCRIBED: dict[str, str | None] = {
@@ -1146,6 +1149,25 @@ def _same_pixels(old, new) -> bool:
     return max(high for _, high in ImageChops.difference(old, new).getextrema()) <= _RENDER_NOISE
 
 
+def _unpinned_fonts(page, target) -> list[str]:
+    """The fonts outside _PINNED_FONTS that draw any text inside ``target``, as Chromium reports
+    the platform fonts it rendered each element's text with."""
+    target.evaluate("el => el.setAttribute('data-capture-target', '')")
+    cdp = page.context.new_cdp_session(page)
+    try:
+        cdp.send("DOM.enable")
+        cdp.send("CSS.enable")
+        root = cdp.send("DOM.getDocument", {"depth": 0})["root"]["nodeId"]
+        node = cdp.send("DOM.querySelector", {"nodeId": root, "selector": "[data-capture-target]"})["nodeId"]
+        nodes = [node, *cdp.send("DOM.querySelectorAll", {"nodeId": node, "selector": "*"})["nodeIds"]]
+        used = {font["familyName"] for n in nodes
+                for font in cdp.send("CSS.getPlatformFontsForNode", {"nodeId": n})["fonts"]}
+    finally:
+        cdp.detach()
+        target.evaluate("el => el.removeAttribute('data-capture-target')")
+    return sorted(used - _PINNED_FONTS)
+
+
 def _picture(target, marker: str) -> bytes:
     """The help image of ``target``: its top _MAX_HEIGHT pixels as a webp carrying ``marker``."""
     from PIL import Image
@@ -1194,6 +1216,8 @@ def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[s
     only = {"labels": step["labels"], "capture": {"evidence": [f"{{{name}}}" for name in elsewhere]}}
     if shown := sorted(set(only["capture"]["evidence"]) - set(_evidence_missing(demo_page, target, only))):
         return [f"listed in _NAMED_ELSEWHERE, yet in the picture: {shown}"]
+    if machine := _unpinned_fonts(demo_page, target):
+        return [f"text drawn in a font the capture does not pin, so in whatever the machine has: {machine}"]
     page_id, n = step_id.rsplit("#", 1)
     path, marker = help_page.help_dir / step["image"], capture_marker(page_id, int(n), step["capture"])
     taken = _picture(target, marker)
