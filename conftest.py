@@ -738,6 +738,10 @@ def _reset_gateway_state():
     # commercial context leaks them into later tests on the same worker. The
     # setter for commercial context rejects a non-newer version, so restore its
     # global directly rather than through set_commercial_context.
+    # The UI's request mirror re-reads the store whenever the file changed since it
+    # last looked, replacing whatever context a test set in memory; bring it up to
+    # the store first, so that only a store change the test itself makes reaches it.
+    _gw.mirror_stored_commercial_context()
     _flags, _ctx = _gw.get_feature_flags(), _gw.get_commercial_context()
     _sub = _gw.get_subscription_state()
     yield
