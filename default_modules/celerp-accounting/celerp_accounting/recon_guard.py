@@ -20,7 +20,7 @@ leaves the books-currency figure as it was is a change too. Two rules refuse it:
 Before both, a bank whose label and entries disagree (``refuse_mislabelled_bank``) takes no
 new or changed row, and a new or changed line on a bank kept in another currency than the
 books' carries its amount in that currency (``acct.err_je_bank_currency``). An entry's lines
-on one bank with no amount in its currency that net to zero in the books' currency between
+on one bank with no amount in any currency but the books' that net to zero there between
 them (money moved between funds on the one account) change nothing the bank holds, so they
 are no bank row at all (``routes._moves_on_bank``).
 

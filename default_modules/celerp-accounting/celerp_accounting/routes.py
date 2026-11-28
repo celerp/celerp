@@ -2951,11 +2951,14 @@ def _carries_foreign_amount(entry: dict) -> bool:
 def _moves_on_bank(lines: list[dict], read) -> list[dict]:
     """Of one entry's *lines* on a bank's ledger account, those that move the bank. *read*
     gives a line's amounts in the bank's currency (None: the bank cannot read it). Lines the
-    bank cannot read that net to zero in the books' currency between them change nothing the
-    bank holds (money moved between funds on the one account), so they are left out; any
-    other unread line stays, for the caller to refuse or show as unknown."""
+    bank cannot read that are all in the books' currency and net to zero there between them
+    change nothing the bank holds (money moved between funds on the one account), so they are
+    left out. Any other unread line stays, for the caller to refuse or show as unknown: one
+    carrying an amount in a further currency moves money the bank cannot weigh, whatever its
+    books' figures add up to."""
     unread = [line for line in lines if read(line) is None]
-    if unread and sum((d - c for d, c in map(_line_amounts, unread)), Decimal(0)) == 0:
+    if (unread and not any(map(_carries_foreign_amount, unread))
+            and sum((d - c for d, c in map(_line_amounts, unread)), Decimal(0)) == 0):
         return [line for line in lines if read(line) is not None]
     return lines
 
