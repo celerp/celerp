@@ -209,7 +209,8 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
 
     Every line names an account in the chart (a line with none is refused, as an amount on
     no account would unbalance the books) and any foreign currency it is typed in is one
-    Celerp recognises; each line is a positive amount on one side, and the entry balances in
+    Celerp recognises; an entry has lines, each a positive amount on one side (the same side in
+    the books' currency and in its own), and the entry balances in
     the books' currency (*books_currency* when an automatic posting names the books it is
     written on, else the company's).
     A line that names roles was chosen for them: its account must be the role's
@@ -229,11 +230,11 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     """
     from celerp.services.currencies import require_currency_code
     from celerp.services import money
-    from celerp.services.money import round_money, to_decimal, to_stored_float
+    from celerp.services.money import line_moves, round_money, to_decimal, to_stored_float
 
     entries = data.get("entries") or []
     if not entries:
-        return
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_two_lines"))
     for entry in entries:
         if not entry.get("account"):
             raise HTTPException(status_code=422, detail=refusal(
@@ -241,13 +242,13 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
         require_currency_code(entry.get("fx_currency"))
     company = await session.get(Company, company_id)
     settings = dict(company.settings or {}) if company is not None else {}
-    # Balanced in the books' currency, the gap named: when lines are in different currencies
-    # it is the exchange difference the author still has to post. Each line is kept at the
-    # books' precision, so what is stored is what was checked, and the entry balances exactly
-    # both as given and as kept: a gap smaller than the books' smallest unit is still a gap,
-    # and many of them add up.
-    # Each line is a positive amount on one side, in the books' currency and in any currency it
-    # was typed in.
+    # One line means one thing: a positive amount on one side, the same side in the books'
+    # currency and in any currency it was typed in (a foreign amount too small to show in the
+    # books' currency leaves the books' side empty). The amounts as given are judged, then each
+    # is kept at its currency's precision, so what is stored is what was checked; the entry
+    # balances in the books' currency both as given and as kept: a gap smaller than the books'
+    # smallest unit is still a gap, and many of them add up. A line that keeps no amount at all
+    # is refused, as it would post nothing.
     base = (books_currency or money.books_currency(settings)).upper()
     # A line copying a posted entry of these books (``posted_from``) keeps an amount that entry
     # stored: it was kept at the books it was posted on, which may have had a finer unit.
@@ -255,19 +256,22 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     given = {"debit": Decimal(0), "credit": Decimal(0)}
     kept = {"debit": Decimal(0), "credit": Decimal(0)}
     for entry in entries:
-        for prefix, currency in (("", base), ("fx_", entry.get("fx_currency") or base)):
-            sides = [to_decimal(entry[prefix + side]) for side in kept if entry.get(prefix + side) is not None]
-            if any(amount < 0 for amount in sides):
-                raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_negative"))
-            if len(sides) == 2 and all(round_money(amount, currency) > 0 for amount in sides):
-                raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_both_sides"))
-        for side in kept:
-            if entry.get(side) is not None:
-                amount = to_decimal(entry[side])
+        amounts = {(prefix, side): to_decimal(entry[prefix + side])
+                   for prefix in ("", "fx_") for side in kept if entry.get(prefix + side) is not None}
+        if any(amount < 0 for amount in amounts.values()):
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_negative"))
+        moving = {side for (_, side), amount in amounts.items() if amount > 0}
+        if len(moving) > 1:
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_both_sides"))
+        for (prefix, side), amount in amounts.items():
+            copied = not prefix and amount in posted.get(entry.get("posted_from"), ())
+            rounded = amount if copied else round_money(amount, (entry.get("fx_currency") or base) if prefix else base)
+            entry[prefix + side] = to_stored_float(rounded)
+            if not prefix:
                 given[side] += amount
-                copied = amount in posted.get(entry.get("posted_from"), ())
-                kept[side] += (rounded := amount if copied else round_money(amount, base))
-                entry[side] = to_stored_float(rounded)
+                kept[side] += rounded
+        if not line_moves(entry):
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_no_amount"))
     for debits, credits in ((kept["debit"], kept["credit"]), (given["debit"], given["credit"])):
         if debits != credits:
             raise HTTPException(status_code=422, detail=catalog_refusal(
