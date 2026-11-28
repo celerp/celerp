@@ -20,7 +20,8 @@ import uuid
 
 import pytest
 
-from celerp.services.money import currency_dp, round_money, to_stored_float
+from celerp.services.auto_je import company_currency
+from celerp.services.money import currency_dp, round_money, to_base, to_stored_float
 from test_recon_guard import _company, _created_data, _refused
 from test_reconciliation_history import admin, bank, complete, match, start
 
@@ -76,16 +77,19 @@ async def test_balance_shown_is_the_reconciliation_figure_and_completed_lines_ar
     await complete(client, h, sid)
 
     cid = await _company(session, b)
+    base = await company_currency(session, cid)
     step = 10 ** -currency_dp(currency)
     for je in je_ids:
+        # A valid change of the entry: each line's foreign amount one unit more on its side,
+        # its books amount that amount at its rate, so only the guard can refuse it.
         data = await _created_data(session, cid, je)
-        for key in ("fx_debit", "fx_credit"):
-            changed = {**data, "entries": [
-                {**line, key: to_stored_float(round_money((line.get(key) or 0) + step, currency))}
-                if line["account"] == b["chart_account_code"] else line
-                for line in data["entries"]]}
-            await _refused(session, cid, je, "acc.journal_entry.created", changed)
-
+        changed = {**data, "entries": [
+            {**line, **{prefix + side: (to_base(fx, line["fx_rate"], base) if prefix == "" else fx)
+                        for side in ("debit", "credit") if line.get("fx_" + side)
+                        for fx in [to_stored_float(round_money(line["fx_" + side] + step, currency))]
+                        for prefix in ("fx_", "")}}
+            for line in data["entries"]]}
+        await _refused(session, cid, je, "acc.journal_entry.created", changed)
 
 # Every function in the accounting module that reads a journal line's amounts, and why
 # it reads them as it does. Reading through ``_bank_amounts`` (or ``_bank_line_amounts``,

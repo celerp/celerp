@@ -109,6 +109,7 @@ async def test_a_stored_line_that_moves_nothing_is_not_shown_and_stays_stored(cl
               {"account": "2120", "debit": 0.0, "credit": 0.0}]
     # History an older version wrote, before the journal boundary refused a line that moves nothing.
     monkeypatch.setattr("celerp.services.journal_accounts.prepare_journal_entry", _written_before_the_boundary)
+    monkeypatch.setattr("celerp.services.journal_accounts.normalize_journal_entry", _written_before_the_boundary)
     for event_type, data in (("acc.journal_entry.created",
                               {"memo": "Older invoice", "ts": "2026-08-31", "entries": stored}),
                              ("acc.journal_entry.posted", {"ts": "2026-08-31"})):

@@ -653,6 +653,7 @@ async def test_doctor_fix_zero_amount_je(client, session, monkeypatch):
         return None
 
     monkeypatch.setattr("celerp.services.journal_accounts.prepare_journal_entry", _written_before_the_boundary)
+    monkeypatch.setattr("celerp.services.journal_accounts.normalize_journal_entry", _written_before_the_boundary)
     await _emit(
         session, company_id=company_id,
         entity_id=je_id,

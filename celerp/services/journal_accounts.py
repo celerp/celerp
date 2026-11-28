@@ -3,7 +3,7 @@
 
 """The one boundary every journal line passes before it enters the ledger.
 
-emit_event calls ``prepare_journal_entry`` for every acc.journal_entry.created,
+emit_event calls ``normalize_journal_entry`` then ``prepare_journal_entry`` for every acc.journal_entry.created,
 whoever produced it: automatic postings, manual journals, imports, bank
 reconciliation, repairs. Replay applies stored events directly and never comes
 back through here, so history is never revalidated or rewritten.
@@ -202,31 +202,15 @@ async def _posted_amounts(session: AsyncSession, company_id, entries: list[dict]
     return out
 
 
-async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *, restored: bool = False,
-                                keep_gifts: bool = False, books_currency: str | None = None,
-                                actor_id=None, entity_id=None) -> None:
-    """Check every line's account and write its immutable role snapshot in place.
+async def normalize_journal_entry(session: AsyncSession, company_id, data: dict, *, restored: bool = False,
+                                  books_currency: str | None = None) -> None:
+    """Judge a new entry's lines and keep their amounts as they will be stored, in place.
 
-    Every line names an account in the chart (a line with none is refused, as an amount on
-    no account would unbalance the books) and any foreign currency it is typed in is one
-    Celerp recognises; a person's entry has two lines at least, each a positive amount on one side (the same side in
-    the books' currency and in its own), and the entry balances in
-    the books' currency (*books_currency* when an automatic posting names the books it is
-    written on, else the company's).
-    A line that names roles was chosen for them: its account must be the role's
-    current target (then active and of a compatible type) or an account that has
-    served the role before (then it only has to exist, as when a payment settles a
-    receivable recognized before a remap). A line naming no roles is classified by
-    every role whose target or scope holds its account; an explicit empty list stays
-    deliberately unclassified. Before the company has posting roles at all (a company
-    still being migrated), such a line is left without a snapshot, so readers classify
-    it by the scopes the company's roles are given later. A *restored* copy of an entry
-    (an unvoid) keeps each line's snapshot as the original recorded it, so a line that
-    recorded none stays without one, never classified by today's roles. Every line is then
-    classified gift or not by the company's rules (_stamp_named_gifts), unless the entry is a
-    restored copy or its writer passes ``keep_gifts`` (a document's posting, or a copy of posted
-    lines, whose answers these books gave). Then the fund rules (check_fund_rules), judged on the entry's content and on ``actor_id``, the user
-    the event is emitted by, for the entry ``entity_id``.
+    emit_event runs this before any other judge of the entry, which then reads what is
+    persisted. Every line names an account and any foreign currency is one Celerp recognises;
+    a person's entry has two lines at least, each a positive amount on one side (the same side
+    in the books' currency and in its own), and balances in the books' currency (*books_currency*
+    when an automatic posting names its books, else the company's). Takes no locks.
     """
     from celerp.services.currencies import require_currency_code
     from celerp.services import money
@@ -291,6 +275,32 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
             raise HTTPException(status_code=422, detail=catalog_refusal(
                 "acct.err_je_unbalanced_credit" if debits > credits else "acct.err_je_unbalanced_debit",
                 base=base, debits=debits, credits=credits, gap=abs(debits - credits)))
+
+
+async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *, restored: bool = False,
+                                keep_gifts: bool = False, actor_id=None, entity_id=None) -> None:
+    """Check every line's account and write its immutable role snapshot in place.
+
+    It reads the lines normalize_journal_entry kept; every line's account is in the chart. A line that names roles was chosen for them: its account must be the role's
+    current target (then active and of a compatible type) or an account that has
+    served the role before (then it only has to exist, as when a payment settles a
+    receivable recognized before a remap). A line naming no roles is classified by
+    every role whose target or scope holds its account; an explicit empty list stays
+    deliberately unclassified. Before the company has posting roles at all (a company
+    still being migrated), such a line is left without a snapshot, so readers classify
+    it by the scopes the company's roles are given later. A *restored* copy of an entry
+    (an unvoid) keeps each line's snapshot as the original recorded it, so a line that
+    recorded none stays without one, never classified by today's roles. Every line is then
+    classified gift or not by the company's rules (_stamp_named_gifts), unless the entry is a
+    restored copy or its writer passes ``keep_gifts`` (a document's posting, or a copy of posted
+    lines, whose answers these books gave). Then the fund rules (check_fund_rules), judged on the entry's content and on ``actor_id``, the user
+    the event is emitted by, for the entry ``entity_id``.
+    """
+    entries = data.get("entries") or []
+    if not entries:
+        return
+    company = await session.get(Company, company_id)
+    settings = dict(company.settings or {}) if company is not None else {}
     current = role_map(settings)
     accounts = await lock_accounts(session, company_id, {e["account"] for e in entries})
     for entry in entries:

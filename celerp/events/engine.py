@@ -847,6 +847,17 @@ async def emit_event(
         await held_fund_ledger(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
         await hold_movement_actor(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
 
+    # A new entry's lines are judged and kept as they will be stored before anything else reads
+    # their amounts. An arrival journal carries its origin on the entry and every line first.
+    if kwargs["event_type"] == "acc.journal_entry.created":
+        from celerp.services.journal_accounts import normalize_journal_entry
+
+        if origin is not None:
+            await _judge_inbound(session, kwargs.get("company_id"), journal_inbound_keys(kwargs["data"], fund_grant), origin)
+            mark_journal(kwargs["data"], origin)
+        await normalize_journal_entry(session, kwargs.get("company_id"), kwargs["data"],
+                                      restored=restoring, books_currency=books_currency)
+
     # Every journal entry change, whoever produced it, is judged against the bank accounts:
     # one that would change what a reconciliation counts, or add a row to a bank whose label
     # and entries disagree, is refused.
@@ -858,20 +869,13 @@ async def emit_event(
             await access.guard_journal_change(
                 session, kwargs.get("company_id"), kwargs["entity_id"], kwargs["event_type"], kwargs["data"])
 
-    # Every journal line, whoever produced it, passes the one account boundary. An arrival
-    # journal carries its origin on the entry and every line before the boundary reads them;
-    # a line copying one these books posted (``posted_from``, rule V) keeps its own fund keys,
+    # Every journal line, whoever produced it, passes the one account boundary: a line copying one these books posted (``posted_from``, rule V) keeps its own fund keys,
     # and a local user's choice (``fund_grant``, by line number) sets the ones it names.
     if kwargs["event_type"] == "acc.journal_entry.created":
         from celerp.services.journal_accounts import prepare_journal_entry
 
-        if origin is not None:
-            await _judge_inbound(session, kwargs.get("company_id"), journal_inbound_keys(kwargs["data"], fund_grant), origin)
-            mark_journal(kwargs["data"], origin)
-
         await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring,
-                                    keep_gifts=keep_gifts, books_currency=books_currency,
-                                    actor_id=kwargs.get("actor_id"),
+                                    keep_gifts=keep_gifts, actor_id=kwargs.get("actor_id"),
                                     entity_id=kwargs["entity_id"])
 
     # Enforce the line rules on every document and List write. Extract the post-change
