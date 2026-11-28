@@ -1304,6 +1304,10 @@ _SAME_VISUAL = {
     frozenset({"core.help#2", "core.help#3"}): "the help index holds the search box and the guide list",
     frozenset({"core.modules#1", "core.modules#2"}): "the modules page holds the installed list and its toggles",
     frozenset({"ai.usage-settings#3", "core.users#2"}): "the role matrix holds the assistant permission row",
+    frozenset({"manufacturing.demand-planning#1", "manufacturing.make-from-recipe#2"}):
+        "the demand planning board lists the open lines waiting to be made",
+    frozenset({"manufacturing.demand-planning#2", "manufacturing.make-from-recipe#3"}):
+        "the demand planning board with a line ticked, ready for the make action",
     frozenset({"accounting.bank-questions#1", "accounting.bank-questions#3", "accounting.bank-questions#4"}):
         "the questions page holds the cards, the Open, Answered and All tabs and its title",
     frozenset({"accounting.donors#1", "accounting.donors#4"}): "the donors page holds the list and the send panel",
