@@ -252,3 +252,17 @@ async def test_an_imported_line_repeating_the_books_currency_is_stored_as_a_book
     assert result["created"] == 1, result
     stored = (await session.get(Projection, (auth["company_id"], je))).state["entries"]
     assert not any(key.startswith("fx_") for e in stored for key in e), stored
+
+
+async def test_a_bank_reads_a_stored_line_naming_the_books_currency_as_a_books_currency_line():
+    """A line stored before the line rule may still name the books' own currency with its
+    amounts repeated; every bank reader takes it as the boundary does: a books-currency line."""
+    from celerp_accounting.routes import _bank_amounts, _carries_foreign_amount, _moves_on_bank
+
+    older = {"account": "1111", "debit": 10.0, "fx_debit": 10.0, "fx_currency": "usd", "fx_rate": 1.0}
+    assert _bank_amounts(older, "USD", "USD") == (10, 0)
+    assert _bank_amounts(older, "THB", "USD") is None
+    assert not _carries_foreign_amount(older, "USD")
+    assert _carries_foreign_amount(older, "THB")
+    back = {"account": "1111", "credit": 10.0}
+    assert _moves_on_bank([older, back], lambda line: None, "USD") == []

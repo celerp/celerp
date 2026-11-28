@@ -77,7 +77,7 @@ def _bank_rows(entity_id: str, state: dict, currencies: dict[str, list[str]], ba
         for code, on_bank in on_banks.items():
             read = {id(line): tuple(_bank_amounts(line, currency, base) for currency in currencies[code])
                     for line in on_bank}
-            for line in _moves_on_bank(on_bank, lambda e: None if all(a is None for a in read[id(e)]) else e):
+            for line in _moves_on_bank(on_bank, lambda e: None if all(a is None for a in read[id(e)]) else e, base):
                 lines.setdefault((row_id, code), (day, []))[1].append(read[id(line)])
     return {key: (day, tuple(sorted(amounts, key=repr))) for key, (day, amounts) in lines.items()}
 

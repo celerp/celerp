@@ -2895,12 +2895,13 @@ async def create_bank_account(
     return (await _bank_dicts(session, company_id, [bank]))[0]
 
 
-def _carries_foreign_amount(entry: dict) -> bool:
-    """Whether a journal line carries an amount in a currency other than the books'."""
-    return bool(entry.get("fx_currency") and (entry.get("fx_debit") or entry.get("fx_credit")))
+def _carries_foreign_amount(entry: dict, base: str) -> bool:
+    """Whether a journal line carries an amount in a currency other than the books'. A line
+    naming the books' own currency is a books-currency line, as the journal boundary reads it."""
+    return (entry.get("fx_currency") or base).upper() != base and bool(entry.get("fx_debit") or entry.get("fx_credit"))
 
 
-def _moves_on_bank(lines: list[dict], read) -> list[dict]:
+def _moves_on_bank(lines: list[dict], read, base: str) -> list[dict]:
     """Of one entry's *lines* on a bank's ledger account, those that move the bank. *read*
     gives a line's amounts in the bank's currency (None: the bank cannot read it). Lines the
     bank cannot read that are all in the books' currency and net to zero there between them
@@ -2909,7 +2910,7 @@ def _moves_on_bank(lines: list[dict], read) -> list[dict]:
     carrying an amount in a further currency moves money the bank cannot weigh, whatever its
     books' figures add up to."""
     unread = [line for line in lines if read(line) is None]
-    if (unread and not any(map(_carries_foreign_amount, unread))
+    if (unread and not any(_carries_foreign_amount(line, base) for line in unread)
             and sum((d - c for d, c in map(_line_amounts, unread)), Decimal(0)) == 0):
         return [line for line in lines if read(line) is not None]
     return lines
@@ -2920,14 +2921,14 @@ def _bank_lines(rows: list, bank: BankAccount, base: str) -> list[tuple[str, dic
     the bank (``_moves_on_bank``)."""
     return [(je_id, entry) for je_id, state, _ts in rows for entry in _moves_on_bank(
         [e for e in state.get("entries", []) if e.get("account") == bank.chart_account_code
-         and _line_amounts(e) is not None], lambda e, je_id=je_id: _bank_line_amounts(bank, base, je_id, e))]
+         and _line_amounts(e) is not None], lambda e, je_id=je_id: _bank_line_amounts(bank, base, je_id, e), base)]
 
 
 def _relabel_to(bank: BankAccount, base: str, lines: list[tuple[str, dict]]) -> str | None:
     """The currency the account can be corrected to: one labelled in another currency
     than the books', whose postings carry books-currency amounts only, reads none of
     them, and setting it to the books' currency makes every one readable."""
-    return base if bank.currency != base and not any(_carries_foreign_amount(e) for _, e in lines) else None
+    return base if bank.currency != base and not any(_carries_foreign_amount(e, base) for _, e in lines) else None
 
 
 def _mislabelled_as(bank: BankAccount, base: str, lines: list[tuple[str, dict]]) -> str | None:
@@ -2978,7 +2979,7 @@ async def set_bank_currency(session: AsyncSession, company_id: uuid.UUID, bank: 
     if lines or statuses:
         correction = target == _relabel_to(bank, base, lines)
         undo = (bank.currency == base and target == bank.relabelled_from
-                and not any(_carries_foreign_amount(e) for _, e in lines))
+                and not any(_carries_foreign_amount(e, base) for _, e in lines))
         if not (correction or undo):
             return t("acct.err_bank_currency_has_history", currency=bank.currency)
         if "completed" in statuses:
