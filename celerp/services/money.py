@@ -170,6 +170,13 @@ def checked_exchange_rate(v: _MoneyInput) -> Decimal:
     return stored
 
 
+def implied_rate(books: _MoneyInput, foreign: _MoneyInput) -> Decimal:
+    """The rate at which a nonzero *foreign* amount shows as *books* in the books' currency,
+    ready to store (``checked_exchange_rate``): what a line carrying both amounts and no
+    rate of its own means. ValueError when that rate is no usable rate."""
+    return checked_exchange_rate(abs(to_decimal(books)) / abs(to_decimal(foreign)))
+
+
 def books_currency(settings: dict) -> str:
     """The currency a company with *settings* keeps its books in."""
     return str(settings.get("currency") or "USD").upper()

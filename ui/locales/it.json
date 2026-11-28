@@ -197,6 +197,7 @@
   "acct.err_fx_rate_invalid": "{line}: il tasso di cambio non è valido. Inserisci un numero maggiore di zero, per esempio 35.5.",
   "acct.err_fx_no_amount": "{line} è in {currency} ma non ha un importo in {currency}. Inserisci l'importo in {currency} sul lato della riga, oppure cancella la valuta.",
   "acct.err_fx_no_books_amount": "{line} non ha un importo in {base}, ma il suo importo in {currency} a questo tasso è maggiore di zero in {base}. Inserisci l'importo in {base}.",
+  "acct.err_fx_books_disagree": "{line}: {books} {base} non corrisponde a {amount} {currency} al tasso {rate}, pari a {converted} {base}, una differenza di {gap} {base}. Correggi gli importi oppure lascia vuoto il tasso e Celerp lo ricava dai due importi.",
   "acct.err_je_two_lines": "Una registrazione richiede almeno due righe: un dare e un avere. Aggiungi un'altra riga e registra di nuovo.",
   "acct.err_je_negative": "Gli importi in dare e avere non possono essere negativi. Inserisci invece l'importo in positivo sull'altro lato.",
   "acct.err_je_bank_currency": "Il conto {account} è un conto bancario denominato in {currency}. Inserisci quella riga in {currency} con il relativo tasso di cambio, quindi contabilizza la registrazione.",

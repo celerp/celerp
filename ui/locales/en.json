@@ -197,6 +197,7 @@
   "acct.err_fx_rate_invalid": "{line}: the exchange rate isn't valid. Enter a number greater than zero, for example 35.5.",
   "acct.err_fx_no_amount": "{line} is in {currency} but has no amount in {currency}. Enter the {currency} amount on the line's side, or clear the currency.",
   "acct.err_fx_no_books_amount": "{line} has no amount in {base}, but its {currency} amount at this rate is more than zero in {base}. Enter the {base} amount.",
+  "acct.err_fx_books_disagree": "{line}: {books} {base} doesn't match {amount} {currency} at the rate {rate}, which comes to {converted} {base}, a gap of {gap} {base}. Correct the amounts, or leave the rate out and Celerp works it out from the two amounts.",
   "acct.err_je_two_lines": "A journal entry needs at least two lines: one debit and one credit. Add another line and post again.",
   "acct.err_je_negative": "Debit and credit amounts can't be negative. Enter the amount as a positive number on the other side instead.",
   "acct.err_je_bank_currency": "Account {account} is a bank account kept in {currency}. Enter that line in {currency} with its exchange rate, then post the entry.",

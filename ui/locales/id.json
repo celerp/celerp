@@ -197,6 +197,7 @@
   "acct.err_fx_rate_invalid": "{line}: kurs tidak valid. Masukkan angka lebih dari nol, misalnya 35.5.",
   "acct.err_fx_no_amount": "{line} dalam {currency} tetapi tidak punya jumlah dalam {currency}. Masukkan jumlah {currency} di sisi baris tersebut, atau hapus mata uangnya.",
   "acct.err_fx_no_books_amount": "{line} tidak punya jumlah dalam {base}, tetapi jumlah {currency}-nya dengan kurs ini lebih dari nol dalam {base}. Masukkan jumlah {base}.",
+  "acct.err_fx_books_disagree": "{line}: {books} {base} tidak cocok dengan {amount} {currency} pada kurs {rate}, yaitu {converted} {base}, selisih {gap} {base}. Perbaiki jumlahnya, atau kosongkan kurs dan Celerp akan menghitungnya dari kedua jumlah.",
   "acct.err_je_two_lines": "Jurnal membutuhkan minimal dua baris: satu debit dan satu kredit. Tambahkan baris lagi lalu posting ulang.",
   "acct.err_je_negative": "Jumlah debit dan kredit tidak boleh negatif. Masukkan jumlahnya sebagai angka positif di sisi sebaliknya.",
   "acct.err_je_bank_currency": "Akun {account} adalah rekening bank yang dicatat dalam {currency}. Masukkan baris tersebut dalam {currency} beserta kursnya, lalu bukukan jurnalnya.",

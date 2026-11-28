@@ -136,8 +136,8 @@ async def test_an_imported_line_in_a_currency_celerp_does_not_recognise_is_refus
 
 async def test_an_imported_line_in_a_withdrawn_currency_is_stored(client, auth):
     result = await _import_lines(client, auth, [
-        {"account": "6100", "debit": 10.0, "fx_debit": 19.5, "fx_currency": "BGN", "fx_rate": 0.51},
-        {"account": "1111", "credit": 10.0}])
+        {"account": "6100", "debit": 9.95, "fx_debit": 19.5, "fx_currency": "BGN", "fx_rate": 0.51},
+        {"account": "1111", "credit": 9.95}])
     assert result["created"] == 1 and not result["errors"], result
 
 
@@ -280,3 +280,78 @@ async def test_an_imported_line_rate_is_stored_as_every_door_stores_a_rate(clien
     assert result["created"] == 1, result
     stored = (await session.get(Projection, (auth["company_id"], je))).state["entries"]
     assert stored[0]["fx_rate"] == float(round_exchange_rate(rate)) != rate, stored
+
+
+async def _post_at_boundary(session, auth, lines):
+    """Post *lines* through the journal boundary itself, as any writer could; the stored lines or the refusal."""
+    from fastapi import HTTPException
+
+    from celerp.events.engine import emit_event
+
+    await _keep_books_in(session, auth["company_id"], "USD")
+    je = f"je:{uuid.uuid4()}"
+    try:
+        await emit_event(
+            session, company_id=uuid.UUID(str(auth["company_id"])), entity_id=je,
+            entity_type="journal_entry", event_type="acc.journal_entry.created",
+            data={"status": "posted", "ts": "2026-03-01", "entries": [dict(e) for e in lines]},
+            actor_id=None, location_id=None, source="test", idempotency_key=uuid.uuid4().hex, metadata_={})
+        await session.commit()
+    except HTTPException as exc:
+        await session.rollback()
+        return exc.detail
+    return (await session.get(Projection, (auth["company_id"], je))).state["entries"]
+
+
+def _line(books, fx, rate, currency="EUR"):
+    return {"account": "6100", "debit": books, "fx_debit": fx, "fx_currency": currency,
+            **({"fx_rate": rate} if rate is not None else {})}
+
+
+# Shapes our own writers post: a give-back piece, split_to_base parts, a transfer split over three
+# funds, a fee converted at the paid rate, and our own bundle round trip on large VND amounts.
+_OWN_WRITER_SHAPES = {
+    "give-back piece": [_line(0.05, 0.05, 1.123456)],
+    "split parts": [_line(b, 0.05, 1.123456) for b in (0.06, 0.05, 0.06)],
+    "three-fund transfer": [_line(1111.11, f, 33.3333) for f in (33.34, 33.33, 33.33)],
+    "fee at the paid rate": [_line(12.34, 0.35, 35.5)],
+    "bundle VND 1e11": [_line(4000000.05, 1e11, 0.000040000001, "VND")],
+    "bundle VND 3.14e12": [_line(123456789.37, 3.14e12, 0.000039317449, "VND")],
+}
+
+
+@pytest.mark.parametrize("name", list(_OWN_WRITER_SHAPES))
+async def test_a_foreign_line_our_own_writers_post_is_accepted(session, auth, name):
+    lines = _OWN_WRITER_SHAPES[name]
+    total = round(sum(ln["debit"] for ln in lines), 2)
+    stored = await _post_at_boundary(session, auth, [*lines, {"account": "1111", "credit": total}])
+    assert isinstance(stored, list), stored
+    assert [(e["debit"], e["fx_rate"]) for e in stored[:-1]] == [(ln["debit"], ln["fx_rate"]) for ln in lines], stored
+
+
+@pytest.mark.parametrize("books, fx, rate, gap", [
+    (0.01, 100.0, 1.1, "109.99"),
+    (1103540.0, 1000000.0, 1.1035, "40.00"),
+])
+async def test_a_foreign_line_whose_books_amount_is_not_its_amount_at_its_rate_is_refused(session, auth, books, fx, rate, gap):
+    detail = await _post_at_boundary(session, auth, [_line(books, fx, rate), {"account": "1111", "credit": books}])
+    assert isinstance(detail, dict) and detail["message_key"] == "acct.err_fx_books_disagree", detail
+    assert f"a gap of {gap} USD" in detail["message"] and "leave the rate out" in detail["message"], detail
+
+
+async def test_a_foreign_line_with_books_and_no_rate_stores_the_rate_its_amounts_imply(session, auth):
+    stored = await _post_at_boundary(session, auth, [_line(1103540.0, 1000000.0, None), {"account": "1111", "credit": 1103540.0}])
+    assert isinstance(stored, list) and stored[0]["fx_rate"] == 1.10354 and stored[0]["debit"] == 1103540.0, stored
+
+
+# The bound for JPY 2 at rate R in USD books is 0.01 + R x 1 + 2 x 1e-12 / 2. At R = 0.003333333333 it is
+# 0.013333333334, and books 0.02 are exactly that far from 2 x R: accepted. One books unit more, or one
+# unit less in the rate's last place, is past it.
+@pytest.mark.parametrize("books, rate, accepted", [
+    (0.02, 0.003333333333, True),
+    (0.03, 0.003333333333, False),
+    (0.02, 0.003333333332, False),
+])
+async def test_the_bound_is_exact_at_its_edge(session, auth, books, rate, accepted):
+    got = await _post_at_boundary(session, auth, [_line(books, 2.0, rate, "JPY"), {"account": "1111", "credit": books}])
+    assert isinstance(got, list) is accepted, got

@@ -197,6 +197,7 @@
   "acct.err_fx_rate_invalid": "{line}: Der Wechselkurs ist ungültig. Geben Sie eine Zahl größer als null ein, zum Beispiel 35.5.",
   "acct.err_fx_no_amount": "{line} ist in {currency}, hat aber keinen Betrag in {currency}. Geben Sie den Betrag in {currency} auf der Seite der Zeile ein oder entfernen Sie die Währung.",
   "acct.err_fx_no_books_amount": "{line} hat keinen Betrag in {base}, aber ihr Betrag in {currency} ist zu diesem Kurs größer als null in {base}. Geben Sie den Betrag in {base} ein.",
+  "acct.err_fx_books_disagree": "{line}: {books} {base} passt nicht zu {amount} {currency} zum Kurs {rate}, das ergibt {converted} {base}, eine Differenz von {gap} {base}. Korrigieren Sie die Beträge oder lassen Sie den Kurs weg, dann ermittelt Celerp ihn aus den beiden Beträgen.",
   "acct.err_je_two_lines": "Eine Buchung braucht mindestens zwei Zeilen: eine Soll- und eine Habenzeile. Fügen Sie eine weitere Zeile hinzu und buchen Sie erneut.",
   "acct.err_je_negative": "Soll- und Habenbeträge dürfen nicht negativ sein. Tragen Sie den Betrag stattdessen positiv auf der anderen Seite ein.",
   "acct.err_je_bank_currency": "Das Konto {account} ist ein Bankkonto, das in {currency} geführt wird. Geben Sie die betreffende Buchungszeile in {currency} mit dem zugehörigen Wechselkurs ein und buchen Sie anschließend den Buchungssatz.",

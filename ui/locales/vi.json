@@ -197,6 +197,7 @@
   "acct.err_fx_rate_invalid": "{line}: tỷ giá không hợp lệ. Hãy nhập một số lớn hơn 0, ví dụ 35.5.",
   "acct.err_fx_no_amount": "{line} dùng {currency} nhưng không có số tiền bằng {currency}. Hãy nhập số tiền {currency} ở cùng bên của dòng, hoặc xóa đơn vị tiền tệ.",
   "acct.err_fx_no_books_amount": "{line} không có số tiền bằng {base}, nhưng số tiền {currency} của dòng theo tỷ giá này lớn hơn 0 khi tính bằng {base}. Hãy nhập số tiền {base}.",
+  "acct.err_fx_books_disagree": "{line}: {books} {base} không khớp với {amount} {currency} theo tỷ giá {rate}, tức là {converted} {base}, chênh lệch {gap} {base}. Hãy sửa số tiền, hoặc để trống tỷ giá và Celerp sẽ tính từ hai số tiền.",
   "acct.err_je_two_lines": "Bút toán cần ít nhất hai dòng: một dòng Nợ và một dòng Có. Hãy thêm một dòng rồi ghi sổ lại.",
   "acct.err_je_negative": "Số tiền Nợ và Có không được âm. Hãy nhập số dương ở bên còn lại.",
   "acct.err_je_bank_currency": "Tài khoản {account} là tài khoản ngân hàng được ghi nhận bằng {currency}. Hãy nhập dòng bút toán đó bằng {currency} cùng tỷ giá hối đoái, rồi ghi sổ bút toán.",

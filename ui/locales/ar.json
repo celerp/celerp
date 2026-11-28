@@ -197,6 +197,7 @@
   "acct.err_fx_rate_invalid": "{line}: سعر الصرف غير صالح. أدخل رقمًا أكبر من صفر، مثل 35.5.",
   "acct.err_fx_no_amount": "{line} بعملة {currency} لكن ليس فيه مبلغ بعملة {currency}. أدخل المبلغ بعملة {currency} على جانب السطر، أو امسح العملة.",
   "acct.err_fx_no_books_amount": "{line} ليس فيه مبلغ بعملة {base}، لكن مبلغه بعملة {currency} بهذا السعر أكبر من صفر بعملة {base}. أدخل المبلغ بعملة {base}.",
+  "acct.err_fx_books_disagree": "{line}: المبلغ {books} {base} لا يطابق {amount} {currency} بسعر {rate}، أي {converted} {base}، بفارق {gap} {base}. صحّح المبالغ، أو اترك السعر فارغًا وسيحسبه Celerp من المبلغين.",
   "acct.err_je_two_lines": "يحتاج القيد إلى سطرين على الأقل: مدين ودائن. أضف سطرًا آخر ورحّل مرة أخرى.",
   "acct.err_je_negative": "لا يمكن أن تكون مبالغ المدين والدائن سالبة. أدخل المبلغ موجبًا في الجانب الآخر بدلًا من ذلك.",
   "acct.err_je_bank_currency": "الحساب {account} حساب بنكي تُحفظ سجلاته بعملة {currency}. أدخل هذا السطر بعملة {currency} مع سعر الصرف الخاص به، ثم رحّل القيد.",

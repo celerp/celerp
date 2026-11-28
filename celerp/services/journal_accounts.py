@@ -355,11 +355,15 @@ def _judge_line_amounts(entry: dict, amounts: dict, side: str, base: str, where:
     A line in the books' currency *base* (no currency named, or that one) may repeat its
     amounts as foreign ones: equal, they say nothing more and are dropped, so it is stored as
     every books-currency line is; any other figure would restate the line and is refused. A
-    line in another currency carries a positive amount in it on the line's side; its books'
-    side may be empty only when that amount at its rate shows as zero in the books' currency.
-    A books' amount given beside it stays as given: an imported entry keeps the figure its
-    own books posted."""
-    from celerp.services.money import round_money, to_decimal
+    line in another currency carries a positive amount in it on the line's side, judged as it
+    is kept (each amount at its currency's precision, the rate as ``_judge_line_rate`` kept it).
+    Its books' side may be empty only when that amount at its rate shows as zero in the books'
+    currency. A books' amount B beside a foreign amount F means one figure: with no rate, the
+    rate stored is the one they imply; with a rate R, B must be F x R up to what rounding each
+    figure allows (one unit of the books' currency, R units of the foreign one, and half the
+    last place of the rate on F), else the line is refused."""
+    from celerp.services.money import (EXCHANGE_RATE_DP, currency_dp, implied_rate, money_text,
+                                       round_money, to_decimal, to_stored_float)
 
     currency = (entry.get("fx_currency") or "").upper()
     if currency in ("", base):
@@ -372,18 +376,35 @@ def _judge_line_amounts(entry: dict, amounts: dict, side: str, base: str, where:
         for field in ("fx_currency", "fx_rate", "fx_debit", "fx_credit"):
             entry.pop(field, None)
         return
-    amount = amounts.get(("fx_", side), 0)
+    amount = round_money(amounts.get(("fx_", side), 0), currency)
     if not amount:
         raise HTTPException(status_code=422, detail=catalog_refusal(
             "acct.err_fx_no_amount", line=where, currency=currency))
-    if amounts.get(("", side)):
-        return
+    books = round_money(amounts.get(("", side), 0), base)
     if entry.get("fx_rate") is None:
+        if not books:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_fx_no_rate", line=where, currency=currency))
+        try:
+            entry["fx_rate"] = to_stored_float(implied_rate(books, amount))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_fx_rate_invalid", line=where)) from exc
+        return
+    rate = to_decimal(entry["fx_rate"])
+    converted = amount * rate
+    if not books:
+        if round_money(converted, base):
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_fx_no_books_amount", line=where, currency=currency, base=base))
+        return
+    gap = abs(books - converted)
+    if gap > (Decimal(10) ** -currency_dp(base) + rate * Decimal(10) ** -currency_dp(currency)
+              + amount * Decimal(10) ** -EXCHANGE_RATE_DP / 2):
         raise HTTPException(status_code=422, detail=catalog_refusal(
-            "acct.err_fx_no_rate", line=where, currency=currency))
-    if round_money(amount * to_decimal(entry["fx_rate"]), base):
-        raise HTTPException(status_code=422, detail=catalog_refusal(
-            "acct.err_fx_no_books_amount", line=where, currency=currency, base=base))
+            "acct.err_fx_books_disagree", line=where, books=money_text(books, base), base=base,
+            amount=money_text(amount, currency), currency=currency, rate=rate,
+            converted=money_text(converted, base), gap=money_text(gap, base)))
 
 
 async def _stamp_named_gifts(session: AsyncSession, company_id, settings: dict, entries: list[dict]) -> None:
