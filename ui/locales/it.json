@@ -103,7 +103,6 @@
   "acct.currency_base_hint": "Valuta della società",
   "acct.err_amounts_numeric": "Inserisci gli importi in dare e avere come numeri, per esempio 120.50.",
   "acct.err_currency_unknown": "{currency} non è una valuta riconosciuta da Celerp. Usa un codice valuta di tre lettere come USD, EUR o THB.",
-  "acct.err_rate_positive": "Inserisci un tasso di cambio maggiore di zero.",
   "acct.error_loading_data": "Celerp non è riuscito a caricare questi dati. Seleziona Riprova; se il problema persiste, riavvia Celerp.",
   "acct.filter_clear": "Cancella filtri",
   "acct.filtered_totals": "Filtrato",

@@ -1021,49 +1021,6 @@ async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
     return books_currency(company.settings or {} if company else {})
 
 
-def _validated_line_fx(base: str, line: "ManualJELine", index: int) -> tuple[str, Decimal] | None:
-    """(currency, rate) for a line typed in a foreign currency, or None for a
-    line already in base currency.
-
-    Every message names the line at fault: an accountant who mistypes a rate on
-    the fourth line of an entry should be told which line was refused, not handed
-    a rejection they have to search for.
-    """
-    where = t("acct.field_line", n=index + 1)
-    currency = (line.currency or "").upper()
-    if not currency and line.rate is None:
-        return None
-    if not currency:
-        raise HTTPException(
-            status_code=422,
-            detail=t("acct.err_fx_rate_no_currency", line=where),
-        )
-    if currency not in CURRENCY_CODES:
-        raise HTTPException(
-            status_code=422,
-            detail=t("acct.err_currency_unknown", currency=line.currency),
-        )
-    if currency == base:
-        # The company's own currency converts at 1 by definition. An explicit 1 is
-        # accepted and dropped so the stored line looks like every other base-
-        # currency line; anything else would silently restate the amount.
-        if line.rate is not None and to_decimal(line.rate) != 1:
-            raise HTTPException(
-                status_code=422,
-                detail=t("acct.err_fx_base_rate", line=where, currency=currency),
-            )
-        return None
-    if line.rate is None:
-        raise HTTPException(
-            status_code=422,
-            detail=t("acct.err_fx_no_rate", line=where, currency=currency),
-        )
-    try:
-        return currency, checked_exchange_rate(line.rate)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=t("acct.err_fx_rate_invalid", line=where)) from exc
-
-
 def _id_chunks(ids: list[str], size: int = 10_000):
     """Slices for IN() clauses: asyncpg caps a statement at 32767 bind
     arguments, and a mature company's id lists can exceed that."""
@@ -1864,28 +1821,23 @@ async def create_manual_journal_entry(
 
     await require_destinations(session, company_id, {line.account for line in payload.entries}, foreign_amounts=True)
 
+    # A line typed in a currency carries its amounts as typed and what they convert to in the
+    # books' currency at the rate typed (to_base, as an importer's books amount is; the books'
+    # own currency is as typed, another one with no rate converts to nothing yet). The journal boundary
+    # judges what each line means and the balance, and stores each amount at its currency's
+    # precision, exactly as it does for an imported entry.
     base = await _base_currency(session, company_id)
-    # Every posting is stored in base currency. A line typed in a foreign currency keeps
-    # its amount as typed and carries what that amount, at its own currency's precision,
-    # converts to: the figure the author sees while typing. The journal boundary judges
-    # each line and the balance on the amounts as given and stores them at each
-    # currency's precision, exactly as it does for an imported entry.
     entries: list[dict] = []
-    for index, line in enumerate(payload.entries):
-        line_fx = _validated_line_fx(base, line, index)
-        if line_fx:
-            currency, rate = line_fx
-            stored = {
-                "account": line.account,
-                "debit": to_base(round_money(line.debit, currency), rate, base),
-                "credit": to_base(round_money(line.credit, currency), rate, base),
-                "fx_debit": line.debit or None,
-                "fx_credit": line.credit or None,
-                "fx_currency": currency,
-                "fx_rate": to_stored_float(rate),
-            }
-        else:
-            stored = {"account": line.account, "debit": line.debit, "credit": line.credit}
+    for line in payload.entries:
+        stored = {"account": line.account, "debit": line.debit, "credit": line.credit}
+        currency = (line.currency or "").upper() or None
+        if currency or line.rate is not None:
+            if currency != base:
+                converted = line.rate is not None
+                stored.update(debit=to_base(line.debit, line.rate, base) if converted else None,
+                              credit=to_base(line.credit, line.rate, base) if converted else None)
+            stored.update(fx_debit=line.debit or None, fx_credit=line.credit or None,
+                          fx_currency=currency, fx_rate=line.rate)
         # Only lines that name a party carry the key, so an entry with no party
         # stores exactly what it stored before.
         if line.contact:
@@ -3418,9 +3370,11 @@ def _rule_to_dict(r: ReconciliationRule) -> dict:
 def _bank_amounts(line: dict, bank_currency: str, base: str) -> tuple[Decimal, Decimal] | None:
     """(debit, credit) of a bank account's journal line in the account's own currency:
     the line's foreign amounts when it was written in that currency, its base amounts
-    when the account is kept in base currency. None otherwise: the line was posted in
-    another currency with no rate to the account's, so no figure is guessed."""
-    if (line.get("fx_currency") or "").upper() == bank_currency and (line.get("fx_debit") or line.get("fx_credit")):
+    when the account is kept in base currency. A line naming the books' own currency is a
+    books-currency line, as the journal boundary reads it. None otherwise: the line was
+    posted in another currency with no rate to the account's, so no figure is guessed."""
+    if bank_currency != base and (line.get("fx_currency") or "").upper() == bank_currency and (
+            line.get("fx_debit") or line.get("fx_credit")):
         return to_decimal(line.get("fx_debit") or 0), to_decimal(line.get("fx_credit") or 0)
     return _line_amounts(line) if bank_currency == base else None
 

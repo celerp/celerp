@@ -103,7 +103,6 @@
   "acct.currency_base_hint": "Mata uang perusahaan",
   "acct.err_amounts_numeric": "Masukkan jumlah debit dan kredit sebagai angka, misalnya 120.50.",
   "acct.err_currency_unknown": "{currency} bukan mata uang yang dikenali Celerp. Gunakan kode mata uang tiga huruf seperti USD, EUR, atau THB.",
-  "acct.err_rate_positive": "Masukkan kurs yang lebih dari nol.",
   "acct.error_loading_data": "Celerp tidak bisa memuat data ini. Pilih Coba lagi; jika terus terjadi, mulai ulang Celerp.",
   "acct.filter_clear": "Hapus filter",
   "acct.filtered_totals": "Difilter",

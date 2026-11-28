@@ -103,7 +103,6 @@
   "acct.currency_base_hint": "自社通貨",
   "acct.err_amounts_numeric": "借方と貸方の金額は数値で入力してください(例: 120.50)。",
   "acct.err_currency_unknown": "{currency} は Celerp が認識できる通貨ではありません。USD、EUR、THB のような 3 文字の通貨コードを使ってください。",
-  "acct.err_rate_positive": "0 より大きい為替レートを入力してください。",
   "acct.error_loading_data": "このデータを読み込めませんでした。「再試行」を選んでください。繰り返し起きる場合は、Celerp を再起動してください。",
   "acct.filter_clear": "フィルターをクリア",
   "acct.filtered_totals": "絞り込み済み",

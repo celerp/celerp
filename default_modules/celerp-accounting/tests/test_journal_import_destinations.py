@@ -200,3 +200,55 @@ async def test_a_reversal_copies_both_currencies_onto_the_other_side(client, ses
     stored = (await session.get(Projection, (auth["company_id"], reversal))).state["entries"]
     assert [(e["account"], e.get("credit"), e.get("fx_credit"), e.get("debit"), e.get("fx_debit")) for e in stored] == [
         ("6100", 10.05, 1500.0, None, None), ("6200", None, None, 10.05, None)], stored
+
+
+# A line in the books' own currency (USD here) and a line in another one mean the same
+# whichever door they come through: (typed line, the line an import carries, refusal key).
+_LINE_REFUSALS = [
+    ({"debit": 10.0, "currency": "USD", "rate": 1.5},
+     {"debit": 10.0, "fx_debit": 10.0, "fx_currency": "USD", "fx_rate": 1.5}, "acct.err_fx_base_rate"),
+    ({"debit": 10.0, "currency": "EUR"}, {"fx_debit": 10.0, "fx_currency": "EUR"}, "acct.err_fx_no_rate"),
+    ({"debit": 10.0, "rate": 2.0}, {"debit": 20.0, "fx_debit": 10.0, "fx_rate": 2.0}, "acct.err_fx_rate_no_currency"),
+    ({"debit": 10.0, "currency": "EUR", "rate": 0.0},
+     {"debit": 0.0, "fx_debit": 10.0, "fx_currency": "EUR", "fx_rate": 0.0}, "acct.err_fx_rate_invalid"),
+    ({"debit": 10.0, "currency": "QQQ", "rate": 2.0},
+     {"debit": 20.0, "fx_debit": 10.0, "fx_currency": "QQQ", "fx_rate": 2.0}, "error.invalid_currency"),
+]
+
+
+@pytest.mark.parametrize("typed, imported, key", _LINE_REFUSALS)
+async def test_a_typed_line_and_an_imported_one_are_refused_with_the_same_message(
+        client, session, auth, typed, imported, key):
+    await _keep_books_in(session, auth["company_id"], "USD")
+    r = await client.post("/accounting/journal-entries", headers=auth["headers"], json={
+        "ts": "2026-03-01", "memo": "typed", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": "6100", **typed}, {"account": "1111", "credit": 10.0}]})
+    assert r.status_code == 422, r.text
+    result = await _import_lines(client, auth, [{"account": "6100", **imported}, {"account": "1111", "credit": 10.0}])
+    assert result["created"] == 0, result
+    refused = result["errors"][0]["params"]["refusal"]
+    assert r.json()["detail"]["message_key"] == refused["message_key"] == key, (r.text, result)
+    assert r.json()["detail"]["message"] == refused["message"], (r.text, result)
+
+
+@pytest.mark.parametrize("line, key", [
+    ({"debit": 10.0, "fx_debit": 9.0, "fx_currency": "USD", "fx_rate": 1.0}, "acct.err_fx_base_rate"),
+    ({"debit": 10.0, "fx_credit": 10.0, "fx_currency": "USD"}, "acct.err_je_both_sides"),
+    ({"debit": 10.0, "fx_currency": "EUR", "fx_rate": 1.1}, "acct.err_fx_no_amount"),
+    ({"fx_debit": 10.0, "fx_currency": "EUR", "fx_rate": 1.1}, "acct.err_fx_no_books_amount"),
+])
+async def test_an_imported_line_whose_currency_fields_say_something_else_is_refused(client, session, auth, line, key):
+    await _keep_books_in(session, auth["company_id"], "USD")
+    result = await _import_lines(client, auth, [{"account": "6100", **line}, {"account": "1111", "credit": 10.0}])
+    assert result["created"] == 0 and result["errors"][0]["params"]["refusal"]["message_key"] == key, result
+
+
+async def test_an_imported_line_repeating_the_books_currency_is_stored_as_a_books_currency_line(client, session, auth):
+    await _keep_books_in(session, auth["company_id"], "USD")
+    je = f"je:{uuid.uuid4()}"
+    result = await _import_lines(client, auth, [
+        {"account": "6100", "debit": 10.0, "fx_debit": 10.0, "fx_currency": "USD", "fx_rate": 1.0},
+        {"account": "1111", "credit": 10.0}], entity_id=je)
+    assert result["created"] == 1, result
+    stored = (await session.get(Projection, (auth["company_id"], je))).state["entries"]
+    assert not any(key.startswith("fx_") for e in stored for key in e), stored

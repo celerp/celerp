@@ -103,7 +103,6 @@
   "acct.currency_base_hint": "عملة الشركة",
   "acct.err_amounts_numeric": "أدخل مبالغ المدين والدائن أرقامًا، مثل 120.50.",
   "acct.err_currency_unknown": "{currency} ليست عملة يعرفها Celerp. استخدم رمز عملة من ثلاثة أحرف مثل USD أو EUR أو THB.",
-  "acct.err_rate_positive": "أدخل سعر صرف أكبر من صفر.",
   "acct.error_loading_data": "تعذّر على Celerp تحميل هذه البيانات. اختر إعادة المحاولة؛ وإذا تكرر ذلك فأعد تشغيل Celerp.",
   "acct.filter_clear": "مسح عوامل التصفية",
   "acct.filtered_totals": "مُصفّى",

@@ -103,7 +103,6 @@
   "acct.currency_base_hint": "Company currency",
   "acct.err_amounts_numeric": "Enter debit and credit amounts as numbers, for example 120.50.",
   "acct.err_currency_unknown": "{currency} isn't a currency Celerp recognizes. Use a three-letter currency code such as USD, EUR or THB.",
-  "acct.err_rate_positive": "Enter an exchange rate greater than zero.",
   "acct.error_loading_data": "Celerp couldn't load this data. Select Try again; if it keeps happening, restart Celerp.",
   "acct.filter_clear": "Clear filters",
   "acct.filtered_totals": "Filtered",

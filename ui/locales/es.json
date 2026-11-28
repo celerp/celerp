@@ -103,7 +103,6 @@
   "acct.currency_base_hint": "Moneda de la empresa",
   "acct.err_amounts_numeric": "Escriba los importes de débito y crédito como números, por ejemplo 120.50.",
   "acct.err_currency_unknown": "{currency} no es una moneda que Celerp reconozca. Use un código de moneda de tres letras como USD, EUR o THB.",
-  "acct.err_rate_positive": "Escriba un tipo de cambio mayor que cero.",
   "acct.error_loading_data": "Celerp no pudo cargar estos datos. Seleccione Reintentar; si sigue pasando, reinicie Celerp.",
   "acct.filter_clear": "Borrar filtros",
   "acct.filtered_totals": "Filtrado",

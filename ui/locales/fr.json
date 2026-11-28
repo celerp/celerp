@@ -103,7 +103,6 @@
   "acct.currency_base_hint": "Devise de la société",
   "acct.err_amounts_numeric": "Saisissez les montants au débit et au crédit sous forme de nombres, par exemple 120.50.",
   "acct.err_currency_unknown": "{currency} n'est pas une devise reconnue par Celerp. Utilisez un code de devise à trois lettres comme USD, EUR ou THB.",
-  "acct.err_rate_positive": "Saisissez un taux de change supérieur à zéro.",
   "acct.error_loading_data": "Celerp n'a pas pu charger ces données. Sélectionnez « Réessayer » ; si le problème persiste, redémarrez Celerp.",
   "acct.filter_clear": "Effacer les filtres",
   "acct.filtered_totals": "Filtré",

@@ -27,7 +27,6 @@ from ui.components.funds import chosen_fund, fund_options, funds_in_use, journal
 from celerp.services.peer_lines import UNRESTRICTED
 from ui.components.operation_key import FIELD as OPERATION_KEY_FIELD, key_reused
 from ui.components.shell import base_shell, no_access_banner, no_access_text, page_header, page_title, toast_header
-from celerp.services.currencies import CURRENCY_CODES
 from ui.components.report_kit import (
     action_bar, csv_response as _csv_response, date_params as _date_params,
     href as _href, journal_totals as _journal_totals,
@@ -317,20 +316,12 @@ def setup_routes(app):
                  **({"fund_id": chosen_fund(l["fund"])} if chosen_fund(l["fund"]) else {})}
                 for l in lines
             ]
-            if any(not (_math.isfinite(e["debit"]) and _math.isfinite(e["credit"])) for e in entries):
+            # What each line's currency and rate mean is the journal boundary's to judge, as
+            # for every other door; only a figure that is not a number stops here.
+            if not all(_math.isfinite(e[key]) for e in entries for key in ("debit", "credit", "rate") if key in e):
                 error = t("acct.err_amounts_numeric")
         except ValueError:
             error = t("acct.err_amounts_numeric")
-
-        if error is None:
-            for e in entries:
-                if e.get("currency") and e["currency"] not in CURRENCY_CODES:
-                    error = t("acct.err_currency_unknown", currency=e["currency"])
-                    break
-                r = e.get("rate")
-                if r is not None and (not _math.isfinite(r) or r <= 0):
-                    error = t("acct.err_rate_positive")
-                    break
 
         if error is None:
             try:

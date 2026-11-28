@@ -103,7 +103,6 @@
   "acct.currency_base_hint": "สกุลเงินของบริษัท",
   "acct.err_amounts_numeric": "ใส่จำนวนเดบิตและเครดิตเป็นตัวเลข เช่น 120.50",
   "acct.err_currency_unknown": "Celerp ไม่รู้จักสกุลเงิน {currency} ใช้รหัสสกุลเงินสามตัวอักษร เช่น USD, EUR หรือ THB",
-  "acct.err_rate_positive": "ใส่อัตราแลกเปลี่ยนที่มากกว่าศูนย์",
   "acct.error_loading_data": "Celerp โหลดข้อมูลนี้ไม่ได้ เลือก ลองอีกครั้ง หากยังเกิดขึ้นอีก ให้รีสตาร์ต Celerp",
   "acct.filter_clear": "ล้างตัวกรอง",
   "acct.filtered_totals": "กรองแล้ว",

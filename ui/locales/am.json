@@ -103,7 +103,6 @@
   "acct.currency_base_hint": "የኩባንያው ምንዛሬ",
   "acct.err_amounts_numeric": "የዴቢት እና የክሬዲት መጠኖችን እንደ ቁጥር ያስገቡ፣ ለምሳሌ 120.50።",
   "acct.err_currency_unknown": "{currency} Celerp የሚያውቀው ገንዘብ አይደለም። እንደ USD፣ EUR ወይም THB ያለ ባለሦስት ፊደል የገንዘብ ኮድ ይጠቀሙ።",
-  "acct.err_rate_positive": "ከዜሮ የሚበልጥ የምንዛሪ ተመን ያስገቡ።",
   "acct.error_loading_data": "Celerp ይህን ውሂብ መጫን አልቻለም። እንደገና ሞክር ይምረጡ፤ ችግሩ ከቀጠለ Celerpን እንደገና ያስጀምሩ።",
   "acct.filter_clear": "ማጣሪያዎችን አጽዳ",
   "acct.filtered_totals": "በማጣሪያ የተገኘ ድምር",

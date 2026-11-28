@@ -103,7 +103,6 @@
   "acct.currency_base_hint": "Tiền tệ của công ty",
   "acct.err_amounts_numeric": "Hãy nhập số tiền Nợ và Có dưới dạng số, ví dụ 120.50.",
   "acct.err_currency_unknown": "{currency} không phải tiền tệ Celerp nhận ra. Hãy dùng mã tiền tệ ba chữ cái như USD, EUR hoặc THB.",
-  "acct.err_rate_positive": "Hãy nhập tỷ giá lớn hơn 0.",
   "acct.error_loading_data": "Celerp không tải được dữ liệu này. Hãy chọn Thử lại; nếu vẫn xảy ra, hãy khởi động lại Celerp.",
   "acct.filter_clear": "Xóa bộ lọc",
   "acct.filtered_totals": "Đã lọc",
