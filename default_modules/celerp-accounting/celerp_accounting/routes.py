@@ -1852,8 +1852,6 @@ async def create_manual_journal_entry(
     lock is enforced by the event engine on the entry's date."""
     await hold_fund_ledger(session, company_id)  # before any row lock: a line may name a fund
     _require_iso_date(payload.ts or "", t("acct.field_entry_date"))
-    if len(payload.entries) < 2:
-        raise HTTPException(status_code=422, detail=t("acct.err_je_two_lines"))
     if not payload.idempotency_token:
         raise HTTPException(status_code=422, detail=t("acct.err_idempotency_token_required"))
     # The token is bound to the whole request: sent again unchanged it answers with the
@@ -1867,34 +1865,27 @@ async def create_manual_journal_entry(
     await require_destinations(session, company_id, {line.account for line in payload.entries}, foreign_amounts=True)
 
     base = await _base_currency(session, company_id)
-    # Every posting is stored in base currency (the journal boundary checks the entry
-    # balances there, on the same converted figures the author sees while typing). A
-    # line in a foreign currency is validated and rounded at that currency's precision
-    # first, then converted; a line without one is already base currency.
+    # Every posting is stored in base currency. A line typed in a foreign currency keeps
+    # its amount as typed and carries what that amount, at its own currency's precision,
+    # converts to: the figure the author sees while typing. The journal boundary judges
+    # each line and the balance on the amounts as given and stores them at each
+    # currency's precision, exactly as it does for an imported entry.
     entries: list[dict] = []
     for index, line in enumerate(payload.entries):
         line_fx = _validated_line_fx(base, line, index)
-        amount_currency = line_fx[0] if line_fx else base
-        d = round_money(line.debit, amount_currency)
-        c = round_money(line.credit, amount_currency)
-        if d == 0 and c == 0:
-            raise HTTPException(status_code=422, detail=t("acct.err_je_no_amount"))
         if line_fx:
             currency, rate = line_fx
-            bd = round_money(d * rate, base)
-            bc = round_money(c * rate, base)
             stored = {
                 "account": line.account,
-                "debit": to_stored_float(bd),
-                "credit": to_stored_float(bc),
-                "fx_debit": to_stored_float(d) if d else None,
-                "fx_credit": to_stored_float(c) if c else None,
+                "debit": to_base(round_money(line.debit, currency), rate, base),
+                "credit": to_base(round_money(line.credit, currency), rate, base),
+                "fx_debit": line.debit or None,
+                "fx_credit": line.credit or None,
                 "fx_currency": currency,
                 "fx_rate": to_stored_float(rate),
             }
         else:
-            bd, bc = d, c
-            stored = {"account": line.account, "debit": to_stored_float(bd), "credit": to_stored_float(bc)}
+            stored = {"account": line.account, "debit": line.debit, "credit": line.credit}
         # Only lines that name a party carry the key, so an entry with no party
         # stores exactly what it stored before.
         if line.contact:
