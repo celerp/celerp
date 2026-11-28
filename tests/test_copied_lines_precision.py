@@ -23,6 +23,22 @@ async def _state(session, co, je_id: str) -> dict:
     return row.state
 
 
+async def _stored_before(session, co, je_id: str, line, extra=(), **fields) -> list[dict]:
+    """The record of ``je_id`` as an older release stored it: each line through ``line``, then
+    the lines in ``extra``, and ``fields`` on the entry, written to the record a reversal reads.
+    Returns the stored lines."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from celerp.models.projections import Projection
+
+    row = await session.get(Projection, (uuid.UUID(co["company_id"]), je_id))
+    older = [line(e) for e in row.state["entries"]] + list(extra)
+    row.state = {**row.state, **fields, "entries": older}
+    flag_modified(row, "state")
+    await session.commit()
+    return older
+
+
 async def _books_in(session, co, currency: str) -> None:
     from celerp.services.company_lock import locked_company
 
@@ -140,9 +156,6 @@ async def test_a_movement_posted_before_the_line_rule_reverses_as_it_was_posted(
     line in the books' own currency dropped its rate, still reverses: the reversal copies what
     was posted, line for line, and is not judged again as a person's new entry."""
     from celerp_accounting.funds import post_fund_movement
-    from sqlalchemy.orm.attributes import flag_modified
-
-    from celerp.models.projections import Projection
 
     co = await B.company(client)
     h = co["h"]
@@ -156,15 +169,88 @@ async def test_a_movement_posted_before_the_line_rule_reverses_as_it_was_posted(
         session, uuid.UUID(co["company_id"]), ts=date.fromisoformat(DAY), reason="Set aside",
         actor=uuid.UUID(co["user_id"]), request_key=uuid.uuid4().hex, kind="fund_transfer", entries=lines))["je_id"]
     await session.commit()
-    row = await session.get(Projection, (uuid.UUID(co["company_id"]), moved))
-    older = [e if e["account"] == code else e | ({"fx_currency": "EUR", "fx_rate": 1.1} if e["debit"] else
-                                                  {"fx_currency": "USD", "fx_rate": 2.0, "fx_credit": e["credit"] / 2})
-             for e in row.state["entries"]]
-    row.state = {**row.state, "entries": older}
-    flag_modified(row, "state")
-    await session.commit()
+    older = await _stored_before(session, co, moved, lambda e: e if e["account"] == code else e | (
+        {"fx_currency": "EUR", "fx_rate": 1.1} if e["debit"] else
+        {"fx_currency": "USD", "fx_rate": 2.0, "fx_credit": e["credit"] / 2}))
     reversal = await _state(session, co, await _reverse(client, h, moved))
     keys = ("fx_currency", "fx_rate", "fx_debit", "fx_credit")
     got = [(e["account"], *(e.get(k) for k in keys)) for e in reversal["entries"]]
     want = [(e["account"], e.get("fx_currency"), e.get("fx_rate"), e.get("fx_credit"), e.get("fx_debit")) for e in older]
     assert sorted(got, key=repr) == sorted(want, key=repr)
+
+
+_SWAP = {"debit": "credit", "credit": "debit", "fx_debit": "fx_credit", "fx_credit": "fx_debit"}
+
+
+def _amounts(e: dict) -> tuple:
+    return (e["account"], e.get("fund_id"), e.get("fx_currency"), *(float(e.get(k) or 0) for k in _SWAP))
+
+
+def _undone(older: list[dict], reversal: list[dict]) -> None:
+    """The reversal holds every older line's amounts, books and foreign, on the other side, so
+    the two together leave nothing on any account in either representation."""
+    swapped = [_amounts({**e, **{_SWAP[k]: e.get(k) for k in _SWAP}}) for e in older]
+    assert sorted(map(_amounts, reversal), key=repr) == sorted(swapped, key=repr)
+
+
+# An older release kept a foreign amount finer than its currency, or a line that moves nothing.
+_OLDER = {"fine": (100.004, False), "zero": (100.0, True)}
+
+
+@pytest.mark.parametrize("older", sorted(_OLDER))
+async def test_a_fund_reversal_of_an_older_movement_undoes_exactly_what_it_posted(client, session, older):
+    fx, zero = _OLDER[older]
+    co = await B.company(client)
+    h = co["h"]
+    code = (await B.bank(client, h, currency="EUR", name="Euro Bank"))["chart_account_code"]
+    ids = await _fund_bank(client, h, code)
+    await _given(client, h, code, 500.0, ids["U1"], currency="EUR", rate=1.1)
+    moved = await _transfer(client, h, ids, code, 110.0)
+    stored = await _stored_before(session, co, moved, lambda e: e if e["account"] != code else e | {
+        "fx_currency": "EUR", "fx_rate": 1.1, ("fx_debit" if e["debit"] else "fx_credit"): fx},
+        [{"account": code, "debit": 0.0, "credit": 0.0, "fund_id": ids["U1"]}] if zero else [])
+    _undone(stored, (await _state(session, co, await _reverse(client, h, moved)))["entries"])
+
+
+@pytest.mark.parametrize("older", sorted(_OLDER))
+async def test_an_accountant_reversal_of_an_older_entry_undoes_exactly_what_it_posted(client, session, older):
+    fx, zero = _OLDER[older]
+    co = await B.company(client)
+    h = co["h"]
+    code = (await B.bank(client, h, currency="EUR", name="Euro Bank"))["chart_account_code"]
+    r = await client.post("/accounting/journal-entries", headers=h, json={
+        "ts": DAY, "memo": "Accrual", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": code, "debit": 100.0, "currency": "EUR", "rate": 1.1},
+                    {"account": "4100", "credit": 110.0}]})
+    assert r.status_code == 200, r.text
+    je_id = r.json()["je_id"]
+    stored = await _stored_before(
+        session, co, je_id, lambda e: e | {"fx_debit": fx} if e["account"] == code else e,
+        [{"account": "6100", "debit": 0.0, "credit": 0.0}] if zero else [],
+        peer_origin={"journal": je_id, "firm": "Firm", "firm_company": str(uuid.uuid4())})
+    r = await client.post(f"/accounting/journal-entries/{je_id}/reverse", headers=h)
+    assert r.status_code == 200, r.text
+    _undone(stored, (await _state(session, co, r.json()["je_id"]))["entries"])
+
+
+async def test_an_automatic_copy_keeps_a_posted_line_that_moves_nothing(client, session):
+    """A line an older release posted with no amount is copied as posted, so the copy's line
+    numbers are its source's."""
+    from celerp.services.auto_je import _emit_auto_posted_je
+    from celerp.services.peer_lines import copy_posted_lines
+
+    co = await B.company(client)
+    h = co["h"]
+    r = await client.post("/accounting/journal-entries", headers=h, json={
+        "ts": DAY, "memo": "Sale", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": "6200", "debit": 10.55, "credit": 0.0}, {"account": "4100", "debit": 0.0, "credit": 10.55}]})
+    assert r.status_code == 200, r.text
+    source = r.json()["je_id"]
+    stored = await _stored_before(session, co, source, lambda e: e, [{"account": "2120", "debit": 0.0, "credit": 0.0}])
+    je_id = f"je:{uuid.uuid4()}"
+    await _emit_auto_posted_je(
+        session, company_id=uuid.UUID(co["company_id"]), user_id=None, je_id=je_id, record_id=None,
+        idem_create=uuid.uuid4().hex, idem_posted=uuid.uuid4().hex, memo="copy", ts=DAY,
+        entries=copy_posted_lines(source, stored, reverse=True), metadata_={})
+    await session.commit()
+    _undone(stored, (await _state(session, co, je_id))["entries"])

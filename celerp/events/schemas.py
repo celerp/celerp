@@ -1294,7 +1294,7 @@ class AccJournalEntryFx(BaseModel):
 class AccJournalEntryCreated(BaseModel):
     """Shape of a journal entry creation. Validates structure only; accounting
     policy (balanced totals, real accounts) is enforced by the journal boundary
-    (journal_accounts.prepare_journal_entry)."""
+    (journal_accounts.normalize_journal_entry and prepare_journal_entry)."""
 
     memo: str | None = None
     ts: str | None = None

@@ -276,7 +276,7 @@ async def _emit_auto_posted_je(
     posted line is written as posted, so its line numbers and amounts are its source's."""
     currency = currency or await company_currency(session, company_id)
     # A copy of a posted line (``posted_from``) is left as posted: the boundary keeps an amount
-    # its source stored and rounds any other (journal_accounts.prepare_journal_entry).
+    # its source stored and rounds any other (journal_accounts.normalize_journal_entry).
     def kept(e: dict, side: str) -> float:
         amount = e.get(side) or 0
         return to_stored_float(to_decimal(amount) if e.get("posted_from") else round_money(amount, currency))
