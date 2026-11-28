@@ -106,14 +106,23 @@ def _serve_api():
     _reset_pg_database()
 
     from celerp.main import app
+    from celerp.services import update
+
+    async def _no_index_call(*args, **kwargs):
+        return None
+
     config = uvicorn.Config(app, host="127.0.0.1", port=_API_PORT, log_level="error")
     server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    _wait_for_port(_API_PORT)
-    yield _API_BASE
-    server.should_exit = True
-    thread.join(timeout=3)
+    # The update loop asks the package index a minute after startup; its answer would
+    # light the bell part way through a run, so pages would differ with run length.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(update, "auto_update_tick", _no_index_call)
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        _wait_for_port(_API_PORT)
+        yield _API_BASE
+        server.should_exit = True
+        thread.join(timeout=3)
     _reset_pg_database()
 
 

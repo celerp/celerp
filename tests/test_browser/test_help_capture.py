@@ -76,6 +76,7 @@ _CAPTURE_PASSWORD = "ExampleTrading1!"
 # capture runs: the app's "today" (business_time) is frozen to it, as the agreement tests do.
 _CAPTURE_DAY = date(2026, 6, 15)
 _CAPTURE_NOON = datetime(2026, 6, 15, 12, tzinfo=timezone.utc)
+_CAPTURE_ZONE = "Asia/Bangkok"
 _PAGES = [p for p in shipped_pages() if isinstance(p.data, dict)]
 # The app's own components for a screen with nothing to show: an empty list or report, the
 # Remote Access and Connect sales pages and banners, the AI page shown without an account, and
@@ -194,14 +195,16 @@ _FREE_EMAIL_QUOTA = 50
 # A page an action opens in a new tab (a printable list) opens in the capture's own tab instead,
 # so the step pictures it.
 # The app's sans font is pinned to the one every committed picture was taken with, Liberation
-# Sans; its mono list ends in the generic monospace, DejaVu Sans Mono. CI installs both, so a
-# machine with other fonts renders the same picture and the freshness check holds.
+# Sans, then FreeSans for the symbols Liberation lacks (an info mark, a menu's dots), which
+# would otherwise fall back to whatever font the machine has; its mono list ends in the generic
+# monospace, DejaVu Sans Mono. CI installs all three, so a machine with other fonts renders
+# the same picture and the freshness check holds.
 _CAPTURE_PAGE_SCRIPT = """Object.defineProperty(window, "Chart", {configurable: true,
   set(chart) { chart.defaults.animation = false;
                Object.defineProperty(window, "Chart", {value: chart, writable: true, configurable: true}); }});
 window.open = url => { location.assign(url); return null; };
 document.addEventListener("DOMContentLoaded", () => { const pin = document.createElement("style");
-  pin.textContent = ":root { --font: 'Liberation Sans', sans-serif; }";
+  pin.textContent = ":root { --font: 'Liberation Sans', 'FreeSans', sans-serif; }";
   document.head.append(pin); });"""
 # A step on the assistant's screen is taken with the AI subscription; the two that picture what a
 # company without it sees are listed as None.
@@ -1214,6 +1217,8 @@ def test_help_capture_every_page(page, browser_context, api_server, api, demo_co
                else suite_owner if page_id in _INSTALLATION_PAGES else demo_company)
     set_session_cookies(browser_context, company["token"])
     page.add_init_script(_CAPTURE_PAGE_SCRIPT)
+    # The browser's time zone is pinned too: the company setup suggests a country from it.
+    page.context.new_cdp_session(page).send("Emulation.setTimezoneOverride", {"timezoneId": _CAPTURE_ZONE})
     records = _records(company["id"])
     with _store_connected(company["id"]) if company is demo_company else contextlib.nullcontext():
         wrong = _capture_steps(page, help_page, page_id, suite_owner)
