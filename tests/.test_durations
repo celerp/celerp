@@ -32924,5 +32924,14 @@
     "tests/test_journal_line_meaning_oracle.py::test_a_foreign_line_is_accepted_exactly_when_its_books_amount_is_its_amount_at_its_rate[JPY]": 4.0482428499963135,
     "tests/test_journal_line_meaning_oracle.py::test_a_foreign_line_is_accepted_exactly_when_its_books_amount_is_its_amount_at_its_rate[KWD]": 4.1480706030270085,
     "tests/test_journal_line_meaning_oracle.py::test_a_foreign_line_is_accepted_exactly_when_its_books_amount_is_its_amount_at_its_rate[THB]": 4.106553159072064,
-    "tests/test_journal_line_meaning_oracle.py::test_a_foreign_line_is_accepted_exactly_when_its_books_amount_is_its_amount_at_its_rate[USD]": 4.17935291188769
+    "tests/test_journal_line_meaning_oracle.py::test_a_foreign_line_is_accepted_exactly_when_its_books_amount_is_its_amount_at_its_rate[USD]": 4.17935291188769,
+    "tests/test_copied_lines_precision.py::test_a_fund_reversal_of_an_older_movement_undoes_exactly_what_it_posted[fine]": 1.16075013007503,
+    "tests/test_copied_lines_precision.py::test_a_fund_reversal_of_an_older_movement_undoes_exactly_what_it_posted[zero]": 0.29417368792928755,
+    "tests/test_copied_lines_precision.py::test_an_accountant_reversal_of_an_older_entry_undoes_exactly_what_it_posted[fine]": 0.1819953500526026,
+    "tests/test_copied_lines_precision.py::test_an_accountant_reversal_of_an_older_entry_undoes_exactly_what_it_posted[zero]": 0.19096289097797126,
+    "tests/test_copied_lines_precision.py::test_an_automatic_copy_keeps_a_posted_line_that_moves_nothing": 0.1411610950017348,
+    "tests/test_recon_bank_amount_guard.py::test_an_entry_the_rounding_moves_on_a_bank_is_judged_as_it_will_be_stored[EUR-False]": 0.1321960559580475,
+    "tests/test_recon_bank_amount_guard.py::test_an_entry_the_rounding_moves_on_a_bank_is_judged_as_it_will_be_stored[EUR-True]": 0.18989461194723845,
+    "tests/test_recon_bank_amount_guard.py::test_an_entry_the_rounding_moves_on_a_bank_is_judged_as_it_will_be_stored[USD-True]": 0.19169459282420576,
+    "tests/test_recon_bank_amount_guard.py::test_the_bank_guard_is_handed_the_lines_as_they_will_be_stored": 0.12832488806452602
 }
