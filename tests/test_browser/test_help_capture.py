@@ -195,12 +195,14 @@ _FREE_EMAIL_QUOTA = 50
 # A page an action opens in a new tab (a printable list) opens in the capture's own tab instead,
 # so the step pictures it.
 # The app's fonts are pinned to the ones every committed picture was taken with: Liberation
-# Sans, then FreeSans for the symbols Liberation lacks (an info mark, a menu's dots), then Noto
-# Color Emoji for the emoji; DejaVu Sans Mono for figures. CI installs all four. A glyph none of
-# them has would fall back to whatever font the machine has, so a step whose screen draws any
-# text in another font is refused (_unpinned_fonts) and a local picture renders as CI's does.
-_FONT_PIN = (":root { --font: 'Liberation Sans', 'FreeSans', 'Noto Color Emoji', sans-serif;"
-             " --font-mono: 'DejaVu Sans Mono', monospace; }")
+# Sans, then FreeSans for the symbols Liberation lacks (an info mark, a menu's dots), then DejaVu
+# Sans for the symbols neither has, then Noto Color Emoji for the emoji; Liberation Mono, then
+# DejaVu Sans Mono, for figures. CI installs all five, so any glyph one of them has is drawn by
+# the list itself, the same on every machine. A glyph none of them has would fall back to
+# whatever font the machine has, so a step whose screen draws any text in another font is
+# refused (_unpinned_fonts) and a local picture renders as CI's does.
+_FONT_PIN = (":root { --font: 'Liberation Sans', 'FreeSans', 'DejaVu Sans', 'Noto Color Emoji', sans-serif;"
+             " --font-mono: 'Liberation Mono', 'DejaVu Sans Mono', monospace; }")
 _PINNED_FONTS = frozenset(re.findall(r"'([^']+)'", _FONT_PIN))
 _CAPTURE_PAGE_SCRIPT = """Object.defineProperty(window, "Chart", {configurable: true,
   set(chart) { chart.defaults.animation = false;

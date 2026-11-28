@@ -1136,7 +1136,7 @@ def _secondary_kpi_grid(cfg: dict, values: dict, role: str = "owner", settings: 
 # Charts
 # ---------------------------------------------------------------------------
 
-_CHARTJS_CDN = "https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"
+_CHARTJS = "/static/vendor/chart.js/chart.umd.min.js"
 
 
 _MONTH_ABBR = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -1314,7 +1314,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
         H2(t("page.charts"), cls="section-title"),
         revenue_card,
         Div(*chart_cards, cls="charts-grid"),
-        Script(src=_CHARTJS_CDN),
+        Script(src=_CHARTJS),
         Script(chart_init, data_cfg=chart_cfg),
         cls="charts-section",
     )

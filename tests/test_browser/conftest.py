@@ -115,8 +115,18 @@ def _serve_api():
     server = uvicorn.Server(config)
     # The update loop asks the package index a minute after startup; its answer would
     # light the bell part way through a run, so pages would differ with run length.
-    with pytest.MonkeyPatch.context() as mp:
+    # Every other outbound call of the API and UI servers (both run in this process) goes
+    # through a proxy port that is bound and never listens, so it is refused at once: the
+    # pages read the relay's and the internet's absence, the same on every machine.
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    proxy = f"http://127.0.0.1:{closed.getsockname()[1]}"
+    with closed, pytest.MonkeyPatch.context() as mp:
         mp.setattr(update, "auto_update_tick", _no_index_call)
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            mp.setenv(name, proxy)
+        for name in ("NO_PROXY", "no_proxy"):
+            mp.setenv(name, "localhost,127.0.0.1")
         thread = threading.Thread(target=server.run, daemon=True)
         thread.start()
         _wait_for_port(_API_PORT)
