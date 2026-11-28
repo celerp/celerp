@@ -266,3 +266,17 @@ async def test_a_bank_reads_a_stored_line_naming_the_books_currency_as_a_books_c
     assert _carries_foreign_amount(older, "THB")
     back = {"account": "1111", "credit": 10.0}
     assert _moves_on_bank([older, back], lambda line: None, "USD") == []
+
+
+async def test_an_imported_line_rate_is_stored_as_every_door_stores_a_rate(client, session, auth):
+    """A rate given with more places than a rate keeps is stored rounded, as a typed one is."""
+    from celerp.services.money import round_exchange_rate
+
+    await _keep_books_in(session, auth["company_id"], "USD")
+    je, rate = f"je:{uuid.uuid4()}", 1.123456789012345
+    result = await _import_lines(client, auth, [
+        {"account": "6100", "debit": 11.23, "fx_debit": 10.0, "fx_currency": "EUR", "fx_rate": rate},
+        {"account": "1111", "credit": 11.23}], entity_id=je)
+    assert result["created"] == 1, result
+    stored = (await session.get(Projection, (auth["company_id"], je))).state["entries"]
+    assert stored[0]["fx_rate"] == float(round_exchange_rate(rate)) != rate, stored
