@@ -14,15 +14,17 @@ one this file has not reviewed, so a new reader is checked before it ships.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import pathlib
 import random
 import uuid
 
 import pytest
 
-from celerp.services.money import currency_dp, round_money, to_stored_float
+from celerp.services.auto_je import company_currency
+from celerp.services.money import currency_dp, round_money, to_base, to_stored_float
 from test_recon_guard import _company, _created_data, _refused
-from test_reconciliation_history import admin, bank, complete, match, start
+from test_reconciliation_history import admin, bank, complete, completed, match, start
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE = ROOT / "default_modules" / "celerp-accounting" / "celerp_accounting"
@@ -76,16 +78,75 @@ async def test_balance_shown_is_the_reconciliation_figure_and_completed_lines_ar
     await complete(client, h, sid)
 
     cid = await _company(session, b)
+    base = await company_currency(session, cid)
     step = 10 ** -currency_dp(currency)
     for je in je_ids:
+        # A valid change of the entry: each line's foreign amount one unit more on its side,
+        # its books amount that amount at its rate, so only the guard can refuse it.
         data = await _created_data(session, cid, je)
-        for key in ("fx_debit", "fx_credit"):
-            changed = {**data, "entries": [
-                {**line, key: to_stored_float(round_money((line.get(key) or 0) + step, currency))}
-                if line["account"] == b["chart_account_code"] else line
-                for line in data["entries"]]}
-            await _refused(session, cid, je, "acc.journal_entry.created", changed)
+        changed = {**data, "entries": [
+            {**line, **{prefix + side: (to_base(fx, line["fx_rate"], base) if prefix == "" else fx)
+                        for side in ("debit", "credit") if line.get("fx_" + side)
+                        for fx in [to_stored_float(round_money(line["fx_" + side] + step, currency))]
+                        for prefix in ("fx_", "")}}
+            for line in data["entries"]]}
+        await _refused(session, cid, je, "acc.journal_entry.created", changed)
 
+# The owner's table: balanced as given and as kept, neutral on the bank as given, but each
+# 5.0025 is kept as 5.00 and the 10.005 as 10.01, so the bank lines as stored move 0.01.
+def _rounding_table(code: str) -> list[dict]:
+    return [{"account": code, "debit": 10.005}, {"account": code, "credit": 5.0025}, {"account": code, "credit": 5.0025},
+            {"account": "6100", "credit": 10.005}, {"account": "6100", "debit": 5.0025}, {"account": "6100", "debit": 5.0025}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("currency,period", [("EUR", False), ("EUR", True), ("USD", True)])
+async def test_an_entry_the_rounding_moves_on_a_bank_is_judged_as_it_will_be_stored(client, session, currency, period):
+    """The bank guard reads the lines as they will be stored: an entry that leaves the bank as
+    given but moves it once each line is kept to the cent is refused, or stored leaving it."""
+    from celerp.models.projections import Projection
+
+    _, h = await admin(client)
+    b = await bank(client, h, currency=currency, opening=0, rate=1.1 if currency != "USD" else None)
+    if period:
+        await completed(client, h, b, "2026-09-30", balance=0)
+    r = await client.post("/accounting/journal-entries", headers=h, json={
+        "ts": "2026-09-10", "memo": "Rounding", "idempotency_token": uuid.uuid4().hex,
+        "entries": _rounding_table(b["chart_account_code"])})
+    if r.status_code != 200:
+        assert r.status_code in (409, 422), r.text
+        return
+    row = await session.get(Projection, (await _company(session, b), r.json()["je_id"]), populate_existing=True)
+    moved = sum(round_money(ln.get("debit") or 0, "USD") - round_money(ln.get("credit") or 0, "USD")
+                for ln in row.state["entries"] if ln["account"] == b["chart_account_code"])
+    assert moved == 0, row.state["entries"]
+
+
+@pytest.mark.asyncio
+async def test_the_bank_guard_is_handed_the_lines_as_they_will_be_stored(client, session, monkeypatch):
+    from test_recon_guard import _emit
+
+    from celerp.services.journal_accounts import chart_access
+
+    _, h = await admin(client)
+    b = await bank(client, h, opening=0)
+    cid = await _company(session, b)
+    seen: list[dict] = []
+    access = chart_access()
+    judge = access.guard_journal_change
+
+    async def guard(session, company_id, entity_id, event_type, data):
+        seen.append({k: [dict(ln) for ln in v] if k == "entries" else v for k, v in data.items()})
+        await judge(session, company_id, entity_id, event_type, data)
+
+    monkeypatch.setattr("celerp.services.journal_accounts.chart_access",
+                        lambda: dataclasses.replace(access, guard_journal_change=guard))
+    await _emit(session, cid, f"je:{uuid.uuid4()}", "acc.journal_entry.created",
+                {"ts": "2026-09-10", "memo": "Rounding", "status": "posted",
+                 "entries": [{"debit": 0, "credit": 0, **ln} for ln in _rounding_table(b["chart_account_code"])]})
+    [data] = seen
+    assert sorted((ln["debit"], ln["credit"]) for ln in data["entries"]) == sorted(
+        [(10.01, 0.0), (0.0, 5.0), (0.0, 5.0), (0.0, 10.01), (5.0, 0.0), (5.0, 0.0)]), data["entries"]
 
 # Every function in the accounting module that reads a journal line's amounts, and why
 # it reads them as it does. Reading through ``_bank_amounts`` (or ``_bank_line_amounts``,
@@ -96,7 +157,6 @@ BOOKS_CURRENCY_READERS = {
     ("routes.py", "_build_balances"): "trial balance and balance sheet, books currency, every account",
     ("routes.py", "_journal_payload"): "the journal, books currency with each line's own currency beside it",
     ("routes.py", "journal_by_doc"): "one document's entries from the journal payload, totalled in books currency",
-    ("funds.py", "post_fund_movement"): "a reversal swapping the books-currency sides of the movement it undoes",
     ("funds.py", "journal_funds"): "a journal's lines in the Change fund panel, books currency as the journal shows them",
     ("routes.py", "account_ledger"): "one account's ledger in books currency, with foreign amounts beside them",
     ("routes.py", "trial_balance"): "books currency, every account",
@@ -104,10 +164,9 @@ BOOKS_CURRENCY_READERS = {
     ("routes.py", "opening_tie_out"): "opening balances against the books, books currency",
     ("routes.py", "statement_of_account"): "a contact's statement, books currency",
     ("routes.py", "_carries_foreign_amount"): "whether a line carries a foreign amount, not how much",
-    ("routes.py", "_bank_lines"): "which lines sit on the account, not how much they move",
     ("routes.py", "set_bank_currency"): "whether the account has lines and whether any carries a foreign amount",
+    ("routes.py", "refuse_mislabelled_bank"): "whether the account's entries disagree with its label, as set_bank_currency reads them",
     ("routes.py", "transfer_entries"): "a writer reading back the source line it just built",
-    ("statement_lines.py", "reclassify"): "a Suspense reversal swapping the sides of each line it moves, amounts as posted",
     ("routes.py", "cash_flow"): "the cash flow statement, books currency over every cash account",
     ("routes.py", "matches"): "journal search matching a typed figure against books-currency amounts",
     ("routes.py", "_line_party"): "which side of a note application a control line is on, not how much",

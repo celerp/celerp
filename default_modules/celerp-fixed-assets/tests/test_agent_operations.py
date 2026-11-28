@@ -27,6 +27,8 @@ async def test_the_assistant_reviews_an_asset_then_adds_it_once_the_user_confirm
 
     monkeypatch.setattr(ai_tools, "loaded_modules", lambda: [_MANIFEST])
     await fa.ok(await fa.patch("/settings", {"first_managed_period": "2026-01-01"}))
+    # The assistant proposes no change to books with no currency set (ai.service.books_currency_refusal).
+    await fa.ok(await fa.client.patch("/companies/me/books", headers=fa.h, json={"currency": "USD"}))
     asset = {"kind": "contributed", "class_id": (await fa.classes())["Vehicles"]["id"], "name": "Owner's car",
              "available_date": "2026-01-15", "cost": "12000", "credit_account": "3100"}
     change = _agent_change("/assets")[0]["name"]

@@ -18,6 +18,7 @@ from ui.i18n import t, get_lang, available_langs, lang_label, may_take, refusal_
 from ui.components.doc_money import DOC_MONEY_JS
 from ui.components.encode import js_value, safe_url
 from ui.components.icons import icon
+from ui.components.branding import favicon_links, logo
 from ui.components.preview_confirm import preview_confirm_script
 from ui.components.table import searchable_select
 
@@ -361,8 +362,9 @@ document.addEventListener('htmx:afterRequest', function(e) {
   if (!hdr) return;
   try {
     var obj = JSON.parse(hdr);
-    // A toast sent with a redirect is shown on the page the redirect opens, not on this one.
-    if (obj.celerpToast && e.detail.xhr.getResponseHeader('HX-Redirect')) _celerpKeepToast(obj.celerpToast);
+    // A toast sent with a redirect or a page refresh is shown on the page that opens, not on this one.
+    var leaves = e.detail.xhr.getResponseHeader('HX-Redirect') || e.detail.xhr.getResponseHeader('HX-Refresh');
+    if (obj.celerpToast && leaves) _celerpKeepToast(obj.celerpToast);
     else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist, obj.celerpToast.action);
     if (obj.celerpRestoreCell) {
       // A refused change made in an always-open control shows the saved value again
@@ -968,12 +970,12 @@ function quietError(e) {
   return !!(el && el.closest && el.closest('[data-quiet-error]'));
 }
 
-/* A short plain-text or JSON {detail} reply already says what went wrong;
-   anything else (an HTML page, a long body) gets the general message. */
-function serverErrorText(xhr) {
-  if (!xhr) return '';
-  var type = xhr.getResponseHeader('Content-Type') || '';
-  var body = xhr.responseText || '';
+/* A short plain-text or JSON {detail} reply (its content type and body, read from htmx or
+   a fetch) already says what went wrong; anything else (an HTML page, a long body) gets
+   the general message. */
+function serverErrorText(type, body) {
+  type = type || '';
+  body = body || '';
   var text = '';
   if (type.indexOf('text/plain') === 0) {
     text = body;
@@ -986,7 +988,9 @@ function serverErrorText(xhr) {
 
 document.addEventListener('htmx:responseError', function(e) {
   if (quietError(e)) return;
-  showGlobalUiError(serverErrorText(e.detail && e.detail.xhr) || window.__shellI18n.requestFailed);
+  var xhr = e.detail && e.detail.xhr;
+  showGlobalUiError((xhr && serverErrorText(xhr.getResponseHeader('Content-Type'), xhr.responseText))
+                    || window.__shellI18n.requestFailed);
 });
 
 document.addEventListener('htmx:sendError', function(e) {
@@ -2208,7 +2212,7 @@ _STICKY_HEADER_JS = """
   window.addEventListener('beforeprint', function(){ printing = true; unpinAll(); });
   window.addEventListener('afterprint', function(){ printing = false; onScroll(); });
 
-  mo = new MutationObserver(onFull);
+  mo = new MutationObserver(function(records){ if(!celerpScrollCueOnly(records)) onFull(); });
   // attributes:true catches a column-resize style write on a th; the controller's own writes
   // never re-fire it because pauseObserver disconnects the observer for the duration of each pass.
   function observe(){ if(mo && document.body) mo.observe(document.body, {childList:true, subtree:true, attributes:true}); }
@@ -2247,6 +2251,15 @@ _STICKY_HEADER_JS = """
   }
   document.addEventListener('DOMContentLoaded', watch);
   document.addEventListener('htmx:afterSwap', watch);
+  // True when a batch of DOM changes is only this cue moving or toggling its shades (the box's
+  // style and class, written by update above), which changes no column: observers that
+  // re-measure a table skip it, or every scroll re-measures.
+  window.celerpScrollCueOnly = function(records){
+    return records.every(function(r){
+      return r.type === 'attributes' && (r.attributeName === 'style' || r.attributeName === 'class')
+        && !!r.target.dataset && !!r.target.dataset.scrollCue;
+    });
+  };
 })();
 """
 
@@ -2390,15 +2403,6 @@ def client_scripts(lang: str = "en", request=None) -> list:
     ]
 
 
-def _favicon_links() -> tuple[FT, ...]:
-    """The Celerp shield icon set, made from the same master as the desktop app icon."""
-    return (
-        Link(rel="icon", type="image/x-icon", href="/static/favicon.ico"),
-        Link(rel="icon", type="image/png", sizes="32x32", href="/static/favicon-32x32.png"),
-        Link(rel="apple-touch-icon", sizes="180x180", href="/static/apple-touch-icon.png"),
-    )
-
-
 def _redirect_notice(request, lang: str) -> list:
     """Why the caller was sent here, on whichever page answers the redirect: the
     dashboard, or the page standing in for it where the company turned it off
@@ -2459,7 +2463,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Meta(charset="utf-8"),
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
         Title(title),
-        *_favicon_links(),
+        *favicon_links(),
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         *client_scripts(lang, request),
         Script(ESC_BLURS_FIELD),
@@ -2517,7 +2521,7 @@ def _minimal_sidebar() -> FT:
     permission-dependent nav is ever computed or shown."""
     return Nav(
         Div(
-            A(Img(src="/static/logo.png", alt="Celerp", cls="sidebar-logo"), href="/dashboard"),
+            A(logo("sidebar-logo"), href="/dashboard"),
             cls="sidebar-logo-wrap",
         ),
         cls="sidebar",
@@ -3174,7 +3178,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         )
     return Nav(
         Div(
-            A(Img(src="/static/logo.png", alt="Celerp", cls="sidebar-logo"), href="/dashboard"),
+            A(logo("sidebar-logo"), href="/dashboard"),
             cls="sidebar-logo-wrap",
         ),
         *sections,
@@ -3196,7 +3200,7 @@ def auth_shell(*content, title: str = "Celerp") -> FT:
             Meta(charset="utf-8"),
             Meta(name="viewport", content="width=device-width, initial-scale=1"),
             Title(title),
-            *_favicon_links(),
+            *favicon_links(),
             Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
             Script(ESC_BLURS_FIELD),
         ),

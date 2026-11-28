@@ -97,6 +97,22 @@ def test_to_decimal_decimal_passthrough():
 def test_to_decimal_zero_float():
     assert to_decimal(0.0) == Decimal(0)
 
+def test_to_decimal_empty_string_returns_zero():
+    # A blank stored amount reads as nothing, as None does.
+    assert to_decimal("") == Decimal(0)
+
+def test_to_decimal_zero_decimal_keeps_its_places():
+    d = Decimal("0.00")
+    assert to_decimal(d) is d
+
+def test_money_text_keeps_currency_precision():
+    from celerp.services.money import money_text
+
+    assert money_text(Decimal("100.125"), "KWD") == "100.125"
+    assert money_text("1000003", "JPY") == "1000003"
+    assert money_text(Decimal("100.005"), "USD") == "100.01"
+    assert money_text(None, "USD") == money_text("", "USD") == "0.00"
+
 def test_to_decimal_negative():
     assert to_decimal(-5.5) == Decimal("-5.5")
 

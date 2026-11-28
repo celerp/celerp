@@ -20,10 +20,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from celerp.services.money import to_decimal
 from celerp_fixed_assets import setup, sources
 from celerp_fixed_assets.fixaccount import accounts_at
 from celerp_fixed_assets.operations import MODULE, asset_movements
-from celerp_fixed_assets.projections import _dec
 from celerp_fixed_assets.recon import _class_at
 from celerp_fixed_assets.store import _emit, _entities
 
@@ -59,8 +59,8 @@ def _shares(items: list[tuple[int, Decimal, str | None]]):
         placed.clear()
         for index, amount, fund in items:
             line = out[index]
-            side = "debit" if _dec(line.get("debit")) else "credit"
-            left = _dec(line.get(side))
+            side = "debit" if to_decimal(line.get("debit")) else "credit"
+            left = to_decimal(line.get(side))
             if left == amount:
                 out[index] = _on(line, fund)
                 placed.append(index)
@@ -160,8 +160,8 @@ async def dependents(session, company_id, user_id, doc_id: str, relabel) -> None
             expense = asset.get("depreciation_account") or accounts_at(
                 classes[_class_at(asset, day)], day)["depreciation_account"]
             debit = next(i for i, e in enumerate(entries)
-                         if e.get("account") == expense and _fund(e) == old and _dec(e.get("debit")))
-            amount = _dec(c.get("amount"))
+                         if e.get("account") == expense and _fund(e) == old and to_decimal(e.get("debit")))
+            amount = to_decimal(c.get("amount"))
             shares.setdefault(je_id, []).extend([(m["id"], n, index, amount, old, new),
                                                  ("", -1, debit, amount, old, new)])
 

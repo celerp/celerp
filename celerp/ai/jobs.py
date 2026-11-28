@@ -1428,7 +1428,7 @@ async def _finish_question(job_id: uuid.UUID, result, refusal, runner_id: str) -
                     tools_called = [*result.tools_called, failure_record(result.error_code)]
                 else:
                     tools_called = [*result.tools_called, *(asdict(p) for p in result.pending_actions),
-                                    *answer_links(result.help_pages, result.downloads)]
+                                    *answer_links(result.help_pages, result.downloads, cut=result.cut)]
                 msg = await add_message(session, job.conversation_id, "assistant", result.error or result.answer,
                                         model_used=result.model_used, tools_called=tools_called)
             job.results = {"message_id": str(msg.id)}
@@ -1439,7 +1439,7 @@ async def _finish_question(job_id: uuid.UUID, result, refusal, runner_id: str) -
             else:
                 job.results = {"answer": result.answer, "model_used": result.model_used,
                                "tools_called": result.tools_called, "help_pages": result.help_pages,
-                               "downloads": result.downloads,
+                               "downloads": result.downloads, "cut": result.cut,
                                "error": result.error, "error_code": result.error_code}
         failed = refusal is not None or bool(result.error) or (job.question_id is not None and asked is None)
         job.status = "failed" if failed else "completed"

@@ -6,31 +6,31 @@
   "routes": ["/inventory", "/inventory/{entity_id}", "/inventory/{entity_id}/history", "/inventory/{entity_id}/channel/{platform}"],
   "permission": "view_inventory",
   "order": 1,
-  "checked": "b69128bc80892873ed8dabddc90038814d15703db5f94c0612e68195b7277b15",
+  "checked": "ed6d874e3617bd98925a6fcbf05e55d8ec880902beead043502246f170769a67",
   "steps": [
     {
       "text": "Open {inv} from the sidebar to see the inventory list.",
       "labels": {"inv": "nav.inventory"},
-      "image": null,
-      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+      "image": "img/add-item-1.webp",
+      "capture": {"route": "/inventory", "selector": "main", "actions": [], "evidence": ["{inv}"]}
     },
     {
       "text": "Click {add} to create a blank item. Its detail page opens so you can fill in the fields.",
       "labels": {"add": "btn.add_item"},
-      "image": null,
-      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+      "image": "img/add-item-2.webp",
+      "capture": {"route": "/inventory", "selector": "main", "actions": [], "evidence": ["{add}"]}
     },
     {
       "text": "On an item's page, its history lists every change to it, newest first. Where the item is linked to an online store, a page for that store lets you publish it, set it to draft there or pause its sync; nothing is ever deleted in the store.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+      "image": "img/add-item-3.webp",
+      "capture": {"route": "/inventory", "selector": "main div.doc-section:has(.history-table)", "actions": [{"click": "main tr:has-text('Whiteboard 90x60') a.table-link"}, {"click": "main a.category-tab[href$='?tab=activity']"}, {"wait": "main .history-table"}], "evidence": ["table.history-table"]}
     },
     {
       "text": "You can also ask the assistant to find items, add an item or change items' prices, status or location, many at once if you like. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+      "image": "img/add-item-4.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Move all mugs to the warehouse"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["inventory.import-export", "inventory.stock-views"]

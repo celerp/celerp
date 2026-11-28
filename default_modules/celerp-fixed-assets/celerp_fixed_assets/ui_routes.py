@@ -1398,7 +1398,7 @@ def _movements_table(items: list[dict], currency: str) -> FT:
     """Each movement's change to cost and depreciation, and to impairment once any movement
     has touched it. A column the movement does not change reads as empty."""
     if not items:
-        return P(t("fixed_assets.no_movements"), cls="form-hint")
+        return P(t("fixed_assets.no_movements"), cls="empty-state")
     columns = ["cost", "accumulated_depreciation"]
     if any(Decimal(str((m.get("amounts") or {}).get("accumulated_impairment") or 0)) for m in items):
         columns.append("accumulated_impairment")
@@ -1503,7 +1503,7 @@ def _origin(asset: dict, first: dict | None) -> FT:
                  *([A(t("fixed_assets.journal"), href=f"/accounting?{urlencode({'q': journal})}")] if journal else []))
     if first.get("operation") == "opening":
         return P(t("fixed_assets.origin.opening"))
-    return P(t("fixed_assets.no_sources"), cls="form-hint")
+    return P(t("fixed_assets.no_sources"), cls="empty-state")
 
 
 def _sources_card(asset: dict, first: dict | None, currency: str) -> FT:
@@ -1548,7 +1548,7 @@ def _skips_card(asset: dict) -> FT:
                          hx_delete=f"/fixed-assets/assets/{asset_id}/skip/{month}", hx_swap="none")))
             for month, reason in skips]
     table = Table(Thead(Tr(Th(t("fixed_assets.month")), Th(t("fixed_assets.reason")), Th(""))), Tbody(*rows),
-                  cls="data-table") if rows else P(t("fixed_assets.no_skips"), cls="form-hint")
+                  cls="data-table") if rows else P(t("fixed_assets.no_skips"), cls="empty-state")
     form = Form(_field(t("fixed_assets.month"), _month_input("month", required=True)),
                 _field(t("fixed_assets.reason"), _input("reason", required=True)),
                 Button(t("fixed_assets.skip_month"), type="submit", cls="btn btn--secondary"),
@@ -1563,7 +1563,7 @@ def _readings_card(asset: dict) -> FT:
     readings = sorted((asset.get("readings") or {}).items(), reverse=True)
     table = Table(Thead(Tr(Th(t("fixed_assets.month")), Th(t("fixed_assets.units"), cls="cell--number"))),
                   Tbody(*[Tr(Td(p), Td(u, cls="cell--number")) for p, u in readings]),
-                  cls="data-table") if readings else P(t("fixed_assets.no_readings"), cls="form-hint")
+                  cls="data-table") if readings else P(t("fixed_assets.no_readings"), cls="empty-state")
     form = Form(_field(t("fixed_assets.month"), _month_input("period", required=True)),
                 _field(t("fixed_assets.units"), _input("units", type_="number", step="any", min="0", required=True)),
                 Div(Button(t("fixed_assets.record_reading"), type="submit", cls="btn btn--secondary"),
@@ -1599,7 +1599,7 @@ def _reviews_card(asset: dict, reviews: list[dict], currency: str, today: str) -
             for i, r in enumerate(reviews)]
     table = Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.review_found")),
                            _money_th(t("fixed_assets.recoverable_amount")), Th(t("fixed_assets.basis")), Th(""))),
-                  Tbody(*rows), cls="data-table") if rows else P(t("fixed_assets.no_reviews"), cls="form-hint")
+                  Tbody(*rows), cls="data-table") if rows else P(t("fixed_assets.no_reviews"), cls="empty-state")
     form = Form(_field(t("fixed_assets.date"), _input("date", today, type_="date", required=True)),
                 _field(t("fixed_assets.review_found"),
                        Select(*[Option(t(f"fixed_assets.review_outcome.{o}"), value=o) for o in REVIEW_OUTCOMES],
@@ -1935,7 +1935,7 @@ def _corrections_card(asset: dict, items: list[dict]) -> FT:
                    cls="flex-row flex-between settings-card-header"),
                P(t("fixed_assets.corrections_card_hint"), cls="settings-hint"),
                _corrections_table(items, with_asset=False) if items
-               else P(t("fixed_assets.no_corrections"), cls="form-hint"),
+               else P(t("fixed_assets.no_corrections"), cls="empty-state"),
                cls="detail-card section-card")
 
 
@@ -2309,7 +2309,7 @@ def setup_ui_routes(app) -> None:
                                        more=(A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new",
                                                cls="btn btn--secondary"),)))
         elif not found["items"]:
-            body = P(t("fixed_assets.no_match"), cls="form-hint")
+            body = P(t("fixed_assets.no_match"), cls="empty-state")
         else:
             body = Div(_register_toolbar(), _register_table(found["items"], _class_names(classes), currency),
                        pagination(page, found["total"], per_page, "/fixed-assets", urlencode(params)))
@@ -2419,7 +2419,7 @@ def setup_ui_routes(app) -> None:
                 shares = [_field(f"{a['number']} {a.get('name') or ''}",
                                  _input(f"share:{a['id']}", type_="number", step="any", min="0")) for a in active]
                 form = _op_form("link-depreciation", hidden, P(t("fixed_assets.link_hint"), cls="settings-hint"),
-                                *(shares or [P(t("fixed_assets.no_active_assets"), cls="form-hint")]))
+                                *(shares or [P(t("fixed_assets.no_active_assets"), cls="empty-state")]))
             return await _page(request, crumbs, page_header(t("fixed_assets.line_title")), summary,
                                line_tabs(choices, action) if len(choices) > 1 else "", form,
                                title_key="fixed_assets.line_title")
@@ -2991,7 +2991,7 @@ def setup_ui_routes(app) -> None:
         form = _op_form("move", *[Input(type="hidden", name="asset_ids", value=a["id"]) for a in assets],
                         P(t("fixed_assets.move_hint"), cls="settings-hint"), listed, *fields)
         return await _page(request, crumbs, page_header(t("fixed_assets.move_several_title", n=len(assets))),
-                           *[_left_use_notice(a) for a in assets], form if assets else P(t("label.select_rows_first"), cls="form-hint"),
+                           *[_left_use_notice(a) for a in assets], form if assets else P(t("label.select_rows_first"), cls="empty-state"),
                            title_key="fixed_assets.move")
 
     @app.get("/fixed-assets/assets/{asset_id}/reclassify")
@@ -3459,7 +3459,7 @@ def setup_ui_routes(app) -> None:
                         P(t("fixed_assets.dispose_several_hint"), cls="settings-hint"), listed,
                         *_disposal_fields(None, setup["today"]))
         return await _page(request, crumbs, page_header(t("fixed_assets.dispose_several_title", n=len(assets))),
-                           form if assets else P(t("label.select_rows_first"), cls="form-hint"),
+                           form if assets else P(t("label.select_rows_first"), cls="empty-state"),
                            title_key="fixed_assets.dispose")
 
     @app.post("/fixed-assets/assets/{asset_id}/request-correction")

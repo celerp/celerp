@@ -384,7 +384,7 @@ async def _confirmed(session, monkeypatch, result) -> tuple[dict, dict]:
     outcome = await routes._run_confirmed_action(
         SimpleNamespace(app=None, headers={}), session, {"create_contact": {}},
         conversation_id=conversation_id, message_id=message_id, tool_call_id="call",
-        company_id=company_id, user_id=user_id,
+        company_id=company_id, user_id=user_id, company_settings={"currency": "THB"},
     )
     from celerp.models.ai import AIMessage
     return outcome, (await session.get(AIMessage, message_id)).tools_called[0]

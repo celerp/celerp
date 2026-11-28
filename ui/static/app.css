@@ -86,7 +86,7 @@ a:hover { text-decoration: underline; }
 .auth-container { width: 100%; max-width: 420px; padding: 24px 16px; }
 .auth-card { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 36px 32px; }
 .auth-header { text-align: center; margin-bottom: 28px; }
-.auth-logo { height: 160px; margin-bottom: 16px; }
+.auth-logo { height: 160px; max-width: 100%; object-fit: contain; margin-bottom: 16px; }
 .auth-title { font-size: 20px; font-weight: 600; color: var(--c-text); }
 .auth-subtitle { font-size: 12px; color: var(--c-text2); margin-top: 6px; overflow-wrap: anywhere; }
 .auth-form { display: flex; flex-direction: column; gap: 16px; }
@@ -377,6 +377,9 @@ a:hover { text-decoration: underline; }
 .scroll-more-left::before, .scroll-more-right::after {
   content: ""; position: absolute; top: 0; bottom: 0; width: 20px; z-index: 4; pointer-events: none;
 }
+/* The offset stops at the box's children, so a scroll restyles the box and its shades, never
+   every cell under it. */
+[data-scroll-cue] > * { --scroll-x: 0px; }
 .scroll-more-left::before { left: var(--scroll-x, 0px); background: linear-gradient(to right, rgba(26,29,46,0.3), transparent); }
 .scroll-more-right::after { right: calc(-1 * var(--scroll-x, 0px)); background: linear-gradient(to left, rgba(26,29,46,0.3), transparent); }
 @media print { .scroll-more-left::before, .scroll-more-right::after { content: none; } }
@@ -1355,6 +1358,7 @@ input[type="number"] { text-align: right; }
 .help-steps { margin: 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
 .help-step p { margin: 0 0 0.5rem; }
 .help-step__img { max-width: 100%; height: auto; border: 1px solid var(--c-border); border-radius: var(--radius); }
+.help-step__zoom { display: inline-block; cursor: zoom-in; }
 .help-related { margin: 0; padding-left: 1.25rem; }
 .help-back { align-self: flex-start; }
 
@@ -2555,7 +2559,11 @@ th.cell--right { text-align: right !important; }
 .ai-showcase__input-send { padding: 0.5rem 1.1rem; border-radius: var(--radius); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); color: #8892a4; font-size: 0.85rem; font-weight: 600; cursor: not-allowed; }
 
 /* Chat layout (cloud users) */
-.ai-chat { display: flex; flex: 1; height: calc(100vh - 56px); overflow: hidden; }
+/* The chat fills the window under the top bar and any banner: its column is one window
+   tall, so only the thread scrolls and the composer stays in view. */
+.content-area:has(> .main-content > .ai-chat) { height: 100dvh; }
+.main-content:has(> .ai-chat) { display: flex; flex-direction: column; min-height: 0; }
+.ai-chat { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .ai-sidebar { width: 220px; flex-shrink: 0; background: var(--c-bg2); border-right: 1px solid var(--c-border); display: flex; flex-direction: column; padding: 0.75rem 0.75rem 1rem; gap: 0.5rem; overflow-y: auto; overflow-x: hidden; transition: width 0.2s ease, padding 0.2s ease; }
 .ai-sidebar--collapsed { width: 48px; padding: 0.75rem 0.5rem 1rem; overflow-y: hidden; }
 .ai-sidebar__toggle { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: var(--radius); background: transparent; border: 1px solid var(--c-border); color: var(--c-text2); cursor: pointer; font-size: 1rem; flex-shrink: 0; align-self: flex-end; transition: background 0.1s; margin-bottom: 0.25rem; }
@@ -2587,7 +2595,8 @@ th.cell--right { text-align: right !important; }
 /* Input bar (active chat) */
 .ai-input { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem 1rem; border-top: 1px solid var(--c-border); background: var(--c-bg); position: relative; }
 .ai-input__attach { min-width: 36px; width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; flex-shrink: 0; }
-.ai-input__field { flex: 1; padding: 0.5rem 0.75rem; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-bg2); color: var(--c-text); font-size: 0.9rem; }
+/* The prompt grows with its text, up to a third of the window, then scrolls. */
+.ai-input__field { flex: 1; padding: 0.5rem 0.75rem; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-bg2); color: var(--c-text); font: inherit; font-size: 0.9rem; line-height: 1.45; resize: none; field-sizing: content; max-height: 33vh; overflow-y: auto; }
 .ai-input__field:focus { outline: 2px solid var(--c-accent); border-color: var(--c-accent); }
 .ai-input__send { flex-shrink: 0; }
 .ai-input__send:disabled, .ai-input__receipts:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -2857,6 +2866,15 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .ai-msg--error { color: var(--c-red-text); border: 1px solid rgba(239,68,68,0.35); }
 .ai-msg__sources { margin: 0.5rem 0 0; font-size: 0.8rem; color: var(--c-text2); white-space: normal; }
 .ai-msg.ai-msg__sources { margin: 0; }
+.ai-msg:has(> .ai-msg__md) { white-space: normal; }
+.ai-msg__md > :first-child { margin-top: 0; }
+.ai-msg__md > :last-child { margin-bottom: 0; }
+.ai-msg__md p, .ai-msg__md ul, .ai-msg__md ol, .ai-msg__md pre, .ai-msg__md table { margin: 0.5rem 0; }
+.ai-msg__md ul, .ai-msg__md ol { padding-left: 1.25rem; }
+.ai-msg__md pre { overflow-x: auto; white-space: pre; }
+.ai-msg__md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.ai-msg__md th, .ai-msg__md td { border: 1px solid var(--c-border); padding: 0.25rem 0.5rem; text-align: left; word-break: normal; }
+.ai-msg__md th { background: var(--c-bg3); text-align: center; }
 .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; padding: 0.75rem; border: 1px solid rgba(239,68,68,0.35); border-radius: var(--radius); color: var(--c-red-text); background: var(--c-bg2); }
 .load-error__text { margin: 0; }
 .ai-job { white-space: normal; }
@@ -2867,6 +2885,8 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .ai-job--done { font-size: 0.85rem; color: var(--c-text2); }
 .ai-msg__notice { margin: 0.5rem 0 0; font-size: 0.85rem; color: var(--c-text2); }
 .ai-msg--pending .btn, .ai-job .btn { margin-top: 0.5rem; }
+.ai-input__count { font-size: 0.75rem; color: var(--c-text2); text-align: right; }
+.ai-input__count--over { color: var(--c-red-text); font-weight: 600; }
 .ai-upload-error { font-size: 0.8rem; color: var(--c-red-text); margin-top: 0.375rem; }
 .ai-upload-error:empty { display: none; }
 
@@ -2917,7 +2937,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 }
 
 /* ── AI drag-drop upload zone ────────────────────────────────────────────── */
-.ai-input__row { display: flex; gap: 0.5rem; align-items: center; }
+.ai-input__row { display: flex; gap: 0.5rem; align-items: flex-end; }
 .ai-chat-dropzone { border: 2px dashed var(--c-border); border-radius: 0.5rem; padding: 0.625rem 0.875rem; margin-top: 0.5rem; cursor: pointer; display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; color: var(--c-text2); font-size: 0.82rem; transition: border-color 0.15s, background 0.15s; user-select: none; }
 .ai-chat-dropzone:hover { border-color: var(--c-accent); color: var(--c-text); }
 .ai-chat-dropzone--disabled { opacity: 0.55; cursor: not-allowed; pointer-events: none; }
@@ -3703,6 +3723,9 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 #local-modules-panel .data-table td,
 #community-zone .data-table td,
 #marketplace-panel .data-table td { height: auto; padding-top: 8px; padding-bottom: 8px; vertical-align: top; white-space: normal; }
+/* The local list fits its card: its cells wrap, so Status and the on/off control stay
+   on screen instead of behind a sideways scroll. */
+#local-modules-panel .data-table { width: 100%; }
 /* Standard module column: bound the name/description cell so long copy wraps at
    a readable measure instead of pushing the action column off-screen. Same on
    all three module lists, wherever the cell sits in its row. */
@@ -3821,11 +3844,10 @@ svg[aria-hidden="true"] { vertical-align: -0.125em; flex-shrink: 0; }
 .bank-entries { margin: 8px 0; }
 .bank-entry { display: flex; gap: 12px; align-items: center; padding: 2px 0; }
 .bank-search { margin: 8px 0; max-width: 420px; }
-.bulk-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
 .bank-groups { display: flex; flex-direction: column; border-top: 1px solid var(--c-border); }
 .bank-row { display: grid; gap: 8px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--c-border); }
 .bank-row--group { grid-template-columns: 24px minmax(160px, 2fr) 60px 120px minmax(160px, 2fr) 110px; font-weight: 600; }
-.bank-row--line { grid-template-columns: 24px 96px minmax(140px, 2fr) 80px 100px 100px 60px minmax(120px, 1.5fr) 90px minmax(80px, 1fr) minmax(200px, auto); }
+.bank-row--line { grid-template-columns: 24px 96px minmax(80px, 2fr) 80px 100px 100px 60px minmax(70px, 1.5fr) 90px minmax(50px, 1fr) minmax(116px, auto); }
 .bank-row--head { color: var(--c-text2); font-size: 0.85em; text-align: center; }
 .bank-views { display: flex; flex-wrap: wrap; }
 .bank-row--preview { grid-template-columns: 96px minmax(160px, 2fr) 110px 110px 120px; }

@@ -131,5 +131,5 @@ def test_a_referenced_draft_moves_to_deleted_says_so_and_restore_brings_it_back(
     page.evaluate("window.CelerpSelection && window.CelerpSelection.clear()")
     _select(page, parent_id)
     page.locator("#bulk-action-select").select_option("restore_deleted")
-    page.locator("#bulk-action-result .flash", has_text="Restored to draft: 1.").wait_for(state="attached", timeout=8000)
+    page.locator(".toast-container .toast", has_text="Restored to draft: 1.").wait_for(timeout=8000)
     assert api.get(f"/items/{parent_id}").json()["status"] == "draft"

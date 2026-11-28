@@ -60,7 +60,8 @@ from celerp.services.auth import (
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import kept, read_kept, refusal_text, t
 from ui.components.encode import inert_media_type
-from celerp.accounting_roles import Refused
+from celerp.accounting_roles import Refused, refused
+from celerp_ai import MAX_PROMPT_CHARS
 
 # AI routes count on Celerp's one limiter, per caller: tighter limits than the global
 # 60/min default, as LLM queries are expensive and uploads have file-size costs.
@@ -91,8 +92,15 @@ _OPERATION_ID_DESCRIPTION = (
 )
 
 
+def _require_prompt_length(query: str) -> None:
+    """A question past the limit refused naming the limit and its own length. The models
+    take any length so this refusal, not a field validation list, is what the user reads."""
+    if len(query) > MAX_PROMPT_CHARS:
+        raise refused(422, "ai.err_prompt_too_long", limit=MAX_PROMPT_CHARS, length=len(query))
+
+
 class QueryRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=2000, description="Natural language question")
+    query: str = Field(..., min_length=1, description="Natural language question")
     file_ids: list[str] | None = Field(default=None, description="List of file IDs returned from /ai/upload")
     operation_id: uuid.UUID | None = Field(default=None, description=_OPERATION_ID_DESCRIPTION)
 
@@ -108,6 +116,7 @@ class QueryResponse(BaseModel):
     new_question: bool = False      # only a new question, under a new id, can follow
     help_pages: list[str] | None = None
     downloads: list[str] = []       # links to the files the answer offers
+    cut: bool = False               # the answer stopped at the length limit
     message_id: str | None = None   # the question's id in its conversation
     asked_again: bool = False       # the question was already in the conversation
 
@@ -207,6 +216,7 @@ async def ai_query(
     The same ``operation_id`` asks it again and returns the answer it already has."""
     import time
 
+    _require_prompt_length(body.query)
     from celerp.ai import jobs
     started = time.monotonic()
     out = await jobs.ask(company_id=company_id, user_id=user.id, query=body.query, file_ids=body.file_ids,
@@ -221,7 +231,7 @@ async def ai_query(
     return QueryResponse(
         answer=out["answer"], model_used=out["model_used"],
         tools_called=out["tools_called"], pending_actions=[],
-        help_pages=out["help_pages"], downloads=out["downloads"],
+        help_pages=out["help_pages"], downloads=out["downloads"], cut=bool(out.get("cut")),
     )
 
 
@@ -383,7 +393,7 @@ class RenameConversationRequest(BaseModel):
 
 
 class ConversationQueryRequest(BaseModel):
-    query: str = Field("", max_length=2000)
+    query: str = ""
     file_ids: list[str] | None = None
     document_mode: Literal["chat", "receipts"] = "chat"
     operation_id: uuid.UUID | None = Field(default=None, description=_OPERATION_ID_DESCRIPTION)
@@ -428,6 +438,7 @@ class MessageOut(BaseModel):
     refusal_status: int | None = None
     help_pages: list[str] | None = None
     downloads: list[str] = []
+    cut: bool = False                   # the answer stopped at the length limit
     continuation: bool = False          # the app's own question that carried a request on
     created_at: str
 
@@ -499,7 +510,7 @@ async def _open_actions(session: AsyncSession, company_id, user_id, msg) -> list
 
 
 async def _message_out(session: AsyncSession, company_id, user_id, m) -> MessageOut:
-    from celerp.ai.conversations import downloads, help_pages, is_continuation, message_failure, tool_names
+    from celerp.ai.conversations import answer_cut, downloads, help_pages, is_continuation, message_failure, tool_names
     failure = message_failure(m.tools_called) or {}
     return MessageOut(
         id=m.id, role=m.role, content=m.content,
@@ -509,7 +520,7 @@ async def _message_out(session: AsyncSession, company_id, user_id, m) -> Message
         error=bool(failure), error_code=failure.get("code"), **_failure_next(failure.get("code")),
         refusal=failure.get("refusal"), refusal_status=failure.get("status"),
         help_pages=help_pages(m.tools_called), downloads=downloads(m.tools_called),
-        continuation=is_continuation(m.tools_called),
+        cut=answer_cut(m.tools_called), continuation=is_continuation(m.tools_called),
         created_at=m.created_at.isoformat(),
     )
 
@@ -517,7 +528,7 @@ async def _message_out(session: AsyncSession, company_id, user_id, m) -> Message
 async def _answer_response(session: AsyncSession, company_id, user_id, msg, *, question_id: uuid.UUID,
                            asked_again: bool) -> QueryResponse:
     """The response for a stored assistant message: an answer, or the failure it records."""
-    from celerp.ai.conversations import downloads, help_pages, message_failure, tool_names
+    from celerp.ai.conversations import answer_cut, downloads, help_pages, message_failure, tool_names
     failure = message_failure(msg.tools_called)
     common = dict(
         model_used=msg.model_used or "", tools_called=tool_names(msg.tools_called),
@@ -531,7 +542,8 @@ async def _answer_response(session: AsyncSession, company_id, user_id, msg, *, q
     return QueryResponse(
         answer=msg.content,
         pending_actions=await _open_actions(session, company_id, user_id, msg),
-        help_pages=help_pages(msg.tools_called), downloads=downloads(msg.tools_called), **common,
+        help_pages=help_pages(msg.tools_called), downloads=downloads(msg.tools_called),
+        cut=answer_cut(msg.tools_called), **common,
     )
 
 
@@ -743,6 +755,7 @@ async def query_in_conversation(
     An id that names another question, or one that can no longer be asked, is refused as
     ``operation_conflict``: a new question needs a new id.
     """
+    _require_prompt_length(body.query)
     from sqlalchemy.exc import IntegrityError
 
     from celerp.ai import jobs
@@ -985,6 +998,7 @@ async def _run_confirmed_action(
     tool_call_id: str,
     company_id,
     user_id,
+    company_settings: dict,
     run_again: bool = False,
 ) -> dict:
     """Claim, execute and finalize one pending action; never raises for action state.
@@ -1015,6 +1029,15 @@ async def _run_confirmed_action(
         if dependency_error.get("code") == "action_dependency_not_ready":
             outcome["action_status"] = "pending"
         return outcome
+    # Held to the rule it was proposed under, before the claim, so the card stays pending
+    # and confirms once the currency is set.
+    from celerp.ai.service import books_currency_refusal
+    refused = books_currency_refusal(capabilities.get(dependency_record["name"]), company_settings)
+    if refused is not None:
+        return {"tool_call_id": tool_call_id, "name": dependency_record["name"],
+                "title": dependency_record.get("title") or dependency_record["name"],
+                "ok": False, "status": 409, "action_status": "pending", "data": None,
+                "error": refused["error"]}
 
     try:
         record = await claim_tool_call(
@@ -1262,7 +1285,7 @@ async def confirm_action(
         request.app, company_settings, role, caller_gates=await gates_of_caller(session, user_id, role)),
         conversation_id=conversation_id, message_id=body.message_id,
         tool_call_id=body.tool_call_id, company_id=company_id, user_id=user_id,
-        run_again=body.run_again,
+        company_settings=company_settings, run_again=body.run_again,
     )
     error = outcome.get("error") or {}
     # A refused claim is 409; a run that just ended unknown is the card's outcome (200).
@@ -1442,6 +1465,7 @@ async def confirm_all(
             request, session, capabilities,
             conversation_id=conversation_id, message_id=body.message_id,
             tool_call_id=tool_call_id, company_id=company_id, user_id=user_id,
+            company_settings=company_settings,
         )
         results.append(outcome)
         if not outcome["ok"] and group is not None:

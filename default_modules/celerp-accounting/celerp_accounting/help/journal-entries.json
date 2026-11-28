@@ -11,20 +11,20 @@
     {
       "text": "Open {acct} from the sidebar to see every posted entry for the period.",
       "labels": {"acct": "nav.accounting"},
-      "image": null,
-      "capture": {"route": "/accounting", "selector": "main", "actions": []}
+      "image": "img/journal-entries-1.webp",
+      "capture": {"route": "/accounting", "selector": "main", "actions": [], "evidence": ["{acct}"]}
     },
     {
       "text": "Click {new} to post a manual entry: pick an account for each line, enter a debit or credit, and save.",
       "labels": {"new": "btn.new_entry"},
-      "image": null,
-      "capture": {"route": "/accounting", "selector": "main", "actions": []}
+      "image": "img/journal-entries-2.webp",
+      "capture": {"route": "/accounting", "selector": "main", "actions": [], "evidence": ["{new}"]}
     },
     {
       "text": "You can also ask the assistant to find entries, record a manual journal entry or void one. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/accounting", "selector": "main", "actions": []}
+      "image": "img/journal-entries-3.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Record a manual journal entry for last month's rent"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["accounting.financial-reports", "accounting.reconcile", "accounting.settings"]

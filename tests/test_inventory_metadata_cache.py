@@ -119,7 +119,7 @@ async def test_expiry_refetches(monkeypatch):
     calls = _install_counting_getters(monkeypatch)
     await api.get_inventory_metadata("tok")
     assert calls["count"] == 6
-    key = api._metadata_key("tok")
+    key = api._token_key("tok")
     ts, snap = api._metadata_cache[key]
     api._metadata_cache[key] = (ts - (api._METADATA_TTL_SECONDS + 1.0), snap)
     await api.get_inventory_metadata("tok")
@@ -136,8 +136,8 @@ async def test_failure_is_never_cached(monkeypatch):
     monkeypatch.setattr(api, "get_units", _boom)
     with pytest.raises(api.APIError):
         await api.get_inventory_metadata("tok")
-    assert api._metadata_key("tok") not in api._metadata_cache
-    assert api._metadata_key("tok") not in api._metadata_inflight
+    assert api._token_key("tok") not in api._metadata_cache
+    assert api._token_key("tok") not in api._metadata_inflight
 
 
 @pytest.mark.asyncio
@@ -151,7 +151,7 @@ async def test_all_waiters_cancel_then_fetch_fails_self_cleans(monkeypatch):
     monkeypatch.setattr(api, "_fetch_inventory_metadata", _blocking_fetch)
     waiters = [asyncio.ensure_future(api.get_inventory_metadata("tok")) for _ in range(3)]
     await asyncio.sleep(0.02)
-    assert api._metadata_key("tok") in api._metadata_inflight
+    assert api._token_key("tok") in api._metadata_inflight
     for w in waiters:
         w.cancel()
     for w in waiters:
@@ -161,7 +161,7 @@ async def test_all_waiters_cancel_then_fetch_fails_self_cleans(monkeypatch):
     await asyncio.sleep(0.05)
     # The shared fetch, not a waiter, cleaned itself up after failing with no
     # waiters left.
-    assert api._metadata_key("tok") not in api._metadata_inflight
+    assert api._token_key("tok") not in api._metadata_inflight
     assert not api._metadata_tasks
 
 
@@ -177,7 +177,7 @@ def _tagged_fetch(tag, gate):
 async def test_invalidation_during_inflight_caches_only_the_new_fetch(monkeypatch):
     gate_a = asyncio.Event()
     gate_b = asyncio.Event()
-    key = api._metadata_key("tok")
+    key = api._token_key("tok")
 
     monkeypatch.setattr(api, "_fetch_inventory_metadata", _tagged_fetch("A", gate_a))
     a_task = asyncio.ensure_future(api.get_inventory_metadata("tok"))
@@ -206,8 +206,8 @@ async def test_mutation_clears_static_metadata_for_all_tokens(monkeypatch):
     calls = _install_counting_getters(monkeypatch)
     await api.get_inventory_metadata("tok-a")
     await api.get_inventory_metadata("tok-b")
-    assert api._metadata_key("tok-a") in api._metadata_cache
-    assert api._metadata_key("tok-b") in api._metadata_cache
+    assert api._token_key("tok-a") in api._metadata_cache
+    assert api._token_key("tok-b") in api._metadata_cache
 
     # A settings write by token A invalidates everyone's static metadata, because
     # a settings change can alter what another user sees.
@@ -228,14 +228,14 @@ async def test_mutation_clears_static_metadata_for_all_tokens(monkeypatch):
     monkeypatch.setattr(api, "_api_client", lambda _token: _FakeClient())
     monkeypatch.setattr(api, "_raise", lambda r: r)
     await api.patch_units("tok-a", [{"name": "each"}])
-    assert api._metadata_key("tok-a") not in api._metadata_cache
-    assert api._metadata_key("tok-b") not in api._metadata_cache
+    assert api._token_key("tok-a") not in api._metadata_cache
+    assert api._token_key("tok-b") not in api._metadata_cache
 
 
 @pytest.mark.asyncio
 async def test_expired_entries_for_unrelated_tokens_are_pruned(monkeypatch):
     calls = _install_counting_getters(monkeypatch)
-    other = api._metadata_key("stale-token")
+    other = api._token_key("stale-token")
     snap = api.InventoryMetadata([], {}, {}, {}, {}, [])
     import time as _time
 
@@ -285,7 +285,7 @@ async def test_invalidation_keeps_inflight_task_tracked_until_shutdown(monkeypat
     api._get_transport()
     api._get_bulk_transport()
 
-    key = api._metadata_key("tok")
+    key = api._token_key("tok")
     a_task = asyncio.ensure_future(api.get_inventory_metadata("tok"))
     await asyncio.sleep(0.02)
     inflight = api._metadata_inflight[key]
@@ -333,7 +333,7 @@ async def test_returned_snapshot_is_defensively_copied(monkeypatch):
 @pytest.mark.asyncio
 async def test_key_is_token_hash_not_a_claim(monkeypatch):
     _install_counting_getters(monkeypatch)
-    key = api._metadata_key("some-access-token")
+    key = api._token_key("some-access-token")
     assert key == hashlib.sha256(b"some-access-token").digest()
     assert isinstance(key, bytes) and len(key) == 32
-    assert api._metadata_key("token-a") != api._metadata_key("token-b")
+    assert api._token_key("token-a") != api._token_key("token-b")

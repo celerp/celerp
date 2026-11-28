@@ -70,7 +70,7 @@ from celerp.services.journal_accounts import require_income_account
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.item_erasure import depended_on, erase_items, holding_files, referrers, release_from_imports
 from celerp.services.lot_origin import (
-    DELETED, RECORDED, RETIRED, book_lot_value, booked_value, ever_became_stock, in_stock, is_authoring_event, is_stock_type,
+    DELETED, RECORDED, RETIRED, book_lot_value, booked_value, ever_became_stock, in_stock, is_authoring_event, is_draft, is_stock_type,
     recorded_value, refuse_draft,
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
@@ -1218,8 +1218,9 @@ def result_aggregates(
                 price_totals[name] += value
     return {
         "item_count": len(result),
-        "quantity_by_unit": {k: _unit_total(v, k, unit_map) for k, v in quantity_by_unit.items()},
-        "weight_by_unit": {k: _unit_total(v, k, unit_map) for k, v in weight_by_unit.items()},
+        # By unit name, never by the rows' storage order (which any item edit changes).
+        "quantity_by_unit": {k: _unit_total(v, k, unit_map) for k, v in sorted(quantity_by_unit.items())},
+        "weight_by_unit": {k: _unit_total(v, k, unit_map) for k, v in sorted(weight_by_unit.items())},
         "pieces_total": None if pieces_total is None else float(pieces_total),
         "price_totals": {k: to_stored_float(v) for k, v in price_totals.items()},
         "price_missing": price_missing,
@@ -2991,7 +2992,7 @@ async def _lock_selected_items(session: AsyncSession, company_id, entity_ids: li
 
 
 def _row_is_draft(row: Projection) -> bool:
-    return str((row.state or {}).get("status") or "").lower() == "draft"
+    return is_draft(row.state or {})
 
 
 async def _build_transfer_data(session, company_id, entity_id: str, to_location_id, loc_map: dict | None = None) -> dict:

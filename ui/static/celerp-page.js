@@ -203,10 +203,120 @@
     setTimeout(function () { btn.classList.remove('share-url__copy--done'); }, 1500);
   }
 
-  // Forget the stored column choices of a table, then reload.
-  function celerpResetColumns(keys) {
-    keys.forEach(function (k) { localStorage.removeItem(k); });
-    location.reload();
+  // ---------------------------------------------------------------- column setup
+  // A user's column setup for each table lives on the server, so every device shows the same
+  // columns. The page carries a table's saved layout ({vis, order, widths}); the first script
+  // to name a table seeds it, later scripts and re-rendered fragments read the copy this page
+  // holds, and each change is saved back.
+  var columnLayouts = {};
+  function celerpColumns(table, saved) {
+    if (!(table in columnLayouts)) {
+      columnLayouts[table] = saved || {};
+      importBrowserColumns(table);
+    }
+    function put(part, value) {
+      var entry = {}; entry[part] = value;
+      columnLayouts[table] = Object.assign({}, columnLayouts[table], entry);
+      return entry;
+    }
+    return {
+      get: function (part) { return columnLayouts[table][part] || null; },
+      // What the page shows until the user changes it: held for the other scripts, not saved.
+      hold: put,
+      set: function (part, value) {
+        var change = {}; change[table] = put(part, value);
+        saveColumns(change);
+      }
+    };
+  }
+  // Every column setup write of this page (a change, a reset, the move of a browser copy) goes
+  // through one queue: each is sent once the one before it has answered or failed, so the
+  // server applies them in the order the user made them and the newest always lands last.
+  var columnWrites = Promise.resolve();
+  function postColumns(change) {
+    var sent = columnWrites.then(function () {
+      return celerpFetch('/column-prefs', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                           body: JSON.stringify(change)});
+    });
+    columnWrites = sent.catch(function () {});
+    return sent;
+  }
+  function saveColumns(change) {
+    return postColumns(change).then(function (r) {
+      if (r.ok) return true;
+      return r.text().then(function (body) {
+        showGlobalUiError(serverErrorText(r.headers.get('Content-Type'), body) || window.__shellI18n.requestFailed);
+        return false;
+      });
+    }).catch(function () { showGlobalUiError(window.__shellI18n.networkError); return false; });
+  }
+
+  // Before the setup lived on the server each browser kept its own copy. The first page that
+  // names a table moves this browser's copy into the user's setup, where it replaces the parts
+  // it holds. Each part is first cut down to the values a setup can hold (a part with none left
+  // is not a setup and is cleared), then saved on its own, and its copy is cleared once the
+  // server has kept it. A part the server refuses, or that got no answer, stays for the next load.
+  var columnKey = function (k) { return k.length > 0 && k.length <= 100; };
+  var columnParts = {
+    vis: function (v) {
+      var out = {};
+      Object.keys(v).slice(0, 200).forEach(function (k) { if (columnKey(k) && typeof v[k] === 'boolean') out[k] = v[k]; });
+      return out;
+    },
+    order: function (v) {
+      return Array.isArray(v) ? v.filter(function (k) { return typeof k === 'string' && columnKey(k); }).slice(0, 200) : [];
+    },
+    widths: function (v) {
+      var out = {};
+      Object.keys(v).slice(0, 200).forEach(function (k) {
+        var w = v[k];
+        if (columnKey(k) && ((typeof w === 'string' && w.length <= 20) || (typeof w === 'number' && isFinite(w)))) out[k] = w;
+      });
+      return out;
+    }
+  };
+  function browserColumnKeys(table) {
+    return table.indexOf('doc_lines_') === 0 ? {widths: 'celerp_dline_wpct_' + table.slice(10) + '_v2'}
+      : {vis: 'celerp_cols_' + table, order: 'celerp_col_order_' + table, widths: 'celerp_col_widths_' + table};
+  }
+  function importBrowserColumns(table) {
+    var keys = browserColumnKeys(table);
+    var found = {};
+    try {
+      Object.keys(keys).forEach(function (part) {
+        var raw = localStorage.getItem(keys[part]), value = null;
+        if (raw === null) return;
+        try { value = JSON.parse(raw); } catch (e) { /* not a setup */ }
+        value = value && typeof value === 'object' ? columnParts[part](value) : null;
+        if (value && Object.keys(value).length) found[part] = value;
+        else localStorage.removeItem(keys[part]);
+      });
+    } catch (e) { return; }  // this browser keeps no storage
+    if (!Object.keys(found).length) return;
+    columnLayouts[table] = Object.assign({}, columnLayouts[table], found);
+    Object.keys(found).forEach(function (part) {
+      var entry = {}, change = {}; entry[part] = found[part]; change[table] = entry;
+      postColumns(change).then(function (r) { if (r.ok) localStorage.removeItem(keys[part]); }).catch(function () {});
+    });
+  }
+
+  // Forget the saved column setup of the given tables, then reload to show the defaults. A
+  // reset the server kept also clears this browser's old copy of those tables, which a move
+  // that failed or got no answer left behind and the next load would otherwise bring back.
+  // A save that failed changed nothing, so the page stays and keeps its error on screen.
+  function celerpResetColumns(tables) {
+    var change = {};
+    tables.forEach(function (t) { change[t] = null; });
+    saveColumns(change).then(function (saved) {
+      if (!saved) return;
+      try {
+        tables.forEach(function (t) {
+          var keys = browserColumnKeys(t);
+          Object.keys(keys).forEach(function (part) { localStorage.removeItem(keys[part]); });
+        });
+      } catch (e) { /* this browser keeps no storage */ }
+      location.reload();
+    });
   }
 
   // An inline panel's Cancel, or Escape on it (given ev), removes the element it sits in.
@@ -240,6 +350,7 @@
   window.celerpShowModalOnAnswer = celerpShowModalOnAnswer;
   window.celerpToastWhenReady = celerpToastWhenReady;
   window.celerpCopyField = celerpCopyField;
+  window.celerpColumns = celerpColumns;
   window.celerpResetColumns = celerpResetColumns;
   window.celerpRemoveClosest = celerpRemoveClosest;
 })();

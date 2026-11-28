@@ -155,7 +155,9 @@ async def test_books_kept_in_a_withdrawn_currency_keep_it_and_none_move_to_one(c
 
 
 @pytest.mark.asyncio
-async def test_a_contact_kept_in_a_withdrawn_currency_keeps_it_and_none_moves_to_one(client, session):
+async def test_a_contact_may_carry_a_withdrawn_currency_and_an_unknown_one_is_refused(client, session):
+    """A contact holds a withdrawn code (the kuna) as a document does: Celerp recognises it.
+    Only the pickers keep it off new choices. A code it does not recognise is refused."""
     from celerp.models.projections import Projection
 
     h = _auth(await _register(client))
@@ -168,38 +170,13 @@ async def test_a_contact_kept_in_a_withdrawn_currency_keeps_it_and_none_moves_to
     old.state = {**old.state, "currency": "HRK"}
     await session.commit()
 
-    async def change(cid: str, before: str) -> int:
+    async def change(cid: str, before: str, after: str) -> int:
         return (await client.patch(f"/crm/contacts/{cid}", headers=h, json={
-            "fields_changed": {"currency": {"old": before, "new": "HRK"}}})).status_code
+            "fields_changed": {"currency": {"old": before, "new": after}}})).status_code
 
-    assert await change(ids[0], "HRK") == 200
-    assert await change(ids[1], "EUR") == 422
-
-
-@pytest.mark.asyncio
-async def test_a_withdrawn_currency_is_checked_against_the_contact_as_it_now_stands(client, session):
-    """A copy read before another change moved the contact to the euro cannot put it back on the
-    kuna: the change is checked against the contact as saved."""
-    from sqlalchemy import update
-
-    from celerp.models.projections import Projection
-
-    h = _auth(await _register(client))
-    r = await client.post("/crm/contacts", headers=h, json={"name": "Old Supplier", "currency": "EUR"})
-    assert r.status_code == 200, r.text
-    cid = r.json()["id"]
-    row = (await session.execute(select(Projection).where(Projection.entity_id == cid))).scalar_one()
-    row.state = {**row.state, "currency": "HRK"}
-    await session.commit()
-    # Another writer moves it to the euro; the copy this session holds still reads the kuna.
-    await session.execute(update(Projection).where(Projection.company_id == row.company_id,
-                                                   Projection.entity_id == cid)
-                          .values(state={**row.state, "currency": "EUR"})
-                          .execution_options(synchronize_session=False))
-    assert row.state["currency"] == "HRK"
-    r = await client.patch(f"/crm/contacts/{cid}", headers=h,
-                           json={"fields_changed": {"currency": {"old": "HRK", "new": "HRK"}}})
-    assert r.status_code == 422, r.text
+    assert await change(ids[0], "HRK", "HRK") == 200
+    assert await change(ids[1], "EUR", "HRK") == 200
+    assert await change(ids[1], "HRK", "ZZZ") == 422
 
 
 # ── The pickers ──────────────────────────────────────────────────────────────

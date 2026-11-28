@@ -119,3 +119,6 @@ def test_doc_href_routes_lists_and_documents():
     from ui.components.table import doc_href
     assert doc_href("list:wo1") == "/lists/list:wo1"
     assert doc_href("doc:INV-1") == "/docs/doc:INV-1"
+    # The kind wins when the caller holds it: an imported list keeps the id it came with.
+    assert doc_href("PO-77", "list") == "/lists/PO-77"
+    assert doc_href("list:wo1", "invoice") == "/docs/list:wo1"

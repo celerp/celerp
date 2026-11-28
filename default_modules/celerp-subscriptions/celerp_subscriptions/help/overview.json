@@ -6,37 +6,37 @@
   "routes": ["/subscriptions", "/subscriptions/{entity_id}"],
   "permission": "view_subscriptions",
   "order": 1,
-  "checked": "3981f90774d9bd2e5c3ec6a6288bdc03d98523dbef0987152762a6c1ccaa851a",
+  "checked": "a8c56cd27d507b23c8a3c5a6b5571f60fd00b4d8280e95fee7fd65dec1059d4e",
   "steps": [
     {
       "text": "Open {sales} or {purch} from the sidebar to see sales and purchasing subscriptions separately.",
       "labels": {"sales": "nav.subscriptions_sales", "purch": "nav.subscriptions_purchasing"},
-      "image": null,
-      "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
+      "image": "img/overview-1.webp",
+      "capture": {"route": "/subscriptions", "selector": "main", "actions": [], "evidence": ["{sales}"]}
     },
     {
       "text": "Choose {new} to create a subscription, or {imp} to bring in many at once from a file.",
       "labels": {"new": "page.new_subscription", "imp": "btn.import"},
-      "image": null,
-      "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
+      "image": "img/overview-2.webp",
+      "capture": {"route": "/subscriptions", "selector": "main", "actions": [], "evidence": ["{new}", "{imp}"]}
     },
     {
       "text": "The status cards above the list, including {all}, let you filter by stage with one click.",
       "labels": {"all": "status.all_issued"},
-      "image": null,
-      "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
+      "image": "img/overview-3.webp",
+      "capture": {"route": "/subscriptions", "selector": "#sub-status-cards", "actions": [], "evidence": ["{all}"]}
     },
     {
-      "text": "Click a subscription to open it: its lines, its {sched} of billing periods and the invoices each period produced.",
-      "labels": {"sched": "subscriptions.schedule_heading"},
-      "image": null,
-      "capture": {"route": "/subscriptions", "selector": "main", "actions": [{"click": "table tbody tr a"}]}
+      "text": "Click a subscription to open it. Under {periods} you see each billing period, when it bills, and the invoice it produced, which you can open.",
+      "labels": {"periods": "subscriptions.periods_heading"},
+      "image": "img/overview-4.webp",
+      "capture": {"route": "/subscriptions", "selector": "#sub-periods", "actions": [{"click": "table tbody tr:has-text('Annually'):has-text('Active') a"}], "evidence": ["{periods}", "table.data-table td a[href^='/docs/']"]}
     },
     {
       "text": "You can also ask the assistant to generate the invoices that are due, or to pause, resume, cancel or change a subscription. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
+      "image": "img/overview-5.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Generate the invoices that are due"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["subscriptions.import"]

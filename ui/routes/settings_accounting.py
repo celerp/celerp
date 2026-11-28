@@ -15,6 +15,7 @@ import ui.api_client as api
 from ui.components.activity import actor_label
 from ui.components.currency import currency_options
 from ui.components.icons import import_icon
+from ui.components.journal import money_or_empty
 from ui.api_client import APIError, error_message
 from ui.components.shell import base_shell, bug_report_url, flash, page_header, page_title
 from celerp.accounting_roles import account_label
@@ -504,10 +505,6 @@ def _older_stock_url(filters: dict, path: str = "", **changes) -> str:
     return base + ("&" if "?" in base else "?") + query if query else base
 
 
-def _money(value, currency: str) -> FT | str:
-    return fmt_money(value, currency) if value else EMPTY
-
-
 def _correction_url(filters: dict, kind: str) -> str:
     return _older_stock_url(filters, "/corrections", kind=kind)
 
@@ -556,9 +553,9 @@ def _placement_row(p: dict, currency: str, filters: dict, retained: str) -> FT:
         Td(str(p["count"]), cls="cell--number"),
         Td(p["account"] or EMPTY),
         Td(display_enum(p["classification"], "older_stock_classification") if p.get("classification") else EMPTY),
-        Td(_money(p["transferred"], currency), cls="cell--number"),
-        Td(_money(p["recognized"], currency), cls="cell--number"),
-        Td(_money(p["unresolved"], currency), cls="cell--number"),
+        Td(money_or_empty(p["transferred"], currency), cls="cell--number"),
+        Td(money_or_empty(p["recognized"], currency), cls="cell--number"),
+        Td(money_or_empty(p["unresolved"], currency), cls="cell--number"),
         Td(*([Div(j, cls="cell--mono") for j in p["journal"]] or [EMPTY])),
         Td(*(actions or [EMPTY]), cls="cell--actions"),
         cls="data-row",
@@ -569,10 +566,10 @@ def _summary_row(s: dict, currency: str) -> FT:
     return Tr(
         Td(s["account"]),
         Td(str(s["lots"]), cls="cell--number"),
-        Td(_money(s["value"], currency), cls="cell--number"),
-        Td(_money(s["transferred"], currency), cls="cell--number"),
-        Td(_money(s["recognized"], currency), cls="cell--number"),
-        Td(_money(s["unresolved"], currency), cls="cell--number"),
+        Td(money_or_empty(s["value"], currency), cls="cell--number"),
+        Td(money_or_empty(s["transferred"], currency), cls="cell--number"),
+        Td(money_or_empty(s["recognized"], currency), cls="cell--number"),
+        Td(money_or_empty(s["unresolved"], currency), cls="cell--number"),
     )
 
 
@@ -682,7 +679,7 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
             [_older_lot_row(lot, currency) for lot in lots], **operation_key_attrs())
     else:
         lot_table = P(t("older_stock.no_match") if filters.get("account") or filters.get("q")
-                      else t("older_stock.empty"), cls="hint", id="older-stock-table")
+                      else t("older_stock.empty"), cls="empty-state", id="older-stock-table")
     return Div(
         flash(message, kind) if message else None,
         H3(t("older_stock.tab"), cls="section-title"),
@@ -716,13 +713,13 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
             Th(t("older_stock.col_transferred"), **number), Th(t("older_stock.col_recognized"), **number),
             Th(t("older_stock.col_unresolved"), **number), Th(t("older_stock.col_journal")), Th("")],
             [_placement_row(p, currency, filters, retained) for p in placements])
-        if placements else P(t("older_stock.no_placements"), cls="hint"),
+        if placements else P(t("older_stock.no_placements"), cls="empty-state"),
         pager("placements"),
         H4(t("older_stock.moves"), cls="mt-md"),
         table("older-stock-moves", [
             Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_lots"), **number),
             Th(t("older_stock.col_to")), Th(t("older_stock.col_value"), **number), Th("")],
-            [_move_row(m, currency, filters) for m in moves]) if moves else P(t("older_stock.no_moves"), cls="hint"),
+            [_move_row(m, currency, filters) for m in moves]) if moves else P(t("older_stock.no_moves"), cls="empty-state"),
         pager("moves"),
         H4(t("older_stock.corrections"), cls="mt-md"),
         table("older-stock-corrections", [
@@ -730,7 +727,7 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
             Th(t("older_stock.col_account")), Th(t("older_stock.col_amount"), **number),
             Th(t("older_stock.col_journal")), Th(t("older_stock.col_by"))],
             [_correction_row(c, currency) for c in corrections])
-        if corrections else P(t("older_stock.no_corrections"), cls="hint"),
+        if corrections else P(t("older_stock.no_corrections"), cls="empty-state"),
         pager("corrections"),
         cls="settings-card", id="older-stock-card",
     )

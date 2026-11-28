@@ -62,10 +62,12 @@ def display_unit(name, fallback: str | None = None) -> str:
     return fallback if fallback is not None else raw
 
 
-def doc_href(doc_id) -> str:
-    """The page of a document or list, from its id."""
+def doc_href(doc_id, kind: str | None = None) -> str:
+    """The page of a document or list: by its kind ("list" or a document type) when the
+    caller holds it, as an imported list keeps the id it came with; else by its id."""
     did = str(doc_id or "")
-    return f"/lists/{did}" if did.startswith("list:") else f"/docs/{did}"
+    is_list = kind == "list" if kind else did.startswith("list:")
+    return f"/lists/{did}" if is_list else f"/docs/{did}"
 
 
 # Default column widths for fixed-layout tables.
@@ -1400,6 +1402,24 @@ def display_cell(
     )
 
 
+def not_applicable_cell(entity_id: str, field: str, message: FT | str = "") -> FT:
+    """The cell of an attribute the row's category does not define (field_schema.
+    out_of_category_keys): a not-applicable mark that, opened like any cell, shows
+    ``message``, the refusal a value there would get, instead of an editor."""
+    _cell_id = f"cell-{entity_id.replace(':', '-')}-{re.sub(r'[^A-Za-z0-9_-]', '_', field)}"
+    return Td(
+        message or Span(t("table.not_applicable"), cls="cell-na"),
+        id=_cell_id,
+        title=t("table.not_applicable_hint"),
+        hx_get=f"/api/items/{entity_id}/field/{field}/edit",
+        hx_target="this",
+        hx_swap="outerHTML",
+        hx_trigger="dblclick",
+        cls="cell cell--clickable cell--na",
+        data_col=field,
+    )
+
+
 def table_columns(schema: list[dict], show_cols: list[str] | None = None,
                   hidden_fields: set | None = None) -> list[dict]:
     """The columns ``data_table`` renders, in order.
@@ -1533,11 +1553,15 @@ def data_row(
     # that render click-to-edit even when the schema marked them read-only
     # (used for draft items, whose amount fields stay authorable until commit).
     row_editable = set(row.get("_row_editable_keys") or ())
+    # An attribute the row's category does not define shows a not-applicable mark
+    # (_not_applicable_keys, set by the inventory list from field_schema.out_of_category_keys).
+    not_applicable = set(row.get("_not_applicable_keys") or ())
     return Tr(
         *checkbox_td,
         *match_td,
         *[
-            cell_renderers[f["key"]](entity_id, row) if cell_renderers and f["key"] in cell_renderers
+            not_applicable_cell(entity_id, f["key"]) if f["key"] in not_applicable
+            else cell_renderers[f["key"]](entity_id, row) if cell_renderers and f["key"] in cell_renderers
             else display_cell(
                 entity_id=entity_id,
                 field=f["key"],
@@ -1567,6 +1591,7 @@ def data_table(
     rows: list[dict],
     entity_type: str = "item",
     show_cols: list[str] | None = None,
+    layout: dict | None = None,
     sort_key: str = "",
     sort_dir: str = "desc",
     sort_url: str = "",
@@ -1597,6 +1622,7 @@ def data_table(
     link_fn: dict mapping field keys to URL templates with ``{id}`` placeholder
              (e.g. ``{"name": "/contacts/{id}"}``). Matched cells render as hyperlinks.
     auto_hide_empty: auto-hide columns where >80% of cells are empty (default True).
+    layout: the signed-in user's saved column setup for this table ({vis, order, widths}).
                      Set False when schema already defines the right visible set.
     edit_url_tpl: URL template for cell editing, with ``{id}`` and ``{field}`` placeholders
                   (e.g. ``"/contacts/{id}/field/{field}/edit"``). Overrides the default
@@ -1667,9 +1693,8 @@ def data_table(
                         link_fn=link_fn, edit_url_tpl=edit_url_tpl, delete_url_tpl=delete_url_tpl,
                         cell_renderers=cell_renderers, match_labels=match_labels)
 
-    # JS: smart column defaults + localStorage persistence + drag-to-resize
+    # JS: smart column defaults + the user's saved column setup + drag-to-resize
     import json as _json
-    page_key = f"celerp_cols_{entity_type}"
     # Default visibility: show_cols if provided (user/saved selection), else schema show_in_table.
     # Columns not in show_cols start hidden but are fully rendered in DOM so JS can toggle them.
     if show_cols:
@@ -1687,8 +1712,7 @@ def data_table(
     _js = """
 (function(){
   var CFG = JSON.parse(document.currentScript.dataset.cfg);
-  var PAGE_KEY = CFG.pageKey;
-  var ORDER_KEY = 'celerp_col_order_' + CFG.entityType;
+  var COLS = celerpColumns(CFG.entityType, CFG.layout);
   var SCHEMA_DEFAULTS = CFG.schemaDefaults;
   // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
   var VIRTUAL_FOLLOWERS = CFG.virtualFollowers;
@@ -1719,7 +1743,7 @@ def data_table(
 
   // Load persisted prefs or compute smart defaults
   var prefs;
-  try { prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null'); } catch(e) { prefs = null; }
+  prefs = COLS.get('vis') && Object.assign({}, COLS.get('vis'));
   if (!prefs) {
     prefs = {};
     ths.forEach(function(th) {
@@ -1749,10 +1773,9 @@ def data_table(
   // Apply visibility — accept optional live table so post-swap calls use the new DOM node
   function applyVis(liveTable) {
     liveTable = liveTable || table;
-    // Re-read prefs from localStorage so post-swap calls reflect changes made in
-    // the column-manager dropdown (which writes to the same PAGE_KEY but doesn't
-    // share the in-memory `prefs` variable from this IIFE closure).
-    try { prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null') || prefs; } catch(e) {}
+    // Re-read the page's copy so post-swap calls reflect changes made in the column-manager
+    // dropdown (which does not share the in-memory `prefs` of this closure).
+    prefs = COLS.get('vis') || prefs;
     var liveRows = Array.from(liveTable.querySelectorAll('tbody tr.data-row'));
     var liveThs = Array.from(liveTable.querySelectorAll('thead th[data-key]'));
     liveThs.forEach(function(th) {
@@ -1765,7 +1788,7 @@ def data_table(
       });
     });
     window.celerpSyncExportCols(liveTable);
-    localStorage.setItem(PAGE_KEY, JSON.stringify(prefs));
+    COLS.hold('vis', prefs);
   }
   applyVis();
   // Re-apply after HTMX settles so rows added during the swap phase are also covered.
@@ -1785,15 +1808,12 @@ def data_table(
     });
   }
 
-  // Drag-to-resize column headers — persist widths to localStorage
-  var WIDTH_KEY = 'celerp_col_widths_' + CFG.entityType;
-  function loadWidths() {
-    try { return JSON.parse(localStorage.getItem(WIDTH_KEY) || 'null'); } catch(e) { return null; }
-  }
+  // Drag-to-resize column headers - widths are saved with the user's column setup
+  function loadWidths() { return COLS.get('widths'); }
   function saveWidths() {
     var w = {};
     ths.forEach(function(th) { if (th.style.width) w[th.dataset.key] = th.style.width; });
-    try { localStorage.setItem(WIDTH_KEY, JSON.stringify(w)); } catch(e) {}
+    COLS.set('widths', w);
   }
   // Restore persisted widths synchronously. A saved width is an explicit px value that needs no
   // committed layout, and applying it before the sticky controller can pin the header is what keeps
@@ -1913,7 +1933,7 @@ def data_table(
       });
       // Persist new order and notify picker
       var newOrder = Array.from(thead_tr.querySelectorAll('th[data-key]')).map(function(h){return h.dataset.key;});
-      try { localStorage.setItem(ORDER_KEY, JSON.stringify(newOrder)); } catch(e) {}
+      COLS.set('order', newOrder);
       document.dispatchEvent(new CustomEvent('celerp:col-reorder', {detail: {order: newOrder}}));
       window.celerpSyncExportCols(table);
       dragKey = null;
@@ -1921,8 +1941,7 @@ def data_table(
   });
 
   // Apply persisted column order on page load
-  var storedOrder;
-  try { storedOrder = JSON.parse(localStorage.getItem(ORDER_KEY) || 'null'); } catch(e) { storedOrder = null; }
+  var storedOrder = COLS.get('order');
   if (storedOrder && storedOrder.length) {
     var thead_tr = table.querySelector('thead tr');
     var actionsTh = thead_tr.querySelector('.col-actions');
@@ -2435,8 +2454,11 @@ function sendToTypeChanged(docType, docLabel){
   var inner = phantom && phantom.firstElementChild;
   if (!wrap || !phantom || !inner) return;
   // Size the inner spacer to match the scrollable content width
+  // Written only when it changes: an unchanged write is still a DOM change that wakes the
+  // pinned header's observer, which re-pins the header every frame of a sideways scroll.
   function syncWidth() {
-    inner.style.width = wrap.scrollWidth + 'px';
+    var w = wrap.scrollWidth + 'px';
+    if (inner.style.width !== w) inner.style.width = w;
   }
   syncWidth();
   // Bidirectional scroll sync (guard flag prevents infinite loop)
@@ -2452,12 +2474,13 @@ function sendToTypeChanged(docType, docLabel){
     syncing = false;
   });
   // Re-sync width if columns change (e.g. column manager toggle)
-  new MutationObserver(syncWidth).observe(wrap, {childList: true, subtree: true, attributes: true});
+  new MutationObserver(function(records){ if(!celerpScrollCueOnly(records)) syncWidth(); })
+    .observe(wrap, {childList: true, subtree: true, attributes: true});
 })();
 """)
     top_scroll = Div(Div(style="height:1px"), cls="table-top-scroll") if len(rows) > 10 else None
     scripts = [Script(_js, data_cfg=js_value({
-        "pageKey": str(page_key), "entityType": entity_type, "schemaDefaults": _schema_defaults,
+        "layout": layout or {}, "entityType": entity_type, "schemaDefaults": _schema_defaults,
         "virtualFollowers": _virtual_followers, "autoHide": bool(auto_hide_empty)}))]
     if show_checkboxes:
         scripts.append(Script(_bulk_js, data_cfg=js_value({
@@ -2495,18 +2518,18 @@ function sendToTypeChanged(docType, docLabel){
     )
 
 
-def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str] | None = None) -> FT:
-    """Generic column manager dropdown. Toggles column visibility and order via localStorage.
-
-    Uses the same localStorage key as ``data_table`` (``celerp_cols_{entity_type}``),
-    so visibility state is shared between the manager UI and the table's own JS.
+def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str] | None = None,
+                   layout: dict | None = None) -> FT:
+    """Generic column manager dropdown. Toggles column visibility and order in the signed-in
+    user's column setup (``layout``, saved on the server under ``entity_type``), the same copy
+    ``data_table`` reads, so the manager UI and the table's own JS share one state.
 
     Features:
     - Checkbox toggle per column with immediate visibility apply
     - Drag-and-drop reordering within the picker (source of truth for column order)
     - Listens for ``celerp:col-reorder`` events fired by data_table header drag, keeping
       the picker in sync when the user drags a table column header directly
-    - Reset to default button (clears all localStorage keys and reloads)
+    - Reset to default button (forgets the saved setup and reloads)
     """
     selected = set(visible_cols) if visible_cols else {f["key"] for f in schema if f.get("show_in_table", True)}
     col_data = [{"key": f["key"], "label": field_label(f)} for f in schema]
@@ -2526,15 +2549,15 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
     _mgr_js = """
 (function(){
   var CFG = JSON.parse(document.currentScript.dataset.cfg);
-  var VIS_KEY=CFG.visKey,ORDER_KEY=CFG.orderKey,WIDTH_KEY=CFG.widthKey;
+  var COLS=celerpColumns(CFG.table,CFG.layout);
   var ALL=CFG.all;
   var DEFAULTS=CFG.defaults;
   var btn=document.getElementById('col-mgr-btn'),menu=document.getElementById('col-mgr-menu');
   if(!btn||!menu) return;
-  function loadVis(){try{return JSON.parse(localStorage.getItem(VIS_KEY)||'null')}catch(e){return null}}
-  function saveVis(p){localStorage.setItem(VIS_KEY,JSON.stringify(p))}
-  function loadOrder(){try{return JSON.parse(localStorage.getItem(ORDER_KEY)||'null')}catch(e){return null}}
-  function saveOrder(o){localStorage.setItem(ORDER_KEY,JSON.stringify(o))}
+  function loadVis(){return COLS.get('vis')}
+  function saveVis(p){COLS.set('vis',p)}
+  function loadOrder(){return COLS.get('order')}
+  function saveOrder(o){COLS.set('order',o)}
   function applyVis(prefs){
     var t=document.getElementById('data-table');if(!t)return;
     var ths=Array.from(t.querySelectorAll('thead th[data-key]'));
@@ -2602,8 +2625,7 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
   menu.style.display='none';
 })();
 """
-    reset_onclick = call("celerpResetColumns", [
-        f"celerp_cols_{entity_type}", f"celerp_col_order_{entity_type}", f"celerp_col_widths_{entity_type}"])
+    reset_onclick = call("celerpResetColumns", [entity_type])
     return Div(
         Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
         Div(
@@ -2620,7 +2642,7 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
             id="col-mgr-menu",
             style="display:none",
         ),
-        Script(_mgr_js, data_cfg=js_value({'visKey': f"celerp_cols_{entity_type}", 'all': col_data, 'defaults': default_keys, 'orderKey': f"celerp_col_order_{entity_type}", 'widthKey': f"celerp_col_widths_{entity_type}"})),
+        Script(_mgr_js, data_cfg=js_value({'table': entity_type, 'layout': layout or {}, 'all': col_data, 'defaults': default_keys})),
         cls="column-manager",
     )
 
@@ -2885,7 +2907,7 @@ def simple_table(headers: list[str], rows: list[list], id: str = "", cls_extra: 
     )
 
 
-def col_resize_script(table_selector: str, storage_key: str):
+def col_resize_script(table_selector: str, table: str, layout: dict | None):
     """Reusable PROPORTIONAL drag-to-resize for a header's columns.
 
     The table is meant to fill its container (``width:100%; table-layout:fixed``). Every column
@@ -2896,22 +2918,23 @@ def col_resize_script(table_selector: str, storage_key: str):
 
     On first load (no saved prefs) the columns' current rendered proportions are captured as the
     baseline; otherwise the saved percentages are restored. Widths persist to
-    ``localStorage[storage_key]`` keyed by each th's first ``col-*`` class. The column set is
+    the signed-in user's column setup for ``table`` (``layout`` is its saved copy), keyed by each
+    th's first ``col-*`` class. The column set is
     fixed — this only resizes, never adds/removes/reorders. The last column has no handle (it is
     pinned to the right edge; resize it by dragging its left neighbour's handle).
     """
     # MIN = floor width per column, in %
     resize_js = (
         "(function(){var CFG=JSON.parse(document.currentScript.dataset.cfg);"
-        "var SEL=CFG.sel,KEY=CFG.key,MIN=3;function ck(h){var m=(h.className||'').match(/col-[a-z-]+/);"
+        "var SEL=CFG.sel,COLS=celerpColumns(CFG.table,CFG.layout),MIN=3;function ck(h){var m=(h.className||'').match(/col-[a-z-]+/);"
             "return m?m[0]:'';}document.querySelectorAll(SEL).forEach(function(t){"
             "if(t.dataset.colResize)return;t.dataset.colResize='1';var ths=Array.from(t.querySelectorAll('thead th')).filter(function(h){"
             "return getComputedStyle(h).display!=='none';});if(!ths.length)return;function tw(){"
             'return t.offsetWidth||1;}function pct(h){return h.offsetWidth/tw()*100;'
             '}function save(){var w={};ths.forEach(function(h){var k=ck(h);if(k)w[k]=parseFloat(h.style.width)||pct(h);'
-            '});try{localStorage.setItem(KEY,JSON.stringify(w));}catch(e){}}requestAnimationFrame(function(){'
-            "var sv=null;try{sv=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){"
-            '}var ws=ths.map(function(h){var k=ck(h);return(sv&&sv[k]!=null)?sv[k]:pct(h);'
+            '});COLS.set(\'widths\',w);}requestAnimationFrame(function(){'
+            "var sv=COLS.get('widths');"
+            'var ws=ths.map(function(h){var k=ck(h);return(sv&&sv[k]!=null)?sv[k]:pct(h);'
             '});var s=ws.reduce(function(a,b){return a+b;},0)||1;ths.forEach(function(h,'
             "i){h.style.width=(ws[i]/s*100)+'%';});});ths.forEach(function(h,idx){"
             "if(idx>=ths.length-1)return;if(h.querySelector('.col-resize-handle'))return;"
@@ -2925,4 +2948,4 @@ def col_resize_script(table_selector: str, storage_key: str):
             "save();}document.addEventListener('mousemove',mv);document.addEventListener('mouseup',"
             'up);e.preventDefault();e.stopPropagation();});});});})();'
     )
-    return Script(resize_js, data_cfg=js_value({"sel": table_selector, "key": storage_key}))
+    return Script(resize_js, data_cfg=js_value({"sel": table_selector, "table": table, "layout": layout or {}}))

@@ -7,6 +7,7 @@ an edited sample, a renamed one, one used on a document and the owner's own item
 named "[DEMO] ..." must never be on it."""
 from __future__ import annotations
 
+import json
 import re
 import uuid
 
@@ -74,11 +75,13 @@ async def test_demo_filter_lists_only_untouched_samples_and_delete_keeps_the_res
 
 async def _demo_list_delete(owner_ui, ids: list[str], page: str) -> str:
     """Delete from an inventory list page, the way its bulk Delete posts (htmx names the
-    page it came from)."""
+    page it came from). Returns what the user reads: the body plus the toast that carries
+    the outcome once the bulk bar hides."""
     r = await owner_ui.post("/api/items/bulk/delete", data={"selected": ids},
                             headers={"HX-Request": "true", "HX-Current-URL": f"http://ui{page}"})
     assert r.status_code == 200, r.text
-    return r.text
+    toast = json.loads(r.headers.get("HX-Trigger") or "{}").get("celerpToast") or {}
+    return r.text + toast.get("message", "")
 
 
 async def _agricultural_samples(owner_ui) -> list[dict]:

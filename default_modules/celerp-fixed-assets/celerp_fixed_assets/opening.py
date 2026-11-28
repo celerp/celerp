@@ -17,10 +17,12 @@ import uuid
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refused
 from celerp.services.business_time import business_today
+from celerp.services.money import to_decimal
 
 from celerp_fixed_assets import projections, runs, setup, sources
-from celerp_fixed_assets.operations import _dec, _move
+from celerp_fixed_assets.operations import _move
 from celerp_fixed_assets.store import _entities, movements_by_asset
 
 OPENING_STATES = ("finished", "kept_open")
@@ -32,10 +34,10 @@ async def move_cutover(session, company_id, user_id, fa: dict, new_cut: str) -> 
     old_cut = setup.cutover(fa)
     books = await runs._books(session, company_id)
     if books.last is not None:
-        raise setup.refused(409, "fixed_assets.err_depreciation_period_label_has_posted_so", period_label=runs.period_label(books.last))
+        raise refused(409, "fixed_assets.err_depreciation_period_label_has_posted_so", period_label=runs.period_label(books.last))
     for line in await sources.lines(session, company_id):
         if line["claim"] and line["date"] <= new_cut:
-            raise setup.refused(409, "fixed_assets.err_description_date_registered_new_cutover_new", description=line['description'], date=line['date'], new_cut=new_cut)
+            raise refused(409, "fixed_assets.err_description_date_registered_new_cutover_new", description=line['description'], date=line['date'], new_cut=new_cut)
     assets = dict(await _entities(session, company_id, "fa_asset"))
     movements = await movements_by_asset(session, company_id)
     redate = []
@@ -44,16 +46,16 @@ async def move_cutover(session, company_id, user_id, fa: dict, new_cut: str) -> 
         for mv in projections.live(moved):
             if mv["operation"] == "opening":
                 if (assets[asset_id].get("available_date") or "") > new_cut:
-                    raise setup.refused(409, "fixed_assets.err_number_opening_asset_available_from_available", number=number, available_date=assets[asset_id]['available_date'], new_cut=new_cut)
+                    raise refused(409, "fixed_assets.err_number_opening_asset_available_from_available", number=number, available_date=assets[asset_id]['available_date'], new_cut=new_cut)
                 redate.append(mv)
             elif mv["operation"] not in runs.OPENING_OPERATIONS and mv["posting_date"] <= new_cut:
-                raise setup.refused(409, "fixed_assets.err_number_has_change_dated_posting_date", number=number, posting_date=mv['posting_date'], new_cut=new_cut)
+                raise refused(409, "fixed_assets.err_number_has_change_dated_posting_date", number=number, posting_date=mv['posting_date'], new_cut=new_cut)
     op_key = f"cutover.{uuid.uuid4().hex[:12]}"
     for mv in redate:
         amounts = mv.get("amounts") or {}
         await _move(session, company_id, user_id, mv["asset_id"], kind="reversal", operation="cutover_moved",
                     effective=mv["effective_date"], posting=old_cut, op_key=op_key,
-                    amounts={k: -_dec(v) for k, v in amounts.items()}, quantity=str(-_dec(mv.get("quantity"))),
+                    amounts={k: -to_decimal(v) for k, v in amounts.items()}, quantity=str(-to_decimal(mv.get("quantity"))),
                     reverses=mv["id"])
         await _move(session, company_id, user_id, mv["asset_id"], kind="opening", operation="opening",
                     effective=mv["effective_date"], posting=new_cut, op_key=op_key, amounts=amounts,
@@ -69,7 +71,7 @@ async def view(session, company_id) -> dict:
     return {"cutover": at_cut["cutover"], "state": at_cut["opening"],
             "accounts": [{"account": a["account"], "name": a["name"], "label": a["label"], "ledger": a["ledger"],
                           "registered": a["registered"],
-                          "difference": str(_dec(a["ledger"]) - _dec(a["registered"]))}
+                          "difference": str(to_decimal(a["ledger"]) - to_decimal(a["registered"]))}
                          for a in at_cut["accounts"]]}
 
 
@@ -84,7 +86,7 @@ async def finish(session, company_id, user_id, body: dict) -> dict:
     reopen, keep_open = bool(body.get("reopen")), bool(body.get("keep_open"))
     shown = await view(session, company_id)
     if not reopen and not keep_open:
-        apart = [f"{a['label']} ({a['difference']})" for a in shown["accounts"] if _dec(a["difference"])]
+        apart = [f"{a['label']} ({a['difference']})" for a in shown["accounts"] if to_decimal(a["difference"])]
         if apart:
             from celerp.accounting_roles import refusal
 

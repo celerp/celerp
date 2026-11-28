@@ -17,10 +17,11 @@ from decimal import Decimal
 from fastapi import HTTPException
 
 from celerp_fixed_assets import disposal, projections, runs, setup
+from celerp.accounting_roles import refused
 from celerp.services.periods import month_index, period_label
-from celerp_fixed_assets.projections import money
+from celerp.services.money import money_text, to_decimal
 from celerp_fixed_assets.operations import (
-    _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, in_use)
+    _date, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, in_use)
 from celerp_fixed_assets.store import _emit
 from ui.i18n import t
 
@@ -63,18 +64,18 @@ async def reclassify(session, company_id, user_id, asset_id: str, body: dict) ->
         books = await runs._books(session, company_id)
         month = month_index(date.fromisoformat(day))
         if books.last is not None and books.last >= month:
-            raise setup.refused(409, "fixed_assets.err_depreciation_posted_through_period_label_reclassify", period_label=period_label(books.last), period_label2=period_label(books.last + 1))
+            raise refused(409, "fixed_assets.err_depreciation_posted_through_period_label_reclassify", period_label=period_label(books.last), period_label2=period_label(books.last + 1))
         movements = await asset_movements(session, company_id, asset_id)
         disposal.check_date(books, asset, projections.live(movements), day, what="reclassification")
         owed, _ = disposal.owed(books, asset, movements, month - 1, month - 1)
         caught_up = sum(owed.values(), Decimal(0))
-        cost, ad, imp = _dec(asset.get("cost")), _dec(asset.get(_AD)), _dec(asset.get(_IMP))
+        cost, ad, imp = to_decimal(asset.get("cost")), to_decimal(asset.get(_AD)), to_decimal(asset.get(_IMP))
         expense = asset.get("depreciation_account") or old["depreciation_account"]
         lines = _lines(expense, old["accumulated_depreciation_account"], caught_up) if caught_up else []
         for moved, _ in balance_moves(asset["number"], old, new, cost, ad + caught_up + imp):
             lines += moved
         shown = {"number": asset["number"], "date": day, "from_class": old["name"], "to_class": new["name"],
-                 "depreciation": money(caught_up, books.currency),
+                 "depreciation": money_text(caught_up, books.currency),
                  "journals": [_journal_view(lines, books.currency)] if lines else []}
         return shown, {"asset": asset, "old": old, "new": new, "day": day, "lines": lines,
                        "periods": {period_label(k): str(v) for k, v in owed.items()},

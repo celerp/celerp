@@ -226,7 +226,7 @@ class TestCurrencyThreadingAllRoutes:
         }
         ui_client.cookies.update(_authed())
         with (
-            patch("ui.api_client.get_subscription", new=AsyncMock(return_value=sub)),
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=sub)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_USD)),
             patch("ui.api_client.get_subscription_periods", new=AsyncMock(return_value={"rows": [], "review": [], "set_aside": []})),
         ):

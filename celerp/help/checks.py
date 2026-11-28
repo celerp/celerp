@@ -34,7 +34,7 @@ from celerp.modules.loader import (
 )
 from celerp.services.permissions import is_permission_key
 
-# EXIF ImageDescription written by the capture test into every screenshot it saves.
+# EXIF ImageDescription the capture test starts every screenshot's marker with (capture_marker).
 CAPTURE_MARKER = "celerp help capture"
 _EXIF_DESCRIPTION = 0x010E
 MAX_TOTAL_IMAGE_BYTES = 25 * 1024 * 1024
@@ -170,22 +170,31 @@ def check_permissions(pages: list[PageFile]) -> list[str]:
     return out
 
 
-def _has_marker(path: Path) -> bool:
+def capture_marker(page_id: str, n: int, capture: dict) -> str:
+    """The marker the capture test writes into step ``n``'s picture and check_images expects:
+    the page, the step and a hash of the recipe that took it (its capture spec with its evidence),
+    so a picture moved to another step or left from an older recipe no longer passes."""
+    recipe = hashlib.sha256(json.dumps(capture, sort_keys=True).encode()).hexdigest()[:16]
+    return f"{CAPTURE_MARKER} {page_id}#{n} {recipe}"
+
+
+def image_marker(path: Path) -> str | None:
     from PIL import Image
     try:
         with Image.open(path) as im:
-            return im.getexif().get(_EXIF_DESCRIPTION) == CAPTURE_MARKER
+            return im.getexif().get(_EXIF_DESCRIPTION)
     except Exception:
-        return False
+        return None
 
 
 def check_images(pages: list[PageFile]) -> list[str]:
     out = []
     total = 0
     for page in pages:
-        for step in _steps(page):
+        for n, step in enumerate(_steps(page), 1):
             image = step.get("image")
             if not isinstance(image, str):
+                out.append(f"{page.path.name}: step {n} has no image")
                 continue
             path = page.help_dir / image
             if not path.is_file():
@@ -194,8 +203,11 @@ def check_images(pages: list[PageFile]) -> list[str]:
                 out.append(f"{page.path.name}: image {image} is not a .webp file")
             elif path.stat().st_size > MAX_IMAGE_BYTES:
                 out.append(f"{page.path.name}: image {image} is larger than {MAX_IMAGE_BYTES // 1024} KB")
-            elif not _has_marker(path):
+            elif not str(marker := image_marker(path)).startswith(CAPTURE_MARKER):
                 out.append(f"{page.path.name}: image {image} was not written by the capture test")
+            elif marker != capture_marker(page.data.get("id"), n, step.get("capture")):
+                out.append(f"{page.path.name}: image {image} was taken for another step or by an older "
+                           f"recipe ({marker}): retake it")
             else:
                 total += path.stat().st_size
     if total > MAX_TOTAL_IMAGE_BYTES:

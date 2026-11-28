@@ -6,25 +6,25 @@
   "routes": ["/contacts/customers", "/contacts/{contact_id}"],
   "permission": "view_contacts",
   "order": 1,
-  "checked": "aff28b2c00db9790edb0beb4442ef4c8c830812393ce2dee29187720f5dfc717",
+  "checked": "0228e6e84d09430192b1fe104cd571e414b4ccbcefd5ad3ad17a5ad57bd20168",
   "steps": [
     {
       "text": "Open {cust} from the sidebar to see the customer list.",
       "labels": {"cust": "nav.customers"},
-      "image": null,
-      "capture": {"route": "/contacts/customers", "selector": "main", "actions": []}
+      "image": "img/add-customer-1.webp",
+      "capture": {"route": "/contacts/customers", "selector": "main", "actions": [], "evidence": ["{cust}"]}
     },
     {
       "text": "Click {new} to create a blank customer. Its detail page opens so you can fill in addresses, people and other fields.",
       "labels": {"new": "contacts.new_customer"},
-      "image": null,
-      "capture": {"route": "/contacts/customers", "selector": "main", "actions": []}
+      "image": "img/add-customer-2.webp",
+      "capture": {"route": "/contacts/customers", "selector": "main", "actions": [], "evidence": ["{new}"]}
     },
     {
       "text": "You can also ask the assistant to add or update customers, add a note, a person or an address, tag or merge contacts. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/contacts/customers", "selector": "main", "actions": []}
+      "image": "img/add-customer-3.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Add a customer called Lumen Cafe"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["contacts.add-vendor", "contacts.settings"]

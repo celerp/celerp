@@ -27,7 +27,7 @@ async def _other_company_location(client, headers: dict) -> str:
 
 @pytest.mark.asyncio
 async def test_document_contact_must_be_live_contact_projection(client, session):
-    setup = await perm_setup(client, session)
+    setup = await perm_setup(client, session, currency="USD")
     headers = setup["admin_h"]
     item_id = setup["item_id"]
 
@@ -50,7 +50,7 @@ async def test_document_contact_must_be_live_contact_projection(client, session)
 
 @pytest.mark.asyncio
 async def test_item_patch_requires_item_and_company_owned_location(client, session):
-    setup = await perm_setup(client, session)
+    setup = await perm_setup(client, session, currency="USD")
     headers = setup["admin_h"]
     foreign_location = await _other_company_location(client, headers)
 

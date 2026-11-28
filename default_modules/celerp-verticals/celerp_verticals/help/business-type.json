@@ -6,31 +6,31 @@
   "routes": ["/setup/company", "/setup/activating"],
   "permission": null,
   "order": 1,
-  "checked": "cba86f6f7f92ac67f6602fe24448fdb80c1ee6817ebaea85080665f218369316",
+  "checked": "eceb746b4670e0c865f1ed919b135a20b555bac03830575e60dd3b0d323a5961",
   "steps": [
     {
       "text": "Choose {label} on the setup screen; search if your trade is not in the short list.",
       "labels": {"label": "label.business_type"},
-      "image": null,
-      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+      "image": "img/business-type-1.webp",
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": ["{label}"]}
     },
     {
       "text": "{hint}",
       "labels": {"hint": "setup.business_type_hint"},
-      "image": null,
-      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+      "image": "img/business-type-2.webp",
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": ["{hint}"]}
     },
     {
       "text": "Once you continue, Celerp turns on the modules for your business type and opens the dashboard when they are ready.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+      "image": "img/business-type-3.webp",
+      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": [], "evidence": ["form.auth-form"]}
     },
     {
       "text": "You can also ask the assistant to set your business type. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+      "image": "img/business-type-4.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Set our business type to retail"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["verticals.category-library"]

@@ -6,49 +6,49 @@
   "routes": ["/manufacturing", "/manufacturing/production"],
   "permission": "manage_manufacturing",
   "order": 3,
-  "checked": "c86512efd1ca4b79d44ca9a1cfb4d49d693a129162778652c4c7c274e70db471",
+  "checked": "7315bb55190ddc52865c476e9f58bc99238a394b5651c6cead492d94471ce785",
   "steps": [
     {
       "text": "Open the item and choose its {tab} tab. The recipe there lists the components and the quantity of each that one unit takes, so a recipe for pressed rapeseed oil lists the seed.",
       "labels": {"tab": "nav.manufacturing"},
-      "image": null,
-      "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
+      "image": "img/make-from-recipe-1.webp",
+      "capture": {"route": "/inventory?q=BNDL-001", "selector": "main", "actions": [{"click": "main a.table-link[href^=\"/inventory/item:\"] >> nth=-1"}, {"wait": ".category-tabs"}, {"click": ".category-tabs a[href$=\"tab=manufacturing\"]"}, {"wait": ".category-tab--active[href$=\"tab=manufacturing\"]"}, {"wait": "#recipe-section tr.data-row"}], "evidence": ["{tab}"]}
     },
     {
       "text": "Say what to make and how many: add the item and quantity to a production order from {so} and finalize it. The line then shows on {dp}.",
       "labels": {"so": "documents.page_stock_orders", "dp": "manufacturing.demand_planning"},
-      "image": null,
-      "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
+      "image": "img/make-from-recipe-2.webp",
+      "capture": {"route": "/manufacturing", "selector": "main", "actions": [], "evidence": ["{so}", "{dp}"]}
     },
     {
       "text": "On {dp}, tick the line and choose Make selected from the Action list. This creates the work order for that item and quantity.",
       "labels": {"dp": "manufacturing.demand_planning"},
-      "image": null,
-      "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
+      "image": "img/make-from-recipe-3.webp",
+      "capture": {"route": "/manufacturing", "selector": "main", "actions": [{"click": "#mfg-table tbody input.bulk-select"}], "evidence": ["{dp}", "#mfg-table tbody input.bulk-select:checked", ".bulk-action-select"]}
     },
     {
       "text": "Open {wip}, tick the work order and choose {issue}. The components leave stock and are held as work in progress, and a work order that was still planned starts.",
       "labels": {"wip": "manufacturing.work_in_progress", "issue": "manufacturing.action_issue"},
-      "image": null,
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
+      "image": "img/make-from-recipe-4.webp",
+      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": [{"click": "#mfg-table tbody tr:has-text('Planned') input.bulk-select"}], "evidence": ["{wip}", "#mfg-table tbody tr:has-text('Planned') input.bulk-select:checked", ".bulk-action-select"]}
     },
     {
       "text": "When the product is made, tick the work order and choose {complete}. The finished item is received into stock and the components held for it are used up.",
       "labels": {"complete": "manufacturing.action_complete"},
-      "image": null,
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
+      "image": "img/make-from-recipe-5.webp",
+      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": [{"click": "#mfg-table tbody tr:has-text('In progress') input.bulk-select"}], "evidence": ["#mfg-table tbody tr:has-text('In progress') input.bulk-select:checked", ".bulk-action-select"]}
     },
     {
-      "text": "A work order makes one product. A second product from the same batch, such as oil cake from pressing rapeseed, is not part of the run: add it to stock as its own item with {add}.",
-      "labels": {"add": "btn.add_item"},
-      "image": null,
-      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+      "text": "A work order can make more than one product. If pressing rapeseed also gives oil cake, add the cake to the oil's recipe under {also}, with the quantity one batch yields and its share of the cost. Each work order then receives the cake into stock beside the oil, and the cost of the run is split between them by those shares.",
+      "labels": {"also": "inventory.also_produces"},
+      "image": "img/make-from-recipe-6.webp",
+      "capture": {"route": "/inventory?q=OIL-001", "selector": "#recipe-form .doc-section:has(tr.recipe-add-row [name=\"also_new\"])", "actions": [{"click": "main a.table-link[href^=\"/inventory/item:\"] >> nth=-1"}, {"wait": ".category-tabs"}, {"click": ".category-tabs a[href$=\"tab=manufacturing\"]"}, {"wait": ".category-tab--active[href$=\"tab=manufacturing\"]"}, {"wait": "#recipe-section tr.data-row"}], "evidence": ["{also}", "#recipe-form tr:has-text('CAKE-001')"]}
     },
     {
       "text": "You can also ask the assistant to create the work order, issue its components or complete it. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
+      "image": "img/make-from-recipe-7.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Create a work order for 10 tables"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["manufacturing.demand-planning", "manufacturing.production"]

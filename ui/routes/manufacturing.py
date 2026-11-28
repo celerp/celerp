@@ -29,7 +29,7 @@ from ui.i18n import reconcile_reason, refusal_text, t
 from ui.routes.reports import _company_today, _get_company
 from celerp.services.business_time import business_today
 from celerp.services.ledger_display import run_reference
-from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES
+from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES, output_skus
 from ui.components.encode import call, EVENT, html_response, safe_url, THIS
 
 logger = logging.getLogger(__name__)
@@ -187,10 +187,6 @@ def _status_badge(coverage: str) -> FT:
 
 
 
-def _doc_href(doc_id: str, doc_type: str) -> str:
-    return f"/lists/{doc_id}" if doc_type == "list" else f"/docs/{doc_id}"
-
-
 def _demand_lines(rows: list[dict]) -> list[dict]:
     """Flatten the product-centric to-make rows into one entry per demanding document line, each
     carrying its product and the document's pegged coverage. Needed first, then partial, then
@@ -217,7 +213,7 @@ def _demand_row(l: dict) -> FT:
     unit = l.get("unit")
     doc_type = l.get("doc_type") or ""
     doc_no = l.get("doc_number") or EMPTY
-    doc_cell = (A(doc_no, href=safe_url(_doc_href(l.get("doc_id"), doc_type)), cls="table-link")
+    doc_cell = (A(doc_no, href=safe_url(doc_href(l.get("doc_id"), doc_type)), cls="table-link")
                 if l.get("doc_id") else Span(doc_no))
     return Tr(
         # value carries the demand line (product + its document) so each makes a 1:1-linked work order.
@@ -238,7 +234,7 @@ def _demand_row(l: dict) -> FT:
 def _demand_table(lines: list[dict], kept_key: str = "") -> FT:
     if not lines:
         return Div(
-            P(t("manufacturing.demand_empty"), cls="hint"),
+            P(t("manufacturing.demand_empty"), cls="empty-state"),
             id="mfg-table",
         )
     return Table(
@@ -549,7 +545,7 @@ def setup_routes(app):
             shown = [o for o in orders_all if str(o.get("status") or "").lower() == active]
         if q:
             shown = [o for o in shown
-                     if q in " ".join(str(x.get("sku", "")) for x in o.get("expected_outputs", [])).lower()
+                     if q in " ".join(output_skus(o)).lower()
                      or q in str(o.get("description", "")).lower()]
         body = (
             _intro("factory", t("manufacturing.wip_intro")),
@@ -674,7 +670,7 @@ def setup_routes(app):
         head = (P(t("manufacturing.make_list", items=", ".join(
             f"{p.get('sku') or p.get('item_id')} ({_qty(p.get('quantity', 0), p.get('unit'))})"
             for p in products)), cls="hint") if products
-            else P(t("manufacturing.no_shortfall_selection"), cls="hint"))
+            else P(t("manufacturing.no_shortfall_selection"), cls="empty-state"))
         return await base_shell(
             page_header(
                 t("manufacturing.component_requirements"),

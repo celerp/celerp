@@ -11,44 +11,44 @@
     {
       "text": "Open {co} from the sidebar and click {new} to start a memo for the customer receiving the goods.",
       "labels": {"co": "nav.consignment_out", "new": "btn.new_memo"},
-      "image": null,
-      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+      "image": "img/memos-1.webp",
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": [], "evidence": ["{co}", "{new}"]}
     },
     {
       "text": "Add a line for each item you are sending, then click {issue}. The items stay in your stock, marked as on memo, until the customer buys them or sends them back.",
       "labels": {"issue": "documents.finalize_label_memo"},
-      "image": null,
-      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": [{"click": "main button[hx-post='/docs/create-blank?type=memo']"}]}
+      "image": "img/memos-2.webp",
+      "capture": {"route": "/docs?type=memo&status=draft", "selector": "main", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main div.doc-actions"}], "evidence": ["{issue}"]}
     },
     {
       "text": "When the goods leave, tick their lines on the memo and choose Set as shipped from the line actions. Only shipped lines can be invoiced.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+      "image": "img/memos-3.webp",
+      "capture": {"route": "/docs?type=memo", "selector": "main div:has(> #li-bulk-toolbar)", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main input.li-select"}, {"click": "main input.li-select"}], "evidence": ["#li-bulk-toolbar"]}
     },
     {
       "text": "When the customer keeps some items, tick those lines and choose Invoice selected. Check the preview, then confirm to put them on a new draft invoice or one you already have. Invoice all puts everything still out on one draft invoice.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+      "image": "img/memos-4.webp",
+      "capture": {"route": "/docs?type=memo", "selector": "main div:has(> #li-bulk-toolbar)", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main input.li-select"}, {"click": "main input.li-select"}], "evidence": ["#li-bulk-toolbar"]}
     },
     {
       "text": "When items come back, tick their lines and choose Set as available. They return to your stock as available to sell.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+      "image": "img/memos-5.webp",
+      "capture": {"route": "/docs?type=memo", "selector": "main div:has(> #li-bulk-toolbar)", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main input.li-select"}, {"click": "main input.li-select"}], "evidence": ["#li-bulk-toolbar"]}
     },
     {
       "text": "The totals on the memo show what each invoice took and what is still on memo. Once nothing is out, click Close. A closed memo can be reopened.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+      "image": "img/memos-6.webp",
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": [{"click": "main table a[href^='/docs/doc:']"}, {"wait": "main div.doc-actions"}], "evidence": ["#doc-outstanding"]}
     },
     {
       "text": "You can also ask the assistant to create a memo, mark lines shipped or available, invoice lines or close the memo. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+      "image": "img/memos-7.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Invoice the lines kept from my latest memo"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["docs.sales-documents", "docs.payments"]

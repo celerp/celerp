@@ -533,7 +533,7 @@ async def test_journal_date_filter_and_order(client):
 
     data = await _journal(client, tok, date_from="2026-01-01", date_to="2026-01-31")
     got = [e["je_id"] for e in data["entries"]]
-    assert got == sorted(got, key=lambda i: ([e["ts"] for e in data["entries"] if e["je_id"] == i][0], i))
+    assert [e["ts"] for e in data["entries"]] == ["2026-01-10", "2026-01-20"]
     assert ids["2026-01-10"] in got and ids["2026-01-20"] in got
     assert ids["2026-02-05"] not in got
     # Edge dates are inclusive
@@ -541,6 +541,23 @@ async def test_journal_date_filter_and_order(client):
     assert [e["je_id"] for e in edge["entries"]] == [ids["2026-01-10"]]
     assert abs(edge["total_debit"] - 10.0) < 0.01
     assert abs(edge["total_credit"] - 10.0) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_entries_of_one_day_list_in_posting_order(client):
+    """Entries sharing a date read in the order they were posted, in the journal, an
+    account's ledger and the general ledger's lines, not in the order of their random ids."""
+    tok = await _reg(client)
+    posted = [(await _post_manual_je(client, tok, _bal(float(n)), ts="2026-03-03")).json()["je_id"]
+              for n in range(1, 9)]
+    journal = await _journal(client, tok, date_from="2026-03-03", date_to="2026-03-03")
+    assert [e["je_id"] for e in journal["entries"]] == posted
+    ledger = (await client.get("/accounting/ledger/1111", headers=_h(tok))).json()
+    assert [l["je_id"] for l in ledger["lines"]] == posted
+    gl = (await client.get("/accounting/general-ledger", headers=_h(tok), params={
+        "date_from": "2026-03-01", "date_to": "2026-03-31", "include_lines": "true"})).json()
+    cash = next(r for r in gl["rows"] if r["code"] == "1111")
+    assert [l["je_id"] for l in cash["lines"]] == posted
 
 
 @pytest.mark.asyncio
@@ -1423,8 +1440,7 @@ async def test_batch_import_tolerates_null_amounts(client):
         "event_type": "acc.journal_entry.created",
         "data": {"status": "posted", "ts": "2026-01-15", "entries": [
             {"account": "1111", "debit": 10.0, "credit": None},
-            {"account": None, "debit": None, "credit": None},
-            {"account": "4100", "debit": None, "credit": 10.0},
+            {"account": "4100", "debit": None, "credit": 10.0, "fx_rate": None, "fund_id": None},
         ]},
         "source": "test",
         "idempotency_key": str(uuid.uuid4()),
@@ -1435,9 +1451,7 @@ async def test_batch_import_tolerates_null_amounts(client):
     bank = [l for l in tb["lines"] if l["code"] == "1111"]
     assert bank and abs(bank[0]["total_debit"] - 10.0) < 0.01
 
-    # The journal renders the same entry with the account-less line skipped
-    # rather than crashing. This endpoint did not exist before this change, so
-    # the assertion is red against the pre-change tree.
+    # The journal renders the same entry, its null amounts read as zero.
     entries = [e for e in (await _journal(client, tok))["entries"] if e not in start["entries"]]
     assert len(entries) == 1
     assert [l["account"] for l in entries[0]["lines"]] == ["1111", "4100"]
@@ -1445,29 +1459,33 @@ async def test_batch_import_tolerates_null_amounts(client):
 
 @pytest.mark.asyncio
 async def test_ledger_buckets_by_literal_code_only(client):
-    """A legacy entry posted directly to a parent code shows on the parent's
-    own ledger and nowhere else, matching how TB/GL/journal bucket it."""
+    """An entry posted to an account that later gained an account under it (so it is now
+    a parent) shows on the parent's own ledger and nowhere else, matching how TB/GL/journal
+    bucket it."""
     tok = await _reg(client)
     r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
         "entity_id": f"je:{uuid.uuid4()}",
         "event_type": "acc.journal_entry.created",
         "data": {"status": "posted", "ts": "2026-01-10", "entries": [
-            {"account": "1130", "debit": 70.0, "credit": 0},
+            {"account": "1140", "debit": 70.0, "credit": 0},
             {"account": "3200", "debit": 0, "credit": 70.0},
         ]},
         "source": "test", "idempotency_key": str(uuid.uuid4()),
     }]})
-    assert r.status_code == 200 and r.json()["created"] == 1
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    r = await client.post("/accounting/accounts", headers=_h(tok), json={
+        "code": "1140-C", "name": "Child", "account_type": "asset", "parent_code": "1140"})
+    assert r.status_code == 200, r.text
 
-    parent = (await client.get("/accounting/ledger/1130", headers=_h(tok))).json()
+    parent = (await client.get("/accounting/ledger/1140", headers=_h(tok))).json()
     assert any(abs(l["debit"] - 70.0) < 0.01 for l in parent["lines"])
-    child = (await client.get("/accounting/ledger/1130-P", headers=_h(tok))).json()
+    child = (await client.get("/accounting/ledger/1140-C", headers=_h(tok))).json()
     assert not any(abs(l["debit"] - 70.0) < 0.01 for l in child["lines"])
 
     gl = (await client.get("/accounting/general-ledger", headers=_h(tok))).json()
     rows = {r["code"]: r for r in gl["rows"]}
-    assert abs(rows["1130"]["closing"] - 70.0) < 0.01
-    assert "1130-P" not in rows or abs(rows["1130-P"]["closing"]) < 0.01
+    assert abs(rows["1140"]["closing"] - 70.0) < 0.01
+    assert "1140-C" not in rows or abs(rows["1140-C"]["closing"]) < 0.01
 
 
 @pytest.mark.asyncio
@@ -2118,9 +2136,9 @@ async def test_manual_je_nothing_is_posted_to_the_difference_account_on_its_own(
     assert all(l["account"] != "6960" for l in entry["lines"])
 
 
-async def test_manual_je_line_respects_its_own_currency_decimal_places(client):
-    """JPY has no minor unit, so a yen line quantizes to whole yen before it
-    converts, at the same place the currency itself uses."""
+async def test_manual_je_line_keeps_its_own_currency_decimal_places_before_it_converts(client):
+    """A typed yen line is kept at whole yen, the place the currency itself uses, and the
+    books' amount is that stored yen amount at its rate, so the line means one figure."""
     tok = await _reg(client)
     await _thb(client, tok)
     r = await _post_manual_je(client, tok, [
@@ -2131,7 +2149,7 @@ async def test_manual_je_line_respects_its_own_currency_decimal_places(client):
 
     line = next(l for l in (await _journal(client, tok))["entries"][0]["lines"]
                 if l["account"] == "1111")
-    # 100.5 rounds to 101 yen, and 101 at 0.25 is 25.25 base.
+    # 100.5 yen keeps whole yen, 101, and 101 yen at 0.25 is 25.25 in the books.
     assert line["fx_debit"] == 101.0 and line["debit"] == 25.25
 
 
@@ -2251,33 +2269,33 @@ async def test_void_manual_je_preserves_the_stored_line_fx(client):
 
 async def test_an_entry_posted_before_per_line_currency_still_reads_back(client, session):
     """Stored events are immutable, so an entry recorded when the currency and
-    rate belonged to the whole entry has to render now. Its lines inherit it."""
-    from celerp.events.engine import emit_event
+    rate belonged to the whole entry has to render now. Its lines inherit it. The
+    event is written as an older release stored it, and the records rebuilt from it:
+    posted today, its lines would be judged as a new entry's."""
+    import json
+
+    from sqlalchemy import text
+
+    from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
 
     tok = await _reg(client)
     await _thb(client, tok)
     company_id, _ = _ids(tok)
     je_id = f"je:manual:{uuid.uuid4().hex}"
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=je_id,
-        entity_type="journal_entry",
-        event_type="acc.journal_entry.created",
-        data={
+    await lock_company(session, company_id)
+    await session.execute(text(
+        "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
+        "VALUES (:c, :e, 'journal_entry', 'acc.journal_entry.created', CAST(:d AS json), 'test', :k)"), {
+        "c": company_id, "e": je_id, "k": uuid.uuid4().hex, "d": json.dumps({
             "ts": "2026-01-15", "memo": "Historic", "status": "posted", "je_type": "manual",
             "entries": [
                 {"account": "1111", "debit": 350.0, "credit": 0.0, "fx_debit": 10.0},
                 {"account": "4100", "debit": 0.0, "credit": 350.0, "fx_credit": 10.0},
             ],
             "fx": {"currency": "USD", "rate": 35.0},
-        },
-        actor_id=None,
-        location_id=None,
-        source="test",
-        idempotency_key=uuid.uuid4().hex,
-        metadata_={},
-    )
+        })})
+    await ProjectionEngine.rebuild(session, company_id)
     await session.commit()
 
     entry = next(e for e in (await _journal(client, tok))["entries"] if e["je_id"] == je_id)

@@ -21,11 +21,14 @@
       "labels": {
         "nav": "nav.subscribers"
       },
-      "image": null,
+      "image": "img/subscribers-1.webp",
       "capture": {
         "route": "/subscribers",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{nav}"
+        ]
       }
     },
     {
@@ -36,11 +39,17 @@
         "seats": "subscriptions.seats",
         "trial": "subscriptions.trial_end"
       },
-      "image": null,
+      "image": "img/subscribers-2.webp",
       "capture": {
         "route": "/subscribers",
-        "selector": "main",
-        "actions": []
+        "selector": "#new-subscriber",
+        "actions": [],
+        "evidence": [
+          "{new}",
+          "label.form-label:has-text('{plan}')",
+          "{seats}",
+          "{trial}"
+        ]
       }
     },
     {
@@ -49,10 +58,10 @@
         "chg": "btn.change_quantities",
         "qty": "subscriptions.quantities_heading"
       },
-      "image": null,
+      "image": "img/subscribers-3.webp",
       "capture": {
         "route": "/subscribers",
-        "selector": "main",
+        "selector": "#sub-quantities",
         "actions": [
           {
             "click": "main table a[href^='/subscriptions/']"
@@ -60,17 +69,29 @@
           {
             "wait": "main h3"
           }
+        ],
+        "evidence": [
+          "{chg}",
+          "{qty}"
         ]
       }
     },
     {
       "text": "You can also ask the assistant to change a subscriber's seats, pause or cancel a subscription. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/subscribers-4.webp",
       "capture": {
-        "route": "/subscribers",
-        "selector": "main",
-        "actions": []
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Pause the subscription for my newest subscriber"
+          }
+        ],
+        "evidence": [
+          "#ai-query-input"
+        ]
       }
     }
   ],

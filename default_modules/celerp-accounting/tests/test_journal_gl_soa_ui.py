@@ -643,7 +643,7 @@ _NEW_KEYS = [
     "acct.no_entries_for_account",
     "acct.record_foreign_currency", "acct.currency_base_hint",
     "acct.imbalance_note", "acct.fx_per_line_hint",
-    "acct.err_currency_unknown", "acct.err_rate_positive",
+    "acct.err_currency_unknown",
     "acct.bulk_void", "acct.bulk_void_confirm", "acct.bulk_void_result",
     "acct.bulk_void_refused", "acct.bulk_void_refused_one", "label.n_selected", "label.select_all",
     "label.select_rows_first",
@@ -767,18 +767,34 @@ async def test_je_form_carries_a_different_currency_on_each_line(ui_client):
 
 
 @pytest.mark.asyncio
-async def test_je_form_rejects_unknown_currency_without_calling_the_api(ui_client):
+async def test_je_form_leaves_a_line_currency_to_the_journal_boundary(ui_client):
+    """The form sends an unknown currency on as typed: the journal boundary refuses it with
+    the message an imported journal gets."""
     from unittest.mock import AsyncMock, patch
 
     with patch("ui.api_client.create_journal_entry", new=AsyncMock(return_value={})) as m:
-        r = await _post(ui_client, "/accounting/journal/new", {
+        await _post(ui_client, "/accounting/journal/new", {
             "ts": "2026-03-01", "memo": "m", "idempotency_token": "tok-fx-3",
             "account_0": "1111", "debit_0": "10", "credit_0": "",
             "account_1": "4100", "debit_1": "", "credit_1": "10",
             "currency_0": "QQQ", "rate_0": "35",
         })
-        assert r.status_code == 200
-        assert m.await_count == 0
+        assert m.await_count == 1
+        assert m.call_args[0][1]["entries"][0]["currency"] == "QQQ"
+
+
+@pytest.mark.asyncio
+async def test_je_form_refuses_a_rate_that_is_not_a_number(ui_client):
+    from unittest.mock import AsyncMock, patch
+
+    with patch("ui.api_client.create_journal_entry", new=AsyncMock(return_value={})) as m:
+        r = await _post(ui_client, "/accounting/journal/new", {
+            "ts": "2026-03-01", "memo": "m", "idempotency_token": "tok-fx-4",
+            "account_0": "1111", "debit_0": "10", "credit_0": "",
+            "account_1": "4100", "debit_1": "", "credit_1": "10",
+            "currency_0": "EUR", "rate_0": "inf",
+        })
+        assert r.status_code == 200 and m.await_count == 0
 
 
 def test_fx_line_amounts_prefers_stored_over_derived():

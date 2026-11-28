@@ -514,3 +514,29 @@ async def test_f05_the_same_key_at_once_posts_one_journal(committed_engine, regi
         events = (await s.execute(select(func.count()).select_from(LedgerEntry).where(
             LedgerEntry.company_id == cid, LedgerEntry.entity_id == one.je_id))).scalar_one()
     assert events == 2
+
+
+# ── Fingerprint compatibility ──────────────────────────────────────────────────
+
+# Digests computed by _intent_hash as it stood before amounts went through to_decimal
+# (base dae0db7f), for the request in test_s6_intent_hash_matches_pre_upgrade_journals.
+# A stored journal keeps its digest, so a retry after the upgrade must compute the same.
+_PRE_UPGRADE_DIGESTS = {
+    "0.00": "f37f587d73a631faeba90d4b3e6ee337b6f82d16af70a57432c70eb77e594c4c",
+    "-0.00": "f37f587d73a631faeba90d4b3e6ee337b6f82d16af70a57432c70eb77e594c4c",
+    "0": "f37f587d73a631faeba90d4b3e6ee337b6f82d16af70a57432c70eb77e594c4c",
+    "1.10": "15716261afa1efc7725d6b83a39acdd536896233ca924e1452b217fd8a341fa0",
+    "123456789012.34": "be7eae4fe58974d92a54555bca6a3eb45f0de85b0e629cee3ffa19d6375aa39f",
+}
+
+
+@pytest.mark.parametrize("amount", sorted(_PRE_UPGRADE_DIGESTS))
+def test_s6_intent_hash_matches_pre_upgrade_journals(amount):
+    """A journal posted before the upgrade is replayed, not refused as a reused key:
+    zero amounts written as 0.00 or -0.00 fingerprint as 0, as they always did."""
+    from celerp.services.module_journals import JournalLine, JournalSource, _intent_hash
+
+    value = Decimal(amount)
+    lines = [JournalLine(account="1110", debit=value), JournalLine(account="4100", credit=value, fund_id="f1")]
+    source = JournalSource(entity_id="ent-1", href="/x/ent-1", label="Ent 1")
+    assert _intent_hash("op", "2026-01-31", lines, source, {"a": 1}) == _PRE_UPGRADE_DIGESTS[amount]

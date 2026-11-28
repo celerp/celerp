@@ -513,7 +513,7 @@ def files_section(
     table = Table(
         Thead(Tr(*header_cells)),
         Tbody(*file_rows) if file_rows else Tbody(
-            Tr(Td(P(t("label.no_files_yet"), cls="muted"), colspan=str(col_count)))
+            Tr(Td(P(t("label.no_files_yet"), cls="empty-state-msg"), colspan=str(col_count)))
         ),
         id=f"files-table-{sid}",
         cls="data-table data-table--compact",

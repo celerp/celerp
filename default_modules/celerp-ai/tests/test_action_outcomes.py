@@ -162,7 +162,7 @@ async def _crash_after_running(client, headers, session, conv_id, message_id, to
 async def test_keyed_retry_reuses_the_key(client, session, agent_caps, ai_session):
     """A fund create whose answer was lost is retryable; the retry carries the same
     key, so the company ends with one fund and the second answer equals the first."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     on = await client.put("/accounting/funds/setting", headers=admin, json={"enabled": True})
     assert on.status_code == 200, on.text
@@ -195,7 +195,7 @@ async def test_unkeyed_ambiguous_claim_shows_outcome_unknown(client, session, ag
     """A location create whose answer was lost is unknown, not retryable: the card
     names the screen to check, plain confirm and confirm-all send nothing, and the
     history tells the model the outcome is unknown."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     before = await _location_count(client, admin)
     conv_id, message_id, call_id = await _propose_location(client, admin, agent_caps)
@@ -231,7 +231,7 @@ async def test_run_again_after_warning_runs_once(client, session, agent_caps, ai
     """Run again on an unknown record runs exactly once more, under its own identity, and
     the card takes the route's own answer: the first run did add the location, so the
     route refuses the same name again. The ended record then refuses a second Run again."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     before = await _location_count(client, admin)
     conv_id, message_id, call_id = await _propose_location(client, admin, agent_caps)
@@ -260,7 +260,7 @@ async def test_run_again_after_warning_runs_once(client, session, agent_caps, ai
 async def test_unknown_in_pending_dismiss_and_dependent_stop(client, session, agent_caps, ai_session):
     """A stale unkeyed claim is listed as unknown and dismiss clears it; in a
     propose_for_each card only the interrupted record is offered for Run again."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     conv_id, message_id, call_id = await _propose_location(client, admin, agent_caps)
     await _crash_after_running(client, admin, session, conv_id, message_id, call_id)
@@ -301,7 +301,7 @@ async def test_ambiguous_outcome_never_reruns_without_run_again(
     """Every way an outcome becomes unknown, read by every claiming reader: the route
     ran once (the first run) and no reader sends it again. Run again on a fresh
     unknown record sends it exactly once more."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
 
     async def unknown_record():
@@ -381,7 +381,7 @@ async def _backdate(session, message_id, tool_call_id) -> None:
 async def test_for_each_stopped_after_k_records_runs_only_the_rest(client, session, agent_caps, ai_session, k):
     """Each record keeps its outcome as it runs: after a stop only the record in flight is
     unknown, and Run again runs only the records that did not finish."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     before = await _location_count(client, admin)
     conv_id, message_id, call_id = await _propose_locations_for_each(client, admin, agent_caps)
@@ -415,7 +415,7 @@ async def test_for_each_stopped_after_k_records_runs_only_the_rest(client, sessi
 @pytest.mark.asyncio
 async def test_run_again_on_a_keyed_record_never_runs_a_second_copy(client, session, agent_caps, ai_session):
     """Run again is refused on a keyed record; its plain retry carries the first key."""
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     assert (await client.put("/accounting/funds/setting", headers=admin, json={"enabled": True})).status_code == 200
     before = await _fund_count(client, admin)
@@ -443,3 +443,72 @@ async def test_outcomes_of_a_message_deleted_mid_run_are_dropped(session):
 
     await ai_conversations.note_outcomes(session, message_id=uuid.uuid4(), tool_call_id="t1",
                                          outcomes=[{"status": "executing"}])
+
+
+async def _drop_books_currency(client, session, headers) -> None:
+    """The company loses its books currency after a change was proposed: a proposal made
+    before the rule, or by a company whose currency was never set."""
+    from sqlalchemy import update
+    from celerp.models.company import Company
+    company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
+    company = await session.get(Company, company_id)
+    settings = {k: v for k, v in (company.settings or {}).items() if k != "currency"}
+    await session.execute(update(Company).where(Company.id == company.id).values(settings=settings))
+    await session.commit()
+
+
+def _held_for_currency(answer: dict) -> bool:
+    return (answer["ok"] is False and answer["action_status"] == "pending"
+            and answer["error"]["code"] == "books_currency_unset")
+
+
+@pytest.mark.asyncio
+async def test_an_older_proposal_and_confirm_all_wait_for_the_books_currency(client, session, agent_caps, ai_session):
+    """A card proposed while the company had a currency is held, not run, once it has
+    none, alone or under confirm-all; it stays pending and runs once the currency is set."""
+    ctx = await perm_setup(client, session, currency="USD")
+    admin = ctx["admin_h"]
+    before = await _location_count(client, admin)
+    conv_id, message_id, call_id = await _propose_location(client, admin, agent_caps)
+    await _drop_books_currency(client, session, admin)
+    held = await _confirm(client, admin, conv_id, message_id, call_id)
+    assert held.status_code == 200, held.text
+    assert _held_for_currency(held.json()), held.json()
+    every = await _confirm_all(client, admin, conv_id, message_id)
+    assert every.status_code == 200, every.text
+    assert all(_held_for_currency(r) for r in every.json()["results"]), every.json()
+    assert (await _record(session, message_id, call_id)).get("status", "pending") == "pending"
+    assert await _location_count(client, admin) == before
+    assert (await client.patch("/companies/me/books", headers=admin, json={"currency": "USD"})).status_code == 200
+    ran = await _confirm(client, admin, conv_id, message_id, call_id)
+    assert ran.json()["ok"] is True, ran.text
+    assert await _location_count(client, admin) == before + 1
+
+
+@pytest.mark.asyncio
+async def test_a_retry_waits_for_the_books_currency(client, session, agent_caps, ai_session):
+    """A retryable change is held to the rule at its retry, then retried under the same
+    key once the currency is set: one record, never two."""
+    ctx = await perm_setup(client, session, currency="USD")
+    admin = ctx["admin_h"]
+    assert (await client.put("/accounting/funds/setting", headers=admin, json={"enabled": True})).status_code == 200
+    before = await _fund_count(client, admin)
+    op = _op(agent_caps, "POST", "/accounting/funds")
+    conv_id, message_id, call_id = await _propose(client, admin, ScriptedModel(
+        _call(op, {"body": {"name": "Building fund"}}, "fund1")))
+    identities: list = []
+    with patch.object(ai_tools, "execute_agent_capability", _lost_after_sending(identities)):
+        first = await _confirm(client, admin, conv_id, message_id, call_id)
+    assert first.json()["action_status"] == "retryable", first.text
+    await _drop_books_currency(client, session, admin)
+    with patch.object(ai_tools, "execute_agent_capability", _counting(identities)):
+        held = await _confirm(client, admin, conv_id, message_id, call_id)
+    assert _held_for_currency(held.json()), held.json()
+    assert len(identities) == 1
+    assert (await _record(session, message_id, call_id))["status"] == "retryable"
+    assert (await client.patch("/companies/me/books", headers=admin, json={"currency": "USD"})).status_code == 200
+    with patch.object(ai_tools, "execute_agent_capability", _counting(identities)):
+        again = await _confirm(client, admin, conv_id, message_id, call_id)
+    assert again.json()["ok"] is True, again.text
+    assert identities[0] == identities[1]
+    assert await _fund_count(client, admin) == before + 1

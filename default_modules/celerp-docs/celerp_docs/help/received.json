@@ -11,26 +11,26 @@
     {
       "text": "Open {recv} from the sidebar. {hint}",
       "labels": {"recv": "nav.received_documents", "hint": "received.hint"},
-      "image": null,
-      "capture": {"route": "/docs/received", "selector": "main", "actions": []}
+      "image": "img/received-1.webp",
+      "capture": {"route": "/docs/received", "selector": "main", "actions": [], "evidence": ["{recv}", "{hint}"]}
     },
     {
       "text": "Use {imp} to bring in a document a vendor shared with you, then book it once it is reviewed.",
       "labels": {"imp": "received.import_shared"},
-      "image": null,
-      "capture": {"route": "/docs/received", "selector": "main", "actions": []}
+      "image": "img/received-2.webp",
+      "capture": {"route": "/docs/received", "selector": "main", "actions": [], "evidence": ["{imp}"]}
     },
     {
       "text": "Click a document in the list to open it and read its lines before you book it.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/docs/received", "selector": "main", "actions": []}
+      "image": "img/received-3.webp",
+      "capture": {"route": "/docs/received", "selector": "main", "actions": [{"click": "main a[href^='/docs/received/rcv']"}, {"wait": "main h1"}], "evidence": ["#received-lines"]}
     },
     {
       "text": "You can also ask the assistant to list what was received, book a received document into your records or mark it reconciled. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/docs/received", "selector": "main", "actions": []}
+      "image": "img/received-4.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "What was received this week?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["docs.purchasing-documents"]

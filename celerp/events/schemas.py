@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from celerp.schemas.numbers import PositiveFloat
+from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 
 # The SKU/barcode write-time predicates live in celerp.inventory_codes so the event
 # boundary, the interactive routes, the allocation service, and the scanner share one
@@ -77,12 +77,12 @@ class _SkuGuard(BaseModel):
 class ItemCreated(_SkuGuard):
     sku: str
     name: str
-    quantity: float = 0
+    quantity: FiniteFloat = 0
     category: str | None = None
     location_id: str | None = None
     sell_by: str | None = None
     allow_splitting: bool = True
-    weight: float | None = None
+    weight: FiniteFloat | None = None
     weight_unit: str | None = None
     inventory_type: str = "stocked"
     attributes: dict[str, Any] = Field(default_factory=dict)
@@ -94,17 +94,17 @@ class ItemSnapshot(_SkuGuard):
 
     sku: str | None = None
     name: str | None = None
-    quantity: float = 0
+    quantity: FiniteFloat = 0
     category: str | None = None
     location_id: str | None = None
     sell_by: str | None = None
     allow_splitting: bool = True
-    weight: float | None = None
+    weight: FiniteFloat | None = None
     weight_unit: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
     entity_id: str | None = None
     status: str | None = None
-    reserved_quantity: float | None = None
+    reserved_quantity: FiniteFloat | None = None
     created_at: str | None = None   # ISO date or datetime from source system
     updated_at: str | None = None   # ISO datetime from source system
 
@@ -150,10 +150,10 @@ class ItemUpdated(BaseModel):
 
 class ItemPricingSet(BaseModel):
     price_type: str
-    new_price: float
+    new_price: FiniteFloat
     # The value this change replaced, in the unit of new_price; None when the item had none.
     # Absent on changes recorded before it was kept.
-    old_price: float | None = None
+    old_price: FiniteFloat | None = None
     # As ItemUpdated.goods_cost_unknown, for a goods-cost price_type.
     goods_cost_unknown: bool | None = None
 
@@ -178,15 +178,15 @@ class ItemTransferred(BaseModel):
 
 
 class ItemQuantityAdjusted(BaseModel):
-    new_qty: float
+    new_qty: FiniteFloat
     # Optional provenance for audit-driven adjustments (Q6): why and from which audit list, plus the
     # pre-adjustment quantity so the audit's "Adjust stock" action can be undone.
     reason: str | None = None
     source_list_id: str | None = None
-    prior_qty: float | None = None
+    prior_qty: FiniteFloat | None = None
     # The value the audit booked for the change, in the books' currency: what the lot recorded
     # before less what it records after (lot_origin.value_moved), negative for stock counted up.
-    value: float | None = None
+    value: FiniteFloat | None = None
     # Set only when returning consigned goods to a supplier: None once nothing is left on
     # hand, "in" while a partial balance remains. Omitted by ordinary stock adjustments,
     # which must leave the item's consignment status untouched.
@@ -195,15 +195,15 @@ class ItemQuantityAdjusted(BaseModel):
     # a return to a supplier rescales it to the quantity still on hand, and a migrated
     # stock position carries the source's value. Omitted by ordinary stock adjustments,
     # which leave the lot's cost alone.
-    cost_base: float | None = None
+    cost_base: FiniteFloat | None = None
     # The lot's landed cost pools ("<source_bill_id>::<kind>" -> amount) after the adjustment,
     # set only when part of the lot leaves as a lot of its own (a split, a return to the
     # supplier) and keeps what carve_cost left it. Omitted, the pools stay put beside an
     # explicit cost_base and otherwise follow the quantity.
-    landed_costs: dict[str, float] | None = None
+    landed_costs: dict[str, FiniteFloat] | None = None
     # Set only when stock consumed earlier is given back (materials returned from production):
     # the quantity no longer counts as used.
-    quantity_returned: float | None = None
+    quantity_returned: FiniteFloat | None = None
     # Goods added to a lot on hand: true when the lot held goods of unknown cost, false when it
     # held none and the received cost is now its whole goods cost. Omitted, it stays as it is.
     goods_cost_unknown: bool | None = None
@@ -214,18 +214,18 @@ class ItemLandedCostAllocated(BaseModel):
     # overwrite-safe so re-running the allocation self-corrects. amount=0 removes it.
     source_bill_id: str
     kind: str                       # freight | insurance | duty | import_vat
-    amount: float
+    amount: FiniteFloat
 
 
 class ItemFulfilled(BaseModel):
     source_doc_id: str
-    quantity_fulfilled: float
+    quantity_fulfilled: FiniteFloat
     fulfilled_by: str
 
 
 class ItemFulfillmentReversed(BaseModel):
     source_doc_id: str
-    quantity_restored: float
+    quantity_restored: FiniteFloat
     reversed_by: str
     reason: str
 
@@ -241,9 +241,9 @@ class ItemWrittenOff(BaseModel):
     # drawings). reason/account live single-sourced on the write-off list; the item row
     # only records that it is off the books and points back to that list via source_list_id.
     account: str
-    qty: float
-    unit_cost: float
-    cost_total: float
+    qty: FiniteFloat
+    unit_cost: FiniteFloat
+    cost_total: FiniteFloat
     reason: str | None = None
     source_list_id: str | None = None
     doc_number: str | None = None
@@ -253,7 +253,7 @@ class ItemReturnedToSupplier(BaseModel):
     # Goods sent back to the supplier they came from leave stock. The lot that goes back is
     # the whole lot, or the part carved off for it; source_doc_id is the receiving document.
     source_doc_id: str
-    qty: float
+    qty: FiniteFloat
     # Present on consigned goods only: they stop being held on consignment.
     consignment_flag: str | None = None
 
@@ -270,7 +270,7 @@ class ItemSplit(BaseModel):
     # children_detail drives the per-child history rows (one row per child).
     child_ids: list[str]
     child_skus: list[str] = Field(default_factory=list)
-    quantities: list[float]
+    quantities: list[FiniteFloat]
     parent_sku: str | None = None
     # One entry per child: {child_id, child_sku, origin_event_id, qty_before, qty_after,
     # pieces_before, pieces_after, weight_before, weight_after}. Sequential mother deltas.
@@ -278,45 +278,45 @@ class ItemSplit(BaseModel):
     # Weight expected to remain minus weight measured, recorded only when a real
     # measurement exists (full weighed break-up, or an operator re-weigh). None when
     # the remainder is only derived, so no false anomaly is asserted.
-    delta: float | None = None
+    delta: FiniteFloat | None = None
 
 
 class ItemSplitFrom(BaseModel):
     """Origin marker on the CHILD created by a split. The child's "first entry"."""
     parent_id: str
     parent_sku: str
-    qty: float
-    pieces: float | None = None
-    weight: float | None = None
+    qty: FiniteFloat
+    pieces: FiniteFloat | None = None
+    weight: FiniteFloat | None = None
 
 
 class ItemTransform(BaseModel):
     child_id: str
     child_sku: str
     child_category: str
-    parent_cost_total: float
-    child_cost_total: float
+    parent_cost_total: FiniteFloat
+    child_cost_total: FiniteFloat
     parent_sku: str | None = None
     child_origin_event_id: int | None = None
-    qty_before: float | None = None
-    qty_after: float | None = None
-    pieces_before: float | None = None
-    pieces_after: float | None = None
-    weight_before: float | None = None
-    weight_after: float | None = None
+    qty_before: FiniteFloat | None = None
+    qty_after: FiniteFloat | None = None
+    pieces_before: FiniteFloat | None = None
+    pieces_after: FiniteFloat | None = None
+    weight_before: FiniteFloat | None = None
+    weight_after: FiniteFloat | None = None
     # Processing/trim loss: mother weight in minus child weight out, recorded only
     # when both weights exist. None otherwise (no fabricated loss).
-    delta: float | None = None
+    delta: FiniteFloat | None = None
 
 
 class ItemTransformedFrom(BaseModel):
     """Origin marker on the CHILD created by a transform. The child's "first entry"."""
     parent_id: str
     parent_sku: str
-    qty: float
+    qty: FiniteFloat
     category: str
-    pieces: float | None = None
-    weight: float | None = None
+    pieces: FiniteFloat | None = None
+    weight: FiniteFloat | None = None
 
 
 class ItemMerged(BaseModel):
@@ -351,20 +351,20 @@ class ItemUnmerged(BaseModel):
 
 
 class ItemConsumed(BaseModel):
-    quantity_consumed: float
+    quantity_consumed: FiniteFloat
     # The landed pools the lot keeps, each to the cent; absent, they follow the units.
-    landed_costs: dict[str, float] | None = None
+    landed_costs: dict[str, FiniteFloat] | None = None
 
 
 class ItemProduced(BaseModel):
-    quantity_produced: float
+    quantity_produced: FiniteFloat
 
 
 class ItemCostAdjusted(BaseModel):
     # Restate a lot's goods cost after the fact. Manufacturing re-costs a produced lot to the run's
     # actual input cost once completion knows the true received quantity. cost_total is the new
     # absolute cost_base; landed contributions rescale from it.
-    cost_total: float
+    cost_total: FiniteFloat
     manufacturing_order_id: str | None = None   # the run that re-costed the lot (audit trail)
     # Whether the restated goods cost is known: set or cleared when named, kept when omitted.
     goods_cost_unknown: bool | None = None
@@ -394,8 +394,8 @@ class ItemConsignorPayableRecorded(BaseModel):
 class ItemConsignmentBought(BaseModel):
     # Consigned goods bought on a vendor bill: the lot becomes the company's own, valued at
     # the bill's cost on the inventory account the bill debited, for the units it held then.
-    cost_total: float
-    quantity: float
+    cost_total: FiniteFloat
+    quantity: FiniteFloat
     inventory_account_code: str
     consignment_doc_id: str
     bill_doc_id: str
@@ -420,18 +420,32 @@ class ComponentSpec(BaseModel):
     unit: str | None = None
 
 
+class CoProductSpec(BaseModel):
+    """Something else a batch yields beside the product, such as the press cake left after
+    pressing oil. ``cost_share`` is the percentage of the batch's value it carries; the
+    product carries the rest. The same line is used by a recipe and by a run's creation."""
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str                       # entity_id of the extra inventory item
+    sku: str | None = None             # denormalized for display; resolved server-side
+    unit: str | None = None            # the item's own sell unit; resolved server-side
+    quantity: PositiveFloat            # qty yielded per recipe batch (output_qty), or per run
+    cost_share: FiniteFloat = 0        # percent of the batch value, 0 <= share < 100
+    unit_cost: FiniteFloat | None = None     # derived by the cost roll-up, never trusted from the client
+
+
 class LaborLine(BaseModel):
     operation: str
     kind: str = "hourly"               # "hourly" (hours × rate) | "fixed" (flat amount)
-    hours: float = 0
-    rate: float = 0                    # per-line rate (no company default)
-    amount: float = 0                  # flat cost, used when kind == "fixed"
+    hours: FiniteFloat = 0
+    rate: FiniteFloat = 0              # per-line rate (no company default)
+    amount: FiniteFloat = 0            # flat cost, used when kind == "fixed"
     source: str = "manual"             # "manual" | "auto:<rule>" (future auto-labor module)
 
 
 class OverheadLine(BaseModel):
     description: str
-    amount: float = 0
+    amount: FiniteFloat = 0
 
 
 class RecipeSpec(BaseModel):
@@ -439,11 +453,12 @@ class RecipeSpec(BaseModel):
     components: list[ComponentSpec] = Field(default_factory=list)
     labor: list[LaborLine] = Field(default_factory=list)
     overhead: list[OverheadLine] = Field(default_factory=list)
+    also_produces: list[CoProductSpec] = Field(default_factory=list)
     # Derived, written server-side by the cost roll-up — never trusted from the client:
-    unit_cost: float | None = None
-    materials_cost: float | None = None
-    labor_cost: float | None = None
-    overhead_cost: float | None = None
+    unit_cost: FiniteFloat | None = None
+    materials_cost: FiniteFloat | None = None
+    labor_cost: FiniteFloat | None = None
+    overhead_cost: FiniteFloat | None = None
 
 
 class ItemRecipeSet(BaseModel):
@@ -477,12 +492,12 @@ class WorkflowStep(BaseModel):
     id: str = ""                       # stable uuid; the server assigns one if blank
     station: str = ""                  # work center / location (links to a WorkCenter name)
     instructions: str = ""             # free-text detail for the worker (multi-line)
-    time_value: float = 0              # elapsed time as typed, in time_unit
+    time_value: FiniteFloat = 0              # elapsed time as typed, in time_unit
     time_unit: str = "min"             # min | hr | day
     ref_file_id: str | None = None     # optional reference image/doc (an item file id)
     # Derived, written server-side from (time_value, time_unit) — never trusted from the client.
     # CANONICAL: every calculation reads time_minutes, never the typed value/unit.
-    time_minutes: float | None = None
+    time_minutes: FiniteFloat | None = None
 
 
 class WorkflowSpec(BaseModel):
@@ -494,12 +509,12 @@ class ItemWorkflowSet(BaseModel):
 
 
 class ItemReserved(BaseModel):
-    quantity: float
+    quantity: FiniteFloat
     reserved_for: str | None = None  # source doc entity_id
 
 
 class ItemUnreserved(BaseModel):
-    quantity: float
+    quantity: FiniteFloat
     released_from: str | None = None  # source doc entity_id
 
 
@@ -535,7 +550,7 @@ class CrmContactTagged(BaseModel):
 class CrmDealCreated(BaseModel):
     name: str
     stage: str | None = None
-    value: float | None = None
+    value: FiniteFloat | None = None
     contact_id: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
 
@@ -648,7 +663,7 @@ class CrmContactStatementSent(BaseModel):
     date_from: str
     date_to: str
     version: int
-    total: float
+    total: FiniteFloat
     email: str
 
 
@@ -772,19 +787,19 @@ class PaymentBooks(BaseModel):
     """The books a payment posted on, which every refund and void of it reverses."""
     bank_account: str
     base_currency: str
-    doc_rate: float
-    settlement_rate: float
+    doc_rate: FiniteFloat
+    settlement_rate: FiniteFloat
 
 
 class DocPaymentReceived(BaseModel):
-    amount: float
+    amount: FiniteFloat
     currency: str | None = None
     method: str | None = None
     reference: str | None = None
-    remaining_balance: float | None = None
+    remaining_balance: FiniteFloat | None = None
     payment_date: str
     bank_account: str | None = None
-    conversion_rate: float | None = None  # pass-through for premium multicurrency module
+    conversion_rate: FiniteFloat | None = None  # pass-through for premium multicurrency module
     source_doc_id: str | None = None
     target_doc_id: str | None = None
     # The recorder allocates the payment's identity index (skipping any value
@@ -797,13 +812,13 @@ class DocPaymentReceived(BaseModel):
 
 class PaymentBatchRecorded(BaseModel):
     doc_ids: list[str]
-    amount: float
+    amount: FiniteFloat
     currency: str
     payment_date: str
     allocations: list[dict]
     skipped: list[dict]
-    total_allocated: float
-    remaining: float
+    total_allocated: FiniteFloat
+    remaining: FiniteFloat
 
 
 class LineActionRecorded(BaseModel):
@@ -813,7 +828,7 @@ class LineActionRecorded(BaseModel):
 
 
 class DocPaymentRefunded(BaseModel):
-    amount: float
+    amount: FiniteFloat
     reason: str | None = None
     method: str | None = None
     payment_index: int | None = None  # the payment the money is given back from
@@ -827,7 +842,7 @@ class DocPaymentRefundReversed(BaseModel):
     came back to the payment."""
     payment_index: int
     refund_number: int
-    amount: float
+    amount: FiniteFloat
     refund_id: str | None = None
     reversal_date: str | None = None
 
@@ -860,14 +875,14 @@ class DocPaymentVoided(BaseModel):
     payment_index: int
     void_reason: str | None = None
     refund_date: str | None = None  # ISO date for the reversal JE; defaults to today if absent
-    amount: float | None = None     # voided payment amount, for the history detail
+    amount: FiniteFloat | None = None     # voided payment amount, for the history detail
     method: str | None = None
 
 
 class DocPaymentDeleted(BaseModel):
     payment_index: int
     delete_reason: str | None = None
-    amount: float | None = None     # deleted payment amount, for the history detail
+    amount: FiniteFloat | None = None     # deleted payment amount, for the history detail
     method: str | None = None
     # True on events written since deletion started tombstoning the payment in
     # place; absent on the compaction-era events, whose replay must keep
@@ -888,9 +903,9 @@ class MemoTakeLine(BaseModel):
     invoice_line_id: str
     memo_line_id: str
     lot_ids: list[str]
-    quantity: float
-    memo_amount: float
-    memo_line_amount: float
+    quantity: FiniteFloat
+    memo_amount: FiniteFloat
+    memo_line_amount: FiniteFloat
 
 
 class MemoTake(BaseModel):
@@ -898,9 +913,9 @@ class MemoTake(BaseModel):
     invoice_id: str
     doc_number: str | None = None
     lines: list[MemoTakeLine]
-    shipping: float = 0
-    discount: float = 0
-    tax: float = 0
+    shipping: FiniteFloat = 0
+    discount: FiniteFloat = 0
+    tax: FiniteFloat = 0
 
 
 class DocLinesInvoiced(BaseModel):
@@ -1021,7 +1036,7 @@ class DocFulfilled(BaseModel):
     fulfilled_by: str
     fulfilled_at: str = ""
     strategy: str
-    total_cogs: float
+    total_cogs: FiniteFloat
 
 
 class DocItemsReturned(BaseModel):
@@ -1044,8 +1059,8 @@ class DocSupplierReturnUndone(BaseModel):
     document holds the goods again and owes what the return took off it."""
     return_key: str
     supplier_credit_doc_id: str
-    payable_credit: float = 0.0
-    supplier_credit: float = 0.0
+    payable_credit: FiniteFloat = 0.0
+    supplier_credit: FiniteFloat = 0.0
 
 
 class DocReturnUndone(BaseModel):
@@ -1096,7 +1111,7 @@ class DocPartiallyReverted(BaseModel):
 
 class MfgOrderCreated(BaseModel):
     product_sku: str | None = None
-    quantity: float | None = None
+    quantity: FiniteFloat | None = None
     inputs: list[dict[str, Any]] = Field(default_factory=list)
     outputs: list[dict[str, Any]] = Field(default_factory=list)
     attributes: dict[str, Any] = Field(default_factory=dict)
@@ -1137,11 +1152,14 @@ class MfgOrderIssued(BaseModel):
 class MfgOrderReceived(BaseModel):
     # Finished goods received from a run. quantity is received as a discrete lot under the product;
     # lot_item_id is that lot's id.
-    quantity: float
+    quantity: FiniteFloat
     lot_item_id: str | None = None
     received_by: str | None = None
     # The work in progress value the received lot carries.
     value: str | None = None
+    # Set only when the lot is of one of the run's extras, not its product.
+    output_item_id: str | None = None
+    sku: str | None = None
 
 
 class MfgOrderWipOpened(BaseModel):
@@ -1185,7 +1203,7 @@ class MfgOrderScheduled(BaseModel):
 class MpListingCreated(BaseModel):
     marketplace: str | None = None
     sku: str | None = None
-    price: float | None = None
+    price: FiniteFloat | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1225,19 +1243,19 @@ class JELine(BaseModel):
     # numerics), and every reader already skips empty accounts and coerces
     # null amounts with `or 0`.
     account: str | None = ""
-    debit: float | None = 0
-    credit: float | None = 0
+    debit: FiniteFloat | None = 0
+    credit: FiniteFloat | None = 0
     # The foreign amounts the author actually typed, when the line carries a
     # rate. Stored rather than derived so the journal shows the document's own
     # figure: dividing the local amount back out can read 99.99 against a
     # 100.00 invoice, which is exactly what an auditor is tying back.
-    fx_debit: float | None = None
-    fx_credit: float | None = None
+    fx_debit: FiniteFloat | None = None
+    fx_credit: FiniteFloat | None = None
     # What currency those figures are in and what one unit of it was worth in
     # base currency. Absent on an ordinary base-currency line, which is why the
     # posted amounts are the only ones such a line carries.
     fx_currency: str | None = None
-    fx_rate: float | None = None
+    fx_rate: FiniteFloat | None = None
     # The posting roles the line served when it was written, set once by the
     # journal boundary and never rewritten: what a line meant does not change when
     # a role later points at another account. Absent on lines posted before roles
@@ -1270,12 +1288,13 @@ class AccJournalEntryFx(BaseModel):
     """
 
     currency: str | None = None
-    rate: float | None = None
+    rate: FiniteFloat | None = None
 
 
 class AccJournalEntryCreated(BaseModel):
     """Shape of a journal entry creation. Validates structure only; accounting
-    policy (balanced totals, real accounts) is enforced where entries are authored."""
+    policy (balanced totals, real accounts) is enforced by the journal boundary
+    (journal_accounts.normalize_journal_entry and prepare_journal_entry)."""
 
     memo: str | None = None
     ts: str | None = None
@@ -1360,7 +1379,7 @@ class FundUnarchived(BaseModel):
 class RevSegment(BaseModel):
     start: str
     end: str
-    amount: float
+    amount: FiniteFloat
 
 
 class RevAmendment(BaseModel):
@@ -1372,7 +1391,7 @@ class RevAmendment(BaseModel):
     by: str | None = None
     at: str
     note_id: str | None = None
-    amount: float | None = None
+    amount: FiniteFloat | None = None
 
 
 class RevScheduleCreated(BaseModel):
@@ -1385,7 +1404,7 @@ class RevScheduleCreated(BaseModel):
     fund_id: str | None = None
     currency: str
     doc_currency: str
-    rate: float
+    rate: FiniteFloat
     basis: Literal["daily"]
     source_je: str
     segments: list[RevSegment]
@@ -1465,13 +1484,13 @@ class SysOlderStockPlaced(BaseModel):
     placement: str
     day: str
     count: int
-    value: float
+    value: FiniteFloat
     account: str
-    rooms: dict[str, float]
-    transferred: float
-    recognized: float
-    unresolved: float
-    provisional: float
+    rooms: dict[str, FiniteFloat]
+    transferred: FiniteFloat
+    recognized: FiniteFloat
+    unresolved: FiniteFloat
+    provisional: FiniteFloat
     classification: str
     journal: list[str]
 
@@ -1483,9 +1502,9 @@ class SysOlderStockCorrected(BaseModel):
     placement: str
     kind: str
     day: str
-    amount: float
-    recognized: float
-    unresolved: float
+    amount: FiniteFloat
+    recognized: FiniteFloat
+    unresolved: FiniteFloat
     journal: str
 
 
@@ -1534,10 +1553,10 @@ class SubExpired(BaseModel):
 
 class ListTotals(BaseModel):
     """The totals a list event gives the list, written with it (emit_event stamps it: doc_projections.with_list_totals)."""
-    subtotal: float
-    discount_amount: float
-    tax_amount: float
-    total: float
+    subtotal: FiniteFloat
+    discount_amount: FiniteFloat
+    tax_amount: FiniteFloat
+    total: FiniteFloat
 
 
 class ListCreated(BaseModel):

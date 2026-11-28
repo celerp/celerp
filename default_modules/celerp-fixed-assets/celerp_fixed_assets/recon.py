@@ -38,12 +38,13 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import refusal, refused
 from celerp.services.business_time import company_today
+from celerp.services.money import money_text, to_decimal
 
 from celerp_fixed_assets import fixaccount, runs, setup, sources
-from celerp_fixed_assets.operations import MODULE, _dec
-from celerp_fixed_assets.projections import fold_movements, money
+from celerp_fixed_assets.operations import MODULE
+from celerp_fixed_assets.projections import fold_movements
 from celerp_fixed_assets.store import _emit, _entities
 
 RECON_STATES = ("open", "noted", "accepted")
@@ -84,7 +85,7 @@ def _class_accounts(classes: dict, surpluses: set[str], clearings: set[str]) -> 
 
 
 def _signed(entry: dict) -> Decimal:
-    return _dec(entry.get("debit")) - _dec(entry.get("credit"))
+    return to_decimal(entry.get("debit")) - to_decimal(entry.get("credit"))
 
 
 async def classify(session, company_id, at: str) -> list[dict]:
@@ -116,7 +117,7 @@ async def classify(session, company_id, at: str) -> list[dict]:
             for source, unit in sorted((by_journal.get(je_id) or {}).items()):
                 claim = unit.get("claim")
                 if claim and claim["allocation"] not in NOTED_ALLOCATIONS and claim.get("account") in accounts:
-                    amount = _SIGN[claim["kind"]] * _dec(claim["amount"])
+                    amount = _SIGN[claim["kind"]] * to_decimal(claim["amount"])
                     out.append(_unit(f"void:{source}", 3, claim["account"], amount, claim.get("date") or day, je_id,
                                      claim["description"], source=source, registered=amount, synthetic=True))
             continue
@@ -140,7 +141,7 @@ async def classify(session, company_id, at: str) -> list[dict]:
             if unit.get("account") not in rest:
                 continue
             claim = unit.get("claim")
-            amount = sign * _SIGN[unit["kind"]] * _dec(unit["amount"])
+            amount = sign * _SIGN[unit["kind"]] * to_decimal(unit["amount"])
             if reversal:
                 rule = 3
             elif claim is None:
@@ -265,9 +266,9 @@ async def report(session, company_id, at: str | None = None) -> dict:
         if account not in clearings and registered != standing.get(account, Decimal(0)):
             # The assets' own balances against the Register column, read from their journals.
             errors.append({"account": account, "name": names.get(account) or account, "label": labels[account],
-                           "held": money(standing.get(account, 0), currency), "registered": money(registered, currency)})
-        out.append({"account": account, "name": names.get(account) or account, "label": labels[account], "ledger": money(ledger, currency),
-                    "registered": money(registered, currency), "status": _status(ledger, registered, differences),
+                           "held": money_text(standing.get(account, 0), currency), "registered": money_text(registered, currency)})
+        out.append({"account": account, "name": names.get(account) or account, "label": labels[account], "ledger": money_text(ledger, currency),
+                    "registered": money_text(registered, currency), "status": _status(ledger, registered, differences),
                     "differences": differences})
     statuses = {a["status"] for a in out}
     status = next(s for s in reversed(STATUSES) if s in statuses) if statuses else STATUSES[0]
@@ -295,17 +296,17 @@ def _difference(key: str, rule, cause: str, amount: Decimal, day: str, units: li
     mark = fixing["marks"].get(key) or {}
     if units and units[0]["rule"] == 4:
         state, reason, effect = "noted", units[0].get("reason"), None
-    elif mark.get("state") in ("noted", "accepted") and _dec(mark.get("amount")) == amount:
+    elif mark.get("state") in ("noted", "accepted") and to_decimal(mark.get("amount")) == amount:
         state, reason, effect = mark["state"], mark.get("reason"), mark.get("effect")
     else:
         state, reason, effect = "open", None, None
     currency = fixing["currency"]
-    return {"key": key, "rule": rule, "cause": cause, "amount": money(amount, currency), "date": day, "state": state,
+    return {"key": key, "rule": rule, "cause": cause, "amount": money_text(amount, currency), "date": day, "state": state,
             "reason": reason, "effect": effect, "action": _action(rule),
             "asset_id": fixing["owners"].get(units[0].get("source")) if rule == 3 else None,
             "fix_from": _fix_from(fixing["lock"], day),
             "lines": [{"journal_id": u["journal_id"], "source": u.get("source"), "description": u["description"],
-                       "date": u["date"], "amount": money(u["amount"], currency)} for u in units]}
+                       "date": u["date"], "amount": money_text(u["amount"], currency)} for u in units]}
 
 
 def _action(rule) -> str | None:
@@ -358,9 +359,9 @@ async def acknowledge(session, company_id, user_id, body: dict) -> dict:
         raise setup.refuse("fixed_assets.err_describe_accounting_effect_accepting_difference")
     found = await find(session, company_id, key)
     if found["rule"] == 4:
-        raise setup.refused(409, "fixed_assets.err_line_was_noted_when_was_kept")
-    if _dec(body.get("amount")) != _dec(found["amount"]):
-        raise setup.refused(409, "fixed_assets.err_difference_now_amount_review_again", amount=found['amount'])
+        raise refused(409, "fixed_assets.err_line_was_noted_when_was_kept")
+    if to_decimal(body.get("amount")) != to_decimal(found["amount"]):
+        raise refused(409, "fixed_assets.err_difference_now_amount_review_again", amount=found['amount'])
     data = {"key": key, "state": state, "amount": found["amount"], "reason": reason or None,
             "effect": effect or None, "by": str(user_id), "at": (await company_today(session, company_id)).isoformat()}
     await _emit(session, company_id, user_id, recon_id(key), "fa_recon", "fa.recon.recorded", data)

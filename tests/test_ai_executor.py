@@ -125,7 +125,7 @@ async def test_executor_real_app_parity_get_item(client, session):
     authorization behavior of its own."""
     from celerp.main import app
 
-    ctx = await perm_setup(client, session)
+    ctx = await perm_setup(client, session, currency="USD")
     admin = ctx["admin_h"]
     item_id = ctx["item_id"]
 

@@ -17,9 +17,11 @@ import re
 import uuid
 
 import pytest
+from fastapi import HTTPException
 from fasthtml.common import to_xml
 
 from celerp.models.projections import Projection
+from celerp.services.peer_lines import refuse_inbound
 from income_books import _issued, _issued_import, _item, _line
 from test_credit_note_settlement_owned import _post
 from test_helpers import message_texts, refused_records
@@ -156,6 +158,11 @@ async def test_marker_survives_every_line_write(client, auth):
     r = await _patch(client, auth, doc, line_items=[_as_sent(first), _as_sent(second),
                                                     _line(None, "Local", 5, origin=ORIGIN)])
     assert r.status_code == 422 and _key(r) == "posting.fund.key_not_taken", r.text
+    # ... nor bring a fund choice on a line it adds ...
+    r = await _patch(client, auth, doc, line_items=[_as_sent(first), _as_sent(second),
+                                                    _line(None, "Local", 5, fund_choice="fund:other")])
+    assert r.status_code == 422 and _key(r) == "posting.fund.key_not_taken", r.text
+    assert r.json()["detail"]["params"]["field"] == "fund_choice", r.text
     # ... nor change the fund chosen for it without a grant (LK3).
     r = await _patch(client, auth, doc, line_items=[_as_sent(first, fund_choice="fund:other"), _as_sent(second)])
     assert r.status_code == 409 and _key(r) == "posting.fund.choice_not_granted", r.text
@@ -1128,3 +1135,20 @@ async def test_every_line_writer_has_a_row():
     assert not silent, f"ARRIVAL writers whose emit passes no origin: {silent}"
     assert not bare_upserts, f"connector_upsert calls without origin=: {bare_upserts}"
     assert len(table(writers)) == 2 + len(writers) + len(HELPERS)
+
+
+@pytest.mark.parametrize("line, origin, key", [
+    (None, "connected_company", "posting.fund.inbound_key"),
+    (2, "connected_company", "posting.fund.inbound_line_key"),
+    (None, "file_import", "posting.fund.file_key"),
+    (2, "migration", "posting.fund.file_key"),
+])
+async def test_an_arrival_bringing_a_fund_key_is_refused_naming_it(line, origin, key):
+    """Where funds are on, an arrival carrying a fund key is refused naming the key, and its
+    line when it is on one; a file is told the fund is chosen on the import screen."""
+    with pytest.raises(HTTPException) as e:
+        refuse_inbound([("fund_choice", line), ("fund_id", 3)], origin)
+    assert e.value.status_code == 422
+    assert e.value.detail["message_key"] == key
+    assert e.value.detail["params"]["field"] == "fund_choice"
+    refuse_inbound([], origin)  # nothing brought, nothing refused

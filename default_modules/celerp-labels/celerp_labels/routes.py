@@ -22,14 +22,16 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field, StrictFloat, StrictStr
+from pydantic import BaseModel, Field, Strict, StrictStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.projections import Projection
+from celerp.schemas.numbers import FiniteFloat
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.company_lock import lock_company
 from celerp.services.permissions import get_current_company_settings, require_permission, role_has_permission
@@ -45,12 +47,15 @@ _MAX_SOURCE_IDS = 500
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+# A size sent as a JSON number (a string is read as a format such as "40x30mm").
+_Millimetres = Annotated[FiniteFloat, Strict()]
+
 class TemplateCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     format: str = Field("40x30mm")
     orientation: str = Field("portrait")
-    width_mm: StrictFloat | StrictStr | None = None
-    height_mm: StrictFloat | StrictStr | None = None
+    width_mm: _Millimetres | StrictStr | None = None
+    height_mm: _Millimetres | StrictStr | None = None
     fields: list[dict] = Field(default_factory=lambda: [
         {"key": "name", "label": "Name", "type": "text"},
         {"key": "sku", "label": "SKU", "type": "text"},
@@ -64,8 +69,8 @@ class TemplateUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     format: str | None = None
     orientation: str | None = None
-    width_mm: StrictFloat | StrictStr | None = None
-    height_mm: StrictFloat | StrictStr | None = None
+    width_mm: _Millimetres | StrictStr | None = None
+    height_mm: _Millimetres | StrictStr | None = None
     fields: list[dict] | None = None
     copies: int | None = Field(None, ge=1, le=100)
     notes: str | None = None

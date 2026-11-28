@@ -6,25 +6,25 @@
   "routes": ["/settings/cloud", "/setup/cloud", "/commercial/checkout", "/settings/billing-portal"],
   "permission": "manage_integrations",
   "order": 2,
-  "checked": "8e2835035496b7a8af351f8bea596af24f076c3cdf0f014d7d4f762fce5479dc",
+  "checked": "b10a4d01da0727621a3ad3e4da90ad4138b05d614c2de73ec908cebc6e143e0a",
   "steps": [
     {
       "text": "{get} opens the Celerp Connect page, which lists what the subscription adds, such as {backup} and {web}, and takes you to checkout.",
       "labels": {"get": "btn.get_connect", "backup": "setup.feature_backup_title", "web": "setup.feature_web_title"},
-      "image": null,
-      "capture": {"route": "/setup/cloud", "selector": ".auth-container", "actions": []}
+      "image": "img/web-access-1.webp",
+      "capture": {"route": "/setup/cloud", "selector": ".auth-container", "actions": [], "evidence": ["{get}", "{backup}", "{web}"]}
     },
     {
-      "text": "Once you subscribe, the same page links to the billing portal, where you change your card, see your invoices or cancel the subscription.",
+      "text": "Once you subscribe, this page shows Celerp Connect as active with your team's address. To change your card, see your invoices or cancel the subscription, ask the assistant for a link to the billing portal.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+      "image": "img/web-access-2.webp",
+      "capture": {"route": "/settings/cloud", "selector": "main", "actions": [], "evidence": ["#cloud-relay-tab .badge--active"]}
     },
     {
       "text": "Open {access} from Settings. If you already subscribed on the Celerp website, use {connect} to link that account to this installation; the same account unlocks Celerp Connect, cloud backups, the module marketplace and Celerp AI's free questions.",
       "labels": {"access": "settings_cloud.web_access", "connect": "btn.connect_automatically"},
-      "image": null,
-      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+      "image": "img/web-access-3.webp",
+      "capture": {"route": "/settings/cloud", "selector": "#cloud-relay-tab", "actions": [], "evidence": ["{connect}"]}
     }
   ],
   "related": ["connectors.connect-store", "backup.cloud-backup"]

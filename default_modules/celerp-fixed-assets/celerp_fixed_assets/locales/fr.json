@@ -635,6 +635,7 @@
   "fixed_assets.class_account_inactive": "{asset_class} passe sur le compte {account}, qui est inactif.",
   "fixed_assets.class_account_header": "{asset_class} passe sur le compte {account}, un compte de regroupement qui a des comptes en dessous.",
   "fixed_assets.class_account_not_in_chart": "{asset_class} passe sur le compte {account}, qui ne figure pas dans le plan comptable.",
+  "fixed_assets.class_account_foreign_bank": "{asset_class} passe sur le compte {account}, qui est un compte bancaire tenu dans une autre devise que celle de la comptabilité.",
   "fixed_assets.recon_ledger": "Grand livre",
   "fixed_assets.recon_registered": "Registre",
   "fixed_assets.recon_status.reconciled": "Rapproché",

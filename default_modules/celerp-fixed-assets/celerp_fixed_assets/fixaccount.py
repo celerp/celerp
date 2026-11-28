@@ -23,9 +23,11 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refused
+from celerp.services.money import to_decimal
 from celerp_fixed_assets import runs, setup
 from celerp_fixed_assets.projections import said
-from celerp_fixed_assets.operations import MODULE, _dec, _effects, _journal_view, _post, _run, _undo
+from celerp_fixed_assets.operations import MODULE, _effects, _journal_view, _post, _run, _undo
 from celerp_fixed_assets.store import _emit, _entities, _state
 from ui.i18n import t
 
@@ -49,10 +51,12 @@ def past_accounts(cls: dict) -> set[str]:
 
 
 PROBLEMS = {"posting.destination.not_in_chart": "not_in_chart", "posting.destination.inactive": "inactive",
-            "posting.destination.header": "header"}
+            "posting.destination.header": "header", "posting.destination.foreign_bank": "foreign_bank"}
 UNUSABLE = {"not_in_chart": "{asset_class} posts to account {account}, which is not in the chart of accounts.",
             "inactive": "{asset_class} posts to account {account}, which is inactive.",
-            "header": "{asset_class} posts to account {account}, which is a header account with accounts under it."}
+            "header": "{asset_class} posts to account {account}, which is a header account with accounts under it.",
+            "foreign_bank": "{asset_class} posts to account {account}, which is a bank account kept in another "
+                            "currency than the books'."}
 
 
 async def unusable(session, company_id, cls: dict) -> list[dict]:
@@ -72,8 +76,8 @@ async def unusable(session, company_id, cls: dict) -> list[dict]:
 
 async def class_refusal(session, company_id, exc: HTTPException) -> HTTPException:
     """A posting refused on an account a class posts to, said as the class's problem with
-    the link to fix it: the operation's form has no account to choose. Any other refusal
-    is returned as it is."""
+    the link to fix it: the operation's form has no account to choose. Any other refusal is
+    returned as it is."""
     from celerp.accounting_roles import refusal
 
     detail = exc.detail if isinstance(exc.detail, dict) else {}
@@ -99,8 +103,8 @@ async def _class_assets(session, company_id, class_id: str) -> list[tuple[str, d
 def _held(assets: list[tuple[str, dict]], field: str) -> Decimal:
     """What the class's assets hold on the account in ``field``, signed as the ledger holds it."""
     if field == "asset_account":
-        return sum((_dec(s.get("cost")) for _, s in assets), Decimal(0))
-    return -sum((_dec(s.get("accumulated_depreciation")) + _dec(s.get("accumulated_impairment"))
+        return sum((to_decimal(s.get("cost")) for _, s in assets), Decimal(0))
+    return -sum((to_decimal(s.get("accumulated_depreciation")) + to_decimal(s.get("accumulated_impairment"))
                  for _, s in assets), Decimal(0))
 
 
@@ -112,7 +116,7 @@ async def refuse_stranding(session, company_id, class_id: str, cls: dict, change
     assets = await _class_assets(session, company_id, class_id)
     for field in moving:
         if _held(assets, field):
-            raise setup.refused(409, "fixed_assets.err_assets_name_hold_balance_account_value", name=cls['name'], value=cls[field])
+            raise refused(409, "fixed_assets.err_assets_name_hold_balance_account_value", name=cls['name'], value=cls[field])
 
 
 def _day(books: runs.Books) -> str:
@@ -161,7 +165,7 @@ async def _split(session, company_id, account: str, amount: Decimal, keys: list[
             used[key] = used.get(key, Decimal(0)) + take
             left -= take
     if left:
-        raise setup.refused(409, "fixed_assets.err_ledger_holds_said_account_account_these", said=said(amount - left, currency), account=account, said2=said(amount, currency))
+        raise refused(409, "fixed_assets.err_ledger_holds_said_account_account_these", said=said(amount - left, currency), account=account, said2=said(amount, currency))
     return lines
 
 

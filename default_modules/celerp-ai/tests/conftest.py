@@ -23,8 +23,9 @@ async def auth_client(client, drained_jobs):
     request sends too. The client fixture restores the session token afterwards. Jobs
     a test started are drained before the client closes."""
     from celerp.gateway.state import set_session_token
-    from test_helpers import register_admin
+    from test_helpers import register_admin, set_books_currency
     session_token = "s" * 64
     set_session_token(session_token)
     token = await register_admin(client)
+    await set_books_currency(client, {"Authorization": f"Bearer {token}"})
     yield client, {"Authorization": f"Bearer {token}", "X-Session-Token": session_token}

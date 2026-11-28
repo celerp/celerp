@@ -13,16 +13,18 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from celerp.help.bundle import MAX_IMAGE_BYTES, MAX_STEPS, TOPIC_ID, entry_problems, is_webp
+from celerp.help.bundle import MAX_IMAGE_BYTES, MAX_STEPS, TOPIC_ID, entry_problems, is_str_list, is_webp
 
 PAGE_KEYS = frozenset({"id", "title", "summary", "keywords", "routes", "permission",
                        "order", "steps", "related"})
 # Optional page key: the content hash of the screens the page was last checked against.
 OPTIONAL_PAGE_KEYS = frozenset({"checked"})
 STEP_KEYS = frozenset({"text", "labels", "image", "capture"})
-CAPTURE_KEYS = frozenset({"route", "selector", "actions"})
-# One verb per action; "fill" also carries the text to type.
-ACTION_VERBS = frozenset({"click", "fill", "press", "wait"})
+CAPTURE_KEYS = frozenset({"route", "selector", "actions", "evidence"})
+# One verb per action; "fill" also carries the text to type, "select" the option's value,
+# "upload" the text of the file.
+ACTION_VERBS = frozenset({"click", "fill", "select", "upload", "press", "wait"})
+_VALUED_VERBS = frozenset({"fill", "select", "upload"})
 
 MAX_FILE_BYTES = 64 * 1024
 
@@ -56,17 +58,13 @@ def module_prefix(module: str) -> str:
     return module.removeprefix("celerp-")
 
 
-def _str_list(value) -> bool:
-    return isinstance(value, list) and all(isinstance(v, str) for v in value)
-
-
 def _keys(where: str, data: dict, allowed: frozenset[str], optional: frozenset[str] = frozenset()) -> list[str]:
     errors = [f"{where}unknown key {k!r}" for k in sorted(set(data) - allowed - optional)]
     errors += [f"{where}missing key {k!r}" for k in sorted(allowed - set(data))]
     return errors
 
 
-def _capture_errors(where: str, capture) -> list[str]:
+def _capture_errors(where: str, capture, labels) -> list[str]:
     if not isinstance(capture, dict):
         return [f"{where}capture must be an object"]
     errors = _keys(f"{where}capture ", capture, CAPTURE_KEYS)
@@ -83,10 +81,18 @@ def _capture_errors(where: str, capture) -> list[str]:
         verbs = set(action) & ACTION_VERBS if isinstance(action, dict) else set()
         extra = set(action) - ACTION_VERBS - {"value"} if isinstance(action, dict) else set()
         if (len(verbs) != 1 or extra or not all(isinstance(v, str) for v in action.values())
-                or ("value" in action) != ("fill" in action)):
+                or ("value" in action) != bool(verbs & _VALUED_VERBS)):
             errors.append(f"{where}capture action {n} must be one of "
                           '{"click": selector}, {"fill": selector, "value": text}, '
+                          '{"select": selector, "value": option value}, '
+                          '{"upload": file input selector, "value": file text}, '
                           '{"press": key} or {"wait": selector}')
+    evidence = capture["evidence"]
+    if not (is_str_list(evidence) and evidence and all(e.strip() for e in evidence)):
+        return [*errors, f"{where}capture evidence must be a non-empty list of selectors or {{label}} names"]
+    names = {m.group(1) for e in evidence for m in PLACEHOLDER.finditer(e)}
+    if isinstance(labels, dict):
+        errors += [f"{where}capture evidence {{{k}}} is not one of the step's labels" for k in sorted(names - set(labels))]
     return errors
 
 
@@ -109,7 +115,7 @@ def _step_errors(n: int, step) -> list[str]:
             errors.append(f"{where}text has a brace that is not a {{name}} placeholder")
     if image is not None and not (isinstance(image, str) and _IMAGE.match(image)):
         errors.append(f"{where}image must be null or img/<file>.webp inside the help folder")
-    return [*errors, *_capture_errors(where, step["capture"])]
+    return [*errors, *_capture_errors(where, step["capture"], labels)]
 
 
 def validate(data, help_dir: Path, prefix: str) -> tuple[HelpPage | None, list[str]]:
@@ -130,9 +136,9 @@ def validate(data, help_dir: Path, prefix: str) -> tuple[HelpPage | None, list[s
         if isinstance(steps, list) else steps
     errors += entry_problems(title, data["summary"], texts, None)
     for key in ("keywords", "related"):
-        if not _str_list(data[key]):
+        if not is_str_list(data[key]):
             errors.append(f"{key} must be a list of strings")
-    if not _str_list(data["routes"]) or not all(r.startswith("/") for r in data["routes"]):
+    if not is_str_list(data["routes"]) or not all(r.startswith("/") for r in data["routes"]):
         errors.append("routes must be a list of paths starting with /")
     if data["permission"] is not None and not isinstance(data["permission"], str):
         errors.append("permission must be a permission key or null")

@@ -27,8 +27,8 @@ CURRENCIES: tuple[str, ...] = (
     "TND", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "UGX", "USD", "UYU", "UZS", "VED", "VES",
     "VND", "VUV", "WST", "XAF", "XCD", "XCG", "XOF", "XPF", "YER", "ZAR", "ZMW", "ZWG",
 )
-# Codes ISO 4217 has withdrawn that records made before still carry: read and shown with
-# their names, never offered for anything new.
+# Codes ISO 4217 has withdrawn that records made before still carry: read, stored and shown
+# with their names, never offered in a picker for anything new.
 HISTORICAL: tuple[str, ...] = ("ANG", "BGN", "HRK", "ZWL")
 
 CURRENCY_CODES: frozenset[str] = frozenset(CURRENCIES)
@@ -36,8 +36,9 @@ KNOWN_CURRENCY_CODES: frozenset[str] = CURRENCY_CODES | frozenset(HISTORICAL)
 
 
 def require_currency_code(code: str | None) -> None:
-    """Refuse a currency outside the supported list at a write boundary. Empty means no currency."""
-    if code and code not in CURRENCY_CODES:
+    """Refuse a currency Celerp does not recognise (current or withdrawn) at a write boundary.
+    An empty code or none means no currency; any other value that is not a code is refused."""
+    if code not in (None, "") and (not isinstance(code, str) or code not in KNOWN_CURRENCY_CODES):
         raise HTTPException(status_code=422, detail=catalog_refusal("error.invalid_currency", value=code))
 
 

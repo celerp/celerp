@@ -635,6 +635,7 @@
   "fixed_assets.class_account_inactive": "تقيّد {asset_class} في الحساب {account}، وهو غير نشط.",
   "fixed_assets.class_account_header": "تقيّد {asset_class} في الحساب {account}، وهو حساب رئيسي تندرج تحته حسابات.",
   "fixed_assets.class_account_not_in_chart": "تقيّد {asset_class} في الحساب {account}، وهو غير موجود في دليل الحسابات.",
+  "fixed_assets.class_account_foreign_bank": "تقيّد {asset_class} في الحساب {account}، وهو حساب بنكي بعملة غير عملة الدفاتر.",
   "fixed_assets.recon_ledger": "دفتر الأستاذ",
   "fixed_assets.recon_registered": "السجل",
   "fixed_assets.recon_status.reconciled": "مُسوّى",

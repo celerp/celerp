@@ -32,6 +32,9 @@ async def test_accounting_import_batch_idempotency(client, session):
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()
 
+    from celerp_accounting.routes import seed_chart_of_accounts_hook
+
+    await seed_chart_of_accounts_hook(session=session, company_id=company_id)
     token = await make_authed_token(session, str(user_id), str(company_id), "admin")
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -41,7 +44,7 @@ async def test_accounting_import_batch_idempotency(client, session):
             {
                 "entity_id": entity_id,
                 "event_type": "acc.journal_entry.created",
-                "data": {"memo": "Import Test", "entries": []},
+                "data": {"memo": "Import Test", "entries": [{"account": "1120", "debit": 1.0}, {"account": "4100", "credit": 1.0}]},
                 "source": "import",
                 "idempotency_key": "je-created-" + entity_id,
             }

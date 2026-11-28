@@ -143,6 +143,17 @@ async def test_reports_unit_branches_heavy():
     assert exp["lines"][0]["sku"] == "E1"
 
 
+@pytest.mark.parametrize(("ts", "period", "bucket"), [
+    ("2026-03-05T10:00:00", "daily", "2026-03-05"),
+    ("2026-03-05T10:00:00", "weekly", "2026-03-02"),  # a Thursday falls in the week of Monday 2 March
+    ("2026-03-02", "weekly", "2026-03-02"),
+    ("2026-03-05T10:00:00", "monthly", "2026-03"),
+    ("not-a-date", "daily", "unknown"),
+])
+def test_a_dated_row_falls_in_its_day_week_or_month(ts, period, bucket):
+    assert reports._period_key(ts, period) == bucket
+
+
 # ---------------------------------------------------------------------------
 # Aging drilldown link generation
 # ---------------------------------------------------------------------------

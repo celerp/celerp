@@ -516,3 +516,21 @@ async def test_s9_accounting_fields_need_manage_accounting(fa):
     apply_all = await fa.post(f"/classes/{cls['id']}/apply-to-assets", {"preview": True, "op_key": "x"},
                               headers=operator)
     assert apply_all.status_code == 403
+
+
+async def test_corrections_made_in_the_same_instant_list_in_one_order(monkeypatch):
+    """Corrections stamped with the same time list by asset number, then id, whatever order
+    the database returns them in, so the list reads the same on every load."""
+    from celerp_fixed_assets import corrections
+
+    at = "2026-06-15T12:00:00+00:00"
+    rows = [("fa:corr:b", {"number": "FA-0001", "applied_at": at}), ("fa:corr:a", {"number": "FA-0005", "applied_at": at}),
+            ("fa:corr:c", {"number": "FA-0001", "requested_at": at}), ("fa:corr:d", {"number": "FA-0002",
+                                                                          "requested_at": "2026-06-16T09:00:00+00:00"})]
+    seen = []
+    for order in (rows, rows[::-1]):
+        async def entities(_session, _company_id, _kind, order=order):
+            return list(order)
+        monkeypatch.setattr(corrections, "_entities", entities)
+        seen.append([r["id"] for r in await corrections.records(None, uuid.uuid4())])
+    assert seen[0] == seen[1] == ["fa:corr:d", "fa:corr:a", "fa:corr:c", "fa:corr:b"]

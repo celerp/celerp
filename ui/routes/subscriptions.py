@@ -1410,7 +1410,7 @@ def _not_converted(data: dict) -> list[FT]:
 
 def _definitions() -> FT:
     return Div(H3(t("subscriptions.definitions_heading")),
-               *[P(t(f"subscriptions.{k}"), cls="text-muted") for k in _DEFINITIONS])
+               *[P(t(f"subscriptions.{k}"), cls="text-muted") for k in _DEFINITIONS], id="sub-definitions")
 
 
 def _revenue_body(data: dict, *, filtered: bool) -> list[FT]:
@@ -1480,7 +1480,7 @@ def setup_routes(app) -> None:
         if not token:
             return ""
         try:
-            sub = await api.get_subscription(token, entity_id)
+            sub = await api.get_doc(token, entity_id)
             doc = await api.get_doc(token, doc_id)
             k = (sub.get("released_bills") or {}).get(doc_id)
             entry = ((sub.get("periods") or {}).get(str(k)) or {}) if k is not None else {}
@@ -1787,7 +1787,7 @@ def setup_routes(app) -> None:
                 draft = await _subscriber_draft(token, await request.form())
                 if isinstance(draft, str):
                     return _action_error(draft)
-            result = await api.create_subscription(token, {"doc_type": doc_type, "frequency": "monthly",
+            result = await api.create_doc(token, {"doc_type": doc_type, "frequency": "monthly",
                                                            **({"kind": kind} if kind else {}), **draft})
         except APIError as e:
             return _refused(e)
@@ -1804,7 +1804,7 @@ def setup_routes(app) -> None:
             return RedirectResponse("/login", status_code=302)
 
         try:
-            doc = await api.get_subscription(token, entity_id)
+            doc = await api.get_doc(token, entity_id)
         except APIError as exc:
             if exc.status == 404:
                 return RedirectResponse("/subscriptions", status_code=302)
@@ -2047,7 +2047,7 @@ def setup_routes(app) -> None:
 
         async def read() -> tuple[dict, str]:
             """The agreement as stored and every view of its schedule drawn from it."""
-            sub = await _with_collection(token, entity_id, await _with_member(token, await api.get_subscription(token, entity_id)))
+            sub = await _with_collection(token, entity_id, await _with_member(token, await api.get_doc(token, entity_id)))
             settings = (await api.get_company(token)).get("settings") or {}
             return sub, _stored_schedule_views(entity_id, sub, await api.get_subscription_periods(token, entity_id),
                                                _defers(settings, sub))

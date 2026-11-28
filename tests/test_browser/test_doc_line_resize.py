@@ -6,7 +6,7 @@ The invoice line table (``table.doc-lines``) fills its container (``width:100%; 
 and holds each column width as a PERCENTAGE of the table (see the shared ``col_resize_script``).
 Dragging a column's handle widens THAT column and narrows its right-hand neighbour by the same amount,
 so the columns always sum to 100% — the table stays the container width with NO horizontal overflow.
-Widths persist across reload (localStorage, keyed ``celerp_dline_wpct_*``).
+Widths persist across reload (the user's column setup on the server, table ``doc_lines_*``).
 
   RESIZE-01: dragging a handle widens the column and narrows its right neighbour (proportional);
              the table width is unchanged (no overflow). The new width survives a reload.
@@ -16,6 +16,8 @@ Widths persist across reload (localStorage, keyed ``celerp_dline_wpct_*``).
 from __future__ import annotations
 
 import pytest
+
+from .conftest import saved_column_layout
 
 pytestmark = pytest.mark.browser
 
@@ -50,12 +52,6 @@ def _right_neighbour_width(page):
     )
 
 
-def _clear_saved_widths(page):
-    page.evaluate("() => Object.keys(localStorage)"
-                  ".filter(k => k.indexOf('celerp_dline_w') === 0)"
-                  ".forEach(k => localStorage.removeItem(k))")
-
-
 def _drag_handle(page, th_sel, dx):
     """Drag the resize handle inside `th_sel` horizontally by `dx` px."""
     handle = page.locator(f"{th_sel} .col-resize-handle").first
@@ -73,11 +69,8 @@ def _drag_handle(page, th_sel, dx):
     page.mouse.up()
 
 
-def test_invoice_column_resize_proportional_and_persists(page, ui_server, resize_doc_id):
+def test_invoice_column_resize_proportional_and_persists(page, ui_server, resize_doc_id, api):
     page.goto(f"{ui_server}/docs/{resize_doc_id}", wait_until="domcontentloaded")
-    page.wait_for_selector("table.doc-lines thead th.col-desc .col-resize-handle", timeout=5000)
-    _clear_saved_widths(page)
-    page.reload(wait_until="domcontentloaded")
     page.wait_for_selector("table.doc-lines thead th.col-desc .col-resize-handle", timeout=5000)
     page.wait_for_timeout(250)  # let the requestAnimationFrame baseline run
 
@@ -107,6 +100,7 @@ def test_invoice_column_resize_proportional_and_persists(page, ui_server, resize
     )
 
     # RESIZE persistence: the widened size must survive a full reload (saved as %).
+    saved_column_layout(api, "doc_lines_invoice", lambda l: "col-desc" in (l.get("widths") or {}))
     page.reload(wait_until="domcontentloaded")
     page.wait_for_selector(desc, timeout=5000)
     page.wait_for_timeout(250)  # let the requestAnimationFrame restore run
@@ -121,9 +115,6 @@ def test_invoice_column_resize_does_not_overflow(page, ui_server, resize_doc_id)
     NOT overflow the scroll wrap and must NOT move the table's left edge — the right neighbour
     absorbs the change down to its minimum."""
     page.goto(f"{ui_server}/docs/{resize_doc_id}", wait_until="domcontentloaded")
-    page.wait_for_selector("table.doc-lines thead th.col-desc .col-resize-handle", timeout=5000)
-    _clear_saved_widths(page)
-    page.reload(wait_until="domcontentloaded")
     page.wait_for_selector("table.doc-lines thead th.col-desc .col-resize-handle", timeout=5000)
     page.wait_for_timeout(250)
 

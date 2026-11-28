@@ -106,14 +106,33 @@ def _serve_api():
     _reset_pg_database()
 
     from celerp.main import app
+    from celerp.services import update
+
+    async def _no_index_call(*args, **kwargs):
+        return None
+
     config = uvicorn.Config(app, host="127.0.0.1", port=_API_PORT, log_level="error")
     server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    _wait_for_port(_API_PORT)
-    yield _API_BASE
-    server.should_exit = True
-    thread.join(timeout=3)
+    # The update loop asks the package index a minute after startup; its answer would
+    # light the bell part way through a run, so pages would differ with run length.
+    # Every other outbound call of the API and UI servers (both run in this process) goes
+    # through a proxy port that is bound and never listens, so it is refused at once: the
+    # pages read the relay's and the internet's absence, the same on every machine.
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    proxy = f"http://127.0.0.1:{closed.getsockname()[1]}"
+    with closed, pytest.MonkeyPatch.context() as mp:
+        mp.setattr(update, "auto_update_tick", _no_index_call)
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            mp.setenv(name, proxy)
+        for name in ("NO_PROXY", "no_proxy"):
+            mp.setenv(name, "localhost,127.0.0.1")
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        _wait_for_port(_API_PORT)
+        yield _API_BASE
+        server.should_exit = True
+        thread.join(timeout=3)
     _reset_pg_database()
 
 
@@ -265,11 +284,15 @@ def _shared_session_kept(request):
 
 
 @pytest.fixture
-def page(browser_context, request):
+def page(browser_context, ui_server, request):
     """Fresh page per test, from cold server- and client-side state. On setup, drop the UI's
-    per-token metadata snapshot; on teardown, clear per-origin localStorage/sessionStorage so
-    client state (column prefs, Excel-funnel filters, etc.) can't leak to the next test - both are
-    what made the suite order- and shard-sensitive (e.g. the inventory attribute funnel).
+    per-token metadata snapshot, forget the saved column setups (kept on the server per user) and
+    clear the app origin's localStorage, so state (columns, Excel-funnel filters, etc.) can't leak
+    in from an earlier test - that is what made the suite order- and shard-sensitive (e.g. the
+    inventory attribute funnel). The storage is cleared
+    through the browser, not a page's script, so it holds however the earlier test left its page
+    (closed, or on about:blank where a script can no longer reach the app's storage); a new page
+    has its own sessionStorage.
 
     A Playwright trace is recorded and, on failure, saved to /tmp/playwright_failures so CI-only
     browser flakes (which never reproduce locally) can be diagnosed from the uploaded artifact -
@@ -279,11 +302,14 @@ def page(browser_context, request):
     # schema/preset/location write goes through the UI. Browser tests seed those
     # writes straight against the API, which the UI never sees, so a snapshot a
     # prior test warmed would mask this test's setup. Start each test from a cold
-    # snapshot, the same reason localStorage is cleared on teardown below.
+    # snapshot, the same reason the column setups and localStorage are cleared below.
     from ui import api_client
     api_client._reset_metadata_cache_for_tests()
+    clear_column_prefs()
 
     p = browser_context.new_page()
+    browser_context.new_cdp_session(p).send(
+        "Storage.clearDataForOrigin", {"origin": ui_server, "storageTypes": "local_storage"})
     browser_context.tracing.start(snapshots=True, screenshots=True, sources=True)
     yield p
     if getattr(request.node, "_failed", False):
@@ -299,10 +325,6 @@ def page(browser_context, request):
             browser_context.tracing.stop()
         except Exception:
             pass
-    try:
-        p.evaluate("try{localStorage.clear();sessionStorage.clear();}catch(e){}")
-    except Exception:
-        pass
     if not p.is_closed():
         p.close()
 
@@ -401,6 +423,27 @@ def clear_session_registry() -> None:
     conn.close()
 
 
+def clear_column_prefs() -> None:
+    """Forget every user's saved column setup (a server copy per user, read by every device),
+    so a table opens with its default columns."""
+    conn = _test_db()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE companies SET settings = (settings::jsonb - 'column_prefs')::json"
+                    " WHERE settings::jsonb ? 'column_prefs';")
+    conn.close()
+
+
+def saved_column_layout(api, table: str, ready) -> dict:
+    """The signed-in user's saved column setup for *table* once ``ready(layout)`` holds (a change
+    on the page is saved in the background), or the last one read after a few seconds."""
+    deadline = time.monotonic() + 5
+    while True:
+        layout = api.get("/companies/me/column-prefs").json().get(table) or {}
+        if ready(layout) or time.monotonic() > deadline:
+            return layout
+        time.sleep(0.1)
+
+
 def css_class(name: str) -> re.Pattern:
     """A class attribute holding *name* as one whole class, for expect(...).to_have_class.
     The expect retries until it holds; a class read once can see the element mid-swap,
@@ -428,6 +471,20 @@ def htmx_settled(locator) -> None:
     added = "contains(concat(' ', normalize-space(@class), ' '), ' htmx-added ')"
     expect(locator.locator(f"xpath=ancestor-or-self::*[{added}]")).to_have_count(0)
     expect(locator.locator(".htmx-added")).to_have_count(0)
+
+
+def htmx_idle(page) -> None:
+    """Waits until htmx is quiet across the whole page: loaded, fonts in, no request in flight
+    and no swap still settling, and it stays so for three polls, because a fragment a swap
+    brings in can start its own load. Parts of a page that load after it
+    (``hx-trigger="load"``) are then in place, so what is read or pictured is the screen the
+    person sees, not one mid-load. A navigation in between starts the count again."""
+    page.wait_for_function("""() => {
+      const busy = document.readyState !== "complete" || document.fonts.status !== "loaded"
+        || document.querySelector(".htmx-request, .htmx-swapping, .htmx-settling, .htmx-added");
+      window.__htmxQuietPolls = busy ? 0 : (window.__htmxQuietPolls || 0) + 1;
+      return window.__htmxQuietPolls >= 3;
+    }""", polling=100)
 
 
 def settled_boxes(page, *selectors: str) -> list[dict]:
@@ -546,6 +603,15 @@ def fresh_company(api_server, browser_context, api):
     )
     with client:
         yield client
+
+
+@pytest.fixture
+def company_with_books(fresh_company):
+    """A company whose books currency is set: the assistant proposes accounting changes
+    only once the books have a currency (it refuses them while none is set)."""
+    r = fresh_company.patch("/companies/me/books", json={"currency": "USD"})
+    assert r.status_code == 200, r.text
+    return fresh_company
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -30,7 +30,7 @@ def _je(entries, ts="2026-01-15"):
 @pytest.mark.asyncio
 async def test_one_line_entry_asks_for_a_second_line(client):
     r = await client.post("/accounting/journal-entries", headers=await _headers(client),
-                          json=_je([{"account": "1110", "debit": 10, "credit": 0}]))
+                          json=_je([{"account": "1111", "debit": 10, "credit": 0}]))
     assert r.status_code == 422
     assert refusal_text(r.json()["detail"]) == t("acct.err_je_two_lines", "en")
 

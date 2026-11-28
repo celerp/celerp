@@ -116,10 +116,10 @@ async def test_finalize_sent_again_while_the_invoice_ships_both_finish(_db_engin
         shipping = asyncio.Event()
         original = doc_routes._lock_item_sku_lots
 
-        async def slow_lots(session, cid, item_ids):
+        async def slow_lots(session, cid, item_ids, **kw):
             shipping.set()
             await asyncio.sleep(1.5)
-            return await original(session, cid, item_ids)
+            return await original(session, cid, item_ids, **kw)
 
         monkeypatch.setattr(doc_routes, "_lock_item_sku_lots", slow_lots)
 

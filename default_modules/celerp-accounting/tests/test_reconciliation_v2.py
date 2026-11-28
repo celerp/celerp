@@ -472,7 +472,8 @@ async def test_a_rule_onto_an_unknown_or_archived_account_is_refused_and_nothing
         "match_pattern": "Fee", "match_type": "contains", "target_account_code": "6100"}, headers=h)).json()
     assert (await client.patch("/accounting/accounts/6200", headers=h, json={"is_active": False})).status_code == 200
 
-    for code, status, key in (("9999", 404, "acct.err_account_unknown"), ("6200", 422, "acct.err_account_archived")):
+    for code, status, key in (("9999", 422, "posting.destination.not_in_chart"),
+                              ("6200", 422, "posting.destination.inactive")):
         r = await client.post("/accounting/rules", json={
             "match_pattern": "Rent", "match_type": "contains", "target_account_code": code}, headers=h)
         assert r.status_code == status, r.text

@@ -9,7 +9,7 @@ from ui.i18n import t
 
 def test_render_step_uses_user_language_labels():
     step = {"text": "Open {inv} from the sidebar.", "labels": {"inv": "nav.inventory"},
-            "image": None, "capture": {"route": "/inventory", "selector": "main", "actions": []}}
+            "image": None, "capture": {"route": "/inventory", "selector": "main", "actions": [], "evidence": ["main"]}}
     thai = t("nav.inventory", "th")
     assert thai != t("nav.inventory", "en")
     assert render_step(step, "th", {}) == f"Open {thai} from the sidebar."

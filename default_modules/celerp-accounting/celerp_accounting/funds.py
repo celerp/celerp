@@ -43,8 +43,8 @@ from celerp.services.journal_reversals import standing_reversal_ids
 from celerp.services.ledger_rows import journal_rows
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.peer_lines import (
-    CONNECTION_DEFAULTS, UNRESTRICTED, ChangeFundIn, change_posted_fund, checked, default_active, default_key,
-    outside_waiting, records_carrying,
+    CONNECTION_DEFAULTS, UNRESTRICTED, ChangeFundIn, change_posted_fund, checked, copy_posted_lines, default_active,
+    default_key, outside_waiting, records_carrying,
 )
 from celerp.services.permissions import read_authority, require_permission
 from celerp.services.visible_text import visible_text
@@ -544,8 +544,7 @@ async def post_fund_movement(session: AsyncSession, company_id, *, ts: date, rea
         if original_kind not in ({kind} if kind else FUND_MOVEMENT_TYPES) or state.get("status") != "posted":
             raise HTTPException(status_code=404, detail=catalog_refusal("fund.movement_not_found"))
         kind = original_kind
-        entries = [{"account": e["account"], "debit": e.get("credit") or 0, "credit": e.get("debit") or 0,
-                    **({"fund_id": e["fund_id"]} if e.get("fund_id") else {})} for e in state.get("entries") or ()]
+        entries = copy_posted_lines(reverses, state.get("entries"), reverse=True)
     elif entries is None:
         entries = await _leg_lines(session, company_id, company.settings or {}, legs)
     data = {"memo": reason, "ts": ts.isoformat(), "entries": entries, "je_type": kind, "status": "posted",
@@ -554,7 +553,8 @@ async def post_fund_movement(session: AsyncSession, company_id, *, ts: date, rea
         await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
                          event_type="acc.journal_entry.created", data=data, actor_id=actor, location_id=None,
                          source="api", idempotency_key=je_idempotency_key(je_id, kind, "c"),
-                         metadata_={"request": request_fingerprint(request)} if request_key is not None else {})
+                         metadata_={"request": request_fingerprint(request)} if request_key is not None else {},
+                         keep_gifts=reverses is not None)
     return {"je_id": je_id}
 
 

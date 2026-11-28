@@ -22,13 +22,14 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from celerp.accounting_roles import refused
+from celerp.services.money import money_text, to_decimal
 from celerp_fixed_assets import disposal, operations, projections, runs, setup, transfer
-from celerp_fixed_assets.projections import money, said
+from celerp_fixed_assets.projections import said
 from celerp_fixed_assets.operations import (
     _claim,
     _create_asset,
     _date,
-    _dec,
     _effects,
     _journal_view,
     _move,
@@ -80,7 +81,7 @@ async def _funding(session, company_id, body: dict, asset_account: str, currency
         line = await _open_line(session, company_id, body["source"])
         if line["kind"] != "acquisition":
             raise setup.refuse("fixed_assets.err_only_line_adds_asset_account_pays")
-        amount = _dec(line["amount"])
+        amount = to_decimal(line["amount"])
         lines = _reclass(line, asset_account, amount) if line["account"] != asset_account else []
         contributions = [{"journal_id": line["journal_id"], "line_index": line["line_index"], "amount": str(amount)}]
         return {"line": line, "amount": amount, "lines": lines, "contributions": contributions,
@@ -112,7 +113,7 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         movements = await asset_movements(session, company_id, asset_id)
         disposal.check_date(books, asset, projections.live(movements), day, what="addition")
         life = _life(body.get("life_months"))
-        shown = {"kind": kind, "date": day, "number": asset["number"], "amount": money(funding["amount"], currency),
+        shown = {"kind": kind, "date": day, "number": asset["number"], "amount": money_text(funding["amount"], currency),
                  "life_months": life}
         context = {"kind": kind, "asset": asset, "cls": cls, "day": day, "funding": funding, "life": life,
                    "generation": funding["generation"],
@@ -201,11 +202,11 @@ async def _replaced(session, company_id, books, asset_id: str, asset: dict, cls:
         part_cls = await setup.get_class(session, company_id, part.get("class_id"))
         return disposal._plan_asset(books, part_id, part, part_cls,
                                     await asset_movements(session, company_id, part_id), day, Decimal(1),
-                                    _dec(part.get("quantity")), roles)
+                                    to_decimal(part.get("quantity")), roles)
     from celerp.services.money import round_money
 
     estimate = round_money(setup.number(replaced["estimate"], "The estimated cost of the old part"), books.currency)
-    cost = _dec(asset.get("cost"))
+    cost = to_decimal(asset.get("cost"))
     if estimate <= 0 or estimate >= cost:
         raise setup.refuse("fixed_assets.err_estimated_cost_old_part_more_than", number=asset['number'], said=said(cost, books.currency))
     return disposal._plan_asset(books, asset_id, asset, cls, movements, day, estimate / cost, _ZERO, roles)
@@ -232,9 +233,9 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
         if not cls.get("construction"):
             raise setup.refuse("fixed_assets.err_number_not_under_construction", number=site['number'])
         if site.get("status") == "placed_in_service":
-            raise setup.refused(409, "fixed_assets.err_number_already_placed_service_full", number=site['number'])
+            raise refused(409, "fixed_assets.err_number_already_placed_service_full", number=site['number'])
         if site.get("status") != "active":
-            raise setup.refused(409, "fixed_assets.err_number_not_use_so_cannot_placed", number=site['number'])
+            raise refused(409, "fixed_assets.err_number_not_use_so_cannot_placed", number=site['number'])
         day = _date(body.get("date"), "The available-for-use date")
         books = await runs._books(session, company_id)
         currency = books.currency
@@ -243,7 +244,7 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
         rows = body.get("allocations")
         if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
             raise setup.refuse("fixed_assets.err_allocate_cost_at_least_one_asset")
-        balance = _dec(site.get("cost"))
+        balance = to_decimal(site.get("cost"))
         allocations = []
         for row in rows:
             target = await setup.get_class(session, company_id, row.get("class_id"))
@@ -266,9 +267,9 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
         lines = [JournalLine(account=k, debit=v) for k, v in debits.items()]
         lines.append(JournalLine(account=cls["asset_account"], credit=total))
         numbers = await _next_numbers(session, company_id, len(allocations))
-        shown = {"date": day, "number": site["number"], "balance": money(balance, currency),
-                 "remainder": money(balance - total, currency), "journals": [_journal_view(lines, currency)],
-                 "assets": [{"number": n, "name": a["name"], "class": a["cls"]["name"], "cost": money(a["amount"], currency)}
+        shown = {"date": day, "number": site["number"], "balance": money_text(balance, currency),
+                 "remainder": money_text(balance - total, currency), "journals": [_journal_view(lines, currency)],
+                 "assets": [{"number": n, "name": a["name"], "class": a["cls"]["name"], "cost": money_text(a["amount"], currency)}
                             for n, a in zip(numbers, allocations)]}
         return shown, {"site": site, "day": day, "allocations": allocations, "numbers": numbers, "lines": lines,
                        "total": total, "full": total == balance,
@@ -338,7 +339,7 @@ async def undo_latest(session, company_id, user_id, asset_id: str, body: dict) -
     if latest is None:
         raise setup.refuse("fixed_assets.err_number_has_nothing_undo", number=asset['number'])
     if latest.get("operation") in disposal._CHARGES:
-        raise setup.refused(409, "fixed_assets.err_depreciation_was_charged_number_after_its", number=asset['number'])
+        raise refused(409, "fixed_assets.err_depreciation_was_charged_number_after_its", number=asset['number'])
     op = await _state(session, company_id, f"fa:op:{latest['op_key']}") or {}
     if op.get("type") in ("disposal", "sale"):
         return await disposal.undo(session, company_id, user_id, asset_id, body)

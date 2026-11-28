@@ -215,7 +215,7 @@ def test_every_kind_of_maker_is_found():
     makers = _makers(_trees())
     assert makers["celerp.ai.tools"]["keyed_error"] == 1 and makers["celerp.ai.tools"]["_agent_error"] == 1
     assert makers["celerp.accounting_roles"]["Refused"] == 0
-    assert makers["celerp_fixed_assets.setup"]["refuse"] == 0 and makers["celerp_fixed_assets.setup"]["refused"] == 1
+    assert makers["celerp_fixed_assets.setup"]["refuse"] == 0 and makers["celerp.accounting_roles"]["refused"] == 1
     assert "refuse" not in makers["celerp_manufacturing.movements"]  # it prefixes "mfg." to the key
     assert any(site.startswith("default_modules/celerp-inventory/celerp_inventory/services.py:")
                and key == "inventory.err_restate_lineage_missing" for site, key, _kind in _refusal_calls())
@@ -252,8 +252,8 @@ def _schedule_error_keys() -> list[str]:
 
 
 def _peer_lines_keys() -> list[str]:
-    """The key of every peer_lines._refused call, and of every peer_lines.checked call in any
-    file importing it (checked passes its key on to _refused). A key passed through by name is
+    """The key of every refused call in peer_lines, and of every peer_lines.checked call in any
+    file importing it (checked passes its key on to refused). A key passed through by name is
     allowed only inside checked itself; one built from anything else fails here."""
     keys = []
     for root in _ROOTS:
@@ -268,7 +268,7 @@ def _peer_lines_keys() -> list[str]:
                        for c in ast.walk(f)}
             for node in ast.walk(tree):
                 name = getattr(node.func, "id", None) if isinstance(node, ast.Call) else None
-                at = {"checked": 2, **({"_refused": 1} if own else {})}.get(name)
+                at = {"checked": 2, **({"refused": 1} if own else {})}.get(name)
                 if at is None or id(node) in passing:
                     continue
                 key = node.args[at]
@@ -370,7 +370,7 @@ _DYNAMIC_KEY_SITES = {
     # celerp_subscriptions/billing.py: schedule_refusal(status, exc) for the key of each
     # ScheduleError the module raises
     "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py": _schedule_error_keys(),
-    # celerp/services/peer_lines.py: _refused(status, key, **params) wraps catalog_refusal(key, ...)
+    # celerp/services/peer_lines.py: checked(..., key) passes its key on to accounting_roles.refused
     # for the fund choice, arrival and Change fund refusals
     "celerp/services/peer_lines.py": _peer_lines_keys(),
     # celerp/services/company_handoff_sender.py: cloud_json(unconfirmed=, account_needed=) raises

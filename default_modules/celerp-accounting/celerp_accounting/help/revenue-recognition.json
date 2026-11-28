@@ -25,10 +25,10 @@
       "labels": {
         "flag": "item.recognize_over_service_period"
       },
-      "image": null,
+      "image": "img/revenue-recognition-1.webp",
       "capture": {
         "route": "/inventory?inventory_type=service",
-        "selector": "main",
+        "selector": "main table.detail-table",
         "actions": [
           {
             "click": "main tr:has-text('Support plan') a.table-link"
@@ -36,17 +36,23 @@
           {
             "wait": "text=Recognize over the service period"
           }
+        ],
+        "evidence": [
+          "{flag}"
         ]
       }
     },
     {
       "text": "When the invoice is finalized, each such line gets a revenue schedule: the amount and the service period it is recognized over. Every month that has ended adds a run, the part of the amount that month earns.",
       "labels": {},
-      "image": null,
+      "image": "img/revenue-recognition-2.webp",
       "capture": {
         "route": "/accounting/recognition",
-        "selector": "main",
-        "actions": []
+        "selector": "#recognition-body > table.data-table",
+        "actions": [],
+        "evidence": [
+          "#recognition-body > table.data-table td.cell--number"
+        ]
       }
     },
     {
@@ -56,11 +62,16 @@
         "post": "btn.post",
         "reverse": "recognition.reverse"
       },
-      "image": null,
+      "image": "img/revenue-recognition-3.webp",
       "capture": {
         "route": "/accounting/recognition",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{page}",
+          "{post}",
+          "{reverse}"
+        ]
       }
     },
     {
@@ -68,11 +79,14 @@
       "labels": {
         "auto": "recognition.turn_on"
       },
-      "image": null,
+      "image": "img/revenue-recognition-4.webp",
       "capture": {
         "route": "/accounting/recognition",
-        "selector": "main",
-        "actions": []
+        "selector": "#recognition-setting",
+        "actions": [],
+        "evidence": [
+          "{auto}"
+        ]
       }
     },
     {
@@ -80,31 +94,40 @@
       "labels": {
         "roll": "recognition.roll_forward"
       },
-      "image": null,
+      "image": "img/revenue-recognition-5.webp",
       "capture": {
         "route": "/accounting/recognition",
-        "selector": "main",
-        "actions": []
+        "selector": "#recognition-body .report-section:has(> h3.report-section-title)",
+        "actions": [],
+        "evidence": [
+          "{roll}"
+        ]
       }
     },
     {
       "text": "A schedule can be amended when a service is extended, cut short or repriced. The amendment names the day it takes effect, the new service end and, if it changes, the new amount, and it is sent through the Celerp API. What the schedule planned before that day stays; the rest is planned over the new period. If a posted run covers a day from that date on, reverse that month first.",
       "labels": {},
-      "image": null,
+      "image": "img/revenue-recognition-6.webp",
       "capture": {
         "route": "/accounting/recognition",
-        "selector": "main",
-        "actions": []
+        "selector": "#recognition-body > table.data-table",
+        "actions": [],
+        "evidence": [
+          "#recognition-body > table.data-table td.cell--number"
+        ]
       }
     },
     {
       "text": "A schedule recognizes on the fund of its invoice line and follows that line when its fund changes, for example when you change the fund of an invoice from outside. Runs already posted are posted again on the new fund.",
       "labels": {},
-      "image": null,
+      "image": "img/revenue-recognition-7.webp",
       "capture": {
         "route": "/accounting/recognition",
-        "selector": "main",
-        "actions": []
+        "selector": "#recognition-body .report-section > table.data-table",
+        "actions": [],
+        "evidence": [
+          "#recognition-body .report-section > table.data-table tbody tr:nth-child(2)"
+        ]
       }
     },
     {
@@ -112,21 +135,32 @@
       "labels": {
         "void": "recognition.void_source"
       },
-      "image": null,
+      "image": "img/revenue-recognition-8.webp",
       "capture": {
         "route": "/accounting/recognition",
-        "selector": "main",
-        "actions": []
+        "selector": "#recognition-body .report-section > div:has(> h3.report-section-title)",
+        "actions": [],
+        "evidence": [
+          "{void}"
+        ]
       }
     },
     {
       "text": "You can also ask the assistant what is still deferred, to post a month's recognition or to reverse one. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/revenue-recognition-9.webp",
       "capture": {
-        "route": "/inventory?inventory_type=service",
-        "selector": "main",
-        "actions": []
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "What is still deferred?"
+          }
+        ],
+        "evidence": [
+          "#ai-query-input"
+        ]
       }
     }
   ],

@@ -78,3 +78,21 @@ def test_the_draft_refusal_is_shown_in_the_users_language():
             "RAW-1 ist ein Entwurf und noch kein Bestand: Machen Sie es zuerst verfügbar.")
     finally:
         i18n.set_lang("en")
+
+
+@pytest.mark.parametrize(("status", "refused"), [("draft", True), ("available", False)])
+def test_the_event_boundary_refuses_a_movement_only_of_a_draft(status, refused):
+    """The row-lock check: a movement applied to a lot that is draft by then is refused (409),
+    the same movement of an available lot passes."""
+    from fastapi import HTTPException
+
+    from celerp.projections.engine import Transition
+    from celerp.services.lot_origin import assert_draft_not_circulated
+
+    moved = Transition(before={"sku": "D1", "status": status, "quantity": 5}, after={"sku": "D1", "status": status, "quantity": 4})
+    if refused:
+        with pytest.raises(HTTPException) as e:
+            assert_draft_not_circulated("item.reserved", moved)
+        assert e.value.status_code == 409
+    else:
+        assert assert_draft_not_circulated("item.reserved", moved) is None

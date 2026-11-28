@@ -223,3 +223,25 @@ def test_create_list_via_form(page, ui_server, api):
     entity_id = page.url.rstrip("/").split("/")[-1]
     r = api.get(f"/lists/{entity_id}")
     assert r.status_code == 200, f"GET /lists/{entity_id} failed: {r.text}"
+
+
+# ── CREATE-09: document via the New Memo button ───────────────────────────────
+
+def test_create_memo_via_new_memo_button(page, ui_server, api):
+    """
+    CREATE-09: the New Memo button on /docs?type=memo posts /docs/create-blank, which writes a
+    draft memo and opens it; the memo is then in the API as a draft of that type.
+    """
+    page.goto(f"{ui_server}/docs?type=memo", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memos page load")
+
+    new_btn = page.locator("main button[hx-post='/docs/create-blank?type=memo']").first
+    new_btn.wait_for(state="visible", timeout=5000)
+    new_btn.click()
+    page.wait_for_url(lambda url: "/docs/doc:" in url, timeout=10000)
+    _assert_no_crash(page, "after blank-first memo redirect")
+
+    entity_id = page.url.rstrip("/").split("/")[-1]
+    r = api.get(f"/docs/{entity_id}")
+    assert r.status_code == 200, f"GET /docs/{entity_id} failed: {r.text}"
+    assert (r.json()["doc_type"], r.json()["status"]) == ("memo", "draft"), r.json()

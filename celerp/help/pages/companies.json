@@ -11,26 +11,26 @@
     {
       "text": "On {title} in Global Config, pick a company from the list to switch to it, or use {new} to start another one from scratch.",
       "labels": {"title": "settings.your_companies", "new": "btn.new_company"},
-      "image": null,
-      "capture": {"route": "/settings/general?tab=company", "selector": "main", "actions": []}
+      "image": "img/companies-1.webp",
+      "capture": {"route": "/settings/general?tab=company", "selector": "main div.settings-card", "actions": [], "evidence": ["{title}", "a.btn:has-text('{new}')"]}
     },
     {
       "text": "{clients} opens a separate list for an accountant or bookkeeper working across several companies, showing what needs attention in each one.",
       "labels": {"clients": "firm_view.title"},
-      "image": null,
-      "capture": {"route": "/settings/general?tab=company", "selector": "main", "actions": []}
+      "image": "img/companies-2.webp",
+      "capture": {"route": "/settings/general?tab=company", "selector": "main div.settings-card", "actions": [], "evidence": ["{clients}"]}
     },
     {
       "text": "{clients} lists every company you can open, with its accountant sync and what needs attention. Use {search} to find one, or {move} to move a company to another firm.",
       "labels": {"clients": "firm_view.title", "search": "firm_view.search", "move": "firm_view.move"},
-      "image": null,
-      "capture": {"route": "/companies", "selector": "main", "actions": []}
+      "image": "img/companies-3.webp",
+      "capture": {"route": "/companies", "selector": "main", "actions": [], "evidence": ["{clients}", "{search}", "{move}"]}
     },
     {
       "text": "You can also ask the assistant which companies you can open, or for the companies your firm looks after and how each one stands.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/settings/general?tab=company", "selector": "main", "actions": []}
+      "image": "img/companies-4.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Which companies can I open?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["core.users", "core.settings"]

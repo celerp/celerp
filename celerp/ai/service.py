@@ -34,6 +34,7 @@ from celerp.ai import jobs
 from celerp.ai.card import action_title, card_arguments
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import ModelResult, RelayError, _build_user_content, complete
+from celerp.ai.reverse import BOOKS_CURRENCY_ROUTE
 from celerp.ai.tools import (
     AGENT_RESULT_MAX_BYTES,
     _agent_error,
@@ -110,6 +111,7 @@ class AgentResult:
     downloads: list[str] = field(default_factory=list)  # links to the files the answer offers
     error_code: str | None = None  # why the run failed; see RETRYABLE_ERRORS
     charge_known: bool = False   # the service named the question's whole charge
+    cut: bool = False            # the answer stopped at the service's length limit
 
 
 @dataclass
@@ -289,6 +291,23 @@ say so and name the screen where they do it themselves:
 {groups}"""
 
 
+# The screen whose settings card holds the company currency field (nav.company_details).
+BOOKS_CURRENCY_SCREEN = "Company Details"
+
+_BOOKS_CURRENCY_PROMPT = """
+
+The company keeps its books in {currency}, as set in {screen}. Take the
+books' currency from there only, never from a bank account or a file. When a file, a
+statement or a bank account is in another currency, say so and ask the user to check
+the company and bank account currencies before you propose importing or posting it."""
+
+_NO_BOOKS_CURRENCY_PROMPT = """
+
+The company's books currency is not set yet. Never guess it from a bank account or a
+file. Propose no change other than setting it; tell the user to set the currency in {screen}, then ask again."""
+
+
+
 def agent_area(capability: dict) -> str:
     """The area a capability is listed under: its owning module, or core."""
     owner = capability.get("module")
@@ -319,7 +338,8 @@ def _help_modules(company_settings: dict) -> list[str]:
 
 def agent_system_prompt(lang: str, capabilities: dict, company_settings: dict) -> str:
     """The agent's system prompt for a user who reads ``lang``: the areas the caller's
-    tools come from, the actions kept off the assistant, and the help modules."""
+    tools come from, the actions kept off the assistant, the books' currency as the
+    company set it, and the help modules."""
     prompt = _AGENT_SYSTEM_PROMPT
     if capabilities:
         labels = agent_areas(company_settings)
@@ -327,6 +347,9 @@ def agent_system_prompt(lang: str, capabilities: dict, company_settings: dict) -
         prompt += _AREAS_PROMPT.format(max_open=MAX_OPEN_PER_CALL,
                                        areas=", ".join(f"{a} ({labels.get(a, a)})" for a in used))
     prompt += _ASK_PROMPT.format(groups="\n".join(f"- {reason}" for reason in USER_ACTION_EXCLUSIONS.values()))
+    currency = _books_currency_set(company_settings)
+    prompt += (_BOOKS_CURRENCY_PROMPT if currency else _NO_BOOKS_CURRENCY_PROMPT).format(
+        currency=currency, screen=BOOKS_CURRENCY_SCREEN)
     return prompt + _HELP_PROMPT.format(language=lang_label(lang),
                                         help_modules=", ".join(_help_modules(company_settings)))
 
@@ -672,6 +695,36 @@ def _repeated_changes(parsed: list, capabilities: dict) -> dict[str, dict]:
     return refused
 
 
+def _books_currency_set(company_settings: dict) -> str | None:
+    """The currency the company set for its books, or None while it has set none."""
+    return company_settings.get("currency") or None
+
+
+def books_currency_refusal(capability: dict | None, company_settings: dict) -> dict | None:
+    """The refusal for a change while the company has no books currency set, else None.
+    Fails closed: any change may bring amounts into the books (a build posts stock and
+    WIP, a valuation revalues, an import posts lines), and they would be read in a guessed
+    currency, so every change counts, a new one included, without being listed anywhere.
+    Only setting the currency (``BOOKS_CURRENCY_ROUTE``), the way out, stays open. Checked
+    when a change is proposed and again when a confirmed one runs, so an older proposal
+    or a retry is held to it too."""
+    if (_books_currency_set(company_settings) or capability is None
+            or not capability.get("requires_confirmation")
+            or (str(capability["method"]).upper(), capability["path"]) == BOOKS_CURRENCY_ROUTE):
+        return None
+    return _agent_error(
+        "books_currency_unset", "ai.err_books_currency_unset",
+        "The company's books currency is not set, so no change may be made. Ask the user to set "
+        f"it in {BOOKS_CURRENCY_SCREEN}, then propose this again.")
+
+
+def _books_currency_unset(parsed: list, company_settings: dict) -> dict[str, dict]:
+    """The proposed calls refused while the company has no books currency set."""
+    refused = {call_id: books_currency_refusal(capability, company_settings)
+               for call_id, _name, capability, _arguments, error in parsed if error is None}
+    return {call_id: error for call_id, error in refused.items() if error is not None}
+
+
 async def run_agent(
     *,
     app,
@@ -841,6 +894,8 @@ async def _agent_loop(
             return tally.result(
                 answer=content or t("ai.empty_answer"), model_used=model_used,
                 tools_called=tools_called, pending_actions=[],
+                # "length" is the finish_reason of a reply that stopped at the length limit
+                cut=bool(content) and result.get("finish_reason") == "length",
             )
 
         # Over the per-turn or per-run cap: execute what fits, answer the rest
@@ -859,7 +914,7 @@ async def _agent_loop(
                 dropped.append(call)
 
         parsed = [_parse_call(call, capabilities, opened) for call in kept]
-        refused = _repeated_changes(parsed, capabilities)
+        refused = _repeated_changes(parsed, capabilities) | _books_currency_unset(parsed, company_settings)
         parsed = [(call_id, name, capability, arguments, refused.get(call_id, error))
                   for (call_id, name, capability, arguments, error) in parsed]
         mutations = [
@@ -1018,7 +1073,7 @@ async def _model_turn(
             raise
         stored = {"message": result.message, "reservation_id": result.reservation_id,
                   "model_used": result.model_used, "credits": int((result.usage or {}).get("credits") or 0),
-                  "operation_credits": result.operation_credits}
+                  "operation_credits": result.operation_credits, "finish_reason": result.finish_reason}
         await journal.ended(key, "done", stored)
     tally.charge(stored["credits"], stored["operation_credits"])
     return stored

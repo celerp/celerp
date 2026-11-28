@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 from celerp.error_body import keyed
+from celerp_ai import MAX_PROMPT_CHARS
 from celerp.gateway.state import MULTI_FILE_TIERS, PAID_TIERS
 import ui.api_client as api
 from ui.api_client import APIError
@@ -27,7 +28,7 @@ from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
 from ui.i18n import doc_type_label, read_kept, refusal_text, t, t_or, get_lang, tier_label
 from ui.security import not_permitted_redirect
-from ui.components.encode import call, html_response, js_value, safe_url
+from ui.components.encode import call, html_response, js_value, markdown_markup, safe_url
 
 # A proposal set larger than this renders as the review table instead of cards.
 TABLE_FROM = 5
@@ -576,7 +577,8 @@ def setup_ui_routes(app) -> None:
         parts = (
             user_bubble,
             _msg_bubble("ai", result.get("answer", ""), help_pages=result.get("help_pages"),
-                        downloads=result.get("downloads"), lang=lang),
+                        downloads=result.get("downloads"), lang=lang,
+                        extra=_cut_notice(result, conversation_id, lang, offer_continue=True)),
             *groups,
         )
         return _reply(parts, done=True, question_id=question_id, asked_again=asked_again)
@@ -1123,12 +1125,19 @@ async def _usage_table(token: str, session_token: str, status: dict | None) -> F
 # Components
 # ---------------------------------------------------------------------------
 
+def _reply_body(role: str, text: str, error: bool):
+    """An assistant reply rendered from its Markdown; a question or an error as written."""
+    if role == "user" or error:
+        return text
+    return Div(markdown_markup(text), cls="ai-msg__md")
+
+
 def _msg_bubble(role: str, text: str, *, error: bool = False, help_pages: list[str] | None = None,
                 downloads: list[str] | None = None, lang: str = "en", extra: FT | None = None) -> FT:
     cls = "ai-msg ai-msg--user" if role == "user" else "ai-msg ai-msg--ai"
     if error:
         cls += " ai-msg--error"
-    return Div(text, *_help_sources(help_pages, lang), *_download_links(downloads, lang),
+    return Div(_reply_body(role, text, error), *_help_sources(help_pages, lang), *_download_links(downloads, lang),
                *([extra] if extra is not None else []), cls=cls)
 
 
@@ -1158,6 +1167,17 @@ def _ask_again(conversation_id: str, question_id: str, query: str, file_ids: lis
                lang: str) -> FT:
     """Ask a question that failed once more, as the same question."""
     return _resend(conversation_id, question_id, query, file_ids, t("ai.ask_again", lang), "ai-msg__again")
+
+
+def _cut_notice(entry: dict, conversation_id: str, lang: str, *, offer_continue: bool) -> FT | None:
+    """Under a reply the AI service cut at its length limit: the notice, and Continue,
+    which asks the assistant to carry on as a new question through the chat's own send.
+    Continue carries on from the end of the conversation, so only its last reply offers it."""
+    if not entry.get("cut"):
+        return None
+    carry_on = [_resend(conversation_id, str(uuid.uuid4()), t("ai.continue_request", lang), None,
+                        t("btn.continue", lang), "ai-msg__continue")] if offer_continue else []
+    return Div(P(t("ai.reply_cut", lang), cls="ai-msg__notice"), *carry_on, cls="ai-msg__cut")
 
 
 def _ask_as_new(conversation_id: str, query: str, file_ids: list[str] | None, lang: str) -> FT:
@@ -1263,7 +1283,7 @@ _LABEL_KEYS = {
     "bank_account_id": "field.bank_id", "answer": "bank.answer_label", "body": "label.message",
     "doc_id": "th.document", "docs": "page.documents", "fund_id": "th.fund", "is_active": "label.is_active",
     "line_id": "th.line", "lines": "bank.th_count", "path": "th.file", "session_id": "acct.source_reconciliation",
-    "splits": "bank.split",
+    "splits": "bank.split", "also_produces": "inventory.also_produces", "cost_share": "inventory.cost_share",
 }
 
 
@@ -1855,7 +1875,8 @@ def _pending_bubble(poll_url: str, delay_s: float, *children: FT, cls: str, also
                     method: str = "get", **attrs) -> FT:
     """A bubble that calls ``poll_url`` after ``delay_s`` seconds (at once for 0) and is
     replaced by what it returns: the one way the thread follows a running job. A poll
-    that may save something (``method="post"``) is never a GET."""
+    that may save something (``method="post"``) is never a GET. The thread follows what
+    lands to its foot (``#ai-messages``)."""
     poll = f"load delay:{delay_s:g}s" if delay_s else "load"
     return Div(*children, cls=cls, hx_trigger=f"{poll}{', ' if also_on else ''}{also_on}",
                hx_swap="outerHTML", **({"hx_post": poll_url} if method == "post" else {"hx_get": poll_url}), **attrs)
@@ -2140,7 +2161,7 @@ def _message_parts(entry: dict, conversation_id: str, asked: dict | None, lang: 
                                 asked.get("content") or "", asked.get("file_ids"), lang)
     out = [_msg_bubble("user" if role == "user" else "ai", text, error=error,
                        help_pages=entry.get("help_pages"), downloads=entry.get("downloads"),
-                       lang=lang, extra=again)]
+                       lang=lang, extra=again or _cut_notice(entry, conversation_id, lang, offer_continue=offer_again))]
     actions = entry.get("pending_actions") or []
     if actions:
         out.append(_action_group(conversation_id, str(entry.get("id", "")), actions, lang))
@@ -2230,6 +2251,11 @@ def _chat_view(
                 *message_children,
                 id="ai-messages",
                 cls="ai-messages",
+                # A swapped-out poll bubble hands its finished request to the thread, so what
+                # lands in the thread is followed to its foot when the reader was at the foot
+                # (a reader who scrolled up stays where they are).
+                hx_on__before_swap="this.dataset.atFoot = celerpAiAtFoot();",
+                hx_on__after_request="if (this.dataset.atFoot === 'true') celerpAiScrollToFoot();",
             ),
             # Input area: text row + drop zone
             Form(
@@ -2256,13 +2282,15 @@ def _chat_view(
                 *_operation_input(str(uuid.uuid4())),
                 # Text input row
                 Div(
-                    Input(
-                        type="text",
+                    Textarea(
                         name="query",
                         id="ai-query-input",
+                        rows="1",
                         placeholder=t("msg.ask_anything_about_your_business_data", lang),
                         cls="ai-input__field",
                         autocomplete="off",
+                        onkeydown="celerpAiComposerKey(event)",
+                        oninput="celerpAiCountPrompt()",
                     ),
                     Button(t("btn.send", lang), type="submit", cls="btn btn--primary ai-input__send"),
                     Button(
@@ -2273,6 +2301,8 @@ def _chat_view(
                     ),
                     cls="ai-input__row",
                 ),
+                Div(f"0 / {MAX_PROMPT_CHARS}", id="ai-query-count", cls="ai-input__count",
+                    data_limit=str(MAX_PROMPT_CHARS)),
                 # Drop zone
                 Div(
                     Span(icon("folder"), cls="ai-chat-dropzone__icon"),
@@ -2373,6 +2403,28 @@ function celerpAiRefreshComposer() {
     }
 }
 
+// Enter sends, as the Send button does (and not while it is disabled); Shift+Enter
+// starts a new line; Ctrl/Cmd+Enter also sends. An Enter that confirms an input
+// method's word (Thai, Chinese, Japanese) belongs to the input method.
+function celerpAiComposerKey(e) {
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    var form = document.getElementById('ai-chat-form');
+    var send = form && form.querySelector('.ai-input__send');
+    if (send && !send.disabled) form.requestSubmit(send);
+}
+
+// The prompt's length against the limit the API refuses past; a longer prompt is kept
+// as typed and marked, never cut short.
+function celerpAiCountPrompt() {
+    var count = document.getElementById('ai-query-count');
+    var field = document.getElementById('ai-query-input');
+    if (!count || !field) return;
+    var limit = Number(count.dataset.limit), length = Array.from(field.value).length;
+    count.textContent = length + ' / ' + limit;
+    count.classList.toggle('ai-input__count--over', length > limit);
+}
+
 function celerpAiOpenFilePicker() {
     if (CELERP_AI_REQUESTING || CELERP_AI_UPLOADING > 0) return;
     var input = document.getElementById('ai-file-input');
@@ -2394,7 +2446,18 @@ function celerpAiBeforeRequest() {
         return celerpNode('span', {class: 'ai-typing__dot'});
     })));
     m.appendChild(typing);
-    m.scrollTop = m.scrollHeight;
+    celerpAiScrollToFoot();
+}
+
+// The thread shows its newest message: after a reply, and after a poll's answer lands.
+function celerpAiScrollToFoot() {
+    var m = document.getElementById('ai-messages');
+    if (m) m.scrollTop = m.scrollHeight;
+}
+
+function celerpAiAtFoot() {
+    var m = document.getElementById('ai-messages');
+    return !m || m.scrollTop + m.clientHeight >= m.scrollHeight - 8;
 }
 
 function celerpAiFillQuery(text, needsFiles) {
@@ -2448,6 +2511,7 @@ function celerpAiRemoveChip(btn, fileId) {
 
 function celerpAiResetForm() {
     document.getElementById('ai-query-input').value = '';
+    celerpAiCountPrompt();
     document.getElementById('ai-file-ids').value = '';
     document.getElementById('ai-file-input').value = '';
     document.getElementById('ai-file-chips').replaceChildren();
@@ -2462,8 +2526,7 @@ function celerpAiAfterRequest(event) {
     var xhr = event && event.detail && event.detail.xhr;
     if (xhr && xhr.getResponseHeader('X-AI-Clear-Composer') === '1') celerpAiResetForm();
     celerpAiRefreshComposer();
-    var m = document.getElementById('ai-messages');
-    if (m) m.scrollTop = m.scrollHeight;
+    celerpAiScrollToFoot();
 }
 
 // Drag-and-drop handlers on the drop zone

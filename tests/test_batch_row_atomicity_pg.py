@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
-from celerp.events.engine import emit_event
+from celerp.events.engine import emit_event, request_fingerprint
 from celerp_docs import routes as docs
 from ui.i18n import t
 from test_helpers import provision_company_books, message_texts
@@ -229,14 +229,13 @@ async def test_a_run_imported_twice_at_once_is_counted_once(committed_engine):
     async def first_import(a):
         # A run import holds the company lock from its check to its commit, keyed by its creation key.
         from celerp.services.company_lock import lock_company
-        from celerp_manufacturing import movements
         await lock_company(a, company_id)
         order, quantity = mfg._imported_order(rec["data"])
         request = {"import": rec["entity_id"], **order, "quantity": quantity}
         await emit_event(a, company_id=company_id, entity_id=rec["entity_id"], entity_type="mfg_order",
                          event_type=rec["event_type"], data=rec["data"], actor_id=None, location_id=None,
                          source="import", idempotency_key=f"mfg:created:{rec['idempotency_key']}",
-                         metadata_={"request": movements._fingerprint(request)})
+                         metadata_={"request": request_fingerprint(request)})
 
     counts = await _import_racing_the_same_file(
         committed_engine, factory, company_id, rec, "mfg_order", run, write=first_import)

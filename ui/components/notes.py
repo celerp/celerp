@@ -13,12 +13,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fasthtml.common import *
 
+from ui.components.files import _safe_id
 from ui.i18n import t
-
-
-def _safe_id(s: str) -> str:
-    """Return a CSS-selector-safe HTML id (replaces ':' pseudo-class chars)."""
-    return s.replace(":", "-")
 
 
 def _fmt_ts(iso: str, zone: object) -> str:

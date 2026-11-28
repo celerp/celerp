@@ -44,7 +44,7 @@ def round_basis(v: _MoneyInput) -> float:
 
 def currency_dp(currency: str) -> int:
     """Return ISO 4217 decimal places for a currency code. Unknown codes default to 2."""
-    return CURRENCY_DP.get((currency or "").upper(), DEFAULT_DP)
+    return CURRENCY_DP.get(currency.upper(), DEFAULT_DP) if isinstance(currency, str) else DEFAULT_DP
 
 
 def to_decimal(v: _MoneyInput) -> Decimal:
@@ -52,11 +52,12 @@ def to_decimal(v: _MoneyInput) -> Decimal:
 
     Always use str() conversion for float inputs to avoid IEEE 754 representation
     errors (e.g. Decimal(38.6) produces 38.5999999... but Decimal('38.6') is exact).
+    A missing or blank amount (None, "") reads as zero.
     """
-    if v is None:
-        return Decimal(0)
     if isinstance(v, Decimal):
         return v
+    if not v:
+        return Decimal(0)
     return Decimal(str(v))
 
 
@@ -69,6 +70,11 @@ def round_money(v: _MoneyInput, currency: str) -> Decimal:
     dp = currency_dp(currency)
     quant = Decimal(10) ** -dp
     return to_decimal(v).quantize(quant, rounding=ROUND_HALF_UP)
+
+
+def money_text(v: _MoneyInput, currency: str) -> str:
+    """An amount as stored and shown: rounded once to ``currency``'s precision."""
+    return str(round_money(v, currency))
 
 
 def to_stored_float(v: Decimal) -> float:
@@ -162,6 +168,13 @@ def checked_exchange_rate(v: _MoneyInput) -> Decimal:
             f"must be greater than zero at {EXCHANGE_RATE_DP} decimal places, not {v}"
         )
     return stored
+
+
+def implied_rate(books: _MoneyInput, foreign: _MoneyInput) -> Decimal:
+    """The rate at which a nonzero *foreign* amount shows as *books* in the books' currency,
+    ready to store (``checked_exchange_rate``): what a line carrying both amounts and no
+    rate of its own means. ValueError when that rate is no usable rate."""
+    return checked_exchange_rate(abs(to_decimal(books)) / abs(to_decimal(foreign)))
 
 
 def books_currency(settings: dict) -> str:

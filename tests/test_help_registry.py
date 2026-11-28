@@ -25,7 +25,7 @@ def _write_page(help_dir: Path, page_id: str, title: str = "A page") -> None:
     page = {"id": page_id, "title": title, "summary": "s", "keywords": [], "routes": ["/inventory"],
             "permission": None, "order": 1, "related": [],
             "steps": [{"text": "Do it.", "labels": {}, "image": None,
-                       "capture": {"route": "/inventory", "selector": "main", "actions": []}}]}
+                       "capture": {"route": "/inventory", "selector": "main", "actions": [], "evidence": ["main"]}}]}
     (help_dir / f"{page_id.split('.', 1)[1]}.json").write_text(json.dumps(page))
 
 

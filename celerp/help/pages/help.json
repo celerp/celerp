@@ -6,37 +6,37 @@
   "routes": ["/help", "/help/{page_id}"],
   "permission": null,
   "order": 5,
-  "checked": "b581849799103100c974ba8597acf4c9f1a9aceccd6b5d6ed27f8ff933515f05",
+  "checked": "c06248144a530800c8f7783fe61351ec755abd1b0a27a29ccc725ff44373c1e4",
   "steps": [
     {
       "text": "On any screen, click {help} in the top bar. {here} lists the help pages written for that screen.",
       "labels": {"help": "help.title", "here": "help.for_this_page"},
-      "image": null,
-      "capture": {"route": "/help", "selector": "#topbar-help-panel", "actions": [{"wait": ".topbar-help__btn"}, {"click": ".topbar-help__btn"}]}
+      "image": "img/help-1.webp",
+      "capture": {"route": "/help", "selector": ".content-area", "actions": [{"wait": ".topbar-help__btn"}, {"click": ".topbar-help__btn"}], "evidence": ["{here}"]}
     },
     {
       "text": "To look further, open the help pages and type a few words into {search}. With nothing typed, {browse} lists every page, grouped by the module it belongs to.",
       "labels": {"search": "help.search_placeholder", "browse": "help.browse"},
-      "image": null,
-      "capture": {"route": "/help", "selector": "main", "actions": []}
+      "image": "img/help-2.webp",
+      "capture": {"route": "/help", "selector": "main", "actions": [], "evidence": ["{search}", "{browse}"]}
     },
     {
       "text": "Help pages are written in English, with button and menu names shown in your language. To ask a question in your own words and language, use {ask}. Its answers list the help pages they came from.",
       "labels": {"ask": "help.ask_ai"},
-      "image": null,
-      "capture": {"route": "/help", "selector": "main", "actions": []}
+      "image": "img/help-3.webp",
+      "capture": {"route": "/help", "selector": "main", "actions": [], "evidence": ["{ask}"]}
     },
     {
       "text": "Each help page opens on its own screen, with {rel} at the foot linking to pages on nearby tasks.",
       "labels": {"rel": "help.related"},
-      "image": null,
-      "capture": {"route": "/help/core.help", "selector": "main", "actions": []}
+      "image": "img/help-4.webp",
+      "capture": {"route": "/help/core.settings-import", "selector": "#help-related", "actions": [], "evidence": ["{rel}", "#help-related a[href^='/help/']"]}
     },
     {
       "text": "You can also ask the assistant a question in your own language: it searches these help pages, reads the one that fits and answers from it.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/help", "selector": "main", "actions": []}
+      "image": "img/help-5.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "¿Cómo registro un pago de un cliente?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": []

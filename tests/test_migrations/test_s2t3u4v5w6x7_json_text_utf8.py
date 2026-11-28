@@ -237,6 +237,7 @@ _ASCII_DUMPS = {
     ("celerp/gateway/client.py", "_send"): _WIRE,
     ("celerp/gateway/state.py", "_persist_commercial_context"): _FILE,
     ("celerp/help/checks.py", "<module>"): _WIRE,
+    ("celerp/help/checks.py", "capture_marker"): _DIGEST,
     ("celerp/middleware.py", "log_unhandled_exception"): _WIRE,
     ("celerp/migrations/compatibility.py", "to_json"): _WIRE,
     ("celerp/migrations/versions/k5e6f7a8b9c0_connector_entity_directions.py", "upgrade"):
@@ -304,7 +305,6 @@ _ASCII_DUMPS = {
     ("default_modules/celerp-inventory/celerp_inventory/services.py", "import_preview_hash"): _DIGEST,
     ("default_modules/celerp-inventory/celerp_inventory/services.py", "write_import_batch"): _DIGEST,
     ("default_modules/celerp-labels/celerp_labels/ui_routes.py", "_build_field_options_js"): _PAGE,
-    ("default_modules/celerp-manufacturing/celerp_manufacturing/movements.py", "_fingerprint"): _DIGEST,
 }
 
 

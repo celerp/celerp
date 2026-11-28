@@ -737,7 +737,7 @@ def _files_cell(row: dict) -> FT:
 def _requests_table(mode: WizardMode, rows: list[dict], names: dict[str, str]) -> FT:
     """The requests sent, newest first, each with the files that arrived."""
     if not rows:
-        return P(t("migration.export_requests_empty"), cls="form-hint")
+        return P(t("migration.export_requests_empty"), cls="empty-state")
     rows = sorted(rows, key=lambda r: str(r.get("created_at") or ""), reverse=True)
     return Div(
         H4(t("migration.export_requests_waiting")),
@@ -800,7 +800,7 @@ async def _requests_panel(request: Request, mode: WizardMode, *, values: dict | 
         Button(t("migration.export_request_send"), type="submit", cls="btn btn--secondary btn--full"),
         id="export-request-form", hx_post=f"{mode.base}/requests", hx_target="#export-requests",
         hx_swap="outerHTML", method="post", action=safe_url(f"{mode.base}/requests"), cls="auth-form",
-    ) if asked else P(sources_error or t("migration.export_requests_no_source"), cls="form-hint")
+    ) if asked else P(sources_error or t("migration.export_requests_no_source"), cls="empty-state")
     return html_response(Div(
         H3(t("migration.export_requests_title")),
         P(t("migration.export_requests_hint"), cls="form-hint"),
@@ -885,7 +885,7 @@ _MOVE_OPEN = ("uploading", "received", "in_progress")
 def _moves_table(mode: WizardMode, rows: list[dict], names: dict[str, str]) -> FT:
     """The move requests sent, newest first, each with its status and the team's note."""
     if not rows:
-        return P(t("migration.move_requests_empty"), cls="form-hint")
+        return P(t("migration.move_requests_empty"), cls="empty-state")
     rows = sorted(rows, key=lambda r: str(r.get("created_at") or ""), reverse=True)
 
     def withdraw(row: dict) -> FT:
@@ -1018,7 +1018,7 @@ _FILE_ID = re.compile(r"[A-Za-z0-9-]{1,64}")
 def _several_table(mode: WizardMode, rows: list[dict]) -> FT:
     """Each file uploaded, newest first, with its step and what to do next."""
     if not rows:
-        return P(t("migration.several_empty"), cls="form-hint")
+        return P(t("migration.several_empty"), cls="empty-state")
     rows = sorted(rows, key=lambda r: str(r.get("uploaded_at") or ""), reverse=True)
 
     def step(row: dict) -> FT:
@@ -1215,7 +1215,7 @@ def _summary(scan: dict) -> FT:
 def _coverage_table(scan: dict) -> FT:
     rows = scan.get("coverage") or []
     if not rows:
-        return P(t("migration.no_records"), cls="form-hint")
+        return P(t("migration.no_records"), cls="empty-state")
     return wizard_table(
         Thead(Tr(Th(t("migration.record_type")), Th(t("migration.count"), cls="cell--number"),
                  Th(t("migration.outcome")), Th(t("migration.note")))),

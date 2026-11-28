@@ -59,6 +59,45 @@ def reject_system_item_fields(data: dict) -> None:
             f"These fields are set by the app and cannot be entered: {fields}. Remove them and try again.",
             fields=fields))
 
+
+def out_of_category_keys(settings: dict, category: str) -> set[str]:
+    """The category attributes an item of ``category`` does not define: keys some other
+    category's schema defines that neither the item schema nor ``category``'s own schema
+    does. Empty for an item with no category or a category with no schema, as the
+    inventory table resolves its cells. The one rule behind the write refusal
+    (refuse_out_of_category_attributes) and the inventory table's not-applicable cells."""
+    schemas = all_category_schemas(settings)
+    own = schemas.get(category) if category else None
+    if not isinstance(own, list):
+        return set()
+    return (set(union_category_attr_keys(schemas)) - {f["key"] for f in effective_field_schema(settings)}
+            - {f.get("key") for f in own})
+
+
+def out_of_category_refusal(category: str, attributes: str) -> dict:
+    """The refusal for values of ``attributes`` on an item of ``category``, as the write
+    boundary sends it and the inventory table shows it on a not-applicable cell."""
+    return refusal(
+        "item.attribute_not_in_category",
+        f"The {category} category has no {attributes} attribute. Add it to {category} in "
+        f"Settings > Inventory > Categories, or leave it empty.",
+        attributes=attributes, category=category)
+
+
+def refuse_out_of_category_attributes(settings: dict, after: dict, held: list[dict]) -> None:
+    """Refuse an item write that gives a category attribute (out_of_category_keys) a value
+    the item's resulting category does not define. A value one of ``held`` (the item's
+    attributes before the write, or those of the lots a new lot came from) already carries
+    passes, and an empty value always does, so an item holding such a value from before
+    keeps taking every other edit and can always be cleared. Called for every live item
+    write (events.engine._item_applied)."""
+    category = after.get("category") or ""
+    attrs = after.get("attributes") or {}
+    bad = sorted(k for k in out_of_category_keys(settings, category) & attrs.keys()
+                 if attrs[k] not in (None, "") and all(h.get(k) != attrs[k] for h in held))
+    if bad:
+        raise HTTPException(status_code=422, detail=out_of_category_refusal(category, ", ".join(bad)))
+
 # Fields whose edit is gated by edit_inventory_amounts. Superset of the numeric
 # amount keys with sell_by added: changing the sell unit rewrites quantity, so it
 # carries the same authority as editing an amount directly. Kept distinct from

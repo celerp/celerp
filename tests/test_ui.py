@@ -65,6 +65,12 @@ def _delete_answer(n: int, moved: list[dict] | None = None) -> dict:
     return {"deleted": n, "moved_to_deleted": len(moved or []), "items": items}
 
 
+def _bulk_toast(r) -> dict:
+    """The toast a bulk action that worked answers with: the outcome that stays on screen once
+    the selection is cleared and the bar hides."""
+    return json.loads(r.headers["hx-trigger"])["celerpToast"]
+
+
 def _authed(token: str | None = None, role: str = "owner") -> dict:
     """Return cookies dict with a properly-formed test token."""
     return {"celerp_token": token or make_test_token(role=role)}
@@ -796,8 +802,9 @@ class TestClickToEdit:
         edit_inventory_amounts, returns the read-only paired display: no <input> and
         no <select>, so the sell unit cannot enter edit state from its paired entry
         point either (it server-syncs quantity, so it is amount-gated like the
-        single-field cell)."""
-        schema = [{"key": "sell_by", "label": "Sell by", "type": "text", "editable": True}]
+        single-field cell). Both halves come back read-only, the quantity included."""
+        schema = [{"key": "quantity", "label": "Quantity", "type": "number", "editable": True},
+                  {"key": "sell_by", "label": "Sell by", "type": "text", "editable": True}]
         item = {"entity_id": "gc:123", "sell_by": "piece", "quantity": 5}
         # Operator holds edit_inventory (default); edit_inventory_amounts is granted
         # only to manager and up, so the paired sell_by cell must render read-only.
@@ -818,6 +825,7 @@ class TestClickToEdit:
         assert r.status_code == 200
         assert b"<input" not in r.content
         assert b"<select" not in r.content
+        assert b"paired-primary--readonly" in r.content and b"paired-secondary--readonly" in r.content
 
     @pytest.mark.parametrize("field, route, hint", [
         ("sell_by", "edit", True),
@@ -4535,8 +4543,7 @@ class TestColumnDefaults:
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 1, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 1, "category_counts": {}})),
         ):
             r = await ui_client.get("/inventory")
-        assert b"localStorage" in r.content
-        assert b"celerp_cols_" in r.content
+        assert b"celerpColumns(" in r.content
 
     @pytest.mark.asyncio
     async def test_col_resize_handle_css_exists(self):
@@ -6611,7 +6618,7 @@ class TestBulkTransferRoute:
                 data={"selected": ["item:a", "item:b"], "bulk_location_id": "loc:1"},
             )
         assert r.status_code == 200
-        assert b"Transferred: 2." in r.content
+        assert _bulk_toast(r) == {"message": "Transferred: 2.", "type": "success"}
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_no_items_selected(self, ui_client):
@@ -7041,7 +7048,7 @@ class TestInventoryBulkActions:
                 content=b"selected=item%3Aa&selected=item%3Ab&bulk_status=inactive", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Updated to 'Inactive': 2." in r.content
+        assert _bulk_toast(r) == {"message": "Updated to 'Inactive': 2.", "type": "success"}
 
     @pytest.mark.asyncio
     async def test_bulk_status_passes_ids_and_status(self, ui_client):
@@ -7101,7 +7108,7 @@ class TestInventoryBulkActions:
                 content=b"selected=item%3Aa&selected=item%3Ab&selected=item%3Ac&bulk_location_id=loc%3A1", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Transferred: 3." in r.content
+        assert _bulk_toast(r) == {"message": "Transferred: 3.", "type": "success"}
 
     @pytest.mark.asyncio
     async def test_bulk_transfer_passes_ids_and_location(self, ui_client):
@@ -7161,7 +7168,7 @@ class TestInventoryBulkActions:
                 content=b"selected=item%3Aa&selected=item%3Ab", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Deleted: 2." in r.content
+        assert _bulk_toast(r) == {"message": "Deleted: 2.", "type": "success"}
 
     @pytest.mark.asyncio
     async def test_bulk_delete_names_each_item_moved_to_deleted(self, ui_client):
@@ -7175,7 +7182,7 @@ class TestInventoryBulkActions:
                 headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Deleted: 1. Moved to Deleted: 2." in r.content
+        assert _bulk_toast(r)["message"].startswith("Deleted: 1. Moved to Deleted: 2.")
         toast = json.loads(r.headers["hx-trigger"])["celerpToast"]
         assert "REF-1 moved to Deleted, still referenced by QUO-7." in toast["message"]
         assert "FILE-1 moved to Deleted, it still holds files." in toast["message"]
@@ -7202,7 +7209,7 @@ class TestInventoryBulkActions:
                 headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Restored to draft: 2." in r.content
+        assert _bulk_toast(r) == {"message": "Restored to draft: 2.", "type": "success"}
         assert restore.await_args.args[1] == ["item:a", "item:b"]
 
     @pytest.mark.asyncio
@@ -7291,7 +7298,7 @@ class TestBulkDuplicate:
                 content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Duplicated: 2." in r.content
+        assert _bulk_toast(r) == {"message": "Duplicated: 2.", "type": "success"}
         assert create.call_count == 2
 
     @pytest.mark.asyncio
@@ -7330,8 +7337,8 @@ class TestBulkDuplicate:
                 content=b"selected=gc%3A123&selected=gc%3A456", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert t("inventory.bulk_duplicated_partial", ok=1, failed=1).encode() in r.content
-        assert b"flash--warning" in r.content
+        assert _bulk_toast(r)["message"].startswith(t("inventory.bulk_duplicated_partial", ok=1, failed=1))
+        assert _bulk_toast(r)["type"] == "warning" and _bulk_toast(r)["persist"] is True
         assert create.call_count == 2
 
     @pytest.mark.asyncio
@@ -7384,7 +7391,7 @@ class TestBulkDuplicate:
                 content=b"selected=gc%3A123&selected=gc%3A123", headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Duplicated: 1." in r.content
+        assert _bulk_toast(r) == {"message": "Duplicated: 1.", "type": "success"}
         assert create.call_count == 1
 
     @pytest.mark.asyncio
@@ -7571,7 +7578,7 @@ class TestBulkActionsPhase1to5:
                 headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Expired: 2." in r.content
+        assert _bulk_toast(r) == {"message": "Expired: 2.", "type": "success"}
 
     @pytest.mark.asyncio
     async def test_bulk_expire_no_selection(self, ui_client):
@@ -7834,7 +7841,7 @@ class TestBulkSelectionClear:
         assert "celerpSelectionClear" in trigger, (
             f"Merge success must send HX-Trigger: celerpSelectionClear; got: {trigger!r}"
         )
-        assert b"merged successfully" in r.content.lower() or b"merged" in r.content.lower()
+        assert "merged" in _bulk_toast(r)["message"].lower()
 
     @pytest.mark.asyncio
     async def test_bulk_delete_success_sends_selection_clear_trigger(self, ui_client):
@@ -16124,27 +16131,27 @@ class TestInventoryUXFixes:
         from fasthtml.common import to_xml
         from ui.routes.inventory import _column_manager
         schema = [{"key": "name", "label": "Name", "show_in_table": True}]
-        html = to_xml(_column_manager(schema, {}))
+        html = to_xml(_column_manager(schema))
         assert "col-mgr-btn" in html
         assert "col-mgr-menu" in html
         # No <details> element
         assert "<details" not in html
 
-    def test_column_manager_has_localstorage_js(self):
-        """Column manager JS must save to localStorage."""
+    def test_column_manager_saves_to_the_users_server_setup(self):
+        """Column manager JS saves to the user's server-side column setup, never a browser copy."""
         from fasthtml.common import to_xml
         from ui.routes.inventory import _column_manager
         schema = [{"key": "name", "label": "Name", "show_in_table": True}]
-        html = to_xml(_column_manager(schema, {}))
-        assert "localStorage" in html
-        assert "saveVis" in html
+        html = to_xml(_column_manager(schema))
+        assert "celerpColumns('inventory', CFG.layout)" in html and "saveVis" in html
+        assert "localStorage" not in html
 
     def test_column_manager_closes_on_outside_click(self):
         """Column manager JS must have click-outside-to-close handler."""
         from fasthtml.common import to_xml
         from ui.routes.inventory import _column_manager
         schema = [{"key": "name", "label": "Name", "show_in_table": True}]
-        html = to_xml(_column_manager(schema, {}))
+        html = to_xml(_column_manager(schema))
         assert "document.addEventListener" in html
         assert "menu.style.display" in html
 
@@ -16169,7 +16176,7 @@ class TestInventoryUXFixes:
         assert "dragstart" in html
         assert "dragover" in html
         assert "drop" in html
-        assert "ORDER_KEY" in html
+        assert "COLS.set('order', newOrder)" in html
 
     def test_column_manager_has_drag_reorder_on_labels(self):
         """Column manager checkboxes must have draggable=true for menu reorder."""
@@ -16179,14 +16186,14 @@ class TestInventoryUXFixes:
             {"key": "name", "label": "Name", "show_in_table": True},
             {"key": "sku", "label": "SKU", "show_in_table": True},
         ]
-        html = to_xml(_column_manager(schema, {}))
+        html = to_xml(_column_manager(schema))
         assert 'draggable="true"' in html
 
     def test_data_table_js_no_force_hide_branch(self):
         """data_table IIFE must NOT contain the force-hide branch (Bug 2 fix).
 
-        The else-if (SCHEMA_DEFAULTS[key] === false) branch overwrites user
-        localStorage prefs when a column's schema default is false, causing
+        The else-if (SCHEMA_DEFAULTS[key] === false) branch overwrites the user's
+        saved column prefs when a column's schema default is false, causing
         user-visible columns (e.g. created_at) to disappear after sort.
         """
         from fasthtml.common import to_xml
@@ -16446,6 +16453,28 @@ class TestInventoryUXFixes:
         assert captured_params.get("status") == "available"
         assert captured_params.get("category") == "gemstones"
         assert int(captured_params.get("limit", 0)) <= 100
+
+    @pytest.mark.asyncio
+    async def test_print_list_names_the_items_not_their_ids(self, ui_client):
+        """The print screen lists the items by name (SKU when unnamed), never by record id."""
+        items = {"item:1a2b": {"entity_id": "item:1a2b", "name": "Whiteboard 90x60", "sku": "WB-90"},
+                 "item:3c4d": {"entity_id": "item:3c4d", "name": "", "sku": "PEN-BLK"}}
+
+        async def fake_get(url, params=None, headers=None, **kw):
+            resp = MagicMock(status_code=200)
+            eid = url.rsplit("/", 1)[-1]
+            resp.json.return_value = (items[eid] if eid in items
+                                      else {"items": list(items.values())} if url.endswith("/items") else {"items": []})
+            return resp
+
+        ui_client.cookies.update(_authed())
+        with patch("celerp_labels.ui_routes.httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock(get=fake_get))
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            r = await ui_client.get("/labels/print-list", follow_redirects=False)
+        assert r.status_code == 200
+        assert "Whiteboard 90x60, PEN-BLK" in r.text
+        assert "item:1a2b" not in r.text.replace('value="item:1a2b"', "")
 
     @pytest.mark.asyncio
     async def test_print_bulk_form_appears_when_labels_loaded(self, ui_client):
@@ -20786,10 +20815,10 @@ async def test_transform_handler_raises_a_setting_not_carried_over_as_a_toast_th
     assert r.status_code == 200
     toast = _json.loads(r.headers["HX-Trigger"])["celerpToast"]
     assert "Default Sell Qty 0.5 was not carried over: piece cannot hold it." in toast["message"], toast
-    assert toast["persist"] is True and "flash--warning" in r.text
+    assert toast["persist"] is True and toast["type"] == "warning"
     with patch("ui.api_client.transform_item", new=AsyncMock(return_value={**result, "notices": []})):
         r = await ui_client.post("/api/items/bulk/transform", data=base)
-    assert "celerpToast" not in r.headers["HX-Trigger"] and "flash--success" in r.text
+    assert _bulk_toast(r) == {"message": t("inventory.transformed", parent="P-1", child="C-1"), "type": "success"}
 
 
 def test_reserved_badge_renders():

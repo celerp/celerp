@@ -27,6 +27,8 @@ import celerp.ai.service as ai_service
 from celerp.ai.llm import ModelResult
 from celerp_ai.ui_routes import QUESTION_POLL_S
 
+from .conftest import htmx_idle
+
 pytestmark = [pytest.mark.browser, pytest.mark.usefixtures("tools_open_when_called")]
 
 
@@ -192,7 +194,8 @@ def test_sidebar_link_opens_thread(page: Page, ui_server):
     expect(page.locator(".ai-msg--user")).to_contain_text("how is my stock")
 
 
-def test_action_card_confirm_success(page: Page, ui_server, item_create_cap, api):
+def test_action_card_confirm_success(page: Page, ui_server, item_create_cap, company_with_books):
+    api = company_with_books
     _SCRIPT.append(_mutation(
         item_create_cap, {"name": "Agent Widget", "sell_by": "piece"},
         "I'll add that once you confirm.",
@@ -215,7 +218,7 @@ def test_action_card_confirm_success(page: Page, ui_server, item_create_cap, api
     assert "Agent Widget" in names
 
 
-def test_action_card_confirm_twice_shows_expired(page: Page, ui_server, item_create_cap):
+def test_action_card_confirm_twice_shows_expired(page: Page, ui_server, item_create_cap, company_with_books):
     _SCRIPT.append(_mutation(
         item_create_cap, {"name": "Twice Widget", "sell_by": "piece"},
         "Confirm to add it.",
@@ -246,7 +249,7 @@ def test_action_card_confirm_twice_shows_expired(page: Page, ui_server, item_cre
     assert "already handled or has expired" in resp.text()
 
 
-def test_action_card_dismiss_removes_card(page: Page, ui_server, item_create_cap):
+def test_action_card_dismiss_removes_card(page: Page, ui_server, item_create_cap, company_with_books):
     _SCRIPT.append(_mutation(
         item_create_cap, {"name": "Dismissed Widget", "sell_by": "piece"},
         "Confirm to add it.",
@@ -296,7 +299,7 @@ _VIEWPORTS = [(1440, 900), (390, 844)]
 
 
 @pytest.mark.parametrize("width,height", _VIEWPORTS)
-def test_no_horizontal_overflow_at_1440_and_390(page: Page, ui_server, item_create_cap,
+def test_no_horizontal_overflow_at_1440_and_390(page: Page, ui_server, item_create_cap, company_with_books,
                                                  width, height):
     page.set_viewport_size({"width": width, "height": height})
     _SCRIPT.append(_mutation(
@@ -316,7 +319,30 @@ def test_no_horizontal_overflow_at_1440_and_390(page: Page, ui_server, item_crea
     assert overflow <= 0, f"horizontal overflow of {overflow}px at {width}x{height}"
 
 
-def test_action_card_within_message_column(page: Page, ui_server, item_create_cap):
+@pytest.mark.parametrize("width,height", _VIEWPORTS)
+def test_reply_table_renders_inside_its_bubble(page: Page, ui_server, width, height):
+    """A reply's Markdown table is a table that stays inside its bubble (a wide one
+    scrolls inside it), with its bold text bold, at desktop and phone widths."""
+    page.set_viewport_size({"width": width, "height": height})
+    rows = "\n".join(f"| Item {i} with a long descriptive name | Warehouse {i} | {i * 1000}.00 |"
+                     for i in range(1, 5))
+    _SCRIPT.append(_answer("**Stock** by location:\n\n| Item | Location | Value |\n|---|---|---:|\n"
+                           + rows + "\n\nThat is all of it."))
+    _open_chat(page, ui_server)
+    _send(page, "stock by location")
+
+    reply = page.locator(".ai-msg--ai").last
+    expect(reply.locator("table tbody tr")).to_have_count(4)
+    expect(reply.locator("strong")).to_have_text("Stock")
+    expect(reply).not_to_contain_text("|---")
+    table_box, reply_box = reply.locator("table").bounding_box(), reply.bounding_box()
+    assert table_box["x"] + table_box["width"] <= reply_box["x"] + reply_box["width"] + 1
+    overflow = page.evaluate(
+        "() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
+    assert overflow <= 0, f"horizontal overflow of {overflow}px at {width}x{height}"
+
+
+def test_action_card_within_message_column(page: Page, ui_server, item_create_cap, company_with_books):
     _SCRIPT.append(_mutation(
         item_create_cap, {"name": "Column Widget", "sell_by": "piece"},
         "I'll add that once you confirm.",
@@ -330,6 +356,58 @@ def test_action_card_within_message_column(page: Page, ui_server, item_create_ca
     main_box = page.locator(".ai-chat__main").bounding_box()
     assert card_box["x"] >= main_box["x"] - 2
     assert card_box["x"] + card_box["width"] <= main_box["x"] + main_box["width"] + 2
+
+
+def test_a_proposal_card_that_arrives_is_scrolled_into_view_to_its_foot(page: Page, ui_server, item_create_cap, company_with_books):
+    """A card lands in the thread at the question's poll; the thread follows it to its foot,
+    so Confirm and Dismiss are on screen, not under the composer. A reply that only answers
+    keeps the thread at its foot the same way."""
+    page.set_viewport_size({"width": 1280, "height": 720})
+    _SCRIPT.append(_answer("\n\n".join(f"Line {n} of a long answer." for n in range(40))))
+    _SCRIPT.append(_mutation(item_create_cap, {"name": "Scrolled Widget", "sell_by": "piece"},
+                             "I'll add that once you confirm."))
+    _open_chat(page, ui_server)
+    at_foot = """() => { const m = document.getElementById('ai-messages');
+                         return m.scrollHeight > m.clientHeight && m.scrollTop + m.clientHeight >= m.scrollHeight - 2; }"""
+
+    _send(page, "tell me something long")
+    expect(page.locator(".ai-msg--ai", has_text="Line 39 of a long answer.")).to_be_attached()
+    page.wait_for_function(at_foot)
+
+    _send(page, "add a scrolled widget")
+    card = page.locator(".ai-action__card", has_text="Scrolled Widget")
+    expect(card).to_be_attached()
+    page.wait_for_function(at_foot)
+    thread = page.locator("#ai-messages").bounding_box()
+    for name in ("Confirm", "Dismiss"):
+        button = card.get_by_role("button", name=name).bounding_box()
+        assert thread["y"] <= button["y"] and button["y"] + button["height"] <= thread["y"] + thread["height"], (
+            f"{name} is outside the thread's view: {button} in {thread}")
+
+
+def test_a_reader_scrolled_up_in_the_thread_stays_when_an_answer_lands(page: Page, ui_server):
+    """The thread follows a poll's answer to its foot only for a reader at the foot; a reader
+    who scrolled up to read an earlier message is left where they are."""
+    page.set_viewport_size({"width": 1280, "height": 720})
+    _SCRIPT.append(_answer("\n\n".join(f"Line {n} of a long answer." for n in range(40))))
+    _SCRIPT.append(_answer("The second answer."))
+    _open_chat(page, ui_server)
+    _send(page, "tell me something long")
+    expect(page.locator(".ai-msg--ai", has_text="Line 39 of a long answer.")).to_be_attached()
+
+    held: list = []
+    page.route("**/ai/question-ui**", lambda route: held.append(route))
+    with page.expect_request("**/ai/question-ui**"):
+        _send(page, "and one more thing")
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(100)
+    page.evaluate("document.getElementById('ai-messages').scrollTop = 0")
+    held[0].continue_()
+    expect(page.locator(".ai-msg--ai", has_text="The second answer.")).to_be_attached()
+    htmx_idle(page)
+    assert page.evaluate("document.getElementById('ai-messages').scrollTop") == 0
 
 
 def test_sidebar_header_input_layout_intact(page: Page, ui_server):
@@ -354,7 +432,7 @@ def test_sidebar_header_input_layout_intact(page: Page, ui_server):
     assert inp["y"] >= header["y"] + header["height"] - 2
 
 
-def test_bulk_card_lists_every_record_in_a_scrolling_box(page: Page, ui_server, agent_caps):
+def test_bulk_card_lists_every_record_in_a_scrolling_box(page: Page, ui_server, agent_caps, company_with_books):
     """A propose_for_each card at its largest set shows every record and the values it
     writes in a box that scrolls on the page, amounts right-aligned under their header."""
     rule = agent_caps[("PATCH", "/accounting/rules/{rule_id}")]["name"]
@@ -379,7 +457,7 @@ def test_bulk_card_lists_every_record_in_a_scrolling_box(page: Page, ui_server, 
     expect(rows.last).to_contain_text("RENT-0199")
 
 
-def test_bulk_card_wide_records_scroll_inside_their_own_box_not_the_page(page: Page, ui_server, agent_caps):
+def test_bulk_card_wide_records_scroll_inside_their_own_box_not_the_page(page: Page, ui_server, agent_caps, company_with_books):
     """A for_each table with enough columns to need horizontal scrolling scrolls inside
     its own box; it never pushes the page itself wider than the viewport."""
     rule = agent_caps[("PATCH", "/accounting/rules/{rule_id}")]["name"]
@@ -403,7 +481,7 @@ def test_bulk_card_wide_records_scroll_inside_their_own_box_not_the_page(page: P
     assert overflow <= 0, f"horizontal overflow of {overflow}px"
 
 
-def test_bulk_confirm_updates_only_the_selected_row_whatever_the_call_ids_hold(page: Page, ui_server, item_create_cap,
+def test_bulk_confirm_updates_only_the_selected_row_whatever_the_call_ids_hold(page: Page, ui_server, item_create_cap, company_with_books,
                                                                                agent_caps, monkeypatch):
     """A model may name its tool calls with spaces and selector characters; the review
     table still swaps the outcome into the row that was confirmed and no other."""

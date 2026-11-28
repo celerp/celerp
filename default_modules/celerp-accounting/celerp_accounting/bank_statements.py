@@ -27,7 +27,7 @@ from sqlalchemy import func, or_, select, true, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from celerp.accounting_roles import KeyedRefusal, catalog_refusal
+from celerp.accounting_roles import KeyedRefusal, catalog_refusal, refused
 from celerp.agent_markers import agent_excluded
 from celerp.db import get_session
 from celerp.events.engine import emit_event, keyed_event, refuse_other_request, request_fingerprint
@@ -35,12 +35,12 @@ from celerp.importers.results import keyed_reason
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.payments import lock_recorded_unmatched
-from celerp.services.money import round_money, to_decimal
+from celerp.services.money import money_text, round_money, to_decimal
 from celerp.services.permissions import require_permission
 from celerp_accounting import statement_lines as SL
 from celerp_accounting.models import (Account, BankAccount, BankStatementLine, ReconciliationRule,
                                       ReconciliationSession, holding_any, stored_text)
-from celerp_accounting.routes import BankAccountCreate
+from celerp_accounting.routes import BankAccountCreate, refuse_mislabelled_bank
 from celerp_accounting.statement_reader import block_refusal
 from ui.i18n import refusal_text, t
 
@@ -146,10 +146,6 @@ async def _bank(db: AsyncSession, company_id: uuid.UUID, bank_id) -> BankAccount
     return (await SL.scoped(db, company_id, "bank", [bank_id]))[0]
 
 
-def _money_text(value, currency: str) -> str:
-    return str(round_money(to_decimal(value), currency))
-
-
 # ── Read ────────────────────────────────────────────────────────────────────
 
 class ReadStatement(BaseModel):
@@ -235,7 +231,7 @@ async def _known(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | No
     for e in await _je_entries_for_account(db, company_id, bank):
         if e["je_id"] in held or e["amount"] is None:
             continue
-        bucket = (str(e["ts"])[:10], _money_text(e["amount"], bank.currency))
+        bucket = (str(e["ts"])[:10], money_text(e["amount"], bank.currency))
         counts[bucket] = counts.get(bucket, 0) + 1
     return known, counts
 
@@ -395,7 +391,7 @@ async def statement_preview(job_id: uuid.UUID,
     return await _preview(db, company_id, user.id, job_id)
 
 
-_Figure = str | int | float | None
+_Figure = str | int | FiniteFloat | None
 
 
 class StatementHeaderIn(BaseModel):
@@ -553,6 +549,8 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
     await lock_company(db, company_id)
     if bank is None:
         bank = await add_bank(db, company_id, user.id, payload.new_bank)
+    else:
+        await refuse_mislabelled_bank(db, company_id, bank)
     base = await _base_currency(db, company_id)
     out = []
     for given, found in zip(payload.statements, read["statements"]):
@@ -607,10 +605,10 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
 
 def _line_dict(line: BankStatementLine, currency: str) -> dict:
     return {"id": str(line.id), "statement_id": str(line.reconciliation_id), "line_date": line.line_date,
-            "description": line.description, "amount": _money_text(line.amount, currency), "status": line.status,
+            "description": line.description, "amount": money_text(line.amount, currency), "status": line.status,
             "reference": line.reference, "fitid": line.fitid, "counterparty_key": line.counterparty_key,
             "counterparty_account": line.counterparty_account,
-            "raw_balance": None if line.raw_balance is None else _money_text(line.raw_balance, currency),
+            "raw_balance": None if line.raw_balance is None else money_text(line.raw_balance, currency),
             "matched_je_ids": list(line.matched_je_ids or []), "suggestion": line.suggestion,
             "suggestion_version": suggestion_version(line.suggestion), "client_query": line.client_query, "attachments": _attachments(line)}
 
@@ -685,7 +683,7 @@ def _counted_entries(recon: ReconciliationSession | None, rows: list[BankStateme
     held = {je for line in rows for je in line.matched_je_ids or []}
     counted = set(recon.reconciled_je_ids or []) - held
     return [{"je_id": e["je_id"], "ts": e.get("ts"), "memo": e.get("memo"),
-             "amount": None if e["amount"] is None else _money_text(e["amount"], currency)}
+             "amount": None if e["amount"] is None else money_text(e["amount"], currency)}
             for e in entries if e["je_id"] in counted]
 
 
@@ -737,7 +735,7 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^(
         g["suggestion"] = g["lines"][0]["suggestion"] if len({str(l["suggestion"]) for l in g["lines"]}) == 1 else None
     ordered = sorted(groups.values(), key=lambda g: (-abs(g["total"]), g["key"]))
     for g in ordered:
-        g["total"] = _money_text(g["total"], bank.currency)
+        g["total"] = money_text(g["total"], bank.currency)
     first_open = next((s for s in sessions if s.status == "open"), None)
     if first_open is not None:
         await read_counted(db, company_id, bank, first_open)
@@ -745,14 +743,14 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^(
     waiting = [l for l in rows if _in_view(l, "open", open_ids)]
     return {"bank_id": str(bank.id), "view": view, "q": q, "groups": ordered,
             "statements": [{"id": str(s.id), "period_start": s.period_start, "statement_date": s.statement_date,
-                            "opening_balance": _money_text(s.opening_balance or 0, bank.currency),
-                            "closing_balance": _money_text(s.statement_balance, bank.currency),
+                            "opening_balance": money_text(s.opening_balance or 0, bank.currency),
+                            "closing_balance": money_text(s.statement_balance, bank.currency),
                             "status": s.status, "needs_review": _needs_review(s, bank, entries)}
                            for s in reversed(sessions)],
             "summary": {"lines": len(rows), "open": len(waiting),
                         "questions": sum(1 for l in waiting if SL.asked(l)),
                         "posted": sum(1 for l in rows if l.status != "unmatched")},
-            "difference": {"amount": None if balance is None else _money_text(balance[1], bank.currency),
+            "difference": {"amount": None if balance is None else money_text(balance[1], bank.currency),
                            "statement_id": None if first_open is None else str(first_open.id),
                            "statement_date": None if first_open is None else first_open.statement_date,
                            "notes": await _difference_notes(db, company_id, bank, sessions),
@@ -979,7 +977,7 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
     # Under the locks the named pair must still be the transfer's counterpart.
     still = [c["id"] for c in await _pairs(db, company_id, line, target, d.to_amount)] if other_id else []
     if pair_id is not None and pair_id not in still:
-        raise _refused(409, "reconciliation.line_not_open")
+        raise refused(409, "reconciliation.line_not_open")
     je_ids = await SL.post_transfer(db, company_id=company_id, actor_id=actor_id, bank=bank, line=line, target=target,
                                     paired=by_id.get(pair_id) if pair_id else None, rate=d.rate,
                                     to_amount=d.to_amount, key=key)
@@ -987,10 +985,6 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
         SL.write_suggestion(by_id[hint_id], {"kind": "match", "source": "transfer", "je_ids": je_ids, "confidence": "low",
                                              "reason": str(t("acct.recon_reason_transfer", date=line.line_date[:10]))})
     return {str(line.id): je_ids}
-
-
-def _refused(status: int, key: str, /, **params) -> HTTPException:
-    return HTTPException(status_code=status, detail=catalog_refusal(key, **params))
 
 
 class _Twins(HTTPException):
@@ -1076,19 +1070,19 @@ async def _pay_doc(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str,
     if (keyed := await _keyed_instead(db, company_id, bank, line, instead, book, want, d.separate_from)) is not None:
         return {str(line.id): keyed}
     if not d.docs:
-        raise _refused(422, "acct.err_recon_pay_needs_doc")
+        raise refused(422, "acct.err_recon_pay_needs_doc")
     amount = abs(Decimal(str(line.amount)))
     total = sum((Decimal(str(x.amount)) for x in d.docs), Decimal(0)) + \
         sum((Decimal(str(p.amount)) for p in d.parts or ()), Decimal(0))
     if total != amount:
-        raise _refused(422, "acct.err_split_total", total=money_text(total, bank.currency),
+        raise refused(422, "acct.err_split_total", total=money_text(total, bank.currency),
                        amount=money_text(amount, bank.currency))
     want = "invoice" if line.amount > 0 else "bill"
     je_ids: list[str] = []
     for x in d.docs:
         row = rows[x.doc_id]
         if row is not None and row.entity_type == "doc" and (row.state or {}).get("doc_type") != want:
-            raise _refused(422, "acct.err_recon_doc_direction")
+            raise refused(422, "acct.err_recon_doc_direction")
         event, _applied = await apply_doc_payment(
             db, str(company_id), x.doc_id,
             {"amount": x.amount, "payment_date": line.line_date, "bank_account": bank.chart_account_code,
@@ -1112,7 +1106,7 @@ def _offsets(d: Decision, lines: list[BankStatementLine]) -> list[tuple[dict, De
         _one(lines)
         return [[(fields(s.account_code, s.contact, s.fund_id), Decimal(str(s.amount))) for s in d.splits]]
     if not d.account_code:
-        raise _refused(422, "acct.err_recon_needs_account")
+        raise refused(422, "acct.err_recon_needs_account")
     return [[(fields(d.account_code, d.contact, d.fund_id), abs(Decimal(str(l.amount))))] for l in lines]
 
 
@@ -1123,7 +1117,7 @@ async def _decide(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, 
     to that entry instead, noted in ``instead`` (see _keyed_instead). Only a post to one
     account can be remembered: any other answer asked to be remembered is refused whole."""
     if d.remember and (d.kind != "post" or not d.account_code):
-        raise _refused(422, "acct.err_recon_remember_kind")
+        raise refused(422, "acct.err_recon_remember_kind")
     if d.kind in ("transfer", "cash"):
         return await _transfer(db, company_id, actor_id, bank, d, key, instead, book)
     if d.kind == "pay_doc":
@@ -1186,7 +1180,7 @@ async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, 
                 and suggestion_version(line.suggestion) == accept.versions[line.id]:
             chosen.append(line)
         else:
-            raise _refused(409, "reconciliation.line_not_open")
+            raise refused(409, "reconciliation.line_not_open")
     tax_account = None
     out = []
     for line in sorted(chosen, key=lambda l: (l.line_date, str(l.id))):
@@ -1206,7 +1200,7 @@ async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, 
         elif s.get("kind") == "pay_doc":
             base["docs"] = s.get("docs")
         if s.get("kind") not in _KINDS.__args__:
-            raise _refused(409, "reconciliation.line_not_open")
+            raise refused(409, "reconciliation.line_not_open")
         out.append(Decision(**base))
     return out, earlier
 
@@ -1284,6 +1278,7 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
         return first
     await lock_company(db, company_id)
     bank = await _bank(db, company_id, bank_id)
+    await refuse_mislabelled_bank(db, company_id, bank)
     decisions = list(payload.decisions or [])
     by_line: dict = {}
     earlier: dict = {}
@@ -1537,7 +1532,7 @@ async def _open_docs(db: AsyncSession, company_id: uuid.UUID, currency: str, bas
         if (state.get("currency") or base) != currency:
             continue
         out.append({"doc_id": doc_id, "doc_type": state["doc_type"], "contact_id": state.get("contact_id"),
-                    "open_balance": _money_text(state["amount_outstanding"], currency), "ref": state.get("ref_id"),
+                    "open_balance": money_text(state["amount_outstanding"], currency), "ref": state.get("ref_id"),
                     "identifier": suggest.normalised(state.get("ref_id") or state.get("doc_number"))})
     once = await _carried_once(db, company_id, {d["identifier"] for d in out if d["identifier"]})
     return [{**d, "identifier": d["identifier"] if d["identifier"] in once else None} for d in out]
@@ -1663,7 +1658,7 @@ async def _suggest_input(db: AsyncSession, company_id: uuid.UUID, bank_id) -> tu
     bank = await _bank(db, company_id, bank_id)
     rows = await _open_lines(db, company_id, BankStatementLine.bank_account_id == bank.id)
     lines = [{"id": str(l.id), "line_date": l.line_date, "description": l.description,
-              "amount": _money_text(l.amount, bank.currency), "counterparty_key": l.counterparty_key,
+              "amount": money_text(l.amount, bank.currency), "counterparty_key": l.counterparty_key,
               "counterparty_account": l.counterparty_account, "reference": l.reference,
               "client": l.client_query if SL.asked(l) and l.client_query.get("answered") else None} for l in rows]
     ctx = await _ladder_context(db, company_id, bank, rows)
@@ -1991,7 +1986,7 @@ async def withdraw_question(bank_id: uuid.UUID, payload: LineIds,
 def _question(line: BankStatementLine, bank: BankAccount) -> dict:
     q = line.client_query or {}
     return {"line_id": str(line.id), "bank_name": bank.bank_name, "line_date": line.line_date,
-            "description": line.description, "amount": _money_text(line.amount, bank.currency),
+            "description": line.description, "amount": money_text(line.amount, bank.currency),
             "currency": bank.currency, "status": line.status, "note": q.get("note"), "asked": q.get("asked"),
             "asks": q.get("asks"), "answer": q.get("answer"), "contact_text": q.get("contact_text"),
             "answered": q.get("answered"), "attachments": _attachments(line)}

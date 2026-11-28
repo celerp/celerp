@@ -890,7 +890,8 @@ async def test_reclassify_moves_suspense_to_answer(client, session):
     await _one_month(client, co, bk, [("2026-01-05", "WITHDRAWAL", "-50.00")])
     line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
     r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "suspense"}])
-    suspense_je = await B.journal(session, co, r.json()["results"][0]["je_ids"][0])
+    r_suspense = r.json()["results"][0]["je_ids"][0]
+    suspense_je = await B.journal(session, co, r_suspense)
     suspense_leg = next(e for e in suspense_je["entries"] if e["account"] != bk["chart_account_code"])
     assert (await B.groups(client, co, bk["id"]))["suspense_count"] == 1
     r = await client.post(f"{B.API}/lines/{line['id']}/reclassify", json={"account_code": "5100", "idempotency_key": B.key()},
@@ -903,6 +904,8 @@ async def test_reclassify_moves_suspense_to_answer(client, session):
     assert answer_leg["debit"] == suspense_leg["debit"] and answer_leg["credit"] == suspense_leg["credit"]
     reversal_leg = next(e for e in reclass_je["entries"] if e["account"] == suspense_leg["account"])
     assert reversal_leg["debit"] == suspense_leg["credit"] and reversal_leg["credit"] == suspense_leg["debit"]
+    # Both legs are copies of the posted Suspense line (copy_posted_lines), naming the entry they copy.
+    assert {e.get("posted_from") for e in reclass_je["entries"]} == {r_suspense}
 
 
 # ── Rules ───────────────────────────────────────────────────────────────────
@@ -1468,3 +1471,35 @@ async def test_a_spreadsheet_statement_keeps_text_past_ascii():
     buf = io.BytesIO()
     wb.save(buf)
     assert "ค่าเช่า มกราคม" in _statement_csv_bytes(buf.getvalue(), "statement.xlsx", None).decode("utf-8")
+
+
+async def test_a_bank_kept_in_another_currency_is_refused_where_a_statement_line_or_rule_chooses_it(client, session):
+    """A reclassified line and a rule's target post the line's amount in the books' currency
+    only, so a bank kept in EUR is refused when it is chosen, naming the account, its currency
+    and the way out (another account); an expense account is taken. Moving money between two
+    banks is a transfer, which carries both amounts."""
+    co, bk = await _co_bank(client)
+    eur = (await B.bank(client, co["h"], currency="EUR", name="Euro Bank"))["chart_account_code"]
+    await _one_month(client, co, bk, [("2026-01-05", "WITHDRAWAL", "-50.00")])
+    line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
+    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "suspense"}])
+    assert r.json()["results"][0]["ok"], r.text
+
+    def refused(r) -> None:
+        detail = r.json()["detail"]
+        assert r.status_code == 422 and detail["message_key"] == "posting.destination.foreign_bank", r.text
+        assert detail["params"] == {"code": eur, "currency": "EUR"} and refusal_text(detail) == detail["message"]
+
+    move = f"{B.API}/lines/{line['id']}/reclassify"
+    refused(await client.post(move, json={"account_code": eur, "idempotency_key": B.key()}, headers=co["h"]))
+    assert (await B.groups(client, co, bk["id"]))["suspense_count"] == 1
+    r = await client.post(move, json={"account_code": "5100", "idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 200, r.text
+
+    refused(await client.post("/accounting/rules", json={"match_pattern": "COFFEE", "target_account_code": eur},
+                              headers=co["h"]))
+    made = await client.post("/accounting/rules", json={"match_pattern": "COFFEE", "target_account_code": "5100"},
+                             headers=co["h"])
+    assert made.status_code == 200, made.text
+    refused(await client.patch(f"/accounting/rules/{made.json()['id']}", json={"target_account_code": eur},
+                               headers=co["h"]))

@@ -117,7 +117,7 @@ _IMPORTERS: dict[str, dict] = {
         "confirm": "/subscriptions/import/confirm",
         "csv": "name,frequency,start_date\nZeta Retainer,monthly,2026-01-01\n",
         "marker": "Zeta Retainer",
-        "writer": "create_subscription",
+        "writer": "create_doc",
         "path": "/docs",
     },
     "chart": {

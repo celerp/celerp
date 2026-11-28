@@ -11,20 +11,20 @@
     {
       "text": "{title} lists every report. Each opens for a period you choose, and prints or downloads as CSV.",
       "labels": {"title": "fixed_assets.reports_title"},
-      "image": null,
-      "capture": {"route": "/fixed-assets/reports", "selector": "main", "actions": []}
+      "image": "img/reports-1.webp",
+      "capture": {"route": "/fixed-assets/reports", "selector": "main", "actions": [], "evidence": ["{title}"]}
     },
     {
       "text": "On a report, narrow it by {cls} or a search and choose {show}. A report over a period also asks for its dates.",
       "labels": {"cls": "fixed_assets.class", "show": "fixed_assets.show"},
-      "image": null,
-      "capture": {"route": "/fixed-assets/reports/register", "selector": "main", "actions": []}
+      "image": "img/reports-2.webp",
+      "capture": {"route": "/fixed-assets/reports/register", "selector": "main", "actions": [], "evidence": ["{cls}", "{show}"]}
     },
     {
       "text": "You can also ask the assistant to read these reports for you, such as the depreciation for last year or what was disposed of this quarter.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/fixed-assets/reports", "selector": "main", "actions": []}
+      "image": "img/reports-3.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "What was the depreciation for last year?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.register"]

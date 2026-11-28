@@ -15,18 +15,21 @@
   ],
   "permission": "view_financial_reports",
   "order": 7,
-  "checked": "255ed2f1ea9d46eaa18b89360fb30bfd01eb2a63263cbbb7ce355526387f262d",
+  "checked": "01d647774f01b60676d1ff648b3c33ddecbbc4ff4209f317a36093b7f8365983",
   "steps": [
     {
       "text": "Open {nav} from the sidebar to see MRR, ARR and churn for each month.",
       "labels": {
         "nav": "nav.revenue"
       },
-      "image": null,
+      "image": "img/revenue-1.webp",
       "capture": {
         "route": "/revenue",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{nav}"
+        ]
       }
     },
     {
@@ -36,11 +39,16 @@
         "to": "subscriptions.metrics_to",
         "cur": "label.currency"
       },
-      "image": null,
+      "image": "img/revenue-2.webp",
       "capture": {
         "route": "/revenue",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{from}",
+          "{to}",
+          "{cur}"
+        ]
       }
     },
     {
@@ -48,11 +56,14 @@
       "labels": {
         "coh": "subscriptions.cohorts_heading"
       },
-      "image": null,
+      "image": "img/revenue-3.webp",
       "capture": {
         "route": "/revenue",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{coh}"
+        ]
       }
     },
     {
@@ -60,21 +71,32 @@
       "labels": {
         "defs": "subscriptions.definitions_heading"
       },
-      "image": null,
+      "image": "img/revenue-4.webp",
       "capture": {
         "route": "/revenue",
-        "selector": "main",
-        "actions": []
+        "selector": "#sub-definitions",
+        "actions": [],
+        "evidence": [
+          "{defs}"
+        ]
       }
     },
     {
       "text": "You can also ask the assistant to read these figures for you, such as recurring revenue this month or churn over the last quarter.",
       "labels": {},
-      "image": null,
+      "image": "img/revenue-5.webp",
       "capture": {
-        "route": "/revenue",
-        "selector": "main",
-        "actions": []
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "What is our recurring revenue this month?"
+          }
+        ],
+        "evidence": [
+          "#ai-query-input"
+        ]
       }
     }
   ],

@@ -19,6 +19,7 @@ from ui.components.table import breadcrumbs, display_cell, editable_cell, empty_
 from ui.i18n import t
 
 from celerp_fixed_assets.operations import RESPONSIBLE
+from celerp_fixed_assets.sales import asset_href
 from celerp_fixed_assets.upkeep import KINDS, MAINT_EDITABLE, REMINDERS_URL
 from celerp_fixed_assets.ui_routes import (
     _STACK, _context, _error_text, _field, _hx_write, _input, _members, _money_td, _money_th, _page, _picker, _refused,
@@ -99,7 +100,7 @@ def _reminder_actions(reminder: dict, today: str) -> FT:
 
 def _reminders_table(reminders: list[dict], members: dict[str, str], today: str) -> FT:
     if not reminders:
-        return P(t("fixed_assets.no_reminders"), cls="form-hint")
+        return P(t("fixed_assets.no_reminders"), cls="empty-state")
     insured = any(r["kind"] == "insurance" for r in reminders)
     extra = ("policy", "insured_value") if insured else ()
 
@@ -162,7 +163,7 @@ def _files_cell(asset_id: str, entry: dict) -> FT:
 
 def _maintenance_table(asset_id: str, log: list[dict], currency: str) -> FT:
     if not log:
-        return P(t("fixed_assets.no_maintenance"), cls="form-hint")
+        return P(t("fixed_assets.no_maintenance"), cls="empty-state")
 
     def action(m):
         if m.get("source"):
@@ -220,9 +221,6 @@ def _form_text(form, name: str) -> str:
 def setup_upkeep_routes(app) -> None:
     """Register the reminder and maintenance log writes, their cells, and the due list."""
 
-    def _back(asset_id: str) -> str:
-        return f"/fixed-assets/assets/{asset_id}"
-
     async def _asset_of(token: str, path: str) -> str:
         return (await api.fixed_assets_get(token, path))["asset_id"]
 
@@ -237,7 +235,7 @@ def setup_upkeep_routes(app) -> None:
         body[KINDS.get(kind, "work")] = _form_text(form, "detail")
         if kind == "insurance":
             body.update({k: _form_text(form, k) for k in ("policy", "insured_value")})
-        return await _hx_write(token, "POST", f"/assets/{_rid(asset_id)}/reminders", body, _back(asset_id),
+        return await _hx_write(token, "POST", f"/assets/{_rid(asset_id)}/reminders", body, asset_href(asset_id),
                                t("fixed_assets.toast.reminder_added"))
 
     async def _reminder_write(request: Request, reminder_id: str, action: str, fields: tuple[str, ...]):
@@ -250,7 +248,7 @@ def setup_upkeep_routes(app) -> None:
         except APIError as e:
             return Response(headers=_toast_error(e))
         return await _hx_write(token, "POST", f"/reminders/{_rid(reminder_id)}/{action}",
-                               {k: _form_text(form, k) for k in fields}, _back(asset_id),
+                               {k: _form_text(form, k) for k in fields}, asset_href(asset_id),
                                t(f"fixed_assets.toast.reminder_{action}"))
 
     @app.post("/fixed-assets/reminders/{reminder_id}/done")
@@ -323,7 +321,7 @@ def setup_upkeep_routes(app) -> None:
         form = await request.form()
         return await _hx_write(token, "POST", f"/assets/{_rid(asset_id)}/maintenance",
                                {k: _form_text(form, k) for k in ("date", "work", "by", "next_due", "every_months")},
-                               _back(asset_id), t("fixed_assets.toast.entry_added"))
+                               asset_href(asset_id), t("fixed_assets.toast.entry_added"))
 
     async def _entry_write(request: Request, maint_id: str, action: str):
         token = _token(request)
@@ -333,7 +331,7 @@ def setup_upkeep_routes(app) -> None:
             asset_id = await _asset_of(token, f"/maintenance/{_rid(maint_id)}")
         except APIError as e:
             return Response(headers=_toast_error(e))
-        return await _hx_write(token, "POST", f"/maintenance/{_rid(maint_id)}/{action}", {}, _back(asset_id),
+        return await _hx_write(token, "POST", f"/maintenance/{_rid(maint_id)}/{action}", {}, asset_href(asset_id),
                                t(f"fixed_assets.toast.entry_{action}"))
 
     @app.post("/fixed-assets/maintenance/{maint_id}/remove")
@@ -358,7 +356,7 @@ def setup_upkeep_routes(app) -> None:
             entry = await _send_form(token, "POST", f"/maintenance/{_rid(maint_id)}/files", {}, files=payload)
         except APIError as e:
             return Response(headers=_toast_error(e))
-        return Response(headers={"HX-Redirect": _back(entry["asset_id"]), **toast_header(t("fixed_assets.toast.file_attached"))})
+        return Response(headers={"HX-Redirect": asset_href(entry["asset_id"]), **toast_header(t("fixed_assets.toast.file_attached"))})
 
     @app.get("/fixed-assets/maintenance/{maint_id}/field/{field}/edit")
     async def entry_field_edit(request: Request, maint_id: str, field: str):
@@ -411,7 +409,7 @@ def setup_upkeep_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.due_soon_title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.due_soon_title"), None)])
-        rows = [Tr(Td(A(r["number"], href=safe_url(_back(r["asset_id"])))), Td(_text(r.get("name"))),
+        rows = [Tr(Td(A(r["number"], href=safe_url(asset_href(r["asset_id"])))), Td(_text(r.get("name"))),
                    Td(t(f"fixed_assets.reminder_kind.{r['kind']}")), Td(_text(r["detail"])), Td(r["due"]),
                    Td(Span(t("fixed_assets.overdue"), cls="badge badge--overdue") if r["overdue"] else ""))
                 for r in items]

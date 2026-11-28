@@ -6,37 +6,37 @@
   "routes": ["/fixed-assets/runs", "/fixed-assets/move", "/fixed-assets/dispose", "/fixed-assets/assets/{entity_id}/dispose", "/fixed-assets/assets/{entity_id}/move", "/fixed-assets/assets/{entity_id}/sell", "/fixed-assets/runs/{month}"],
   "permission": "manage_accounting",
   "order": 2,
-  "checked": "dbf4583887adf3e999c907b5f5cfb428cd5cbd6492cbe9e2801aecaa66c5633f",
+  "checked": "2710c7b8ac2679059dda986b8c790cde0fc64c88afe3a27cf14bab0ce6aa0c2c",
   "steps": [
     {
       "text": "Open {runs} to run a month's depreciation; each run shows its journal before it posts.",
       "labels": {"runs": "fixed_assets.runs_title"},
-      "image": null,
-      "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": []}
+      "image": "img/depreciation-and-disposals-1.webp",
+      "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": [], "evidence": ["{runs}"]}
     },
     {
       "text": "Tick assets on the register, then use {move} from the toolbar to relocate them.",
       "labels": {"move": "fixed_assets.move"},
-      "image": null,
-      "capture": {"route": "/fixed-assets/move", "selector": "main", "actions": []}
+      "image": "img/depreciation-and-disposals-2.webp",
+      "capture": {"route": "/fixed-assets", "selector": "main", "actions": [{"click": "#fa-register tbody tr:nth-child(1) .bulk-select"}, {"click": "#fa-register tbody tr:nth-child(2) .bulk-select"}, {"click": ".bulk-action-select"}, {"press": "ArrowDown"}, {"press": "Enter"}, {"wait": "main form"}], "evidence": ["{move}"]}
     },
     {
       "text": "Or use {dispose} from the same toolbar to retire them.",
       "labels": {"dispose": "fixed_assets.dispose"},
-      "image": null,
-      "capture": {"route": "/fixed-assets/dispose", "selector": "main", "actions": []}
+      "image": "img/depreciation-and-disposals-3.webp",
+      "capture": {"route": "/fixed-assets", "selector": "main", "actions": [{"click": "#fa-register tbody tr:nth-child(1) .bulk-select"}, {"click": "#fa-register tbody tr:nth-child(2) .bulk-select"}, {"click": ".bulk-action-select"}, {"press": "ArrowDown"}, {"press": "ArrowDown"}, {"press": "Enter"}, {"wait": "main form"}], "evidence": ["{dispose}"]}
     },
     {
       "text": "Click a month on {runs} to open that run: each asset's charge, the total and the journal it posted.",
       "labels": {"runs": "fixed_assets.runs_title"},
-      "image": null,
-      "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": []}
+      "image": "img/depreciation-and-disposals-4.webp",
+      "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": [{"click": "main a[href^=\"/fixed-assets/runs/\"]"}, {"wait": "main h1"}], "evidence": ["{runs}"]}
     },
     {
       "text": "You can also ask the assistant to run depreciation, or to move, sell or dispose of assets. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/fixed-assets/runs", "selector": "main", "actions": []}
+      "image": "img/depreciation-and-disposals-5.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Run this month's depreciation"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.register", "fixed-assets.settings"]

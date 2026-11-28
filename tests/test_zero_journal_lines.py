@@ -82,6 +82,10 @@ async def test_no_automatic_entry_writes_a_line_that_moves_nothing(client, sessi
     assert state["status"] == "posted"
 
 
+async def _written_before_the_boundary(*args, **kwargs) -> None:
+    """Stands in for the journal boundary while a test writes history an older version stored."""
+
+
 def _rows_for(node, je_id: str):
     """Every row a journal view returns for one entry: the entry's own lines in the journals,
     the entry's row in a ledger."""
@@ -96,13 +100,16 @@ def _rows_for(node, je_id: str):
             yield from _rows_for(value, je_id)
 
 
-async def test_a_stored_line_that_moves_nothing_is_not_shown_and_stays_stored(client, session):
+async def test_a_stored_line_that_moves_nothing_is_not_shown_and_stays_stored(client, session, monkeypatch):
     h, company_id = await _company(client)
     before = (await client.get("/accounting/journal", headers=h)).json()
     je_id = f"je:auto:doc:{uuid.uuid4()}:fin"
     stored = [{"account": "1120", "debit": 41.18, "credit": 0.0},
               {"account": "4100", "debit": 0.0, "credit": 41.18},
               {"account": "2120", "debit": 0.0, "credit": 0.0}]
+    # History an older version wrote, before the journal boundary refused a line that moves nothing.
+    monkeypatch.setattr("celerp.services.journal_accounts.prepare_journal_entry", _written_before_the_boundary)
+    monkeypatch.setattr("celerp.services.journal_accounts.normalize_journal_entry", _written_before_the_boundary)
     for event_type, data in (("acc.journal_entry.created",
                               {"memo": "Older invoice", "ts": "2026-08-31", "entries": stored}),
                              ("acc.journal_entry.posted", {"ts": "2026-08-31"})):
@@ -111,6 +118,7 @@ async def test_a_stored_line_that_moves_nothing_is_not_shown_and_stays_stored(cl
             event_type=event_type, actor_id=None, location_id=None, source="auto_je",
             idempotency_key=f"{je_id}:{event_type}", metadata_={}, data=data)
     await session.commit()
+    monkeypatch.undo()
 
     for path in ("/accounting/journal", "/accounting/extended-journal", "/accounting/ledger/2120",
                  "/accounting/general-ledger?include_lines=true"):

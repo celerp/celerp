@@ -1345,13 +1345,14 @@ async def test_woocommerce_payment_books_to_the_chosen_deposit_account(use_test_
     assert [p["bank_account"] for p in st["payments"]] == [expected]
 
 
-async def _bank_on(session, cid, code: str, *, active: bool = True) -> None:
-    """An active asset chart account *code* with a bank account on it (archived when not *active*)."""
+async def _bank_on(session, cid, code: str, *, active: bool = True, currency: str = "USD") -> None:
+    """An active asset chart account *code* with a bank account on it kept in *currency*
+    (archived when not *active*)."""
     from celerp_accounting.models import Account, BankAccount
     session.add(Account(company_id=cid, code=code, name=f"Bank {code}", account_type="asset"))
     session.add(BankAccount(
         company_id=cid, chart_account_code=code, bank_name=f"Bank {code}", account_number="",
-        bank_type="checking", currency="USD", opening_balance=0, is_active=active,
+        bank_type="checking", currency=currency, opening_balance=0, is_active=active,
     ))
     await session.commit()  # set up by its own request, committed before an import reads it
 
@@ -1367,6 +1368,8 @@ async def _deposit_case(session, cid, other, case: str) -> str:
         await session.commit()  # archived by its own request
     elif case == "archived_bank":
         await _bank_on(session, cid, code, active=False)
+    elif case == "third_currency":
+        await _bank_on(session, cid, code, currency="EUR")
     elif case == "other_company":
         await _bank_on(session, other, code)
     company = await locked_company(session, cid)
@@ -1376,7 +1379,8 @@ async def _deposit_case(session, cid, other, case: str) -> str:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["missing", "archived_cash", "archived_bank", "not_asset", "other_company"])
+@pytest.mark.parametrize("case", ["missing", "archived_cash", "archived_bank", "not_asset", "other_company",
+                                  "third_currency"])
 async def test_woocommerce_payment_waits_for_a_person_when_its_deposit_account_cannot_take_it(
         use_test_session, case):
     """A paid store order whose deposit account is missing, archived, another company's or

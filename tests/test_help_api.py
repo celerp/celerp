@@ -25,7 +25,7 @@ _GOOD = Path(__file__).parent / "fixtures" / "help" / "good"
 
 def _step(text: str, labels: dict | None = None) -> dict:
     return {"text": text, "labels": labels or {}, "image": None,
-            "capture": {"route": "/inventory", "selector": "main", "actions": []}}
+            "capture": {"route": "/inventory", "selector": "main", "actions": [], "evidence": ["main"]}}
 
 
 def _page(page_id: str, title: str, *, module: str = "celerp-inventory", source: str = "first_party",

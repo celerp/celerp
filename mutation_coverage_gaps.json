@@ -201,13 +201,13 @@
  },
  {
   "route": "ui POST /api/items/bulk/make-available",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /api/items/bulk/revert-to-draft",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /api/items/bulk/transfer",
@@ -876,8 +876,8 @@
  },
  {
   "route": "ui POST /settings/partner-claim/resolve",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /settings/password",

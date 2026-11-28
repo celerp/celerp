@@ -16,9 +16,8 @@ from decimal import Decimal
 from urllib.parse import quote_plus
 
 from celerp.models.projections import Projection
-from celerp.services.money import books_currency
+from celerp.services.money import books_currency, to_decimal
 from celerp_fixed_assets import setup
-from celerp_fixed_assets.projections import _dec
 from sqlalchemy import select
 
 BILL_TYPES = ("bill",)
@@ -29,7 +28,7 @@ def claim_id(source: str) -> str:
 
 
 def _quantity(value):
-    q = _dec(value) or Decimal(1)
+    q = to_decimal(value) or Decimal(1)
     return int(q) if q == q.to_integral_value() else str(q)
 
 
@@ -93,7 +92,7 @@ async def _manual_lines(session, company_id, asset_accounts: set[str], accum_acc
     out = []
     for je_id, je in (await _posted_journals(session, company_id, prefix="je:manual:")).items():
         for idx, entry in enumerate(je.get("entries") or []):
-            debit, credit, account = _dec(entry.get("debit")), _dec(entry.get("credit")), entry.get("account")
+            debit, credit, account = to_decimal(entry.get("debit")), to_decimal(entry.get("credit")), entry.get("account")
             if debit > 0 and account in asset_accounts:
                 kind, amount = "acquisition", debit
             elif credit > 0 and account in accum_accounts:
@@ -123,11 +122,11 @@ async def lines(session, company_id) -> list[dict]:
              *await _manual_lines(session, company_id, asset_accounts, accum_accounts)]
     claims = await _claims(session, company_id, [f["source"] for f in found])
     labels = await setup.account_labels(session, company_id, [f["account"] for f in found])
-    threshold = _dec(fa.get("threshold")) if fa.get("threshold") else None
+    threshold = to_decimal(fa.get("threshold")) if fa.get("threshold") else None
     cut = setup.cutover(fa)
     for f in found:
         claim = claims.get(claim_id(f["source"])) or {}
-        per_unit = _dec(f["amount"]) / _dec(f["quantity"])
+        per_unit = to_decimal(f["amount"]) / to_decimal(f["quantity"])
         f.update(generation=int(claim.get("generation") or 0), account_label=labels[f["account"]],
                  claim=claim if claim.get("status") == "claimed" else None,
                  before_cutover=bool(cut) and f["date"] <= cut,

@@ -707,8 +707,11 @@ import copy as _copy  # noqa: E402
 _REFRESH_GRACE_SECONDS = 0.5
 
 
-def _refresh_key(refresh_token: str) -> bytes:
-    return hashlib.sha256(refresh_token.encode()).digest()
+def _token_key(token: str) -> bytes:
+    """The cache key of a token: SHA-256 of the whole token, never a decoded claim.
+    The UI does not verify JWT signatures locally, so keying on a claim would let a
+    forged token collide with an authorized entry; a different token is a different key."""
+    return hashlib.sha256(token.encode()).digest()
 
 
 async def _refresh_upstream(refresh_token: str) -> tuple[str, str]:
@@ -899,7 +902,7 @@ async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
     # every caller of this single refresh seam.
     if not isinstance(refresh_token, str) or not refresh_token.strip():
         raise APIError(401, "Invalid refresh token")
-    key = _refresh_key(refresh_token)
+    key = _token_key(refresh_token)
     return await _refresh_coordinator.run(key, lambda: _refresh_upstream(refresh_token))
 
 
@@ -1251,7 +1254,18 @@ async def get_column_prefs(token: str) -> dict:
         return _raise(await c.get("/companies/me/column-prefs")).json()
 
 
-async def patch_column_prefs(token: str, prefs: dict[str, list[str]]) -> dict:
+async def column_layouts(token: str) -> dict:
+    """The signed-in user's saved column setup for a page to render with: when it cannot be read,
+    each table opens with its default columns (an ended session still raises)."""
+    try:
+        return await get_column_prefs(token)
+    except APIError as e:
+        if e.status == 401:
+            raise
+        return {}
+
+
+async def patch_column_prefs(token: str, prefs: dict[str, dict | None]) -> dict:
     async with _api_client(token) as c:
         result = _raise(await c.patch("/companies/me/column-prefs", json={"prefs": prefs})).json()
     _invalidate_inventory_metadata()
@@ -1446,14 +1460,6 @@ class InventoryMetadata(NamedTuple):
     units: list[dict]
 
 
-def _metadata_key(token: str) -> bytes:
-    # SHA-256 of the whole validated access token, never a decoded company_id:
-    # the UI does not verify JWT signatures locally, so keying on a claim would
-    # let a forged token collide with an authorized entry. A different token is
-    # a different key even when it claims the same company.
-    return hashlib.sha256(token.encode()).digest()
-
-
 _metadata_coordinator = _SingleFlightCoordinator(
     grace_seconds=lambda: _METADATA_TTL_SECONDS,
     track_tasks=True,
@@ -1511,7 +1517,7 @@ async def get_inventory_metadata(token: str) -> InventoryMetadata:
     Failures are never cached. Every returned snapshot is a defensive deep copy
     so a caller mutating what it reads cannot corrupt the stored entry.
     """
-    key = _metadata_key(token)
+    key = _token_key(token)
     return await _metadata_coordinator.run(key, lambda: _fetch_inventory_metadata(token))
 
 
@@ -2292,11 +2298,6 @@ async def list_subscriptions(token: str, params: dict | None = None) -> dict:
         return _raise(await c.get("/subscriptions", params=params or {})).json()
 
 
-async def get_subscription(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get(f"/docs/{entity_id}")).json()
-
-
 async def list_ledger(token: str, params: dict | None = None) -> dict:
     """A page of the events History shows, by the /ledger filters ``params``."""
     p = {"resolve": "true", **(params or {}), "history": "true"}
@@ -2315,11 +2316,6 @@ async def entity_history(token: str, entity_id: str, query: dict, *, limit: int,
                                      **cursor, **query}),
             c.get("/ledger/facets", params={"entity_id": entity_id}))
     return _raise(page).json(), _raise(facets).json()
-
-
-async def create_subscription(token: str, data: dict) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post("/docs", json=data)).json()
 
 
 SUBSCRIPTION_ACTIONS = ("activate", "generate-due", "bill-early", "pause", "resume", "cancel")

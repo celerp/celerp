@@ -293,7 +293,8 @@ async def test_locations_batch_import_creates_and_skips(client):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("path", "body", "read"), [
-    ("/companies/me/column-prefs", {"prefs": {"__all__": ["sku", "name"]}}, {"__all__": ["sku", "name"]}),
+    ("/companies/me/column-prefs", {"prefs": {"inventory": {"vis": {"sku": True, "name": False}, "order": ["name", "sku"]}}},
+     {"inventory": {"vis": {"sku": True, "name": False}, "order": ["name", "sku"]}}),
     ("/companies/me/contact-tags", {"tags": [{"name": "VIP", "color": "gold"}]}, [{"name": "VIP", "color": "gold"}]),
     ("/companies/me/default-price-list", {"name": "Wholesale"}, "Wholesale"),
 ])
@@ -302,6 +303,85 @@ async def test_company_setting_patch_is_read_back(client, path, body, read):
     r = await client.patch(path, json=body, headers=headers)
     assert r.status_code == 200, r.text
     assert (await client.get(path, headers=headers)).json() == read
+
+
+@pytest.mark.asyncio
+async def test_each_user_keeps_their_own_column_setup(client):
+    """Column setup belongs to the signed-in user: a colleague's change never moves theirs, a
+    later change to one part keeps the others, and null forgets the table."""
+    owner = await _register(client, "colprefs")
+    r = await client.post("/companies/me/users", headers=owner, json={
+        "name": "Staff", "email": "staff_colprefs@test.example", "password": "pw123val", "role": "operator"})
+    assert r.status_code == 200, r.text
+    r = await client.post("/auth/login", json={"email": "staff_colprefs@test.example", "password": "pw123val"})
+    assert r.status_code == 200, r.text
+    staff = {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+    for h, vis in ((owner, {"sku": False}), (staff, {"sku": True})):
+        assert (await client.patch("/companies/me/column-prefs", headers=h,
+                                   json={"prefs": {"customers": {"vis": vis}}})).status_code == 200
+    await client.patch("/companies/me/column-prefs", headers=owner,
+                       json={"prefs": {"customers": {"widths": {"sku": "120px"}}}})
+    assert (await client.get("/companies/me/column-prefs", headers=owner)).json() == {
+        "customers": {"vis": {"sku": False}, "widths": {"sku": "120px"}}}
+    assert (await client.get("/companies/me/column-prefs", headers=staff)).json() == {"customers": {"vis": {"sku": True}}}
+
+    await client.patch("/companies/me/column-prefs", headers=owner, json={"prefs": {"customers": None}})
+    assert (await client.get("/companies/me/column-prefs", headers=owner)).json() == {}
+    assert (await client.patch("/companies/me/column-prefs", headers=owner,
+                               json={"prefs": {"customers": {"colour": "red"}}})).status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", ["NaN", "Infinity", "-Infinity", "1e400"])
+async def test_a_column_width_that_is_not_a_number_is_refused_unsaved(client, width):
+    headers = await _register(client, f"colwidth_{width.strip('-').lower()}{len(width)}")
+    r = await client.patch("/companies/me/column-prefs", headers={**headers, "Content-Type": "application/json"},
+                           content='{"prefs": {"inventory": {"widths": {"name": %s}}}}' % width)
+    assert r.status_code == 422, r.text
+    assert (await client.get("/companies/me/column-prefs", headers=headers)).json() == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("table", ["inventory", "customers", "vendors", "doc_lines_invoice", "doc_lines_list_quotation"])
+async def test_every_table_with_a_column_setup_is_saved(client, table):
+    headers = await _register(client, f"coltable_{table}")
+    r = await client.patch("/companies/me/column-prefs", headers=headers, json={"prefs": {table: {"widths": {"name": 12.5}}}})
+    assert r.status_code == 200, r.text
+    assert (await client.get("/companies/me/column-prefs", headers=headers)).json() == {table: {"widths": {"name": 12.5}}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("table", ["items", "contacts", "Inventory", "doc_lines_", "doc_lines_9", "inventory ", "t0_1"])
+async def test_a_table_with_no_column_setup_is_refused_by_name(client, table):
+    headers = await _register(client, f"colunknown_{abs(hash(table)) % 10**8}")
+    r = await client.patch("/companies/me/column-prefs", headers=headers,
+                           json={"prefs": {"inventory": {"vis": {"sku": False}}, table: {"vis": {"sku": True}}}})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message"] == t("settings.err_column_table_unknown", table=table)
+    assert (await client.get("/companies/me/column-prefs", headers=headers)).json() == {}
+
+
+@pytest.mark.asyncio
+async def test_one_user_stores_a_bounded_number_of_tables(client):
+    """Each save stays under the per-call limit, yet the tables one user keeps never pass the
+    bound: the save that would pass it is refused whole, and forgetting a table makes room."""
+    from celerp.routers.companies import MAX_COLUMN_TABLES
+
+    headers = await _register(client, "colbound")
+    names = [f"doc_lines_kind_{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(MAX_COLUMN_TABLES + 1)]
+    r = await client.patch("/companies/me/column-prefs", headers=headers,
+                           json={"prefs": {n: {"order": ["sku"]} for n in names[:MAX_COLUMN_TABLES]}})
+    assert r.status_code == 200, r.text
+    r = await client.patch("/companies/me/column-prefs", headers=headers, json={"prefs": {names[-1]: {"order": ["sku"]}}})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message"] == t("settings.err_column_tables_full", limit=MAX_COLUMN_TABLES)
+    assert len((await client.get("/companies/me/column-prefs", headers=headers)).json()) == MAX_COLUMN_TABLES
+    # a table already kept still saves, and forgetting one makes room for the next
+    assert (await client.patch("/companies/me/column-prefs", headers=headers,
+                               json={"prefs": {names[0]: {"order": ["name"]}}})).status_code == 200
+    assert (await client.patch("/companies/me/column-prefs", headers=headers,
+                               json={"prefs": {names[1]: None, names[-1]: {"order": ["sku"]}}})).status_code == 200
 
 
 # ── /health routes ────────────────────────────────────────────────────────────

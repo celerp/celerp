@@ -635,6 +635,7 @@
   "fixed_assets.class_account_inactive": "{asset_class} bucht auf Konto {account}, das inaktiv ist.",
   "fixed_assets.class_account_header": "{asset_class} bucht auf Konto {account}, ein Sammelkonto mit Konten darunter.",
   "fixed_assets.class_account_not_in_chart": "{asset_class} bucht auf Konto {account}, das nicht im Kontenplan steht.",
+  "fixed_assets.class_account_foreign_bank": "{asset_class} bucht auf Konto {account}, das ein Bankkonto in einer anderen Währung als der Buchhaltungswährung ist.",
   "fixed_assets.recon_ledger": "Hauptbuch",
   "fixed_assets.recon_registered": "Anlagenverzeichnis",
   "fixed_assets.recon_status.reconciled": "Abgestimmt",

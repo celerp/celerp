@@ -24,6 +24,8 @@ from contextvars import ContextVar
 from datetime import date
 from decimal import Decimal
 
+from fastapi import HTTPException
+
 from celerp.compat import StrEnum
 
 # Bumped when a release adds a role. Older companies and backups stay readable:
@@ -382,6 +384,8 @@ REFUSAL_FIXES = {
     "error.recon_period_changed": ("/accounting/reconcile/bank/{bank_id}?view=posted", "recon.view_completed",
                                    "manage_accounting"),
     "reconciliation.no_client_user": ("/settings/general?tab=users", "settings.tab_users", "manage_company_settings"),
+    "item.attribute_not_in_category": ("/settings/inventory?tab=categories", "settings.tab_categories",
+                                       "manage_company_settings"),
 }
 # The settings of the company the current request acts in (get_auth_context): who holds a
 # fix page's permission there. Outside a request the registry's default grants answer.
@@ -424,6 +428,12 @@ def catalog_refusal(key: str, /, **params) -> dict:
     with english():
         message = refusal_text(refusal(key, "", **params))
     return refusal(key, message, **params)
+
+
+def refused(status: int, key: str, /, **params) -> HTTPException:
+    """The refusal ``key`` of the catalog with the way on: ``href`` and ``action`` (the link's
+    label key), or ``links`` (each {"label", "href"}), which the page shows beside the message."""
+    return HTTPException(status_code=status, detail=catalog_refusal(key, **params))
 
 
 def period_locked_refusal(lock_date: str | date) -> dict:
@@ -502,7 +512,10 @@ def target_problem(role: str, role_map: dict[str, str], account: dict | None) ->
     when it can.
 
     ``account`` is the chart row as {"code", "account_type", "is_active",
-    "has_children"}, or None when the company has no such account."""
+    "has_children", "foreign_bank"}, or None when the company has no such account. A role
+    other than the cash roles never takes a bank account kept in another currency than the
+    books' (``foreign_bank``): its automatic postings carry books-currency amounts only, so
+    the journal boundary would refuse each one with nothing the writer's form could change."""
     code = role_map.get(str(role))
     role = AccountRole(role)
     label = ROLE_LABELS[role]
@@ -520,6 +533,10 @@ def target_problem(role: str, role_map: dict[str, str], account: dict | None) ->
                        f"{label} is set to account {code}, of type {account.get('account_type')}; "
                        f"it must be of type {type_list(types)}.",
                        role=role.value, code=code, type=account.get("account_type"), types=sorted(types))
+    if account.get("foreign_bank") and role not in (R.CASH_AND_EQUIVALENTS, R.DEFAULT_DEPOSIT):
+        from celerp.services.journal_accounts import destination_refusal
+
+        return destination_refusal("foreign_bank", code, account, role=role.value)
     if role in POSTABLE_ROLES and account.get("has_children"):
         return refusal("posting.problem.header",
                        f"{label} is set to account {code}, a header account; choose an account under it.",

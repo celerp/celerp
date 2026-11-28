@@ -16,11 +16,14 @@
       "labels": {
         "inv": "no.such.key"
       },
-      "image": null,
+      "image": "img/unknown-label-1.webp",
       "capture": {
         "route": "/inventory",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "main"
+        ]
       }
     }
   ],

@@ -21,11 +21,14 @@
       "labels": {
         "nav": "nav.donors"
       },
-      "image": null,
+      "image": "img/donors-1.webp",
       "capture": {
         "route": "/donors",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{nav}"
+        ]
       }
     },
     {
@@ -33,11 +36,14 @@
       "labels": {
         "wording": "donors.wording_title"
       },
-      "image": null,
+      "image": "img/donors-2.webp",
       "capture": {
         "route": "/donors",
-        "selector": "main",
-        "actions": []
+        "selector": "#donor-wording",
+        "actions": [],
+        "evidence": [
+          "{wording}"
+        ]
       }
     },
     {
@@ -45,11 +51,14 @@
       "labels": {
         "pdf": "donors.pdf"
       },
-      "image": null,
+      "image": "img/donors-3.webp",
       "capture": {
         "route": "/donors",
-        "selector": "main",
-        "actions": []
+        "selector": "main table.data-table",
+        "actions": [],
+        "evidence": [
+          "{pdf}"
+        ]
       }
     },
     {
@@ -59,21 +68,34 @@
         "confirm": "donors.confirm_send",
         "btn": "donors.btn_send"
       },
-      "image": null,
+      "image": "img/donors-4.webp",
       "capture": {
         "route": "/donors",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{send}",
+          "{confirm}",
+          "{btn}"
+        ]
       }
     },
     {
       "text": "You can also ask the assistant who gave in a period, for one donor's history, or to prepare and send donor statements. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/donors-5.webp",
       "capture": {
-        "route": "/donors",
-        "selector": "main",
-        "actions": []
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Who gave last quarter?"
+          }
+        ],
+        "evidence": [
+          "#ai-query-input"
+        ]
       }
     }
   ],

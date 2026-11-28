@@ -26,12 +26,12 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from celerp.accounting_roles import catalog_refusal, refusal
+from celerp.accounting_roles import catalog_refusal, refusal, refused
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services.money import books_currency, round_money
+from celerp.services.money import books_currency, money_text, round_money, to_decimal
 from celerp_fixed_assets import setup, sources
-from celerp_fixed_assets.projections import BUCKETS, _dec, money, said
+from celerp_fixed_assets.projections import BUCKETS, said
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state, recorded
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -89,7 +89,7 @@ def in_use(asset_id: str, asset: dict, cannot: str) -> None:
     """Refuse an operation on an asset no longer in use, before anything else on its form:
     what ``cannot`` (one of CANNOT) be done, then how the asset left use and the way back."""
     if (why := left_use(asset)) is not None:
-        raise setup.refused(409, "fixed_assets.err_not_in_use", links=left_use_links(asset_id, asset), why=why,
+        raise refused(409, "fixed_assets.err_not_in_use", links=left_use_links(asset_id, asset), why=why,
                             cannot=catalog_refusal(f"fixed_assets.err_cannot.{cannot}", number=asset["number"]))
 
 
@@ -156,7 +156,7 @@ def _lines(debit_account: str, credit_account: str, amount: Decimal, roles: tupl
 
 
 def _journal_view(lines, currency: str) -> dict:
-    return {"lines": [{"account": ln.account, "debit": money(ln.debit, currency), "credit": money(ln.credit, currency)}
+    return {"lines": [{"account": ln.account, "debit": money_text(ln.debit, currency), "credit": money_text(ln.credit, currency)}
                       for ln in lines]}
 
 
@@ -208,7 +208,7 @@ async def catch_up(session, company_id, user_id, asset_id: str, *, day: str, per
     when one was owed."""
     if not periods:
         return {"periods": {}}
-    charged = sum((_dec(v) for v in periods.values()), Decimal(0))
+    charged = sum((to_decimal(v) for v in periods.values()), Decimal(0))
     movement_id = await _move(session, company_id, user_id, asset_id, kind="posted", operation="depreciation",
                               effective=day, posting=day, amounts={"accumulated_depreciation": charged},
                               op_key=op_key, periods=periods, journal_id=journal_id)
@@ -245,7 +245,7 @@ async def _claim(session, company_id, user_id, line: dict, *, allocation: str, o
         "line_index": line["line_index"], "account": line["account"], "kind": line["kind"], "date": line["date"],
         **extra}, key=f"{claim}:claim:{line['generation']}")
     if getattr(event, "was_deduped", False):
-        raise setup.refused(409, "fixed_assets.err_description_was_already_registered", description=line['description'])
+        raise refused(409, "fixed_assets.err_description_was_already_registered", description=line['description'])
 
 
 # ── The operation contract ───────────────────────────────────────────────────
@@ -379,7 +379,7 @@ async def _stale(session, company_id, shown: dict, since: str) -> HTTPException:
     named = sorted((s["number"], a) for a, s in states.items() if s.get("number") in numbers)
     if not named:
         return unnamed
-    return setup.refused(409, "fixed_assets.err_review_stale.one" if len(named) == 1
+    return refused(409, "fixed_assets.err_review_stale.one" if len(named) == 1
                          else "fixed_assets.err_review_stale.many",
                          assets=_listed([f"{n} ({', '.join(dict.fromkeys(what[a]))})" for n, a in named]),
                          links=[{"label": n, "href": f"/fixed-assets/assets/{a}"} for n, a in named])
@@ -471,7 +471,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
         if mode not in REGISTER_MODES:
             raise setup.refuse("fixed_assets.err_choose_how_register_line")
         currency = await setup.currency(session, company_id)
-        amount = _dec(line["amount"])
+        amount = to_decimal(line["amount"])
         context = {"line": line, "mode": mode, "generation": line["generation"]}
         if mode in ("expense", "maintenance"):
             account = str(body.get("expense_account") or "")
@@ -491,7 +491,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
         if not name:
             raise setup.refuse("fixed_assets.err_asset_needs_name")
         available = _date(body.get("available_date") or line["date"], "The available-for-use date")
-        quantity = _dec(line["quantity"])
+        quantity = to_decimal(line["quantity"])
         if mode == "separate":
             if quantity != quantity.to_integral_value():
                 raise setup.refuse("fixed_assets.err_separate_assets_need_whole_quantity_register")
@@ -508,7 +508,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
         context.update(cls=cls, name=name, available=available, each=each, numbers=numbers, journals=journals,
                        policy=setup.policy_of(cls, fa))
         return {"journals": [_journal_view(j, currency) for j in journals],
-                "assets": [{"number": n, "name": name, "cost": money(c, currency)} for n, (c, _) in zip(numbers, each)],
+                "assets": [{"number": n, "name": name, "cost": money_text(c, currency)} for n, (c, _) in zip(numbers, each)],
                 "registers": _registers(cls, available, context["policy"])}, context
 
     async def apply(context, op_key):
@@ -617,9 +617,9 @@ async def link_depreciation(session, company_id, user_id, body: dict) -> dict:
             await same_fund(session, company_id, line, asset)
             shares.append((asset_id, asset["number"], _money_in(a.get("amount"), "Each amount", currency, positive=True)))
         total = sum((s for _, _, s in shares), Decimal(0))
-        if total != round_money(_dec(line["amount"]), currency):
+        if total != round_money(to_decimal(line["amount"]), currency):
             raise setup.refuse("fixed_assets.err_amounts_add_up_said_not_said2", said=said(total, currency), said2=said(line['amount'], currency))
-        return ({"journals": [], "assets": [{"number": n, "accumulated_depreciation": money(s, currency)} for _, n, s in shares]},
+        return ({"journals": [], "assets": [{"number": n, "accumulated_depreciation": money_text(s, currency)} for _, n, s in shares]},
                 {"line": line, "shares": shares, "generation": line["generation"]})
 
     async def apply(context, op_key):
@@ -733,7 +733,7 @@ async def create_asset(session, company_id, user_id, body: dict) -> dict:
                 "name": name, "number": number}
         details = await _financials(session, company_id, fa, body)
         _, shown = _financials_shown(details)
-        return ({"journals": shown, "assets": [{"number": number, "name": name, "cost": money(details["cost"], details["currency"])}],
+        return ({"journals": shown, "assets": [{"number": number, "name": name, "cost": money_text(details["cost"], details["currency"])}],
                  "registers": _registers(details["cls"], details["available"], details["policy"])},
                 {"name": name, "number": number, "details": details})
 
@@ -766,11 +766,11 @@ async def add_financial_details(session, company_id, user_id, asset_id: str, bod
         if row is None or row.entity_type != "fa_asset":
             raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
         if row.state.get("status") != "physical":
-            raise setup.refused(409, "fixed_assets.err_asset_already_has_its_financial_details")
+            raise refused(409, "fixed_assets.err_asset_already_has_its_financial_details")
         details = await _financials(session, company_id, fa, body)
         _, shown = _financials_shown(details)
         return ({"journals": shown, "assets": [{"number": row.state["number"], "name": row.state["name"],
-                                                "cost": money(details["cost"], details["currency"])}],
+                                                "cost": money_text(details["cost"], details["currency"])}],
                  "registers": _registers(details["cls"], details["available"], details["policy"])},
                 {"asset": row.state, "details": details})
 
@@ -866,7 +866,7 @@ async def update_asset(session, company_id, user_id, asset_id: str, body: dict) 
 
 
 def _reversed_lines(je: dict, currency: str) -> dict:
-    return {"lines": [{"account": e.get("account"), "debit": money(e.get("credit"), currency), "credit": money(e.get("debit"), currency)}
+    return {"lines": [{"account": e.get("account"), "debit": money_text(e.get("credit"), currency), "credit": money_text(e.get("debit"), currency)}
                       for e in je.get("entries") or []]}
 
 
@@ -876,10 +876,10 @@ async def reverse_move(session, company_id, user_id, movement_id: str, mv: dict,
     and then the same for the depreciation it brought up to date (:func:`catch_up`)."""
     reversed_id = await _move(session, company_id, user_id, mv["asset_id"], kind="reversal", operation=operation,
                               effective=mv["effective_date"], posting=mv["posting_date"],
-                              amounts={k: -_dec(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
-                              contributions=[{**c, "amount": str(-_dec(c.get("amount")))}
+                              amounts={k: -to_decimal(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
+                              contributions=[{**c, "amount": str(-to_decimal(c.get("amount")))}
                                              for c in mv.get("contributions") or []],
-                              quantity=str(-_dec(mv.get("quantity"))), reverses=movement_id)
+                              quantity=str(-to_decimal(mv.get("quantity"))), reverses=movement_id)
     if mv.get("catch_up"):
         await reverse_move(session, company_id, user_id, mv["catch_up"],
                            await _state(session, company_id, mv["catch_up"]), op_key, operation)
@@ -935,7 +935,7 @@ async def changed_since(session, company_id, changed: list[tuple[str, dict, int]
         sentences.append(catalog_refusal(f"fixed_assets.err_changed_since.{since}."
                                          f"{'one' if len(in_use) == 1 else 'many'}", assets=_listed(named)))
     sentences += [await _ended(session, company_id, a) for _, a, _ in changed if a.get("status") in _ENDED]
-    return setup.refused(409, "fixed_assets.err_sentences", sentences=sentences,
+    return refused(409, "fixed_assets.err_sentences", sentences=sentences,
                          links=[{"label": a["number"], "href": f"/fixed-assets/assets/{i}"} for i, a, _ in changed])
 
 
@@ -952,11 +952,11 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         if not ops or any(op is None or op.get("type") in (None, "undo") for op in ops):
             raise setup.refuse("fixed_assets.err_there_nothing_undo_here")
         if any(op.get("undone_by") for op in ops):
-            raise setup.refused(409, "fixed_assets.err_was_already_undone")
+            raise refused(409, "fixed_assets.err_was_already_undone")
         transfer = next((op for op in ops if op.get("type") == "transfer_in"), None)
         if transfer:
             source = transfer["result"]["source"]
-            raise setup.refused(409, "fixed_assets.err_asset_was_transferred_from_company_name", company_name=source['company_name'], number=source['number'])
+            raise refused(409, "fixed_assets.err_asset_was_transferred_from_company_name", company_name=source['company_name'], number=source['number'])
         effects = _effects(**{k: [x for op in ops for x in (op.get("effects") or {}).get(k) or []]
                               for k in ("assets", "movements", "claims", "journals", "maint", "statuses",
                                         "changes", "classes")})
@@ -982,12 +982,12 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         for entity_id, fields in (effects.get("unchanged") or {}).items():
             now = await _state(session, company_id, entity_id) or {}
             if any(int(now.get(k) or 0) > v for k, v in fields.items()):
-                raise setup.refused(409, "fixed_assets.err_has_changed_since_so_can_no")
+                raise refused(409, "fixed_assets.err_has_changed_since_so_can_no")
         settings = await setup.company_settings(session, company_id)
         lock = settings.get("lock_date")
         locked = sorted(s["posting_date"] for s in movements.values() if s and lock and s["posting_date"] <= lock)
         if locked:
-            raise setup.refused(409, "fixed_assets.err_value_locked_period_so_can_no", value=locked[0])
+            raise refused(409, "fixed_assets.err_value_locked_period_so_can_no", value=locked[0])
         journals = {j: await _journal(session, company_id, j) for j in effects.get("journals", [])}
         shown = {"assets": [{"number": a["number"]} for _, a, _ in created],
                  "journals": [_reversed_lines(je, books_currency(settings)) for je in journals.values() if je and je.get("status") == "posted"]}

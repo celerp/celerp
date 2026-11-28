@@ -635,6 +635,7 @@
   "fixed_assets.class_account_inactive": "{asset_class} registra en la cuenta {account}, que está inactiva.",
   "fixed_assets.class_account_header": "{asset_class} registra en la cuenta {account}, que es una cuenta de encabezado con cuentas debajo.",
   "fixed_assets.class_account_not_in_chart": "{asset_class} registra en la cuenta {account}, que no está en el plan de cuentas.",
+  "fixed_assets.class_account_foreign_bank": "{asset_class} registra en la cuenta {account}, que es una cuenta bancaria en otra moneda distinta de la contabilidad.",
   "fixed_assets.recon_ledger": "Libro mayor",
   "fixed_assets.recon_registered": "Registro",
   "fixed_assets.recon_status.reconciled": "Conciliado",

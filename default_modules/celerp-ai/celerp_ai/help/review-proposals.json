@@ -6,31 +6,31 @@
   "routes": ["/ai"],
   "permission": "use_ai_assistant",
   "order": 2,
-  "checked": "d2bf1e900b8f2b6ae074bef9ebdbc172df8fc3a2845d39392babb271589e45ed",
+  "checked": "c5d1f1ef638528e8d024575bd8ddab5b45b6cb28ee6c4c88b21c81b1d07dd064",
   "steps": [
     {
       "text": "Before the assistant changes anything in your books, it shows the change as a card naming what it wants to create, update or delete, with its fields in your language and the records and files it uses by name. The card also says when the change sends something outside Celerp, or finalizes or voids a document, and a change to many records comes as one card with their count and list.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/ai", "selector": "main", "actions": []}
+      "image": "img/review-proposals-1.webp",
+      "capture": {"route": "/ai", "selector": "main", "actions": [{"fill": "#ai-query-input", "value": "Add a desk lamp to my stock, sold by the piece"}, {"click": ".ai-input__send"}, {"wait": ".ai-action__card"}], "evidence": [".ai-action .badge--proposal"]}
     },
     {
       "text": "Confirm applies the change and links to the record it created or updated; Dismiss discards the proposal and nothing is written. Confirm all applies every proposal from the same answer; if one fails, later changes to the same record stay pending with the reason while the others still run. Once every card is answered, the assistant carries on with your request.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/ai", "selector": "main", "actions": []}
+      "image": "img/review-proposals-2.webp",
+      "capture": {"route": "/ai", "selector": "main", "actions": [{"fill": "#ai-query-input", "value": "Add a desk lamp to my stock, sold by the piece"}, {"click": ".ai-input__send"}, {"wait": ".ai-action__card"}, {"click": ".ai-action__card button:has-text('Confirm')"}, {"wait": ".ai-action__done"}, {"wait": ".ai-msg--ai:has-text('Desk Lamp is now in your stock')"}], "evidence": [".ai-action__done a"]}
     },
     {
-      "text": "A proposal that failed can be retried from the same card; one still waiting on something else shows why, so you know what to do next.",
+      "text": "Each proposal stays on its card until you answer it. If a change fails, the card shows the reason, and Retry takes the place of Confirm when the change can be tried again; a proposal still waiting on something else says why, so you know what to do next.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/ai", "selector": "main", "actions": []}
+      "image": "img/review-proposals-3.webp",
+      "capture": {"route": "/ai", "selector": "main", "actions": [{"fill": "#ai-query-input", "value": "Add a desk lamp to my stock, sold by the piece"}, {"click": ".ai-input__send"}, {"wait": ".ai-action__card"}, {"click": ".ai-action__card button:has-text('Confirm')"}, {"wait": ".ai-action__card button:has-text('Retry')"}], "evidence": [".ai-action__error", ".ai-action__card button:has-text('Retry')"]}
     },
     {
-      "text": "When a conversation holds more unanswered proposals than its first page shows, a Show older actions button opens at the top of the thread; each click loads the next page of older proposals in order, so none of them go unanswered.",
+      "text": "Proposals you have not answered stay in the conversation. When it holds more of them than its first page shows, a Show older actions button opens at the top of the thread; each click loads the next page of older proposals in order, so none of them go unanswered.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/ai", "selector": "main", "actions": []}
+      "image": "img/review-proposals-4.webp",
+      "capture": {"route": "/ai", "selector": "main", "actions": [{"fill": "#ai-query-input", "value": "Add a desk lamp to my stock, sold by the piece"}, {"click": ".ai-input__send"}, {"wait": ".ai-action__card:has-text('Desk Lamp')"}, {"fill": "#ai-query-input", "value": "Add a floor lamp too"}, {"click": ".ai-input__send"}, {"wait": ".ai-action__card:has-text('Floor Lamp')"}, {"fill": "#ai-query-input", "value": "And a reading lamp"}, {"click": ".ai-input__send"}, {"wait": ".ai-action__card:has-text('Reading Lamp')"}, {"fill": "#ai-query-input", "value": "And a wall lamp"}, {"click": ".ai-input__send"}, {"wait": ".ai-action__card:has-text('Wall Lamp')"}, {"click": ".ai-sidebar__item"}, {"wait": ".ai-older-actions button"}], "evidence": [".ai-older-actions button", ".ai-action__card:has-text('Floor Lamp')"]}
     }
   ],
   "related": ["ai.ask-questions"]

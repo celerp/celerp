@@ -32,7 +32,7 @@ from celerp.models.ai import AIConversation, AIMessage, AIUsage
 from celerp.services.auth import decode_access_token
 from celerp.services.business_time import business_today
 from migration_support import maker, real_client, real_engine  # noqa: F401
-from test_helpers import invite_user, register_admin, settled_question, signed_request, until, until_a_lock_waits
+from test_helpers import invite_user, register_admin, set_books_currency, settled_question, signed_request, until, until_a_lock_waits
 
 
 def _claims(token: str) -> tuple[uuid.UUID, uuid.UUID]:
@@ -148,9 +148,10 @@ async def _usage(client, token: str, **params):
 
 @pytest.fixture
 async def owner(client, drained_jobs):
-    """The owner of a new company. Its question jobs are drained before the client
+    """The owner of a new company, its books currency set. Its question jobs are drained before the client
     and its session close."""
     token = await register_admin(client)
+    await set_books_currency(client, {"Authorization": f"Bearer {token}"})
     company_id, user_id = _claims(token)
     return token, company_id, user_id
 
@@ -190,7 +191,7 @@ async def test_credits_kept_when_a_later_turn_fails(client, session, owner, monk
     async with jobs.gate.slot("interactive"):
         result = await run_agent(
             app=object(), bearer=lambda: "Bearer tok", query="how do I add a supplier?",
-            company_id=company_id, company_settings={}, user_id=user_id, role="owner",
+            company_id=company_id, company_settings={"currency": "THB"}, user_id=user_id, role="owner",
             memory={"notes": [], "kv": {}}, file_ids=None, history=[], operation_id=operation,
             journal=jobs.Journal(operation),
         )

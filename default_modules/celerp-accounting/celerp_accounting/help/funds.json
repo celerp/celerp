@@ -26,18 +26,21 @@
   ],
   "permission": "manage_accounting",
   "order": 6,
-  "checked": "0222c5932da0510345c546d56125c7b6c281e1b64b5087378a8d60a9b104137b",
+  "checked": "328e6f11b561c4ee3d087349754915b4bc6a4d2fead318b64e0973f427b510b4",
   "steps": [
     {
       "text": "A fund is a pot of money you track on its own. A restricted fund holds gifts a donor limited to a purpose. An unrestricted fund holds money you set aside for a use of your own, and you can spend or move it as you decide. Money on no fund shows as {unres}.",
       "labels": {
         "unres": "label.unrestricted"
       },
-      "image": null,
+      "image": "img/funds-1.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
-        "selector": "main",
-        "actions": []
+        "selector": "main table.data-table",
+        "actions": [],
+        "evidence": [
+          "{unres}"
+        ]
       }
     },
     {
@@ -47,11 +50,16 @@
         "funds": "funds.title",
         "off": "funds.turn_off"
       },
-      "image": null,
+      "image": "img/funds-2.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{settings}",
+          "{funds}",
+          "{off}"
+        ]
       }
     },
     {
@@ -63,11 +71,18 @@
         "archive": "funds.archive",
         "unarchive": "funds.unarchive"
       },
-      "image": null,
+      "image": "img/funds-3.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{add}",
+          "{restricted}",
+          "{purpose}",
+          "{archive}",
+          "{unarchive}"
+        ]
       }
     },
     {
@@ -76,10 +91,10 @@
         "fund": "th.fund",
         "unres": "label.unrestricted"
       },
-      "image": null,
+      "image": "img/funds-4.webp",
       "capture": {
         "route": "/docs?type=invoice",
-        "selector": "main",
+        "selector": "main table.data-table",
         "actions": [
           {
             "click": "main a[href^='/docs/doc:']"
@@ -87,6 +102,10 @@
           {
             "wait": "th:has-text('Fund')"
           }
+        ],
+        "evidence": [
+          "{fund}",
+          "{unres}"
         ]
       }
     },
@@ -94,13 +113,20 @@
       "text": "When you start using funds, use {opening} to give part of each account's balance to a fund as at the {date}. Each line takes the amount from money with no fund.",
       "labels": {
         "opening": "funds.opening_title",
-        "date": "funds.opening_date"
+        "date": "th.date"
       },
-      "image": null,
+      "image": "img/funds-5.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
-        "selector": "main",
-        "actions": []
+        "selector": "main details:has(> summary:has-text('Opening balances by fund'))",
+        "actions": [
+          {
+            "click": "summary:has-text('Opening balances by fund')"
+          }
+        ],
+        "evidence": [
+          "{opening}"
+        ]
       }
     },
     {
@@ -108,11 +134,18 @@
       "labels": {
         "transfer": "funds.transfer_title"
       },
-      "image": null,
+      "image": "img/funds-6.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
-        "selector": "main",
-        "actions": []
+        "selector": "main details:has(> summary:has-text('Transfer between funds'))",
+        "actions": [
+          {
+            "click": "summary:has-text('Transfer between funds')"
+          }
+        ],
+        "evidence": [
+          "{transfer}"
+        ]
       }
     },
     {
@@ -120,11 +153,18 @@
       "labels": {
         "release": "funds.release_title"
       },
-      "image": null,
+      "image": "img/funds-7.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
-        "selector": "main",
-        "actions": []
+        "selector": "main details:has(> summary:has-text('Release from restriction'))",
+        "actions": [
+          {
+            "click": "summary:has-text('Release from restriction')"
+          }
+        ],
+        "evidence": [
+          "{release}"
+        ]
       }
     },
     {
@@ -133,14 +173,18 @@
         "realloc": "funds.reallocate_title",
         "auth": "funds.donor_authorization"
       },
-      "image": null,
+      "image": "img/funds-8.webp",
       "capture": {
         "route": "/settings/accounting?tab=funds",
-        "selector": "main",
+        "selector": "main details:has(> summary:has-text('Reallocate restricted funds'))",
         "actions": [
           {
             "click": "summary:has-text('Reallocate restricted funds')"
           }
+        ],
+        "evidence": [
+          "{realloc}",
+          "{auth}"
         ]
       }
     },
@@ -153,31 +197,50 @@
         "movements": "fund_reports.movements",
         "reverse": "fund_reports.reverse"
       },
-      "image": null,
+      "image": "img/funds-9.webp",
       "capture": {
         "route": "/reports/funds/activity",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{reason}",
+          "{activity}",
+          "{movements}",
+          "{reverse}"
+        ]
       }
     },
     {
       "text": "Records that arrive from a connection, a file import or your accountant wait for a fund choice until you pick one. To skip the wait, set default funds on the connection under Settings, Connectors: its records then take that fund when they arrive.",
       "labels": {},
-      "image": null,
+      "image": "img/funds-10.webp",
       "capture": {
-        "route": "/settings/accounting?tab=funds",
-        "selector": "main",
-        "actions": []
+        "route": "/",
+        "selector": "#fund-waiting-banner",
+        "actions": [],
+        "evidence": [
+          "#fund-waiting-banner"
+        ]
       }
     },
     {
       "text": "If a record from outside already posted on the wrong fund, open it and change its fund, giving a reason. Its entries are voided and posted again on the new fund.",
       "labels": {},
-      "image": null,
+      "image": "img/funds-11.webp",
       "capture": {
-        "route": "/settings/accounting?tab=funds",
+        "route": "/docs/doc:IMP-0002",
         "selector": "main",
-        "actions": []
+        "actions": [
+          {
+            "click": "#doc-fund"
+          },
+          {
+            "wait": "form[hx-post$='/funds/change'] input[name='reason']"
+          }
+        ],
+        "evidence": [
+          "form[hx-post$='/funds/change']"
+        ]
       }
     },
     {
@@ -187,21 +250,34 @@
         "act": "rpt.fund_activity",
         "rec": "rpt.fund_reconciliation"
       },
-      "image": null,
+      "image": "img/funds-12.webp",
       "capture": {
         "route": "/reports/funds/balance-sheet",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{bs}",
+          "{act}",
+          "{rec}"
+        ]
       }
     },
     {
       "text": "You can also ask the assistant to create or archive a fund, move money between funds, release restricted money or read a fund report. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/funds-13.webp",
       "capture": {
-        "route": "/settings/accounting?tab=funds",
-        "selector": "main",
-        "actions": []
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Move 500 from the general fund to the building fund"
+          }
+        ],
+        "evidence": [
+          "#ai-query-input"
+        ]
       }
     }
   ],

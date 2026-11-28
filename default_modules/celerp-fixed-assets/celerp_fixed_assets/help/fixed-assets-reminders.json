@@ -6,19 +6,19 @@
   "routes": ["/fixed-assets/reminders"],
   "permission": "view_fixed_assets",
   "order": 10,
-  "checked": "de96a2b1335adcc37794fa14e81935f186b4306a765788ddfd6af5e2467520fd",
+  "checked": "43af7d95280ee6c88094d470d21d6de1582ecadebea3c746084c4f1fb3e9f970",
   "steps": [
     {
       "text": "{title} lists the reminders set on your assets that fall due soon, with {over} ones first. Click an asset to open it.",
       "labels": {"title": "fixed_assets.due_soon_title", "over": "fixed_assets.overdue"},
-      "image": null,
-      "capture": {"route": "/fixed-assets/reminders", "selector": "main", "actions": []}
+      "image": "img/reminders-1.webp",
+      "capture": {"route": "/fixed-assets/reminders", "selector": "main", "actions": [], "evidence": ["{title}", "{over}"]}
     },
     {
       "text": "You can also ask the assistant which asset reminders are due.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/fixed-assets/reminders", "selector": "main", "actions": []}
+      "image": "img/reminders-2.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Which asset reminders are due?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.register"]

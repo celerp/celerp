@@ -37,15 +37,21 @@ No other keys are allowed, and a page file is at most 64 KB.
 |---|---|---|
 | `text` | string | up to 500 characters, with `{name}` placeholders for labels and no other braces |
 | `labels` | object | maps every placeholder name in `text` to a catalog key, and nothing else |
-| `image` | string or null | `img/<file>.webp` inside the help folder |
+| `image` | string or null | `img/<file>.webp` inside the help folder; required on every step of a first-party page |
 | `capture` | object | how the screenshot is taken and how the step is checked |
 
-`capture` has `route` (the screen to open), `selector` (the element the step is about) and
-`actions`, a list run in order before the check:
+`capture` has `route` (the screen to open), `selector` (the element the step is about and the
+picture shows, its top 800 pixels when taller), `evidence` and `actions`, a list run in order before
+the check. `evidence` is a non-empty list of what shows the step's state: each entry is a selector,
+or `{name}` for the English text of one of the step's labels; a `{name}` inside a selector stands
+for that text, so `.step-label--active:text-is('{map}')` asks for the active step to read the label. After the actions, every entry must
+match a visible element lying wholly inside the pictured part of `selector`; a match elsewhere on
+the page does not count.
 
 ```json
 {"click": "<selector>"}
 {"fill": "<selector>", "value": "<text>"}
+{"upload": "<file input selector>", "value": "<text of a CSV file to choose>"}
 {"press": "Escape"}
 {"wait": "<selector>"}
 ```
@@ -66,7 +72,8 @@ No other keys are allowed, and a page file is at most 64 KB.
       "text": "Open {inv} from the sidebar.",
       "labels": {"inv": "nav.inventory"},
       "image": "img/add-item-1.webp",
-      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+      "capture": {"route": "/inventory", "selector": "main", "actions": [],
+                  "evidence": ["main h1"]}
     }
   ],
   "related": []

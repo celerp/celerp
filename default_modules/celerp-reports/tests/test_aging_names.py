@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""AR and AP aging name each customer and supplier by the contact's name, never its id."""
+"""AR and AP aging and the sales and purchases reports name each customer and supplier by the
+contact's name, never its id."""
 from __future__ import annotations
 
 import uuid
@@ -48,3 +49,19 @@ async def test_aging_names_the_contact_and_never_shows_its_id(client, session, p
     names = {line[f"{party}_id"]: line[f"{party}_name"] for line in r.json()["lines"]}
     assert names == {known: "Harbour Supply Co", gone: "--"}
     assert all(not name.startswith("contact:") for name in names.values())
+
+
+@pytest.mark.parametrize("path,doc_type,party", [("/reports/sales", "invoice", "customer"),
+                                                ("/reports/purchases", "purchase_order", "supplier")])
+async def test_sales_and_purchases_name_the_contact_and_never_show_its_id(client, session, path, doc_type, party):
+    headers, company_id = await _company(client)
+    known, gone = f"contact:{uuid.uuid4()}", f"contact:{uuid.uuid4()}"
+    await _seed(session, company_id, known, "contact", {"name": "Harbour Supply Co", "contact_type": "both"})
+    await _open_doc(session, company_id, "doc:named", doc_type, known)
+    await _open_doc(session, company_id, "doc:unknown", doc_type, gone)
+    await _seed(session, company_id, "doc:unlinked", "doc", {"doc_type": doc_type, "status": "final", "total": 5})
+
+    r = await client.get(path, headers=headers)
+    assert r.status_code == 200, r.text
+    names = {line[f"{party}_id"]: line[f"{party}_name"] for line in r.json()["lines"]}
+    assert names == {known: "Harbour Supply Co", gone: "--", "Unlinked": "Unlinked"}

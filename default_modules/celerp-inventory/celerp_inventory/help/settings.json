@@ -6,19 +6,19 @@
   "routes": ["/settings/inventory"],
   "permission": "manage_module_settings",
   "order": 4,
-  "checked": "7da9687585440c133c50e3fe3129a90039fa165582df0d7ffe8862ea1a805830",
+  "checked": "cf849cbd644bfeb05ad12fdd0ac9ec3e09e5a723562b6c7b34d662ee4b744eb6",
   "steps": [
     {
       "text": "On {title}, the tabs cover {loc}, {cat}, {units}, {reorder}, {bulk} and {history}.",
       "labels": {"title": "settings_inventory.page_header", "loc": "settings.tab_locations", "cat": "settings.tab_categories", "units": "page.units", "reorder": "settings_inventory.tab_reorder", "bulk": "settings.tab_bulk_attach", "history": "settings.tab_import_history"},
-      "image": null,
-      "capture": {"route": "/settings/inventory", "selector": "main", "actions": []}
+      "image": "img/settings-1.webp",
+      "capture": {"route": "/settings/inventory", "selector": "main", "actions": [], "evidence": ["{title}", "{loc}", "{cat}", "{units}", "{reorder}", "{bulk}", "{history}"]}
     },
     {
       "text": "You can also ask the assistant to add or change locations, categories or units. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/settings/inventory", "selector": "main", "actions": []}
+      "image": "img/settings-2.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Add a location called Back Store"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["inventory.add-item", "inventory.stock-views"]

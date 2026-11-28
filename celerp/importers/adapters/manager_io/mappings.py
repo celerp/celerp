@@ -44,7 +44,7 @@ from celerp.importers.schema import (
     CIFSettlement,
     CIFTaxCode,
 )
-from celerp.services.money import checked_exchange_rate, round_money
+from celerp.services.money import implied_rate, round_money
 
 SOURCE_SYSTEM = "manager_io"
 ZERO = Decimal(0)
@@ -249,7 +249,7 @@ def _opening_fx(book: Book) -> object:
         holder = posting_holder(p, holders)
         if holder is None or not p.native:
             return None
-        return book.currency_code(holders[holder]), checked_exchange_rate(p.amount / p.native)
+        return book.currency_code(holders[holder]), implied_rate(p.amount, p.native)
     return fx
 
 

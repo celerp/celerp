@@ -11,32 +11,32 @@
     {
       "text": "Open {rep} from the sidebar; the operational reports sit alongside the financial statements.",
       "labels": {"rep": "nav.reports"},
-      "image": null,
-      "capture": {"route": "/reports", "selector": "main", "actions": []}
+      "image": "img/operational-reports-1.webp",
+      "capture": {"route": "/reports", "selector": "main", "actions": [], "evidence": ["{rep}"]}
     },
     {
       "text": "Click {ar} to see which customer invoices are overdue, grouped into aging buckets.",
       "labels": {"ar": "page.ar_aging"},
-      "image": null,
-      "capture": {"route": "/reports/ar-aging", "selector": "main", "actions": []}
+      "image": "img/operational-reports-2.webp",
+      "capture": {"route": "/reports/ar-aging", "selector": "main", "actions": [], "evidence": ["{ar}"]}
     },
     {
       "text": "Click {ap} for the same view of vendor bills.",
       "labels": {"ap": "page.ap_aging"},
-      "image": null,
-      "capture": {"route": "/reports/ap-aging", "selector": "main", "actions": []}
+      "image": "img/operational-reports-3.webp",
+      "capture": {"route": "/reports/ap-aging", "selector": "main", "actions": [], "evidence": ["{ap}"]}
     },
     {
       "text": "Click {sales} for sales by customer. Purchases and expiring stock have their own reports in the same list.",
       "labels": {"sales": "page.sales_report"},
-      "image": null,
-      "capture": {"route": "/reports/sales", "selector": "main", "actions": []}
+      "image": "img/operational-reports-4.webp",
+      "capture": {"route": "/reports/sales", "selector": "main", "actions": [], "evidence": ["{sales}"]}
     },
     {
       "text": "You can also ask the assistant to read these reports for you, such as which customers are overdue or which items expire this month.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/reports", "selector": "main", "actions": []}
+      "image": "img/operational-reports-5.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Which customers are overdue?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["accounting.financial-reports", "reports.filtering-and-export"]

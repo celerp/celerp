@@ -11,20 +11,20 @@
     {
       "text": "Open {settings} from the AI page's settings link, or from Settings directly. It shows how many questions are included, used and topped up this period.",
       "labels": {"settings": "page.ai_settings"},
-      "image": null,
-      "capture": {"route": "/ai/settings", "selector": "main", "actions": []}
+      "image": "img/usage-settings-1.webp",
+      "capture": {"route": "/ai/settings", "selector": "main", "actions": [{"wait": "#ai-settings-content .ai-settings"}], "evidence": [".ai-settings__stats"]}
     },
     {
       "text": "Owners and admins who can manage users also see a table of how many questions each person asked this month, so usage can be reviewed without reading every conversation.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/ai/settings", "selector": "main", "actions": []}
+      "image": "img/usage-settings-2.webp",
+      "capture": {"route": "/ai/settings", "selector": ".ai-settings__usage", "actions": [{"wait": "#ai-settings-content .ai-settings"}], "evidence": [".ai-settings__usage-table tbody td"]}
     },
     {
       "text": "The assistant works with the permissions of the person asking, so each role's settings decide what it can read and which changes it can propose for them.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/ai/settings", "selector": "main", "actions": []}
+      "image": "img/usage-settings-3.webp",
+      "capture": {"route": "/settings/general?tab=users", "selector": ".role-ref-details", "actions": [{"click": ".role-ref-summary"}], "evidence": ["#role-row-use_ai_assistant"]}
     }
   ],
   "related": ["ai.ask-questions"]

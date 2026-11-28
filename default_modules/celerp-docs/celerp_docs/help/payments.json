@@ -6,19 +6,19 @@
   "routes": ["/payments", "/docs/{entity_id}"],
   "permission": "view_payments",
   "order": 5,
-  "checked": "6947994af30f13be9bb72130000c9b843725bfb58efff1bfc2523806fa54b13b",
+  "checked": "6609a2351c45f304a35d616b86bec1ac706d421b16d03390f314cd25d28e9e6c",
   "steps": [
     {
       "text": "Open {pay} from the sidebar to see every payment across your documents.",
       "labels": {"pay": "nav.payments"},
-      "image": null,
-      "capture": {"route": "/payments", "selector": "main", "actions": []}
+      "image": "img/payments-1.webp",
+      "capture": {"route": "/payments", "selector": "main", "actions": [], "evidence": ["#payments-table"]}
     },
     {
       "text": "You can also ask the assistant to record a payment against a document, refund or void one, or match an online payment that found no invoice. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/payments", "selector": "main", "actions": []}
+      "image": "img/payments-2.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Record a payment against my latest invoice"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["docs.sales-documents", "docs.purchasing-documents"]

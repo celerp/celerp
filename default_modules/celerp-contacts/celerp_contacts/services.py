@@ -45,14 +45,12 @@ class CRMImportRecord(BaseModel):
 
 def require_contact_fields(values: dict, current: dict | None = None) -> None:
     """Refuse (422) a contact write breaking the rules every contact keeps, whichever door
-    it comes through: a name that is not blank, a supported currency, a phone with enough
+    it comes through: a name that is not blank, a recognised currency, a phone with enough
     digits and one email address. ``values`` are the fields the write sets; ``current`` is
-    the contact as it stands, None for a new one. A currency the contact already holds is
-    kept even where ISO 4217 has since withdrawn it."""
+    the contact as it stands, None for a new one."""
     if (current is None or "name" in values) and not str(values.get("name") or "").strip():
         raise HTTPException(status_code=422, detail=catalog_refusal("contacts.err_name_required"))
-    if values.get("currency") != (current or {}).get("currency"):
-        require_currency_code(values.get("currency"))
+    require_currency_code(values.get("currency"))
     require_phone(values.get("phone"))
     require_email(values.get("email"))
 

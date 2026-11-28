@@ -25,13 +25,13 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
-from celerp.accounting_roles import catalog_refusal, refusal
+from celerp.accounting_roles import catalog_refusal, refusal, refused
 from celerp.services.business_time import business_today, company_today
 
 from celerp_fixed_assets import recon, remeasure, runs, setup, taxbooks
 from celerp_fixed_assets.calc import rules
 from celerp.services.periods import month_index, period_label
-from celerp_fixed_assets.projections import money
+from celerp.services.money import money_text
 from celerp_fixed_assets.operations import conflict
 from celerp_fixed_assets.store import _emit, _entities, _state
 from ui.i18n import t
@@ -64,7 +64,7 @@ async def _runs(session, company_id, start: date, end: date) -> list[dict]:
     for k in range(first, through + 1):
         amount = sum((c.owed.get(k, Decimal(0)) for c in charges), Decimal(0))
         if amount:
-            out.append({"key": f"run:{period_label(k)}", "kind": "run", "date": None, "amount": money(amount, books.currency),
+            out.append({"key": f"run:{period_label(k)}", "kind": "run", "date": None, "amount": money_text(amount, books.currency),
                         "label": ("fixed_assets.ye_run", {"month": runs._long(k)}), "href": "/fixed-assets/runs"})
     return out
 
@@ -73,7 +73,7 @@ async def _exceptions(session, company_id) -> list[dict]:
     currency = await setup.currency(session, company_id)
     return [{"key": f"exception:{a['asset_id']}", "kind": "exception", "date": f"{a['exception']['first_month']}-01",
              "amount": None if a["exception"].get("amount") is None
-             else money(Decimal(a["exception"]["amount"]), currency),
+             else money_text(Decimal(a["exception"]["amount"]), currency),
              "label": ("fixed_assets.ye_exception", {"asset": a["number"], "month": a["exception"]["first_month"]}),
              "href": f"/fixed-assets/assets/{a['asset_id']}"} for a in await runs.attention(session, company_id)]
 
@@ -208,7 +208,7 @@ async def mark(session, company_id, user_id, year, body: dict) -> dict:
         raise HTTPException(status_code=404, detail=refusal(
             "fixed_assets.err_no_year_end_item", "There is no such year-end item. Select Try again."))
     if state == "accepted" and found["kind"] == "tax":
-        raise setup.refused(409, "fixed_assets.err_label_tax_year_keeps_its_figures", label=found['label'], remedy=found['remedy'])
+        raise refused(409, "fixed_assets.err_label_tax_year_keeps_its_figures", label=found['label'], remedy=found['remedy'])
     saved = await _state(session, company_id, yearend_id(year)) or {}
     marks = dict(saved.get("marks") or {})
     if state == "open":
@@ -247,15 +247,15 @@ async def close(session, company_id, user_id, regime_key: str, year) -> dict:
     """Close tax ``year`` under the regime, keeping its figures as they stand."""
     settings, regime, year, saved = await _year(session, company_id, user_id, regime_key, year)
     if saved.get("status") == "closed":
-        raise setup.refused(409, "fixed_assets.err_tax_year_year_already_closed", year=year)
+        raise refused(409, "fixed_assets.err_tax_year_year_already_closed", year=year)
     start, end = regime.tax_year(taxbooks.tax_year_end(settings), year)
     if end >= business_today(settings.get("timezone")):
-        raise setup.refused(409, "fixed_assets.err_tax_year_year_ends_isoformat_so", year=year, isoformat=end.isoformat())
+        raise refused(409, "fixed_assets.err_tax_year_year_ends_isoformat_so", year=year, isoformat=end.isoformat())
     years = await taxbooks.years(session, company_id, settings, regime, year)
     earlier = [y for y, f in sorted(years.items()) if y < year and f.get("status") != "closed"
                and (f.get("rows") or f.get("pools"))]
     if earlier:
-        raise setup.refused(409, "fixed_assets.err_close_tax_year_value_first", value=earlier[0])
+        raise refused(409, "fixed_assets.err_close_tax_year_value_first", value=earlier[0])
     figures = years.get(year) or {"rows": [], "pools": []}
     unworked = _unworked(figures)
     # Another regime's missing figures wait on that regime's own close.
@@ -282,11 +282,11 @@ async def reopen(session, company_id, user_id, regime_key: str, year, body: dict
     if not reason:
         raise setup.refuse("fixed_assets.err_reason_required_reopen_tax_year")
     if saved.get("status") != "closed":
-        raise setup.refused(409, "fixed_assets.err_tax_year_year_not_closed", year=year)
+        raise refused(409, "fixed_assets.err_tax_year_year_not_closed", year=year)
     later = sorted(int(s["year"]) for _, s in await _entities(session, company_id, "fa_taxyear")
                    if s.get("regime") == regime_key and s.get("status") == "closed" and int(s["year"]) > year)
     if later:
-        raise setup.refused(409, "fixed_assets.err_reopen_tax_year_value_first", value=later[-1])
+        raise refused(409, "fixed_assets.err_reopen_tax_year_value_first", value=later[-1])
     data = {**saved, "status": "open", "rows": [], "pools": [],
             "history": _history(saved, settings, "reopened", user_id, reason)}
     await _emit(session, company_id, user_id, taxbooks.taxyear_id(regime_key, year), "fa_taxyear",

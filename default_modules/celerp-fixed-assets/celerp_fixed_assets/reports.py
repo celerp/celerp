@@ -17,11 +17,9 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
-from celerp.services.money import books_currency
+from celerp.services.money import books_currency, money_text, to_decimal
 from celerp_fixed_assets import projections, recon, runs, setup, taxbooks
 from celerp.services.periods import month_index, period_label
-from celerp_fixed_assets.projections import money
-from celerp_fixed_assets.operations import _dec
 from celerp_fixed_assets.sales import _credited, doc_number
 from celerp_fixed_assets.store import _entities, _state, movements_by_asset
 from ui.i18n import t
@@ -70,9 +68,9 @@ def _charge(mv: dict) -> Decimal:
     """The depreciation a movement charged: what it says it charged per month, or all of
     its accumulated depreciation for a run or a depreciation entry."""
     if mv.get("periods") is not None:
-        return sum((_dec(a) for a in mv["periods"].values()), _ZERO)
+        return sum((to_decimal(a) for a in mv["periods"].values()), _ZERO)
     if mv.get("operation") in ("depreciation", "run"):
-        return _dec((mv.get("amounts") or {}).get("accumulated_depreciation"))
+        return to_decimal((mv.get("amounts") or {}).get("accumulated_depreciation"))
     return _ZERO
 
 
@@ -80,8 +78,8 @@ def _roll(movements: list[dict], start: str, end: str) -> dict[str, Decimal]:
     out = {k: _ZERO for k in FIGURES}
     for mv in projections.live(movements):
         amounts = mv.get("amounts") or {}
-        cost, ad = _dec(amounts.get("cost")), _dec(amounts.get("accumulated_depreciation"))
-        ai = _dec(amounts.get("accumulated_impairment"))
+        cost, ad = to_decimal(amounts.get("cost")), to_decimal(amounts.get("accumulated_depreciation"))
+        ai = to_decimal(amounts.get("accumulated_impairment"))
         op, day = mv.get("operation"), mv["posting_date"]
         if op in runs.OPENING_OPERATIONS or day < start:
             out["cost_opening"] += cost
@@ -134,7 +132,7 @@ async def _owed(session, company_id, months: range) -> tuple[dict[str, dict[int,
 
 
 def _shown(figures: dict[str, Decimal], currency: str) -> dict[str, str]:
-    return {k: money(v, currency) for k, v in figures.items()}
+    return {k: money_text(v, currency) for k, v in figures.items()}
 
 
 async def schedule(session, company_id, date_from, date_to) -> dict:
@@ -205,11 +203,11 @@ async def depreciation(session, company_id, date_from, date_to) -> dict:
                 out[k]["skipped"].append({**named, "reason": skips[period_label(k)]})
             charged, taken_back, due = posted.get((k, False), _ZERO), posted.get((k, True), _ZERO), ahead.get(k, _ZERO)
             if charged or due:
-                out[k]["assets"].append({**named, "taken_back": False, "posted": money(charged, currency),
-                                         "forecast": money(due, currency)})
+                out[k]["assets"].append({**named, "taken_back": False, "posted": money_text(charged, currency),
+                                         "forecast": money_text(due, currency)})
             if taken_back:
-                out[k]["assets"].append({**named, "taken_back": True, "posted": money(taken_back, currency),
-                                         "forecast": money(_ZERO, currency)})
+                out[k]["assets"].append({**named, "taken_back": True, "posted": money_text(taken_back, currency),
+                                         "forecast": money_text(_ZERO, currency)})
             out[k]["posted"] += charged + taken_back
             out[k]["forecast"] += due
         if caught_up.get(asset_id):
@@ -217,20 +215,20 @@ async def depreciation(session, company_id, date_from, date_to) -> dict:
     rows = [out[k] for k in reversed(months)]
     behind = sum((a["amount"] for a in owing), _ZERO)
     return {"date_from": start.isoformat(), "date_to": end.isoformat(),
-            "months": [{**m, "posted": money(m["posted"], currency), "forecast": money(m["forecast"], currency)}
+            "months": [{**m, "posted": money_text(m["posted"], currency), "forecast": money_text(m["forecast"], currency)}
                        for m in rows],
-            "caught_up": [{**a, "amount": money(a["amount"], currency)} for a in owing],
-            "totals": {"posted": money(sum((m["posted"] for m in rows), _ZERO), currency),
-                       "caught_up_next_run": money(behind, currency),
-                       "forecast": money(sum((m["forecast"] for m in rows), behind), currency)}}
+            "caught_up": [{**a, "amount": money_text(a["amount"], currency)} for a in owing],
+            "totals": {"posted": money_text(sum((m["posted"] for m in rows), _ZERO), currency),
+                       "caught_up_next_run": money_text(behind, currency),
+                       "forecast": money_text(sum((m["forecast"] for m in rows), behind), currency)}}
 
 
 def _carrying(mv: dict) -> Decimal:
     """The carrying amount that left the books: the cost removed less the depreciation and
     impairment removed with it (the movement also carries the charge to the disposal date)."""
     amounts = mv.get("amounts") or {}
-    removed_ad = _charge(mv) - _dec(amounts.get("accumulated_depreciation"))
-    return -_dec(amounts.get("cost")) - removed_ad + _dec(amounts.get("accumulated_impairment"))
+    removed_ad = _charge(mv) - to_decimal(amounts.get("accumulated_depreciation"))
+    return -to_decimal(amounts.get("cost")) - removed_ad + to_decimal(amounts.get("accumulated_impairment"))
 
 
 async def disposals(session, company_id, date_from, date_to) -> dict:
@@ -246,14 +244,14 @@ async def disposals(session, company_id, date_from, date_to) -> dict:
             if mv.get("operation") != "disposal" or not start.isoformat() <= mv["effective_date"] <= end.isoformat():
                 continue
             carrying = _carrying(mv)
-            gain = _dec(mv.get("gain_or_loss"))
+            gain = to_decimal(mv.get("gain_or_loss"))
             sale = asset.get("sale") if mv.get("invoice_id") else None
             items.append({
                 "date": mv["effective_date"], "asset_id": asset_id, "number": asset.get("number"),
                 "name": asset.get("name"), "share": mv.get("share") or "1", "reason": mv.get("reason"),
-                "proceeds": money(carrying + gain, currency),
-                "credited": money(_credited(sale) if sale else _ZERO, currency),
-                "carrying_amount": money(carrying, currency), "gain_or_loss": money(gain, currency),
+                "proceeds": money_text(carrying + gain, currency),
+                "credited": money_text(_credited(sale) if sale else _ZERO, currency),
+                "carrying_amount": money_text(carrying, currency), "gain_or_loss": money_text(gain, currency),
                 "invoice_id": mv.get("invoice_id"),
                 "invoice_number": doc_number(await _state(session, company_id, mv["invoice_id"]), mv["invoice_id"])
                 if mv.get("invoice_id") else None,
@@ -262,7 +260,7 @@ async def disposals(session, company_id, date_from, date_to) -> dict:
                 "journal_id": mv.get("journal_id")})
     items.sort(key=lambda r: (r["date"], r["number"] or ""), reverse=True)
     return {"date_from": start.isoformat(), "date_to": end.isoformat(), "items": items,
-            "totals": {k: money(sum((_dec(r[k]) for r in items), _ZERO), currency)
+            "totals": {k: money_text(sum((to_decimal(r[k]) for r in items), _ZERO), currency)
                        for k in ("proceeds", "credited", "carrying_amount", "gain_or_loss")}}
 
 
@@ -291,16 +289,16 @@ async def book_tax(session, company_id, regime_key: str, year) -> dict:
     for line in _tax_lines(book):
         assets = line.get("assets") or [line["asset_id"]]
         book_value = sum((carrying.get(a, _ZERO) for a in assets), _ZERO)
-        tax_value = _dec(line["closing"])
+        tax_value = to_decimal(line["closing"])
         row = {"key": line.get("number") or line["key"], "name": line.get("name"),
-               "category_label": line.get("category_label"), "book_carrying": money(book_value, currency),
-               "tax_written_down_value": money(tax_value, currency),
-               "difference": money(book_value - tax_value, currency)}
+               "category_label": line.get("category_label"), "book_carrying": money_text(book_value, currency),
+               "tax_written_down_value": money_text(tax_value, currency),
+               "difference": money_text(book_value - tax_value, currency)}
         if regime.deferred_tax is not None:
-            row["deferred_tax"] = money(regime.deferred_tax(DeferredTaxInputs(
+            row["deferred_tax"] = money_text(regime.deferred_tax(DeferredTaxInputs(
                 year=book["year"], book_carrying=book_value, tax_written_down_value=tax_value)).amount, currency)
         rows.append(row)
-    totals = {k: money(sum((_dec(r[k]) for r in rows), _ZERO), currency)
+    totals = {k: money_text(sum((to_decimal(r[k]) for r in rows), _ZERO), currency)
               for k in ("book_carrying", "tax_written_down_value", "difference", "deferred_tax")
               if book["deferred_tax"] or k != "deferred_tax"}
     return {**{k: book[k] for k in ("regime", "label", "basis", "year", "start", "end", "status", "read_only",

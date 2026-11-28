@@ -1166,7 +1166,6 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
                    history_url: str | None = None,
                    currency: str | None = None,
                    category_names: dict | None = None,
-                   resizable: bool = False,
                    deleted: dict[str, dict] | None = None,
                    docs_on: bool = False) -> FT:
     """Unified DRY activity table used by all detail pages and dashboard.
@@ -1241,20 +1240,12 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
         )),
         Tbody(*display_rows),
         cls="data-table activity-table",
-        **({"style": "table-layout:fixed;width:100%"} if resizable else {}),
     )
-    # Drag-to-resize columns, reusing the shared resizer + width persistence (opt-in so the
-    # compact dashboard/contacts/doc activity widgets keep their auto layout).
-    resizer = ""
-    if resizable:
-        from ui.components.table import col_resize_script
-        resizer = col_resize_script("table.activity-table", "celerp_activity_wpct_v1")
 
     return Div(
         Div(*header_parts, cls="section-header") if icon else H3(title, cls="section-title"),
         Div(table, cls="table-scroll-wrap"),
         footer,
-        resizer,
         cls=section_cls,
     )
 

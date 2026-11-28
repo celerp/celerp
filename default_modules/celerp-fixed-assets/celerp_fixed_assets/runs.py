@@ -27,10 +27,10 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import catalog_refusal, refused
 from celerp.models.projections import Projection
 from celerp.services.business_time import business_today, company_today
-from celerp.services.money import books_currency, round_money
+from celerp.services.money import books_currency, money_text, round_money, to_decimal
 from celerp_fixed_assets import notices, operations, setup, sources
 from celerp_fixed_assets.calc import rules
 from celerp_fixed_assets.calc.engine import (
@@ -45,8 +45,8 @@ from celerp_fixed_assets.calc.engine import (
     schedule,
 )
 from celerp.services.periods import month_index, parse_period, period_label
-from celerp_fixed_assets.operations import MODULE, _dec, _move
-from celerp_fixed_assets.projections import REMEASUREMENTS, live, money
+from celerp_fixed_assets.operations import MODULE, _move
+from celerp_fixed_assets.projections import REMEASUREMENTS, live
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state, movements_by_asset
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -162,7 +162,7 @@ def _first(movements: list[dict]) -> int | None:
     for m in movements:
         if m.get("operation") not in _NOT_ACQUIRED:
             day = m["effective_date"]
-            by_day[day] = by_day.get(day, Decimal(0)) + _dec((m.get("amounts") or {}).get("cost"))
+            by_day[day] = by_day.get(day, Decimal(0)) + to_decimal((m.get("amounts") or {}).get("cost"))
     starts += [month_index(date.fromisoformat(day)) for day, cost in by_day.items() if cost]
     return min(starts, default=None)
 
@@ -190,7 +190,7 @@ def engine_movements(asset: dict, movements: list[dict], currency: str) -> list:
     opening = [m for m in movements if m.get("operation") in OPENING_OPERATIONS]
     first = next((m for m in opening if m.get("operation") == "opening"), None)
     if first is not None:
-        totals = {k: sum((_dec((m.get("amounts") or {}).get(k)) for m in opening), Decimal(0))
+        totals = {k: sum((to_decimal((m.get("amounts") or {}).get(k)) for m in opening), Decimal(0))
                   for k in ("cost", "accumulated_depreciation", "accumulated_impairment")}
         # The life left at the cutover: the life less the months used through it.
         cutover = date.fromisoformat(first["posting_date"])
@@ -199,35 +199,35 @@ def engine_movements(asset: dict, movements: list[dict], currency: str) -> list:
                            + totals["accumulated_impairment"], max(int(policy.get("life_months") or 0) - used, 0)))
     by_day: dict[str, Decimal] = {}
     for m in movements:
-        cost = _dec((m.get("amounts") or {}).get("cost"))
+        cost = to_decimal((m.get("amounts") or {}).get("cost"))
         if m.get("operation") not in _NOT_ACQUIRED and cost:
             by_day[m["effective_date"]] = by_day.get(m["effective_date"], Decimal(0)) + cost
     out += [Acquire(date.fromisoformat(day), cost) for day, cost in sorted(by_day.items()) if cost]
     for m in movements:
         on = date.fromisoformat(m["effective_date"])
         if m.get("operation") == "improvement":
-            out.append(Improve(on, _dec(m["amounts"].get("cost")), m.get("life_months")))
+            out.append(Improve(on, to_decimal(m["amounts"].get("cost")), m.get("life_months")))
         elif m.get("operation") == "revaluation":
-            out.append(Revalue(on, _dec(m["carrying_amount"])))
+            out.append(Revalue(on, to_decimal(m["carrying_amount"])))
         elif m.get("operation") in REMEASUREMENTS:
-            out.append(Impair(on, _dec(m["carrying_amount"])))
+            out.append(Impair(on, to_decimal(m["carrying_amount"])))
     disposals = sorted((m for m in movements if m.get("operation") == "disposal"), key=lambda m: m["effective_date"])
-    out += [Dispose(date.fromisoformat(m["effective_date"]), _dec(m.get("share") or 1)) for m in disposals]
+    out += [Dispose(date.fromisoformat(m["effective_date"]), to_decimal(m.get("share") or 1)) for m in disposals]
     start = _first(movements)
     readings = asset.get("readings") or {}
     for m in estimates(movements):
         on, new = date.fromisoformat(m["effective_date"]), m["policy"]
         method = rules.method(new["method"])
         if method.uses_readings:
-            used = sum((_dec(u) for p, u in readings.items() if parse_period(p) < month_index(on)), Decimal(0))
-            left = _dec(new["params"].get("total_units")) - used
+            used = sum((to_decimal(u) for p, u in readings.items() if parse_period(p) < month_index(on)), Decimal(0))
+            left = to_decimal(new["params"].get("total_units")) - used
         else:
             left = Decimal(int(new.get("life_months") or 0) - max(month_index(on) - (start or month_index(on)), 0))
         cost = sum(by_day.get(d, Decimal(0)) for d in by_day if d <= m["effective_date"])
-        cost += sum(_dec(d["amounts"].get("cost")) for d in disposals if d["effective_date"] <= m["effective_date"])
+        cost += sum(to_decimal(d["amounts"].get("cost")) for d in disposals if d["effective_date"] <= m["effective_date"])
         if first is not None:
             cost += totals["cost"]
-        out.append(EstimateChange(on, max(left, Decimal(0)), round_money(cost * _dec(new["residual_percent"]) / 100,
+        out.append(EstimateChange(on, max(left, Decimal(0)), round_money(cost * to_decimal(new["residual_percent"]) / 100,
                                                                           currency),
                                   method=new["method"], params=new.get("params") or {},
                                   convention=new.get("convention")))
@@ -255,14 +255,14 @@ def full_schedule(asset: dict, movements: list[dict], settings: dict, through: i
     currency = books_currency(settings)
     policy = base_policy(asset, movements)
     # The residual is a share of what the asset was acquired or brought in at.
-    cost = sum((_dec((m.get("amounts") or {}).get("cost")) for m in live(movements)
+    cost = sum((to_decimal((m.get("amounts") or {}).get("cost")) for m in live(movements)
                 if m.get("operation") not in (*REMEASUREMENTS, "disposal", "improvement", "construction_out")),
                Decimal(0))
     engine_policy = Policy(policy["method"], int(policy.get("life_months") or 0),
-                           round_money(cost * _dec(policy.get("residual_percent")) / 100, currency),
+                           round_money(cost * to_decimal(policy.get("residual_percent")) / 100, currency),
                            policy.get("convention") or "full_month",
                            int(str(settings.get("fiscal_year_start") or "01-01")[:2]), policy.get("params") or {})
-    readings = {p: _dec(u) for p, u in (asset.get("readings") or {}).items()}
+    readings = {p: to_decimal(u) for p, u in (asset.get("readings") or {}).items()}
     return schedule(engine_movements(asset, movements, currency), engine_policy, through=period_label(through),
                     currency=currency, readings=readings)
 
@@ -276,9 +276,9 @@ def charged_by_month(movements: list[dict]) -> dict[int, Decimal]:
             continue
         if m.get("periods") is not None:
             for p, amount in m["periods"].items():
-                out[parse_period(p)] = out.get(parse_period(p), Decimal(0)) + _dec(amount)
+                out[parse_period(p)] = out.get(parse_period(p), Decimal(0)) + to_decimal(amount)
             continue
-        amount = _dec((m.get("amounts") or {}).get("accumulated_depreciation"))
+        amount = to_decimal((m.get("amounts") or {}).get("accumulated_depreciation"))
         if amount:
             k = month_index(date.fromisoformat(m["effective_date"]))
             out[k] = out.get(k, Decimal(0)) + amount
@@ -347,7 +347,7 @@ class Charge:
             for c in m.get("contributions") or []:
                 if not str(c.get("journal_id")).startswith(_JOURNAL):
                     key = (c["journal_id"], c.get("line_index"))
-                    net[key] = net.get(key, Decimal(0)) + _dec(c.get("amount"))
+                    net[key] = net.get(key, Decimal(0)) + to_decimal(c.get("amount"))
         for je in dict.fromkeys(je for (je, _), amount in net.items() if amount):
             state = await _journal(session, company_id, je)
             if state is not None and state.get("status") == "void":
@@ -397,7 +397,7 @@ async def next_charge(session, company_id, asset_id: str, asset: dict) -> dict |
         return {"month": period_label(month), "held": True, "amount": None, "catches_up": []}
     postable = charge.postable()
     return {"month": period_label(month), "held": False,
-            "amount": money(sum((a for _, a in postable), Decimal(0)), books.currency),
+            "amount": money_text(sum((a for _, a in postable), Decimal(0)), books.currency),
             "catches_up": [period_label(k) for k, _ in postable if k < month]}
 
 
@@ -448,16 +448,16 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
     currency = books.currency
     label = period_label(month)
     if books.last is not None and month <= books.last:
-        raise setup.refused(409, "fixed_assets.err_run_posted", month=label,
+        raise refused(409, "fixed_assets.err_run_posted", month=label,
                             href=f"/fixed-assets/runs/{label}", action="fixed_assets.action.open_run")
     if _end(month) >= today:
         last = period_label(month_index(today) - 1)
-        raise setup.refused(422, "fixed_assets.err_month_not_ended", month=label, last=last,
+        raise refused(422, "fixed_assets.err_month_not_ended", month=label, last=last,
                             fill={"field": "month", "value": last, "action": "fixed_assets.action.review_through"})
     if month < books.first:
         raise setup.refuse("fixed_assets.err_run_before_first_period", month=label)
     if books.locked(month):
-        raise setup.refused(409, "fixed_assets.err_run_month_locked", month=label)
+        raise refused(409, "fixed_assets.err_run_month_locked", month=label)
     start = books.next
     charges = await _charges(session, company_id, books, month, start)
     open_months = [k for k in range(start, month + 1) if not books.locked(k)]
@@ -477,7 +477,7 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
         for into, months in by_month.items():
             amount = c.held_amount(months)
             held[into][c.asset_id] = {"asset_id": c.asset_id, "number": c.asset["number"], "name": c.asset.get("name"),
-                                   "amount": None if amount is None else money(amount, currency), "action": c.action,
+                                   "amount": None if amount is None else money_text(amount, currency), "action": c.action,
                                    "reason": c.reason if c.action == "method_unavailable" else None}
         exceptions[c.asset_id] = (c.asset.get("exception"), c.exception(month, user_id))
     months, total = [], Decimal(0)
@@ -485,11 +485,11 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
         lines = _lines(items[k])
         month_total = sum((it["amount"] for it in items[k]), Decimal(0))
         total += month_total
-        months.append({"month": period_label(k), "total": money(month_total, currency),
+        months.append({"month": period_label(k), "total": money_text(month_total, currency),
                        "lines": operations._journal_view(lines, currency)["lines"], "assets": _by_asset(items[k], currency),
                        "exceptions": list(held[k].values())})
     attention = sum(1 for _, new in exceptions.values() if new)
-    shown = {"empty": not charges, "months": months, "total": money(total, currency),
+    shown = {"empty": not charges, "months": months, "total": money_text(total, currency),
              "ready": len(charges) - attention, "attention": attention}
     context = {"books": books, "month": month, "months": open_months, "items": items, "held": held,
                "exceptions": exceptions, "basis": await _ledger_basis(session, company_id, books)}
@@ -507,12 +507,12 @@ def _by_asset(items: list[dict], currency: str) -> list[dict]:
                                                "months": [], "amount": Decimal(0)})
         row["months"].append(period_label(it["month"]))
         row["amount"] += it["amount"]
-    return [{**row, "months": sorted(row["months"]), "amount": money(row["amount"], currency)} for row in rows.values()]
+    return [{**row, "months": sorted(row["months"]), "amount": money_text(row["amount"], currency)} for row in rows.values()]
 
 
 def _record(k: int, status: str, items: list[dict], held: dict, currency: str, **extra) -> dict:
     total = sum((it["amount"] for it in items), Decimal(0))
-    return {"month": period_label(k), "status": status, "total": money(total, currency),
+    return {"month": period_label(k), "status": status, "total": money_text(total, currency),
             "assets": _by_asset(items, currency), "exceptions": list(held.values()), **extra}
 
 
@@ -617,9 +617,9 @@ async def reverse(session, company_id, user_id, label: str, body: dict) -> dict:
         books = await _books(session, company_id)
         record = books.records.get(month)
         if books.last != month or record is None or record.get("status") not in _POSTED:
-            raise setup.refused(409, "fixed_assets.err_only_latest_posted_run_can_reversed", label=label)
+            raise refused(409, "fixed_assets.err_only_latest_posted_run_can_reversed", label=label)
         if books.locked(month):
-            raise setup.refused(409, "fixed_assets.err_label_locked_use_correct_change_its", label=label)
+            raise refused(409, "fixed_assets.err_label_locked_use_correct_change_its", label=label)
         last: dict[str, int] = {}
         for movement_id in record.get("movements") or []:
             mv = await _state(session, company_id, movement_id)
@@ -643,8 +643,8 @@ async def reverse(session, company_id, user_id, label: str, body: dict) -> dict:
             mv = await _state(session, company_id, movement_id)
             await _move(session, company_id, user_id, mv["asset_id"], kind="reversal", operation="reverse_run",
                         effective=mv["effective_date"], posting=mv["posting_date"],
-                        amounts={k: -_dec(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
-                        contributions=[{**c, "amount": str(-_dec(c.get("amount")))}
+                        amounts={k: -to_decimal(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
+                        contributions=[{**c, "amount": str(-to_decimal(c.get("amount")))}
                                        for c in mv.get("contributions") or []], reverses=movement_id)
         await _emit(session, company_id, user_id, f"fa:run:{label}", "fa_run", "fa.run.reversed", {"op_key": op_key})
         return {"month": label, "status": "reversed"}, operations._effects()
@@ -666,14 +666,14 @@ async def _open_asset(session, company_id, user_id, asset_id: str, keys: tuple[s
     if row is None or row.entity_type != "fa_asset":
         raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     if row.state.get("status") != "active":
-        raise setup.refused(409, "fixed_assets.err_only_asset_use_takes_readings_skipped")
+        raise refused(409, "fixed_assets.err_only_asset_use_takes_readings_skipped")
     return row.state, await _books(session, company_id)
 
 
 def _still_open(books: Books, asset: dict, month: int) -> None:
     held = (asset.get("exception") or {}).get("months") or []
     if books.last is not None and month <= books.last and period_label(month) not in held:
-        raise setup.refused(409, "fixed_assets.err_depreciation_period_label_already_posted_use", period_label=period_label(month))
+        raise refused(409, "fixed_assets.err_depreciation_period_label_already_posted_use", period_label=period_label(month))
 
 
 async def record_reading(session, company_id, user_id, asset_id: str, body: dict) -> dict:
@@ -745,7 +745,7 @@ async def _restore(session, company_id, books: Books) -> bool:
         assets = dict(await _entities(session, company_id, "fa_asset"))
         items = [{"asset_id": s["asset_id"], "number": assets[s["asset_id"]]["number"],
                   "name": assets[s["asset_id"]].get("name"), "month": month_index(date.fromisoformat(s["effective_date"])),
-                  "amount": _dec(s["amounts"]["accumulated_depreciation"])} for _, s in moves]
+                  "amount": to_decimal(s["amounts"]["accumulated_depreciation"])} for _, s in moves]
         await _emit(session, company_id, None, f"fa:run:{period_label(k)}", "fa_run", "fa.run.posted", _record(
             k, "posted", items, {}, books.currency, cycle=cycle, journal_ids=[je["id"]],
             movements=[eid for eid, _ in moves]))

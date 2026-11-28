@@ -373,3 +373,17 @@ async def test_complete_gateway_error(relay):
         await complete([{"role": "user", "content": "x"}])
     assert (ei.value.code, ei.value.status) == ("gateway_error", 500)
 
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize("sent, held", [("length", "length"), ("stop", "stop"), (None, None), (7, None)])
+async def test_complete_carries_the_reason_the_model_stopped(relay, sent, held):
+    """The result carries the service's ``finish_reason``; a service that names none, or
+    one that is not text, leaves it unknown."""
+    reply = synthetic_response("text_completion")
+    if sent is not None:
+        reply["finish_reason"] = sent
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(200, json=reply))
+    result = await complete([{"role": "user", "content": "hi"}])
+    assert result.finish_reason == held

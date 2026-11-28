@@ -118,7 +118,7 @@ def setup_routes(app):
         return await base_shell(
             page_header(t("bank.list_title"), add),
             *BG.page_flashes(request.query_params),
-            P(t("bank.list_intro") if banks else t("acct.no_bank_accounts_configured"), cls="text-muted"),
+            P(t("bank.list_intro"), cls="text-muted") if banks else P(t("acct.no_bank_accounts_configured"), cls="empty-state"),
             Div(*rows, cls="bank-list settings-card") if rows else None,
             title=page_title("bank.list_title"), nav_active="accounting", request=request)
 

@@ -288,7 +288,7 @@ def test_a_sample_edited_on_the_demo_list_survives_its_delete(page: Page, fresh_
     expect(page.locator("#bulk-count")).to_contain_text("3")
     page.select_option("#bulk-action-select", "delete")
     en = json.loads((_LOCALES / "en.json").read_text())
-    expect(page.locator("#bulk-action-result")).to_contain_text(
+    expect(page.locator(".toast-container .toast")).to_contain_text(
         en["settings.business_type_changes.demo_kept"].format(count=1))
     assert sorted(i["name"] for i in _items(fresh_company)) == sorted([*_KEPT, "Kept: edited on the demo list"])
 

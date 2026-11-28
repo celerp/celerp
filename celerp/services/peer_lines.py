@@ -38,7 +38,7 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import catalog_refusal, refused
 
 FUND_KEYS = ("fund_choice", "fund_id")  # what a local choice sets on a line
 LINE_KEYS = ("origin", *FUND_KEYS)
@@ -94,12 +94,12 @@ def checked(funds: Mapping, value, key: str, /, **params):
     if value == UNRESTRICTED:
         return value
     if value is None or value == "":
-        raise _refused(422, key, **params)
+        raise refused(422, key, **params)
     fund = funds.get(value)
     if fund is None:
-        raise _refused(422, "posting.fund.unknown", fund=str(value))
+        raise refused(422, "posting.fund.unknown", fund=str(value))
     if fund.get("archived"):
-        raise _refused(422, "posting.fund.archived", fund=fund.get("name", value))
+        raise refused(422, "posting.fund.archived", fund=fund.get("name", value))
     return value
 
 
@@ -120,10 +120,10 @@ async def require_fund_choices(session, company_id, record: Mapping, *, document
                 if isinstance(li, dict)}
     for line_id in lines:
         if line_id not in numbered:
-            raise _refused(422, "posting.fund.choice_line_unknown")
+            raise refused(422, "posting.fund.choice_line_unknown")
         n, line = numbered[line_id]
         if not line.get("origin"):
-            raise _refused(422, "posting.fund.choice_local_line", line=n)
+            raise refused(422, "posting.fund.choice_local_line", line=n)
     granted = {}
     for line_id, (n, line) in numbered.items():
         if line_id in lines:
@@ -242,14 +242,14 @@ async def check_import_fund_choices(session, company_id, choices: ImportFundChoi
     if choices.all is None and not choices.records and not choices.lines:
         return choices
     if not funds_enabled(await hold_fund_ledger(session, company_id)):
-        raise _refused(422, "posting.fund.import_funds_off")
+        raise refused(422, "posting.fund.import_funds_off")
     for record in [*choices.records, *(key.rpartition(":")[0] for key in choices.lines)]:
         if record not in records:
-            raise _refused(422, "posting.fund.choice_record_unknown", record=record)
+            raise refused(422, "posting.fund.choice_record_unknown", record=record)
     for key in choices.lines:
         record, _, line = key.rpartition(":")
         if not line.isdigit() or not 1 <= int(line) <= records[record]:
-            raise _refused(422, "posting.fund.import_line_unknown", record=record, line=line)
+            raise refused(422, "posting.fund.import_line_unknown", record=record, line=line)
     funds = await funds_by_id(session, company_id)
     for value in [choices.all, *choices.records.values(), *choices.lines.values()]:
         if value is not None:
@@ -400,18 +400,18 @@ async def check_outside_record(session, company_id, data: Mapping, entries: list
     stock_lines = {n for n, flags in own.items() if all(flags)}
     copied = await _copied_legs(session, company_id, data, entries)
     uncovered: set[int] = set()
-    refused = False
+    blocked = False
     for i, (line, numbers) in enumerate(legs):
         if line["account"] in stock or i in copied:
             continue
         fund = line.get("fund_id") or None
         if not numbers:
-            refused |= document is _ABSENT or _fund_of(document) != fund
+            blocked |= document is _ABSENT or _fund_of(document) != fund
         bad = {n for n in numbers if n not in stock_lines
                and (covers.get(n, _ABSENT) is _ABSENT or _fund_of(covers[n]) != fund)}
         uncovered |= bad
-        refused |= bool(bad)
-    if refused:
+        blocked |= bool(bad)
+    if blocked:
         raise FundChoiceNeeded(record, source_label(origin), sorted(uncovered))
 
 
@@ -429,10 +429,6 @@ def origin_key(origin) -> str:
 def source_label(origin) -> dict:
     """Where a record came from (origin_key), as a refusal param."""
     return catalog_refusal(origin_key(origin))
-
-
-def _refused(status: int, key: str, /, **params) -> HTTPException:
-    return HTTPException(status_code=status, detail=catalog_refusal(key, **params))
 
 
 def _marked_or_linked(line: dict) -> bool:
@@ -464,16 +460,16 @@ def judge_line_keys(stored_lines, line_set: list, *, origin: str | None, grant: 
         before = old or {}
         if line.get("origin") != before.get("origin") and allowed.get("origin", _ABSENT) != line.get("origin"):
             if before.get("origin"):
-                raise _refused(409, "posting.fund.origin_fixed", source=source_label(before["origin"]))
-            raise _refused(422, "posting.fund.key_not_taken", field="origin")
+                raise refused(409, "posting.fund.origin_fixed", source=source_label(before["origin"]))
+            raise refused(422, "posting.fund.key_not_taken", field="origin")
         for key in FUND_KEYS:
             if line.get(key) == before.get(key) or allowed.get(key, _ABSENT) == line.get(key):
                 continue
             if key == "fund_id" and not _marked_or_linked(line):
                 continue  # a local line's fund is the writer's, judged by the fund rules at posting
             if not line.get("origin") and key not in before:
-                raise _refused(422, "posting.fund.key_not_taken", field=key)
-            raise _refused(409, "posting.fund.choice_not_granted", line=n)
+                raise refused(422, "posting.fund.key_not_taken", field=key)
+            raise refused(409, "posting.fund.choice_not_granted", line=n)
 
 
 def judge_header_keys(stored: Mapping, written: dict, *, origin: str | None, grant: FundChoiceGrant | None) -> dict:
@@ -488,9 +484,9 @@ def judge_header_keys(stored: Mapping, written: dict, *, origin: str | None, gra
             continue
         if key == "origin":
             if stored.get("origin"):
-                raise _refused(409, "posting.fund.document_origin_fixed", source=source_label(stored["origin"]))
-            raise _refused(422, "posting.fund.key_not_taken", field="origin")
-        raise _refused(409, "posting.fund.document_choice_not_granted")
+                raise refused(409, "posting.fund.document_origin_fixed", source=source_label(stored["origin"]))
+            raise refused(422, "posting.fund.key_not_taken", field="origin")
+        raise refused(409, "posting.fund.document_choice_not_granted")
     return {}
 
 
@@ -529,10 +525,10 @@ def refuse_inbound(found: list[tuple[str, int | None]], origin: str) -> None:
     if found:
         key, line = found[0]
         if origin in _FILE_ORIGINS:
-            raise _refused(422, "posting.fund.file_key", field=key)
+            raise refused(422, "posting.fund.file_key", field=key)
         if line is not None:
-            raise _refused(422, "posting.fund.inbound_line_key", field=key, line=line)
-        raise _refused(422, "posting.fund.inbound_key", field=key)
+            raise refused(422, "posting.fund.inbound_line_key", field=key, line=line)
+        raise refused(422, "posting.fund.inbound_key", field=key)
 
 
 def _measure(values: Mapping, key: str):
@@ -801,7 +797,7 @@ async def change_posted_fund(session, company_id, record_id: str, change: Change
     await lock_fund_ledger(session, company_id, shared=False)
     settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
     if not funds_enabled(settings):
-        raise _refused(422, "fund.not_enabled")
+        raise refused(422, "fund.not_enabled")
     await locked_authority(session, company_id, actor, ("manage_accounting",))
     key = f"fundchange:{record_id}:{change.request_key}"
     request = {**change.model_dump(mode="json"), "journal": journal,
@@ -810,18 +806,18 @@ async def change_posted_fund(session, company_id, record_id: str, change: Change
         return dict(stored.data.get("result") or {})
     reason = change.reason.strip()
     if not reason:
-        raise _refused(422, "posting.fund.change_reason_missing")
+        raise refused(422, "posting.fund.change_reason_missing")
     row = (await lock_projections(session, company_id, [record_id])).get(record_id)
     if row is None or row.entity_type != ("journal_entry" if journal else "doc"):
-        raise _refused(404, "acct.err_je_not_found" if journal else "documents.document_not_found")
+        raise refused(404, "acct.err_je_not_found" if journal else "documents.document_not_found")
     if row.version != change.expected_version:
         raise HTTPException(status_code=409, detail={**catalog_refusal("posting.fund.change_stale"),
                                                      "code": "stale_version"})
     state = dict(row.state or {})
     if document is _ABSENT and not change.lines:
-        raise _refused(422, "posting.fund.choice_empty")
+        raise refused(422, "posting.fund.choice_empty")
     if document not in (_ABSENT, UNRESTRICTED) and document not in await funds_by_id(session, company_id):
-        raise _refused(422, "posting.fund.document_choice_missing")
+        raise refused(422, "posting.fund.document_choice_missing")
 
     if journal:
         bare = [{k: v for k, v in line.items() if k not in FUND_KEYS} for line in state.get("entries") or []
@@ -829,24 +825,24 @@ async def change_posted_fund(session, company_id, record_id: str, change: Change
         keys, grant = await chosen_journal_lines(session, company_id, bare, lines=change.lines,
                                                  every=None if document is _ABSENT else document)
         if not state.get("origin"):
-            raise _refused(422, "posting.fund.change_not_outside")
+            raise refused(422, "posting.fund.change_not_outside")
         if state.get("status") != "posted":
-            raise _refused(422, "posting.fund.change_not_posted")
+            raise refused(422, "posting.fund.change_not_posted")
         dates = [state.get("ts")]
     else:
         await require_fund_choices(session, company_id, state, lines=change.lines,
                                    **({} if document is _ABSENT else {"document": document}))
         if not (state.get("origin") or any(isinstance(li, dict) and li.get("origin")
                                            for li in state.get("line_items") or [])):
-            raise _refused(422, "posting.fund.change_not_outside")
+            raise refused(422, "posting.fund.change_not_outside")
         copies = await auto_je.restore_ids(session, company_id, record_id, goods_movements=True)
         if not copies:
-            raise _refused(422, "posting.fund.change_not_posted")
+            raise refused(422, "posting.fund.change_not_posted")
         if float(state.get("amount_paid") or 0) or float(state.get("credited") or 0):
-            raise _refused(422, "posting.fund.change_settled")
+            raise refused(422, "posting.fund.change_settled")
         name = str(state.get("ref_id") or record_id)
         if await auto_je.imported_carriage(session, company_id, record_id):
-            raise _refused(422, "posting.fund.change_opening_held", document=name)
+            raise refused(422, "posting.fund.change_opening_held", document=name)
         prefix = f"je:auto:{record_id}:"
         dates = list((await session.scalars(select(Projection.state["ts"].as_string()).where(
             Projection.company_id == company_id,
@@ -895,7 +891,7 @@ async def change_posted_fund(session, company_id, record_id: str, change: Change
                                               relabel=relabel)
             result = {"copies": reposted}
         if not action.moves():
-            raise _refused(422, "posting.fund.change_moves_nothing")
+            raise refused(422, "posting.fund.change_moves_nothing")
     after = (await session.get(Projection, {"company_id": company_id, "entity_id": result["copies"][record_id]})
              if journal else row)
     await emit_event(

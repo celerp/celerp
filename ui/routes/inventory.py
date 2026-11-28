@@ -9,6 +9,7 @@ import io
 import hashlib
 import json
 import logging
+import math
 import re
 import uuid
 from urllib.parse import quote, urlencode, urlsplit
@@ -46,6 +47,7 @@ from ui.components.table import fmt_money, data_table, search_bar, pagination, p
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
 from celerp.services.ledger_display import run_reference
+from celerp.services.record_quantities import extra_to_receive, run_outputs
 from ui.security import not_permitted_redirect
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from celerp.accounting_roles import INCOME_ACCOUNT_FIELD, RECOGNIZE_FIELD
@@ -55,13 +57,14 @@ from ui.module_slots import (
     connected_connector_ids, module_contribution_visible, required_connectors, visible_slot_contributions,
 )
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, SYSTEM_ITEM_KEYS, builtin_label_keys, cost_columns
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, SYSTEM_ITEM_KEYS, builtin_label_keys, cost_columns, out_of_category_keys, out_of_category_refusal
 from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, price_lists_in, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from celerp.importers.tabular import known_headers
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN
 from celerp.services.money import currency_dp, rate_dp
+from celerp.services.lot_origin import is_draft
 from celerp.output.doc_print import fmt_rate, input_rate
 from ui.i18n import t, t_or, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text, doc_type_label
 from celerp.services.units import format_qty, is_weight_unit, is_pieces_unit
@@ -942,7 +945,7 @@ async def _load_inventory_static_metadata(token: str) -> tuple:
     labels).
 
     One round-trip-collapsing snapshot backs every inventory view (page,
-    content, columns, search); each caller unpacks the same shape here rather
+    content, search); each caller unpacks the same shape here rather
     than repeating a six-call gather. Company/settings is deliberately not part
     of this snapshot: it carries authorization state and is fetched fresh per
     request. Raises `APIError` so the caller decides how to degrade (401 ->
@@ -983,7 +986,7 @@ async def _export_columns(token: str, p: dict) -> list[str]:
     )
     active_cat = p.get("category", "")
     eff_schema = _effective_schema(schema, cat_schemas, active_cat)
-    cols = list(p.get("cols") or []) or _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
+    cols = list(p.get("cols") or []) or _resolve_visible_cols(eff_schema, col_prefs, [])
     if not p.get("cols"):
         if p.get("on_memo_to") or p.get("consigned_from"):
             cols.append("holding_value")
@@ -1016,12 +1019,11 @@ async def _render_inventory_fragment(
 ):
     """Load the view metadata then render #inventory-content, degrading identically.
 
-    Shared by every HTMX fragment route (content, columns, search): each one loads
+    Shared by every HTMX fragment route (content, search): each one loads
     fresh view metadata and renders content in the same two steps, and each must
     degrade the same way on failure - a 401 from either step sends the browser to
     login, any other APIError falls back to the honest content-error fragment
-    rather than a blank or broken swap. Extra keyword arguments (e.g.
-    col_manager_open) pass straight through to `_inventory_content`.
+    rather than a blank or broken swap.
 
     The full page route does not use this helper: it wraps a single try/except
     around both the metadata load and the content render together (one honest
@@ -1142,8 +1144,12 @@ def _inventory_table(
     # server-side, so this is presentation only.
     if _draft_unlocked:
         for _it in items:
-            if _is_draft(_it):
+            if is_draft(_it):
                 _it["_row_editable_keys"] = _draft_unlocked
+    # A category attribute a row's category does not define reads as not applicable there.
+    for _it in items:
+        if _na := out_of_category_keys(_cs, _it.get("category") or ""):
+            _it["_not_applicable_keys"] = _na
     # Derived read-only money columns, appended to the schema whenever their scope is active
     # (the same rule as _export_columns), so the column set follows from the page state alone
     # and a single re-rendered row lines up with the header the page drew:
@@ -1166,7 +1172,7 @@ def _inventory_table(
             "position": _position, "show_in_table": True,
         }]
 
-    visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
+    visible_cols = _resolve_visible_cols(eff_schema, col_prefs, p.get("cols") or [])
     for _key, _label, _position in derived_money_cols:
         if _key not in visible_cols:
             # Saved column prefs predate this derived column, so force it visible.
@@ -1202,7 +1208,6 @@ async def _inventory_content(
     locations: list[dict],
     units: list[dict],
     category_display_names: dict,
-    col_manager_open: bool = False,
     lang: str = "en",
     role: str = "owner",
 ) -> FT:
@@ -1304,7 +1309,7 @@ async def _inventory_content(
         _bulk_toolbar(locations, p, total_items, settings=_settings, role=role,
                       connected_connectors=connected_connectors),
         Div(
-            _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
+            _column_manager(eff_schema, active_cat, visible_cols, col_prefs.get("inventory")),
             cls="column-manager-row",
         ),
         P(t("inventory.search_not_found", codes=", ".join(not_found)), cls="flash flash--warning")
@@ -1318,6 +1323,7 @@ async def _inventory_content(
             sort_target="#inventory-content",
             auto_hide_empty=False,
             column_filters=_inventory_column_filters(eff_schema, schema, locations, attribute_facets, p),
+            layout=col_prefs.get("inventory"),
             **table_args,
         ) if items else _inventory_empty_state(p, _settings, role),
         pagination(p["page"], list_total, p["per_page"], "/inventory", extra_params),
@@ -1514,43 +1520,6 @@ def setup_routes(app):
         p = _parse_params(request)
         lang = get_lang(request)
         return await _render_inventory_fragment(token, p, lang, _get_role(request))
-
-    @app.post("/inventory/columns")
-    async def inventory_columns(request: Request):
-        """Save column prefs and return updated #inventory-content fragment."""
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        cols = [v.strip() for v in form.getlist("cols") if v.strip()]
-        cat_pref = str(form.get("_cat_pref", "__all__")).strip() or "__all__"
-        # Save column prefs for this view
-        try:
-            existing_prefs = await api.get_column_prefs(token)
-        except APIError:
-            existing_prefs = {}
-        existing_prefs[cat_pref] = cols
-        try:
-            await api.patch_column_prefs(token, existing_prefs)
-        except APIError:
-            pass
-        # Rebuild params from hidden form fields (category, status, etc.)
-        p = {
-            "q": str(form.get("q", "")).strip(),
-            "page": 1,
-            "status": str(form.get("status", "")).strip(),
-            "category": str(form.get("category", "")).strip(),
-            "sort": str(form.get("sort", "")).strip(),
-            "dir": str(form.get("dir", "desc")).strip() or "desc",
-            "per_page": int(form.get("per_page", _DEFAULT_PER_PAGE) or _DEFAULT_PER_PAGE),
-            "cols": [],  # cols are now saved in prefs; don't pass via URL
-        }
-        lang = get_lang(request)
-        # The column-pref write above invalidated the metadata snapshot, so this
-        # reload reflects the saved prefs rather than a stale cached copy.
-        return await _render_inventory_fragment(
-            token, p, lang, _get_role(request), col_manager_open=True,
-        )
 
     @app.get("/inventory/search")
     async def inventory_search(request: Request):
@@ -1986,7 +1955,7 @@ def setup_routes(app):
             else f
             for f in schema
         ]
-        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
+        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=is_draft(item))
         # Merge category-specific fields for this item's category
         item_cat = item.get("category", "")
         schema = item_detail_schema(schema, cat_schemas.get(item_cat) or [], item_cat)
@@ -2218,6 +2187,11 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
     _RUN_ACTION_DONE = {"return": "inventory.wo_returned", "undo": "inventory.wo_receipt_undone",
                         "reopen": "inventory.wo_reopened"}
 
+    async def _extra_refusal(token: str, item_id: str, negative: bool) -> str:
+        """Why an extra's quantity was not sent: below zero, or not a number."""
+        sku = (await api.get_item(token, item_id)).get("sku") or item_id
+        return t("mfg.extra_quantity", sku=sku) if negative else f"{sku}: {t('inventory.invalid_numeric_input')}"
+
     @app.post("/api/items/{entity_id}/runs/{run_id}/act")
     async def run_action(request: Request, entity_id: str, run_id: str):
         """Advance a work order via its Action dropdown (action in the form body); refresh the block."""
@@ -2233,8 +2207,15 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             # The run's action list carries the key it was rendered with, so a choice sent
             # again after a lost answer is recorded once; the refreshed block brings new keys.
             key = required_operation_key(form, str(form.get("action")))
-            await (fn(token, run_id, lot, idempotency_key=key) if action == "undo"
-                   else fn(token, run_id, idempotency_key=key))
+            if action == "complete":
+                extras, bad = _extras_entered(form)
+                if bad is not None:
+                    return await _production_block_response(token, entity_id, flash_kind="error",
+                                                            flash_msg=await _extra_refusal(token, *bad))
+                await fn(token, run_id, {"also_produces": extras}, idempotency_key=key)
+            else:
+                await (fn(token, run_id, lot, idempotency_key=key) if action == "undo"
+                       else fn(token, run_id, idempotency_key=key))
             done = _RUN_ACTION_DONE.get(action)
             return await _production_block_response(token, entity_id, flash_msg=t(done) if done else None)
         except APIError as e:
@@ -2295,6 +2276,14 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
                 changed = bool(new_desc)
                 if changed:
                     recipe["overhead"].append({"description": new_desc, "amount": _num_field(form.get("oh_new_amount"))})
+            elif action == "add_also":
+                # The share starts at 0 (the product keeps all the value) until it is entered.
+                new_id = str(form.get("also_new", "")).strip()
+                changed = bool(new_id)
+                if changed:
+                    recipe.setdefault("also_produces", []).append({"item_id": new_id, "quantity": 1, "cost_share": 0})
+            elif action == "remove_also" and 0 <= index < len(recipe.get("also_produces", [])):
+                recipe["also_produces"].pop(index)
             elif action == "remove_component" and 0 <= index < len(recipe.get("components", [])):
                 recipe["components"].pop(index)
             elif action == "remove_labor" and 0 <= index < len(recipe.get("labor", [])):
@@ -2541,7 +2530,9 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                                 cell_type=_f.get("type", "text"), editable=False, domain="item_status")
-        if field in _locked_edit_keys(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item)):
+        if not_applicable := _not_applicable_cell(company, item, entity_id, field, explain=True):
+            return not_applicable
+        if field in _locked_edit_keys(schema, _get_role(request), company.get("settings") or {}, is_draft=is_draft(item)):
             # Amount fields and sell_by (edit_inventory_amounts) and prices
             # (set_inventory_prices): this GET is the single edit-entry chokepoint, so
             # no gated cell can enter edit state without the permission, however it rendered.
@@ -2657,9 +2648,11 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
         except APIError as e:
             return P(e.detail, cls="cell-error")
         locations = locs.get("items", [])
+        if not_applicable := _not_applicable_cell(company, item, entity_id, field):
+            return not_applicable
         # ESC restore inherits the same read-only state as the static cell, so a
         # restored gated cell never re-offers click-to-edit without the permission.
-        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
+        schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=is_draft(item))
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
         if field == "default_sell_qty":
             return _default_sell_qty_cell(entity_id, item, f_def, await _units_by_name(token))
@@ -2980,7 +2973,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             _fp_company = await api.get_company(token)
         except Exception:
             _fp_company = {}
-        schema = _apply_edit_permission(schema, _get_role(request), _fp_company.get("settings") or {}, is_draft=_is_draft(item))
+        schema = _apply_edit_permission(schema, _get_role(request), _fp_company.get("settings") or {}, is_draft=is_draft(item))
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
         # Category change: context-aware response
         if field == "category":
@@ -3248,7 +3241,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             api.get_item_schema(token), api.get_item(token, entity_id),
             api.get_all_category_schemas(token), api.get_locations(token),
         )
-        schema = _apply_edit_permission(schema, role, settings or {}, is_draft=_is_draft(item))
+        schema = _apply_edit_permission(schema, role, settings or {}, is_draft=is_draft(item))
         # Purchase triple: purchase_unit + purchase_conversion_factor + sell_by (read-only)
         if field in ("purchase_unit", "purchase_conversion_factor"):
             from ui.components.table import purchase_display_cell
@@ -3378,23 +3371,20 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
         return _page_state(QueryParams(urlsplit(request.headers.get("hx-current-url", "")).query))
 
     def _bulk_destructive_success(request: Request, message: str, redirect_qs: str = "",
-                                  cls: str = "flash--success", notice: str = "") -> Response:
-        """Return a bulk-action result response that clears the client-side selection.
+                                  kind: str = "success", notice: str = "") -> Response:
+        """Answer a bulk action that worked (merge, delete, archive, expire, duplicate, ...).
 
-        Sends HX-Trigger: celerpSelectionClear so the JS handler resets CelerpSelection
-        and the toolbar before the table reloads.  Used for bulk actions (merge, delete,
-        archive, expire, duplicate) that reload the table; `cls` selects the flash
-        variant (success, or warning for a partial-success count). Clearing the
-        selection hides the toolbar that holds the flash, so a ``notice`` the user must
-        read (what a merge did to the books) is also raised as a toast that stays until
-        dismissed.
+        The outcome is a toast: the response also fires celerpSelectionClear, which resets
+        CelerpSelection and hides the toolbar, and the table reloads a second later, so the
+        toast is the one place that is still on screen afterwards. A partial outcome
+        (``kind`` "warning": some rows kept or failed) and a ``notice`` the user must read
+        (what a merge did to the books) stay until dismissed.
         """
         # Without a result filter of its own the table reloads the list the owner is on
         # (search, tab, filters), never the unfiltered default.
         state = _base_state(_current_list_query(request))
         content_qs = redirect_qs or (f"?{urlencode(state)}" if state else "")
         content = Div(
-            P(message, cls=f"flash {cls}"),
             id="bulk-action-result",
             hx_trigger="load delay:1s",
             hx_get=f"/inventory/content{content_qs}",
@@ -3402,8 +3392,8 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             hx_swap="outerHTML",
             **({"hx_push_url": f"/inventory{redirect_qs}"} if redirect_qs else {}),
         )
-        headers = (toast_header(f"{message} {notice}", persist=True, celerpSelectionClear=True) if notice
-                   else {"HX-Trigger": "celerpSelectionClear"})
+        headers = toast_header(f"{message} {notice}".strip(), kind, persist=bool(notice) or kind == "warning",
+                               celerpSelectionClear=True)
         return html_response(content, headers=headers)
 
     def _bulk_toast_error(msg: str) -> Response:
@@ -3481,7 +3471,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
         updated = result.get("updated", len(entity_ids))
         refused = [row["detail"] for row in result.get("refused") or []]
         return _bulk_destructive_success(request, t("inventory.bulk_transferred", n=updated),
-                                         cls="flash--warning" if refused else "flash--success",
+                                         kind="warning" if refused else "success",
                                          notice=refusal_text(refused))
 
     @app.post("/api/items/bulk/delete")
@@ -3504,12 +3494,12 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
         if on_demo_list:
             if result["kept"]:
                 message += " " + t("settings.business_type_changes.demo_kept", count=result["kept"])
-            return _bulk_destructive_success(request, message, cls="flash--warning" if result["kept"] else "flash--success")
+            return _bulk_destructive_success(request, message, kind="warning" if result["kept"] else "success")
         # Each item kept as Deleted is named with the reason, so nothing moves silently.
         moved = [_moved_to_deleted_line(i) for i in result["items"] if i["outcome"] == "moved_to_deleted"]
         if moved:
             message = f'{message} {t("inventory.bulk_moved_to_deleted", n=len(moved))}'
-        return _bulk_destructive_success(request, message, cls="flash--warning" if moved else "flash--success",
+        return _bulk_destructive_success(request, message, kind="warning" if moved else "success",
                                          notice=" ".join(moved))
 
     def _moved_to_deleted_line(item: dict) -> str:
@@ -3613,7 +3603,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
                        id="bulk-action-result")
         if failed:
             return _bulk_destructive_success(request, t("inventory.bulk_duplicated_partial", ok=ok, failed=failed),
-                                             cls="flash--warning", notice=refused)
+                                             kind="warning", notice=refused)
         return _bulk_destructive_success(request, t("inventory.bulk_duplicated", n=ok))
 
     # ── Bulk merge (direct — no preview modal) ───────────────────────────
@@ -4081,7 +4071,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             request,
             t("inventory.transformed", parent=parent_sku, child=child_sku),
             f"?skus={exact_skus}&status=all",
-            cls="flash--warning" if notice else "flash--success",
+            kind="warning" if notice else "success",
             notice=notice,
         )
 
@@ -6042,14 +6032,12 @@ async def _reorder_placeholder(token: str, entity_id: str, field: str, value) ->
     return str(sv) if sv not in (None, "") else None
 
 
-def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_cols: list[str] | None = None, keep_open: bool = False) -> FT:
-    """Column manager dropdown with immediate JS toggle + localStorage + drag-and-drop reorder.
-
-    Server-side pref save is preserved for cross-device sync (background fetch).
-    Client-side: checkboxes immediately show/hide columns and persist to localStorage.
+def _column_manager(schema: list[dict], active_cat: str = "", visible_cols: list[str] | None = None,
+                    layout: dict | None = None) -> FT:
+    """Column manager dropdown with immediate JS toggle + drag-and-drop reorder, saved to the
+    signed-in user's inventory column setup (``layout`` is its saved copy).
     """
     selected = set(visible_cols) if visible_cols else {f.get("key") for f in schema if f.get("show_in_table", True)}
-    cat_pref = active_cat or "__all__"
     # JS data for all columns (key, label, visible) — exclude paired secondaries and virtual columns
     _cm_exclude = _PAIRED_SECONDARY_KEYS | {f.get("key") for f in schema if f.get("virtual")}
     col_data = [{"key": f.get("key", ""), "label": field_label(f)} for f in schema if f.get("key") not in _cm_exclude]
@@ -6063,8 +6051,6 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     virtual_followers = _vf_map
     selected_keys = sorted(selected)
     # Hidden inputs for fallback server save (category, status, sort etc.)
-    hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
-    hidden_state["_cat_pref"] = cat_pref
 
     # Build checkbox list for initial render (exclude paired secondaries - they render inside primary cells)
     checkboxes = [
@@ -6085,40 +6071,32 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         if f.get("key") not in _cm_exclude
     ]
 
-    hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
-
-    # JS: localStorage key matches data_table's PAGE_KEY for inventory
-    paired_secondaries = list(_PAIRED_TABLE.values())
 
     col_mgr_js = """
 (function() {var CFG=JSON.parse(document.currentScript.dataset.cfg);
-  var LS_VIS_KEY = 'celerp_cols_inventory';
-  var LS_ORDER_KEY = 'celerp_col_order_inventory';
-  var CAT_PREF = CFG.catPref;
+  var COLS = celerpColumns('inventory', CFG.layout);
   var SELECTED_KEYS = CFG.selected;
   var ALL_COLS = CFG.allCols;
-  // Keys that are now merged into their primary column - strip from saved prefs
-  var MERGED_SECONDARIES = CFG.merged;
   // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
   var VIRTUAL_FOLLOWERS = CFG.followers;
   var btn = document.getElementById('col-mgr-btn');
   var menu = document.getElementById('col-mgr-menu');
   if (!btn || !menu) return;
 
-  // Load visibility from localStorage
+  // The saved visibility
   function loadVis() {
-    try { return JSON.parse(localStorage.getItem(LS_VIS_KEY) || 'null'); } catch(e) { return null; }
+    return COLS.get('vis');
   }
   function saveVis(prefs) {
-    localStorage.setItem(LS_VIS_KEY, JSON.stringify(prefs));
+    COLS.set('vis', prefs);
   }
 
-  // Load order from localStorage
+  // The saved order
   function loadOrder() {
-    try { return JSON.parse(localStorage.getItem(LS_ORDER_KEY) || 'null'); } catch(e) { return null; }
+    return COLS.get('order');
   }
   function saveOrder(order) {
-    localStorage.setItem(LS_ORDER_KEY, JSON.stringify(order));
+    COLS.set('order', order);
   }
 
   // Apply column visibility to the data table
@@ -6140,7 +6118,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     window.celerpSyncExportCols(table);
   }
 
-  // Sync checkboxes in menu to match localStorage
+  // Sync checkboxes in menu to the saved visibility
   function syncCheckboxes() {
     var prefs = loadVis() || {};
     menu.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
@@ -6206,16 +6184,6 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) { return l.dataset.col; });
   }
 
-  // Save cols to server (background, no page reload)
-  function saveToServer(visibleKeys) {
-    var form = new FormData();
-    visibleKeys.forEach(function(k) { form.append('cols', k); });
-    Object.entries(CFG.hidden).forEach(function(kv) {
-      form.append(kv[0], kv[1]);
-    });
-    fetch('/inventory/columns', {method:'POST', body:form}).catch(function(){});
-  }
-
   // Toggle open/close
   btn.addEventListener('click', function(e) {
     e.stopPropagation();
@@ -6246,9 +6214,6 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     applyVisToTable(prefs);
     // Re-apply picker order so the newly-visible column lands in the right slot
     applyOrderToTable(pickerOrder());
-    // Save visible keys to server
-    var visibleKeys = ALL_COLS.filter(function(c) { return prefs[c.key] !== false; }).map(function(c){return c.key;});
-    saveToServer(visibleKeys);
   });
 
   // Drag-and-drop reordering within column manager menu
@@ -6289,22 +6254,16 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     applyOrderToPicker(e.detail.order);
   });
 
-  // Init: apply localStorage state on page load
-  // Strip merged secondary keys from any saved prefs (migration for users who had them as separate columns)
+  // Init: apply the saved setup on page load
   var storedVis = loadVis();
-  if (storedVis) {
-    MERGED_SECONDARIES.forEach(function(k) { delete storedVis[k]; });
-    applyVisToTable(storedVis);
-  }
+  if (storedVis) applyVisToTable(storedVis);
   var storedOrder = loadOrder();
   if (storedOrder) {
-    storedOrder = storedOrder.filter(function(k) { return MERGED_SECONDARIES.indexOf(k) === -1; });
     applyOrderToPicker(storedOrder);
     applyOrderToTable(storedOrder);
   }
 
-  // Keep menu closed unless keep_open is set
-  menu.style.display = CFG.menuDisplay;
+  menu.style.display = 'none';
 })();
 """
 
@@ -6317,13 +6276,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
                 id="col-mgr-reset",
                 cls="btn btn--sm btn--ghost col-mgr-reset-btn",
                 type="button",
-                onclick=(
-                    f"localStorage.removeItem('celerp_cols_inventory');"
-                    f"localStorage.removeItem('celerp_col_order_inventory');"
-                    f"localStorage.removeItem('celerp_col_widths_inventory');"
-                    f"fetch('/inventory/columns',{{method:'POST',body:new FormData()}});"
-                    f"location.reload();"
-                ),
+                onclick=call("celerpResetColumns", ["inventory"]),
                 title=t("btn.reset_columns_title"),
             ),
             A(
@@ -6336,16 +6289,11 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
                 id="col-mgr-custom-link",
                 cls="col-mgr-custom-link",
             ),
-            Form(
-                *hidden_inputs,
-                id="col-mgr-form",
-                style="display:none",
-            ),
             cls="column-menu",
             id="col-mgr-menu",
-            style="display:none" if not keep_open else "",
+            style="display:none",
         ),
-        Script(col_mgr_js, data_cfg=js_value({'catPref': cat_pref, 'allCols': col_data, 'merged': paired_secondaries, 'followers': virtual_followers, 'hidden': hidden_state, 'selected': selected_keys, 'menuDisplay': '' if keep_open else 'none'})),
+        Script(col_mgr_js, data_cfg=js_value({'layout': layout or {}, 'allCols': col_data, 'followers': virtual_followers, 'selected': selected_keys})),
         cls="column-manager",
         id="col-mgr-details",
     )
@@ -6422,8 +6370,24 @@ def _apply_edit_permission(schema: list[dict], role: str, settings: dict, *, is_
     return [{**f, "editable": False} if f.get("key") in locked else f for f in schema]
 
 
-def _is_draft(item: dict) -> bool:
-    return str(item.get("status") or "").lower() == "draft"
+def _not_applicable_cell(company: dict, item: dict, entity_id: str, field: str, *, explain: bool = False) -> FT | None:
+    """The not-applicable cell when ``field`` is a category attribute the item's category
+    does not define (field_schema.out_of_category_keys), else None. ``explain`` (the cell
+    opened) holds the refusal a value there gets, with the link to the page that adds the
+    attribute to the category, instead of an editor."""
+    from ui.components.shell import refusal_fix
+    from ui.components.table import not_applicable_cell
+    from ui.i18n import refusal_text
+
+    category = item.get("category") or ""
+    if field not in out_of_category_keys(company.get("settings") or {}, category):
+        return None
+    if not explain:
+        return not_applicable_cell(entity_id, field)
+    detail = out_of_category_refusal(category, field)
+    fix = refusal_fix(detail)
+    return not_applicable_cell(entity_id, field, P(
+        refusal_text(detail), *((" ", A(fix["label"], href=safe_url(fix["href"]))) if fix else ()), cls="cell-error"))
 
 
 def _resolve_field_def(
@@ -6555,6 +6519,7 @@ _RECIPE_CELLS: dict[str, dict[str, str]] = {
     "components": {"quantity": "number"},
     "labor": {"operation": "text", "kind": "select", "hours": "number", "rate": "number", "amount": "number"},
     "overhead": {"description": "text", "amount": "number"},
+    "also_produces": {"quantity": "number", "cost_share": "number"},
 }
 # Hourly and Daily are both rate-based (qty x rate); Fixed is a flat total. Order = dropdown order.
 _LABOR_KINDS: tuple[str, ...] = ("hourly", "daily", "fixed")
@@ -6573,6 +6538,29 @@ def _num_field(v) -> float:
         return float(str(v).strip() or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+_EXTRA_FIELD = "also:"
+
+
+def _extras_entered(form) -> tuple[list[dict], tuple[str, bool] | None]:
+    """The extras a run's row sends with Complete, as API lines, or the first one that cannot be
+    sent as (item id, below zero): blank or text, or a quantity below zero."""
+    lines = []
+    for name, raw in form.multi_items():
+        if not name.startswith(_EXTRA_FIELD):
+            continue
+        item_id = name[len(_EXTRA_FIELD):]
+        try:
+            qty = float(str(raw).strip())
+        except ValueError:
+            return [], (item_id, False)
+        if not math.isfinite(qty):
+            return [], (item_id, False)
+        if qty < 0:
+            return [], (item_id, True)
+        lines.append({"item_id": item_id, "quantity": qty})
+    return lines, None
 
 
 def _recipe_api_payload(recipe: dict) -> dict:
@@ -6599,6 +6587,12 @@ def _recipe_api_payload(recipe: dict) -> dict:
             {"description": o.get("description", ""), "amount": _num(o.get("amount"))}
             for o in recipe.get("overhead", [])
         ],
+        # Extras go back as stored, so an edit elsewhere keeps them; their unit cost is derived.
+        **({"also_produces": [
+            {"item_id": x.get("item_id"), "sku": x.get("sku"), "unit": x.get("unit"),
+             "quantity": _num(x.get("quantity")), "cost_share": _num(x.get("cost_share"))}
+            for x in recipe["also_produces"] if x.get("item_id")
+        ]} if "also_produces" in recipe else {}),
     }
 
 
@@ -6667,7 +6661,7 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
     if not images:
         return Div(
             section_header(t("inventory.product_images"), icon_name="camera"),
-            P(t("inventory.no_product_images"), cls="hint"),
+            P(t("inventory.no_product_images"), cls="empty-state"),
             cls="doc-section wf-gallery wf-gallery--empty",
             id="wf-gallery",
         )
@@ -7077,6 +7071,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     Values use the system-standard double-click-to-edit cells (same as item and document
     tables) so the page behaves like the rest of celerp. All editing is on-page via HTMX.
     """
+    num = "cell--number"
     recipe = item.get("recipe") or {}
     components = recipe.get("components", [])
     labor_rows = recipe.get("labor", [])
@@ -7162,6 +7157,22 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             cls="data-row",
         )
 
+    def _also_row(i, x):
+        xid = x.get("item_id", "")
+        it = by_id.get(xid) or (hidden or {}).get(xid)
+        label = deleted_label(it.get("sku") or xid) if is_deleted(it) else (x.get("sku") or xid)
+        return Tr(
+            Td(A(label, href=f"/inventory/{xid}", cls="table-link") if it else Span(label)),
+            _recipe_cell(entity_id, "also_produces", i, "quantity", x.get("quantity")),
+            Td(display_unit(x.get("unit")) or EMPTY, cls="comp-unit-cell"),
+            _recipe_cell(entity_id, "also_produces", i, "cost_share", x.get("cost_share")),
+            # The standard cost the share gives it, derived by the roll-up.
+            Td(_recipe_money(x.get("unit_cost"), currency), cls="recipe-amount"),
+            Td(Button("×", type="button", title=t("btn.remove"), cls="btn btn--xs btn--ghost",
+                      hx_post=f"{sec}?action=remove_also&index={i}", **_htmx), cls="cell--actions"),
+            cls="data-row",
+        )
+
     cur_label = f" ({currency_symbol(currency).strip()})" if currency else ""
 
     # Permanent "add" row at the bottom of each table: committing on first input creates a real,
@@ -7178,7 +7189,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         Td(searchable_select("comp_new", comp_opts, value="", placeholder=t("inventory.ph_search_component"),
                              hx_post=f"{sec}?action=add_component", hx_trigger="change",
                              hx_include="#recipe-form", hx_target="#recipe-section", hx_swap="outerHTML")),
-        Td("", cls="cell--number"), Td(""), Td("", cls="recipe-amount"), Td("", cls="recipe-amount"),
+        Td("", cls=num), Td(""), Td("", cls="recipe-amount"), Td("", cls="recipe-amount"),
         Td("", cls="cell--actions"),
         cls="recipe-add-row",
     )
@@ -7209,12 +7220,12 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         Td(Input(type="text", name="labor_new_op", value="", placeholder=t("inventory.ph_add_operation"), cls="form-input recipe-req", onkeydown=_add_enter)),
         Td(Select(*[Option(lbl, value=val, selected=(val == "hourly")) for val, lbl in _labor_kind_labels().items()],
                   name="labor_new_kind", cls="form-input labor-kind", onchange=_kind_toggle)),
-        Td(Input(type="number", name="labor_new_hours", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
-        Td(Input(type="number", name="labor_new_rate", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
+        Td(Input(type="number", name="labor_new_hours", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", oninput=_live_total, onkeydown=_add_enter), cls=num),
+        Td(Input(type="number", name="labor_new_rate", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", oninput=_live_total, onkeydown=_add_enter), cls=num),
         # Total: read-only computed preview for rate-based (default Hourly), editable only for Fixed.
         Td(Output("", name="labor_new_total", cls="recipe-amount"),
            Input(type="number", name="labor_new_amount", value="", placeholder="0", step="any", min="0",
-                 cls="form-input cell--number", hidden=True, disabled=True, onkeydown=_add_enter), cls="cell--number"),
+                 cls="form-input cell--number", hidden=True, disabled=True, onkeydown=_add_enter), cls=num),
         Td(Button(t("btn.save"), type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
                   hx_post=f"{sec}?action=add_labor", onclick=_add_validate, **_add), cls="cell--actions"),
         # Computed previews use the company's money precision, just like saved totals.
@@ -7222,27 +7233,45 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     )
     oh_add_row = Tr(
         Td(Input(type="text", name="oh_new_desc", value="", placeholder=t("inventory.ph_add_cost"), cls="form-input recipe-req", onkeydown=_add_enter)),
-        Td(Input(type="number", name="oh_new_amount", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", onkeydown=_add_enter), cls="cell--number"),
+        Td(Input(type="number", name="oh_new_amount", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", onkeydown=_add_enter), cls=num),
         Td(Button(t("btn.save"), type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
                   hx_post=f"{sec}?action=add_overhead", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
+    also_rows = recipe.get("also_produces") or []
+    also_add_row = Tr(
+        Td(searchable_select("also_new", item_opts, value="", placeholder=t("inventory.scope_all_items"),
+                             hx_post=f"{sec}?action=add_also", hx_trigger="change",
+                             hx_include="#recipe-form", hx_target="#recipe-section", hx_swap="outerHTML")),
+        Td("", cls=num), Td(""), Td("", cls=num), Td("", cls="recipe-amount"),
+        Td("", cls="cell--actions"),
+        cls="recipe-add-row",
+    )
+    also_produces = Table(
+        Thead(Tr(Th(t("th.sku")), Th(t("th.quantity"), cls=num), Th(t("th.unit")),
+                 Th(t("inventory.cost_share"), cls=num),
+                 Th(f"{t('inventory.unit_cost')}{cur_label}", cls=num), Th("", cls="cell--actions"))),
+        Tbody(*[_also_row(i, x) for i, x in enumerate(also_rows)], also_add_row),
+        cls="data-table",
+    )
+    main_share = 100 - sum(float(x.get("cost_share") or 0) for x in also_rows)
+
     materials = Table(
-        Thead(Tr(Th(t("inventory.th_component_sku")), Th(t("th.quantity"), cls="cell--number"), Th(t("th.unit")),
-                 Th(f"{t('inventory.unit_cost')}{cur_label}", cls="cell--number"), Th(f"{t('th.cost')}{cur_label}", cls="cell--number"),
+        Thead(Tr(Th(t("inventory.th_component_sku")), Th(t("th.quantity"), cls=num), Th(t("th.unit")),
+                 Th(f"{t('inventory.unit_cost')}{cur_label}", cls=num), Th(f"{t('th.cost')}{cur_label}", cls=num),
                  Th("", cls="cell--actions"))),
         Tbody(*[_comp_row(i, c) for i, c in enumerate(components)], comp_add_row),
         cls="data-table",
     )
     labor = Table(
-        Thead(Tr(Th(t("inventory.th_operation")), Th(t("th.type")), Th(t("th.qty"), cls="cell--number"),
-                 Th(f"{t('th.rate')}{cur_label}", cls="cell--number"), Th(f"{t('th.total')}{cur_label}", cls="cell--number"),
+        Thead(Tr(Th(t("inventory.th_operation")), Th(t("th.type")), Th(t("th.qty"), cls=num),
+                 Th(f"{t('th.rate')}{cur_label}", cls=num), Th(f"{t('th.total')}{cur_label}", cls=num),
                  Th("", cls="cell--actions"))),
         Tbody(*[_labor_row(i, l) for i, l in enumerate(labor_rows)], labor_add_row),
         cls="data-table",
     )
     overhead = Table(
-        Thead(Tr(Th(t("th.description")), Th(f"{t('label.amount')}{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
+        Thead(Tr(Th(t("th.description")), Th(f"{t('label.amount')}{cur_label}", cls=num), Th("", cls="cell--actions"))),
         Tbody(*[_oh_row(i, o) for i, o in enumerate(overhead_rows)], oh_add_row),
         cls="data-table",
     )
@@ -7301,6 +7330,9 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             ),
             section_card(t("inventory.materials"), materials, header_extra=Span(_recipe_money(recipe.get("materials_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
             section_card(t("inventory.labor"), labor, header_extra=Span(_recipe_money(recipe.get("labor_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
+            section_card(t("inventory.also_produces"), also_produces,
+                         P(t("inventory.main_share", share=f"{main_share:g}"), cls="hint"),
+                         body_cls="recipe-block"),
             section_card(t("inventory.overhead"), overhead, header_extra=Span(_recipe_money(recipe.get("overhead_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
             # Cost summary as a right-aligned totals block under the recipe (like a document's totals).
             Div(_recipe_cost_card(entity_id, item, currency), cls="recipe-totals-wrap"),
@@ -7390,7 +7422,24 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         return Select(*opts, name="action", cls="wo-action-select", hx_trigger="change",
                       hx_post=f"/api/items/{entity_id}/runs/{rid}/act",
                       hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this",
-                      hx_vals=operation_key_vals((kept_keys or {}).get(rid, "")))
+                      hx_vals=operation_key_vals((kept_keys or {}).get(rid, "")),
+                      # The row's extra quantities go with its own choice, never another row's.
+                      **({"hx_include": "closest tr"} if status == "in_progress" and run_outputs(run) else {}))
+
+    def _wo_extras(run: dict) -> list:
+        """An in-progress run's extras as quantity inputs (prefilled with what is still to come),
+        sent with its own row's Complete; a completed run's extras as received."""
+        rid, status = run.get("id"), run.get("status")
+        if status == "in_progress":
+            return [Label(x.get("sku") or x["item_id"],
+                          Input(type="number", name=f"{_EXTRA_FIELD}{x['item_id']}", min="0", step="any",
+                                value=f"{extra_to_receive(run, x['item_id']):g}", cls="form-input cell--number wo-extra-qty"),
+                          cls="wo-extra")
+                    for x in run_outputs(run)]
+        if status == "completed":
+            return [Span(f"{o.get('sku') or o['item_id']} {float(o.get('quantity') or 0):g}", cls="wo-extra hint")
+                    for o in run.get("actual_outputs") or [] if o.get("item_id")]
+        return []
 
     def _wo_source_cell(run: dict) -> FT:
         src_id, src_no = run.get("source_doc_id"), run.get("source_doc_number")
@@ -7411,7 +7460,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
                # A run whose materials' value its history cannot prove moves nothing until reconciled.
                A(t("inventory.wo_needs_reconciling"), href=f"/manufacturing/runs/{rid}/reconcile",
                  cls="table-link ml-sm") if run.get("wip_unresolved") else ""),
-            Td(_wo_action_select(run), cls="cell--actions"),
+            Td(*_wo_extras(run), _wo_action_select(run), cls="cell--actions"),
             cls="data-row" + (" data-row--inactive" if status == "cancelled" else ""),
         )
 
@@ -7429,7 +7478,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
             cls="data-table js-table", id="wo-orders-table", **{"data-page-size": "25"},
         ),
         table_pager("wo-orders-table"),
-    ) if runs else P(t("inventory.no_work_orders"), cls="hint"))
+    ) if runs else P(t("inventory.no_work_orders"), cls="empty-state"))
 
     return Div(
         flash_el,
@@ -8120,12 +8169,12 @@ def _effective_schema(
 def _resolve_visible_cols(
     eff_schema: list[dict],
     col_prefs: dict,
-    active_cat: str,
     url_cols: list[str],
 ) -> list[str]:
     """Determine visible column list for the current view.
 
-    Priority: URL ?cols= override > saved pref for this view > schema defaults.
+    Priority: URL ?cols= override > the user's saved inventory column setup (its order, then
+    each column it does not name in schema order, shown unless it hides them) > schema defaults.
 
     Virtual columns (e.g. cost_price_total) are always injected immediately after
     their ``paired_with`` column when that column is visible.
@@ -8133,9 +8182,12 @@ def _resolve_visible_cols(
     if url_cols:
         base = url_cols
     else:
-        pref_key = active_cat if active_cat else "__all__"
-        saved = col_prefs.get(pref_key)
-        base = saved if saved else [f["key"] for f in eff_schema if f.get("show_in_table", True)]
+        layout = col_prefs.get("inventory") or {}
+        vis, order = layout.get("vis") or {}, layout.get("order") or []
+        schema_keys = [f["key"] for f in eff_schema]
+        default = {f["key"]: f.get("show_in_table", True) for f in eff_schema}
+        ordered = [k for k in order if k in default] + [k for k in schema_keys if k not in order]
+        base = [k for k in ordered if vis.get(k, default[k])]
 
     # Inject virtual columns immediately after their paired_with counterpart
     virtual_cols = {f["key"]: f for f in eff_schema if f.get("virtual")}
@@ -8416,7 +8468,7 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                         Button(t("btn.go"), type="submit", cls="btn btn--secondary btn--xs"),
                         cls="action-card-row",
                     ),
-                    P(t("inventory.revert_no_history"), cls="action-card-hint"),
+                    P(t("inventory.revert_no_history"), cls="empty-state"),
                     hx_post=f"/api/items/{entity_id}/revert-to-draft",
             hx_confirm=t("inventory.confirm_revert_draft"),
                     hx_target="#item-action-error",

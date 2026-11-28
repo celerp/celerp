@@ -24,6 +24,7 @@ from ui.api_client import APIError
 from ui.config import get_role as _get_role, get_token as _token
 from ui.i18n import get_lang, refusal_text, t
 from ui.components.encode import html_response
+from ui.components.shell import toast_header
 
 ACTIONS = ("publish", "unpublish", "stop", "resume")
 
@@ -185,7 +186,8 @@ def setup_routes(app) -> None:
                  *([_bulk_confirmation(platform, asks)] if asks else [])]
         if extra:
             return _bulk_result(done, "flash--success", *extra)
-        return html_response(_bulk_result(done, "flash--success"), headers={"HX-Refresh": "true"})
+        # The page refreshes, so the outcome is a toast the refreshed page shows.
+        return html_response(Div(id="bulk-action-result"), headers={**toast_header(done), "HX-Refresh": "true"})
 
     @app.post("/api/items/{entity_id}/channel-sync/{platform}/{action}")
     async def item_channel_sync(request: Request, entity_id: str, platform: str, action: str):

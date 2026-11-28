@@ -18,15 +18,14 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
-from celerp.services.money import books_currency
+from celerp.accounting_roles import refused
+from celerp.services.money import books_currency, money_text, to_decimal
 from celerp_fixed_assets import disposal, projections, runs, setup, taxbooks
 from celerp.services.periods import month_index
-from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
     MODULE,
     _create_asset,
     _date,
-    _dec,
     _effects,
     _journal_view,
     _lines,
@@ -178,13 +177,13 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         day = _date(body.get("date"), "The transfer date")
         our_name, their_name = await _name(session, company_id), await _name(session, theirs)
         if not _uses(their_settings):
-            raise setup.refused(409, "fixed_assets.err_their_name_does_not_use_fixed", their_name=their_name)
+            raise refused(409, "fixed_assets.err_their_name_does_not_use_fixed", their_name=their_name)
         their_fa = setup.settings_of(their_settings)
         if day < their_fa["first_managed_period"]:
             raise setup.refuse("fixed_assets.err_their_name_manages_fixed_assets_from", their_name=their_name, first_managed_period=their_fa['first_managed_period'])
         their_books = await runs._books(session, theirs)
         if their_books.lock is not None and date.fromisoformat(day) <= their_books.lock:
-            raise setup.refused(409, "fixed_assets.err_day_locked_period_their_name_transfer", day=day, their_name=their_name, isoformat=(their_books.lock + timedelta(days=1)).isoformat())
+            raise refused(409, "fixed_assets.err_day_locked_period_their_name_transfer", day=day, their_name=their_name, isoformat=(their_books.lock + timedelta(days=1)).isoformat())
         await sales.refuse_waiting(session, company_id, asset_id, asset)
         receivable = str(body.get("receivable_account") or "")
         payable = str(body.get("payable_account") or "")
@@ -201,16 +200,16 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
             raise setup.refuse("fixed_assets.err_class_archived_their_name_choose_class", their_name=their_name)
         movements = await asset_movements(session, company_id, asset_id)
         item = disposal._plan_asset(books, asset_id, asset, cls, movements, day, Decimal(1),
-                                    _dec(asset.get("quantity")), disposal.accounts(books), proceeds=price,
+                                    to_decimal(asset.get("quantity")), disposal.accounts(books), proceeds=price,
                                     clearing=receivable)
         cost = round_money(price * rate, theirs_in)
         their_lines = _lines(their_cls["asset_account"], payable, cost) if cost else []
         (number,) = await _next_numbers(session, theirs, 1)
         values = await taxbooks.transfer_values(session, company_id, books.settings, asset_id,
                                                 date.fromisoformat(day))
-        shown = {**item["shown"], "date": day, "company": their_name, "price": money(price, ours_in),
+        shown = {**item["shown"], "date": day, "company": their_name, "price": money_text(price, ours_in),
                  "rate": str(rate) if rate != 1 else None, "their_number": number,
-                 "their_cost": money(cost, theirs_in), "their_class": their_cls["name"], "their_currency": theirs_in,
+                 "their_cost": money_text(cost, theirs_in), "their_class": their_cls["name"], "their_currency": theirs_in,
                  "journals": [_journal_view(item["lines"], ours_in), _journal_view(their_lines, theirs_in)]}
         # Their lines name accounts in their chart, not ours.
         labels = await setup.account_labels(session, theirs, [ln.account for ln in their_lines])
@@ -220,7 +219,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
             "item": item, "day": day, "price": price, "cost": cost, "their_cls": their_cls,
             "their_lines": their_lines, "number": number, "currency": ours_in, "our_name": our_name, "their_name": their_name,
             "policy": _life_left(asset, setup.policy_of(their_cls, their_fa), day),
-            "tax_values": values, "their_tax_values": {k: money(_dec(v) * rate, theirs_in)
+            "tax_values": values, "their_tax_values": {k: money_text(to_decimal(v) * rate, theirs_in)
                                                        for k, v in values.items()},
             "history": [{k: m.get(k) for k in _HISTORY} for m in projections.live(movements)],
             "basis": [asset.get("version"), asset.get("movement_count"),
@@ -244,7 +243,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         je_id, movement_id = await disposal.record(
             session, company_id, user_id, item, day, "transferred", None, op_key, key="ict",
             operation="transfer_out", memo=f"transferred to {context['their_name']}", target=target,
-            price=money(context["price"], context["currency"]), tax_values=context["tax_values"])
+            price=money_text(context["price"], context["currency"]), tax_values=context["tax_values"])
         their_journals, contributions = [], []
         if context["their_lines"]:
             their_journals.append(await _post(
@@ -257,7 +256,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         their_movement = await _move(
             session, theirs, user_id, their_id, kind="posted", operation="transfer_in", effective=day, posting=day,
             amounts={"cost": context["cost"]}, op_key=op_key, contributions=contributions,
-            quantity=str(_dec(asset.get("quantity")) or 1), provenance="transfer", source=source,
+            quantity=str(to_decimal(asset.get("quantity")) or 1), provenance="transfer", source=source,
             journal_id=their_journals[0] if their_journals else None)
         their_result = {"assets": [{"id": their_id, "number": context["number"]}], "journals": their_journals,
                         "source": source}
@@ -288,17 +287,17 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         await locked_authority(session, theirs, user_id, KEYS)
         asset = (await lock_projections(session, company_id, [asset_id]))[asset_id].state
         if int(latest["id"].rsplit(":", 1)[1]) != int(asset.get("movement_count") or 0):
-            raise setup.refused(409, "fixed_assets.err_number_has_changed_since_was_transferred", number=asset['number'])
+            raise refused(409, "fixed_assets.err_number_has_changed_since_was_transferred", number=asset['number'])
         day, name = latest["effective_date"], target["company_name"]
         books = await runs._books(session, company_id)
         if books.lock is not None and date.fromisoformat(day) <= books.lock:
-            raise setup.refused(409, "fixed_assets.err_day_locked_so_transfer_can_no", day=day)
+            raise refused(409, "fixed_assets.err_day_locked_so_transfer_can_no", day=day)
         their = (await lock_projections(session, theirs, [target["asset_id"]]))[target["asset_id"]].state
         if their.get("status") != "active" or int(their.get("movement_count") or 0) > 1:
-            raise setup.refused(409, "fixed_assets.err_number_has_changed_name_since_was", number=their['number'], name=name)
+            raise refused(409, "fixed_assets.err_number_has_changed_name_since_was", number=their['number'], name=name)
         their_books = await runs._books(session, theirs)
         if their_books.lock is not None and date.fromisoformat(day) <= their_books.lock:
-            raise setup.refused(409, "fixed_assets.err_day_locked_name_so_transfer_can", day=day, name=name)
+            raise refused(409, "fixed_assets.err_day_locked_name_so_transfer_can", day=day, name=name)
         (their_movement,) = await asset_movements(session, theirs, target["asset_id"])
         journals = [(company_id, latest["journal_id"]), (theirs, their_movement.get("journal_id"))]
         held_in = {company_id: books.currency, theirs: their_books.currency}

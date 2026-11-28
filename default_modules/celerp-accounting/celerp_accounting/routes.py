@@ -70,8 +70,8 @@ from celerp.services.journal_accounts import (
 )
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
-    books_currency, checked_exchange_rate, currency_dp, line_moves, require_line_amount, round_money, split_to_base,
-    to_base, to_decimal, to_stored_float,
+    books_currency, checked_exchange_rate, currency_dp, implied_rate, line_moves, require_line_amount, round_money,
+    split_to_base, to_base, to_decimal, to_stored_float,
 )
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
@@ -1021,49 +1021,6 @@ async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
     return books_currency(company.settings or {} if company else {})
 
 
-def _validated_line_fx(base: str, line: "ManualJELine", index: int) -> tuple[str, Decimal] | None:
-    """(currency, rate) for a line typed in a foreign currency, or None for a
-    line already in base currency.
-
-    Every message names the line at fault: an accountant who mistypes a rate on
-    the fourth line of an entry should be told which line was refused, not handed
-    a rejection they have to search for.
-    """
-    where = t("acct.field_line", n=index + 1)
-    currency = (line.currency or "").upper()
-    if not currency and line.rate is None:
-        return None
-    if not currency:
-        raise HTTPException(
-            status_code=422,
-            detail=t("acct.err_fx_rate_no_currency", line=where),
-        )
-    if currency not in CURRENCY_CODES:
-        raise HTTPException(
-            status_code=422,
-            detail=t("acct.err_currency_unknown", currency=line.currency),
-        )
-    if currency == base:
-        # The company's own currency converts at 1 by definition. An explicit 1 is
-        # accepted and dropped so the stored line looks like every other base-
-        # currency line; anything else would silently restate the amount.
-        if line.rate is not None and to_decimal(line.rate) != 1:
-            raise HTTPException(
-                status_code=422,
-                detail=t("acct.err_fx_base_rate", line=where, currency=currency),
-            )
-        return None
-    if line.rate is None:
-        raise HTTPException(
-            status_code=422,
-            detail=t("acct.err_fx_no_rate", line=where, currency=currency),
-        )
-    try:
-        return currency, checked_exchange_rate(line.rate)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=t("acct.err_fx_rate_invalid", line=where)) from exc
-
-
 def _id_chunks(ids: list[str], size: int = 10_000):
     """Slices for IN() clauses: asyncpg caps a statement at 32767 bind
     arguments, and a mature company's id lists can exceed that."""
@@ -1380,8 +1337,8 @@ async def _journal_payload(
         if not (date_from and (not r[2] or r[2] < date_from))
         and not (r[2] and date_to and r[2] > date_to)
     ]
-    # Sort by date with entity_id as the deterministic, replay-stable tiebreak.
-    rows.sort(key=lambda r: (r[2], r[0]))
+    # By date; entries of one day keep journal_rows' posting order (a stable sort).
+    rows.sort(key=lambda r: r[2])
 
     accounts = (
         await session.execute(
@@ -1852,8 +1809,6 @@ async def create_manual_journal_entry(
     lock is enforced by the event engine on the entry's date."""
     await hold_fund_ledger(session, company_id)  # before any row lock: a line may name a fund
     _require_iso_date(payload.ts or "", t("acct.field_entry_date"))
-    if len(payload.entries) < 2:
-        raise HTTPException(status_code=422, detail=t("acct.err_je_two_lines"))
     if not payload.idempotency_token:
         raise HTTPException(status_code=422, detail=t("acct.err_idempotency_token_required"))
     # The token is bound to the whole request: sent again unchanged it answers with the
@@ -1864,45 +1819,27 @@ async def create_manual_journal_entry(
     await import_service.check_line_contacts(
         session, company_id, [{"contact": line.contact} for line in payload.entries])
 
-    await require_destinations(session, company_id, {line.account for line in payload.entries})
+    await require_destinations(session, company_id, {line.account for line in payload.entries}, foreign_amounts=True)
 
+    # A line typed in a currency carries its amounts at that currency's precision (round_money,
+    # as the journal boundary keeps them) and what those convert to in the books' currency at
+    # the rate typed (to_base, as an importer's books amount is; the books' own currency is as
+    # typed, another one with no rate converts to nothing yet). The journal boundary judges what
+    # each line means and the balance exactly as it does for an imported entry, so the same
+    # figures typed or imported store the same line or meet the same refusal.
     base = await _base_currency(session, company_id)
-    # Every posting is stored in base currency, so the entry is balanced there,
-    # on the same converted figures the author is looking at while typing. A line
-    # in a foreign currency is validated and rounded at that currency's precision
-    # first, then converted; a line without one is already base currency.
-    total_debit = Decimal(0)
-    total_credit = Decimal(0)
     entries: list[dict] = []
-    for index, line in enumerate(payload.entries):
-        if line.debit < 0 or line.credit < 0:
-            raise HTTPException(status_code=422, detail=t("acct.err_je_negative"))
-        line_fx = _validated_line_fx(base, line, index)
-        amount_currency = line_fx[0] if line_fx else base
-        d = round_money(line.debit, amount_currency)
-        c = round_money(line.credit, amount_currency)
-        if d > 0 and c > 0:
-            raise HTTPException(status_code=422, detail=t("acct.err_je_both_sides"))
-        if d == 0 and c == 0:
-            raise HTTPException(status_code=422, detail=t("acct.err_je_no_amount"))
-        if line_fx:
-            currency, rate = line_fx
-            bd = round_money(d * rate, base)
-            bc = round_money(c * rate, base)
-            stored = {
-                "account": line.account,
-                "debit": to_stored_float(bd),
-                "credit": to_stored_float(bc),
-                "fx_debit": to_stored_float(d) if d else None,
-                "fx_credit": to_stored_float(c) if c else None,
-                "fx_currency": currency,
-                "fx_rate": to_stored_float(rate),
-            }
-        else:
-            bd, bc = d, c
-            stored = {"account": line.account, "debit": to_stored_float(bd), "credit": to_stored_float(bc)}
-        total_debit += bd
-        total_credit += bc
+    for line in payload.entries:
+        stored = {"account": line.account, "debit": line.debit, "credit": line.credit}
+        currency = (line.currency or "").upper() or None
+        if currency or line.rate is not None:
+            if currency != base:
+                converted = line.rate is not None
+                stored.update(
+                    debit=to_base(round_money(line.debit, currency), line.rate, base) if converted else None,
+                    credit=to_base(round_money(line.credit, currency), line.rate, base) if converted else None)
+            stored.update(fx_debit=line.debit or None, fx_credit=line.credit or None,
+                          fx_currency=currency, fx_rate=line.rate)
         # Only lines that name a party carry the key, so an entry with no party
         # stores exactly what it stored before.
         if line.contact:
@@ -1910,26 +1847,6 @@ async def create_manual_journal_entry(
         if line.fund_id:
             stored["fund_id"] = line.fund_id
         entries.append(stored)
-
-    if total_debit != total_credit:
-        # The gap is named, not just the two totals: when lines are in different
-        # currencies the difference is the exchange difference the author still
-        # has to post, and it is the figure they need rather than one to work out.
-        gap = abs(total_debit - total_credit)
-        raise HTTPException(
-            status_code=422,
-            detail=t("acct.err_je_unbalanced_credit" if total_debit > total_credit else "acct.err_je_unbalanced_debit",
-                     base=base, debits=total_debit, credits=total_credit, gap=gap),
-        )
-    # A line on a bank account kept in another currency than the books' carries its
-    # amount in that currency, so the account's reconciliation can read it.
-    from celerp.services.journal_accounts import bank_currencies
-    kept_in = await bank_currencies(session, company_id)
-    for line in entries:
-        currency = kept_in.get(line["account"])
-        if currency and currency != base and line.get("fx_currency") != currency:
-            raise HTTPException(status_code=422, detail=t(
-                "acct.err_je_bank_currency", account=line["account"], currency=currency))
 
     created = await emit_event(
         session,
@@ -2194,7 +2111,7 @@ async def account_ledger(
             })
 
     # Sort chronologically for running balance
-    lines.sort(key=lambda x: (x["date"], x["je_id"]))
+    lines.sort(key=lambda x: x["date"])
 
     # The running balance continues from what the account already held. Starting
     # a date-filtered view at zero would report a balance that ignores every
@@ -2359,7 +2276,7 @@ async def general_ledger(
     if include_lines and detail_jes:
         detail_refs = await _je_doc_refs(session, company_id, sorted(detail_jes))
         for rows_for_code in detail.values():
-            rows_for_code.sort(key=lambda l: (l["date"], l["je_id"]))
+            rows_for_code.sort(key=lambda l: l["date"])
             for line in rows_for_code:
                 ref = detail_refs.get(line["je_id"]) or {}
                 line["source_ref"] = ref.get("doc_ref")
@@ -2829,14 +2746,14 @@ async def _bank_dicts(
     out = []
     for b in banks:
         net: Decimal | None = Decimal(0)
-        lines = _bank_lines(rows, b)
+        lines = _bank_lines(rows, b, base)
         for je_id, entry in lines:
             amounts = _bank_line_amounts(b, base, je_id, entry)
             net = None if net is None or amounts is None else net + amounts[0] - amounts[1]
         d = _bank_to_dict(b)
         d["balance"] = None if net is None else to_stored_float(round_money(net, b.currency))
         d["opening_unbacked"] = bool(b.opening_balance) and _opening_je_id(b.id) not in posted_ids
-        d["relabel_to"] = _relabel_to(b, base, lines)
+        d["relabel_to"] = _mislabelled_as(b, base, lines)
         d["books_currency"] = base
         out.append(d)
     return out
@@ -2910,6 +2827,7 @@ async def post_opening(session: AsyncSession, company_id: uuid.UUID, actor_id, b
                        amount: Decimal, when: str, rate: Decimal | None, memo: str) -> None:
     """Post ``amount`` onto the bank against equity (the retained earnings account) as
     entry ``je_id`` dated ``when``: the opening balance, or a later change to it."""
+    await refuse_mislabelled_bank(session, company_id, bank)
     base = await _base_currency(session, company_id)
     retained = await resolve(session, company_id, AccountRole.RETAINED_EARNINGS)
     entries = _bank_entries(bank, base, rate, [({"account": retained}, abs(amount))], inflow=amount > 0)
@@ -2979,22 +2897,67 @@ async def create_bank_account(
     return (await _bank_dicts(session, company_id, [bank]))[0]
 
 
-def _carries_foreign_amount(entry: dict) -> bool:
-    """Whether a journal line carries an amount in a currency other than the books'."""
-    return bool(entry.get("fx_currency") and (entry.get("fx_debit") or entry.get("fx_credit")))
+def _carries_foreign_amount(entry: dict, base: str) -> bool:
+    """Whether a journal line carries an amount in a currency other than the books'. A line
+    naming the books' own currency is a books-currency line, as the journal boundary reads it."""
+    return (entry.get("fx_currency") or base).upper() != base and bool(entry.get("fx_debit") or entry.get("fx_credit"))
 
 
-def _bank_lines(rows: list, bank: BankAccount) -> list[tuple[str, dict]]:
-    """(entry id, line) of every posted line on the account's ledger account."""
-    return [(je_id, entry) for je_id, state, _ts in rows for entry in state.get("entries", [])
-            if entry.get("account") == bank.chart_account_code and _line_amounts(entry) is not None]
+def _moves_on_bank(lines: list[dict], read, base: str) -> list[dict]:
+    """Of one entry's *lines* on a bank's ledger account, those that move the bank. *read*
+    gives a line's amounts in the bank's currency (None: the bank cannot read it). Lines the
+    bank cannot read that are all in the books' currency and net to zero there between them
+    change nothing the bank holds (money moved between funds on the one account), so they are
+    left out. Any other unread line stays, for the caller to refuse or show as unknown: one
+    carrying an amount in a further currency moves money the bank cannot weigh, whatever its
+    books' figures add up to."""
+    unread = [line for line in lines if read(line) is None]
+    if (unread and not any(_carries_foreign_amount(line, base) for line in unread)
+            and sum((d - c for d, c in map(_line_amounts, unread)), Decimal(0)) == 0):
+        return [line for line in lines if read(line) is not None]
+    return lines
+
+
+def _bank_lines(rows: list, bank: BankAccount, base: str) -> list[tuple[str, dict]]:
+    """(entry id, line) of every posted line on the account's ledger account that moves
+    the bank (``_moves_on_bank``)."""
+    return [(je_id, entry) for je_id, state, _ts in rows for entry in _moves_on_bank(
+        [e for e in state.get("entries", []) if e.get("account") == bank.chart_account_code
+         and _line_amounts(e) is not None], lambda e, je_id=je_id: _bank_line_amounts(bank, base, je_id, e), base)]
 
 
 def _relabel_to(bank: BankAccount, base: str, lines: list[tuple[str, dict]]) -> str | None:
     """The currency the account can be corrected to: one labelled in another currency
     than the books', whose postings carry books-currency amounts only, reads none of
     them, and setting it to the books' currency makes every one readable."""
-    return base if bank.currency != base and not any(_carries_foreign_amount(e) for _, e in lines) else None
+    return base if bank.currency != base and not any(_carries_foreign_amount(e, base) for _, e in lines) else None
+
+
+def _mislabelled_as(bank: BankAccount, base: str, lines: list[tuple[str, dict]]) -> str | None:
+    """The correction the account's entries call for (``_relabel_to``). An account with no
+    entries, or with only its opening balance (read as the figure typed for it in the
+    account's currency, ``_bank_line_amounts``), has nothing that disagrees with its label, so
+    none is called for."""
+    opening = _opening_je_id(bank.id)
+    return _relabel_to(bank, base, lines) if any(je_id != opening for je_id, _ in lines) else None
+
+
+async def refuse_mislabelled_bank(session: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> None:
+    """Refuse a write that imports onto or posts from *bank* while its label and its entries
+    disagree (``_mislabelled_as``): every amount on it would be read in the wrong currency, so
+    nothing goes through until the account is set to the books' currency. Every journal change
+    meets it at the journal boundary (``recon_guard.guard_journal_change``). A transfer and an
+    opening balance call it first too, before they ask for an exchange rate the correction makes
+    moot, and a statement import and its decisions, which read the account's lines without
+    posting, call it themselves."""
+    base = await _base_currency(session, company_id)
+    if bank.currency == base:
+        return
+    lines = _bank_lines(await journal_rows(session, company_id, account=bank.chart_account_code), bank, base)
+    relabel = _mislabelled_as(bank, base, lines)
+    if relabel:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_bank_mislabelled", currency=bank.currency, base=relabel))
 
 
 async def set_bank_currency(session: AsyncSession, company_id: uuid.UUID, bank: BankAccount, target: str) -> str | None:
@@ -3009,16 +2972,16 @@ async def set_bank_currency(session: AsyncSession, company_id: uuid.UUID, bank: 
     account would be read again in another currency."""
     if target == bank.currency:
         return None
-    lines = _bank_lines(await journal_rows(session, company_id), bank)
+    base = await _base_currency(session, company_id)
+    lines = _bank_lines(await journal_rows(session, company_id, account=bank.chart_account_code), bank, base)
     statuses = set((await session.execute(select(ReconciliationSession.status).where(
         ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id,
     ))).scalars())
     relabelled_from = None
     if lines or statuses:
-        base = await _base_currency(session, company_id)
         correction = target == _relabel_to(bank, base, lines)
         undo = (bank.currency == base and target == bank.relabelled_from
-                and not any(_carries_foreign_amount(e) for _, e in lines))
+                and not any(_carries_foreign_amount(e, base) for _, e in lines))
         if not (correction or undo):
             return t("acct.err_bank_currency_has_history", currency=bank.currency)
         if "completed" in statuses:
@@ -3099,14 +3062,18 @@ async def transfer_entries(session: AsyncSession, company_id: uuid.UUID, from_ba
                            allocation: list[tuple[str | None, Decimal]] | None = None) -> list[dict]:
     """The lines of one transfer of ``amount`` (in the source account's currency) between two
     of the company's bank accounts, the one way ``POST /transfers`` and a statement line's
-    transfer or cash decision build it. A destination kept in another currency than both the
+    transfer or cash decision build it. Neither account may be one whose label and entries
+    disagree (``refuse_mislabelled_bank``). A destination kept in another currency than both the
     source and the books receives ``to_amount`` of its own currency."""
     from celerp_accounting.statement_lines import money_value
 
     if from_bank.id == to_bank.id:
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_transfer_same_bank"))
+    for bank in (from_bank, to_bank):
+        await refuse_mislabelled_bank(session, company_id, bank)
     money_value(amount, from_bank.currency)
-    await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code})
+    await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code},
+                               foreign_amounts=True)
     base = await _base_currency(session, company_id)
     to_fields = {"account": to_bank.chart_account_code}
     entries = _bank_entries(from_bank, base, _bank_rate(from_bank, base, rate), [(to_fields, amount)], inflow=False)
@@ -3119,7 +3086,7 @@ async def transfer_entries(session: AsyncSession, company_id: uuid.UUID, from_ba
             received = round_money(to_amount or 0, to_bank.currency)
             if received <= 0 or moved <= 0:
                 raise HTTPException(status_code=422, detail=t("acct.err_transfer_to_amount", currency=to_bank.currency))
-            entries[1] = _money_line(to_fields, to_bank.currency, checked_exchange_rate(moved / received),
+            entries[1] = _money_line(to_fields, to_bank.currency, implied_rate(moved, received),
                                      received, moved, debit=True)
     moved = to_decimal(entries[0]["credit"])
     return split_lines_by_fund(entries, await pooled_split(
@@ -3406,9 +3373,11 @@ def _rule_to_dict(r: ReconciliationRule) -> dict:
 def _bank_amounts(line: dict, bank_currency: str, base: str) -> tuple[Decimal, Decimal] | None:
     """(debit, credit) of a bank account's journal line in the account's own currency:
     the line's foreign amounts when it was written in that currency, its base amounts
-    when the account is kept in base currency. None otherwise: the line was posted in
-    another currency with no rate to the account's, so no figure is guessed."""
-    if (line.get("fx_currency") or "").upper() == bank_currency and (line.get("fx_debit") or line.get("fx_credit")):
+    when the account is kept in base currency. A line naming the books' own currency is a
+    books-currency line, as the journal boundary reads it. None otherwise: the line was
+    posted in another currency with no rate to the account's, so no figure is guessed."""
+    if bank_currency != base and (line.get("fx_currency") or "").upper() == bank_currency and (
+            line.get("fx_debit") or line.get("fx_credit")):
         return to_decimal(line.get("fx_debit") or 0), to_decimal(line.get("fx_credit") or 0)
     return _line_amounts(line) if bank_currency == base else None
 
@@ -3517,22 +3486,21 @@ async def _je_entries_for_account(
     amount the bank moved."""
     base = await _base_currency(session, company_id)
     rows: dict[tuple, dict] = {}
-    for je_id, state, _ in await journal_rows(session, company_id, account=bank.chart_account_code, days=days,
-                                              entry_ids=entry_ids, skip_ids=skip_ids):
-        for entry in state.get("entries", []):
-            if entry.get("account") == bank.chart_account_code:
-                if _line_amounts(entry) is None:
-                    continue
-                amounts = _bank_line_amounts(bank, base, je_id, entry)
-                inflow = None if amounts is None else amounts[0] > amounts[1]
-                row = rows.setdefault((je_id, inflow), {
-                    "je_id": je_id,
-                    "ts": state.get("ts") or state.get("created_at") or "",
-                    "memo": state.get("memo", ""),
-                    "amounts": (Decimal(0), Decimal(0)),
-                })
-                row["amounts"] = None if amounts is None or row["amounts"] is None else (
-                    row["amounts"][0] + amounts[0], row["amounts"][1] + amounts[1])
+    posted = await journal_rows(session, company_id, account=bank.chart_account_code, days=days,
+                                entry_ids=entry_ids, skip_ids=skip_ids)
+    states = {je_id: state for je_id, state, _ in posted}
+    for je_id, entry in _bank_lines(posted, bank, base):
+        state = states[je_id]
+        amounts = _bank_line_amounts(bank, base, je_id, entry)
+        inflow = None if amounts is None else amounts[0] > amounts[1]
+        row = rows.setdefault((je_id, inflow), {
+            "je_id": je_id,
+            "ts": state.get("ts") or state.get("created_at") or "",
+            "memo": state.get("memo", ""),
+            "amounts": (Decimal(0), Decimal(0)),
+        })
+        row["amounts"] = None if amounts is None or row["amounts"] is None else (
+            row["amounts"][0] + amounts[0], row["amounts"][1] + amounts[1])
     result = []
     for row in rows.values():
         amounts = row.pop("amounts")
@@ -4037,10 +4005,8 @@ async def create_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    from celerp_accounting.statement_lines import chart_account
-
     await lock_company(db, company_id)
-    await chart_account(db, company_id, payload.target_account_code)
+    await require_destinations(db, company_id, {payload.target_account_code})
     if payload.bank_account_id is not None:
         bank = (await db.execute(select(BankAccount.id).where(
             BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
@@ -4092,11 +4058,9 @@ async def patch_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    from celerp_accounting.statement_lines import chart_account
-
     rule = await _locked_rule(db, company_id, rule_id)
     if payload.target_account_code is not None:
-        await chart_account(db, company_id, payload.target_account_code)
+        await require_destinations(db, company_id, {payload.target_account_code})
     for field in ("match_field", "match_pattern", "match_type", "target_account_code",
                   "contact_id", "default_memo", "is_active"):
         val = getattr(payload, field)

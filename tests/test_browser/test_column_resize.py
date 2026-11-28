@@ -3,8 +3,8 @@
 """Playwright: resizable columns on the inventory and contacts data tables.
 
 Both pages render the shared ``data_table`` (``#data-table``, ``thead
-th[data-key]``, drag-to-resize handles persisted to
-``localStorage[celerp_col_widths_<entity>]``). These assert that dragging a
+th[data-key]``, drag-to-resize handles saved with the
+signed-in user's column setup on the server). These assert that dragging a
 column's handle actually widens that column and that the width survives a full
 reload — the same properties exercised for the invoice line table in
 ``test_doc_line_resize.py``.
@@ -14,6 +14,8 @@ from __future__ import annotations
 import uuid
 
 import pytest
+
+from .conftest import saved_column_layout
 
 pytestmark = pytest.mark.browser
 
@@ -76,12 +78,9 @@ def _drag_handle(page, th_sel, dx):
     _drag_right(page, page.locator(f"{th_sel} .col-resize-handle").first, dx)
 
 
-def _run_resize_check(page, ui_server, path, storage_key):
+def _run_resize_check(page, ui_server, api, path, table):
+    # the page fixture forgets saved widths, so this measures from the schema defaults
     page.goto(f"{ui_server}{path}", wait_until="domcontentloaded")
-    page.wait_for_selector("#data-table thead th[data-key] .col-resize-handle", timeout=5000)
-    # drop any persisted widths so we measure from the schema defaults
-    page.evaluate("(k) => localStorage.removeItem(k)", storage_key)
-    page.reload(wait_until="domcontentloaded")
     page.wait_for_selector("#data-table thead th[data-key] .col-resize-handle", timeout=5000)
 
     keys = _visible_data_keys(page)
@@ -112,7 +111,8 @@ def _run_resize_check(page, ui_server, path, storage_key):
         f"{neighbor_before:.0f} -> {neighbor_after:.0f}"
     )
 
-    # the width must survive a full reload
+    # the width must survive a full reload, once its save has landed
+    saved_column_layout(api, table, lambda l: keys[0] in (l.get("widths") or {}))
     page.reload(wait_until="domcontentloaded")
     page.wait_for_selector(col, timeout=5000)
     page.wait_for_timeout(250)  # let the requestAnimationFrame width-restore run
@@ -123,12 +123,12 @@ def _run_resize_check(page, ui_server, path, storage_key):
     )
 
 
-def test_inventory_columns_resize_and_persist(page, ui_server, _seed_inventory):
-    _run_resize_check(page, ui_server, "/inventory", "celerp_col_widths_inventory")
+def test_inventory_columns_resize_and_persist(page, ui_server, api, _seed_inventory):
+    _run_resize_check(page, ui_server, api, "/inventory", "inventory")
 
 
-def test_contacts_columns_resize_and_persist(page, ui_server, _seed_contacts):
-    _run_resize_check(page, ui_server, "/contacts/customers", "celerp_col_widths_customers")
+def test_contacts_columns_resize_and_persist(page, ui_server, api, _seed_contacts):
+    _run_resize_check(page, ui_server, api, "/contacts/customers", "customers")
 
 
 def test_files_table_columns_resize(page, ui_server, api):

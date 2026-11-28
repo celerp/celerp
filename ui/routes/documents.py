@@ -514,7 +514,7 @@ def _enrich_doc_files(doc: dict) -> list[dict]:
 
 def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kwargs):
     return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
-from ui.components.notes import _safe_id
+from ui.components.files import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import category_label, doc_type_label, get_lang, refusal_text, sentence, t
 from ui.routes.reports import _company_today, _date_presets, _get_company, _parse_dates, _resolve_preset
@@ -2933,10 +2933,11 @@ def setup_routes(app):
         if doc_type == "purchase_order" and status == "draft":
             line_suggestions = await _po_line_suggestions(token, doc)
         doc_funds = await _doc_funds(token, doc, _co_settings)
+        column_prefs = await api.column_layouts(token)
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original, draw_targets=draw_targets, funds=doc_funds,
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original, draw_targets=draw_targets, funds=doc_funds, column_prefs=column_prefs,
                         fund_open=await _doc_fund_open(token, doc, _co_settings)),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
@@ -5165,7 +5166,7 @@ def setup_routes(app):
         if not locations:
             return await base_shell(
                 page_header(t("documents.new_audit_title")),
-                P(t("documents.audit_no_locations"), cls="hint"),
+                P(t("documents.audit_no_locations"), cls="empty-state"),
                 title=page_title("documents.new_audit_title"), nav_active="lists", request=request,
             )
         loc_options = [(l.get("id"), l.get("name") or l.get("id")) for l in locations]
@@ -5314,7 +5315,7 @@ def setup_routes(app):
                 _chart_accounts = (await api.get_chart(token)).get("items", [])
             except Exception:
                 _chart_accounts = []
-        _detail = _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors,
+        _detail = _doc_detail(lst, column_prefs=await api.column_layouts(token), price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors,
                         notes=list_notes, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, locations=_list_locations,
                         email_used=_ls_used, email_quota=_ls_quota, email_resets_on=_ls_resets_on, share_enabled=_list_share, share_active=_list_share_active,
                         chart_accounts=_chart_accounts,
@@ -7778,7 +7779,7 @@ def subscription_meta_cells(doc: dict) -> tuple:
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100, column_prefs: dict | None = None,
                 connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None,
                 draw_targets: list | None = None, funds: list | None = None, fund_open: dict | None = None) -> FT:
     def _pick(*keys: str):
@@ -11776,12 +11777,12 @@ async function celerpCsvImport(input, entityId) {
         # Line items + price list bar
         Div(
             lines_section,
-            # _wpct_ key: widths stored as percentages. Namespaced PER list_type (+ a version bump):
-            # the three list types have different column sets, so a single shared "list" key let one
-            # type's saved widths corrupt another's layout. _v2 discards the old shared prefs once.
+            # Widths are saved per list_type: the three list types have different column sets, so
+            # one shared table name would let one type's saved widths corrupt another's layout.
             col_resize_script(
                 "table.doc-lines",
-                f"celerp_dline_wpct_{doc_type}" + (f"_{list_type}" if is_list and list_type else "") + "_v2",
+                table := f"doc_lines_{doc_type}" + (f"_{list_type}" if is_list and list_type else ""),
+                (column_prefs or {}).get(table),
             ),
             cls="doc-section doc-section--lines",
         ),

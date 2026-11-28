@@ -3,7 +3,8 @@
 //
 // The bank page: a line's panels are cloned from <template>s with no server trip, a group's
 // lines unfold, a dropped file is sent at once, and the bulk toolbar counts and totals the
-// ticked lines and carries them in hidden inputs. Lines the user unticks are kept per bank
+// ticked lines, carries them in hidden inputs and shows only while a line is ticked or the
+// last post's outcome sits in it. Lines the user unticks are kept per bank
 // for the session, so the choice survives moving between views, and forgotten once posted.
 // Every value comes from data-* attributes the server rendered; none is written here.
 
@@ -71,6 +72,7 @@
     var shown = total.toLocaleString('en-US', {minimumFractionDigits: dp, maximumFractionDigits: dp});
     var label = ticked.length === 1 ? button.dataset.labelOne : button.dataset.label;
     button.textContent = label.replace('{n}', ticked.length).replace('{total}', shown);
+    bar.classList.toggle('is-active', ticked.length > 0 || !!bar.querySelector('.bulk-toolbar__outcome'));
   }
 
   function applyStored() {

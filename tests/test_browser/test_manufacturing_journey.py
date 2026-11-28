@@ -54,7 +54,7 @@ def test_full_manufacturing_journey(page, ui_server, api):
                     raise
         raise AssertionError(f"cell {data_col} did not save {value}")
 
-    _combo_pick(page, ".recipe-add-row", "JNY-GOLD")  # ghost add-row commits a real component
+    _combo_pick(page, "tr.recipe-add-row:has([name=comp_new])", "JNY-GOLD")  # ghost add-row commits a real component
     page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
     _set_cell("recipe__components__0__quantity", "5")
     # The per-cell save fires recipeSaved, which re-renders the whole #recipe-section

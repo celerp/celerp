@@ -19,10 +19,11 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refused
+from celerp.services.money import money_text, to_decimal
 from celerp_fixed_assets import opening, recon, setup
-from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
-    WRITTEN_OFF_OVER_COST, _create_asset, _date, _dec, _effects, _money_in, _move, _next_numbers,
+    WRITTEN_OFF_OVER_COST, _create_asset, _date, _effects, _money_in, _move, _next_numbers,
     _run, _undo, after_cutover, tag_taken)
 from celerp_fixed_assets.store import _emit, _entities, _state
 from ui.i18n import t
@@ -312,7 +313,7 @@ def _duplicates(books: _Books, checked: list[_Checked]) -> list[dict]:
             if serial and (s.get("serial") or "").casefold() == serial:
                 out.append({"row": row.row, "message": f"Serial {v['serial']} is already on {s['number']} "
                                                        f"{s.get('name')}."})
-            elif ((s.get("name") or "").casefold(), _dec(s.get("cost")), s.get("available_date")) == same:
+            elif ((s.get("name") or "").casefold(), to_decimal(s.get("cost")), s.get("available_date")) == same:
                 out.append({"row": row.row, "message": f"{s['number']} {s.get('name')} has the same name, cost "
                                                        "and available-for-use date."})
         for earlier in seen:
@@ -346,8 +347,8 @@ async def _plan(session, company_id, books: _Books, numbered, excluded: set[int]
         rows = sorted({e["row"] for e in errors})
         raise setup.refuse("fixed_assets.err_import_rows_with_problems", rows=", ".join(str(n) for n in rows))
     importing = _balances(books, creating)
-    accounts = [{**a, "importing": money(importing.get(a["account"]), books.currency),
-                 "difference": money(_dec(a["ledger"]) - _dec(a["registered"]) - importing.get(a["account"], 0),
+    accounts = [{**a, "importing": money_text(importing.get(a["account"]), books.currency),
+                 "difference": money_text(to_decimal(a["ledger"]) - to_decimal(a["registered"]) - importing.get(a["account"], 0),
                                      books.currency)}
                 for a in (await opening.view(session, company_id))["accounts"]]
     shown = {
@@ -357,7 +358,7 @@ async def _plan(session, company_id, books: _Books, numbered, excluded: set[int]
                    "history": sum(1 for r in checked if r.history and not r.errors and not r.excluded)},
         "errors": errors,
         "duplicates": _duplicates(books, checked),
-        "assets": [{"row": r.row, "number": r.number, "name": r.values["name"], "cost": money(r.figures["cost"], books.currency)}
+        "assets": [{"row": r.row, "number": r.number, "name": r.values["name"], "cost": money_text(r.figures["cost"], books.currency)}
                    for r in creating],
         "accounts": accounts,
     }
@@ -406,7 +407,7 @@ def _row_id(batch_id: str, row: int) -> str:
 
 
 def _totals(before: dict, added: dict[str, Decimal]) -> dict:
-    out = {k: _dec(v) for k, v in before.items()}
+    out = {k: to_decimal(v) for k, v in before.items()}
     for account, amount in added.items():
         out[account] = out.get(account, Decimal(0)) + amount
     return {k: str(v) for k, v in sorted(out.items())}
@@ -494,7 +495,7 @@ async def import_rows(session, company_id, user_id, batch_id: str, body: dict) -
     async def plan(fa):
         batch = await _batch(session, company_id, batch_id)
         if batch["state"] == "undone":
-            raise setup.refused(409, "fixed_assets.err_import_was_undone_import_rows_again")
+            raise refused(409, "fixed_assets.err_import_was_undone_import_rows_again")
         waiting = {r["row"]: r for r in await _batch_rows(session, company_id, batch_id) if r["status"] == "rejected"}
         numbered = []
         for fix in fixes:
@@ -526,7 +527,7 @@ async def undo_import(session, company_id, user_id, batch_id: str, body: dict) -
     as undone. Refused, naming them, when an imported asset has changed since."""
     batch = await _batch(session, company_id, batch_id)
     if batch["state"] == "undone":
-        raise setup.refused(409, "fixed_assets.err_import_was_already_undone")
+        raise refused(409, "fixed_assets.err_import_was_already_undone")
 
     async def done(op_key):
         await _record_batch(session, company_id, user_id, batch_id, {**batch, "state": "undone", "undone_by": op_key})

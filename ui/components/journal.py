@@ -215,7 +215,7 @@ def _money(val, currency: str | None) -> str:
     return fmt_money(val, currency) if val else ""
 
 
-def _attr(val, currency: str | None) -> str:
+def money_or_empty(val, currency: str | None) -> str:
     """An item attribute cell, `--` when the item has no such figure.
 
     An attribute is not a posting: a row with no unit price has none to show, and
@@ -417,7 +417,7 @@ def _item_cells(row: dict, currency: str | None, has_fx: bool) -> list:
         Td(row.get("memo", ""), cls="cell--muted"),
         Td(fx_currency or currency or EMPTY, cls="cell--mono"),
         Td(f"{to_decimal(qty).normalize():f}" if qty else EMPTY, cls="cell--number"),
-        Td(_attr(row.get("unit_price"), fx_currency or currency), cls="cell--number"),
+        Td(money_or_empty(row.get("unit_price"), fx_currency or currency), cls="cell--number"),
         Td(_money(debit, currency), cls="cell--number"),
         Td(_money(credit, currency), cls="cell--number"),
     ]

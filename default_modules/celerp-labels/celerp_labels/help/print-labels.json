@@ -6,31 +6,31 @@
   "routes": ["/labels/print-list", "/labels/print-source"],
   "permission": "manage_labels",
   "order": 1,
-  "checked": "d4379593e693dbf735063c7365c2b79024a6aebea77643b96933c17400049470",
+  "checked": "a790eb0117dc4fbec7cda8decf625f6b8c19641fbf2eda347927a228ba579610",
   "steps": [
     {
       "text": "Selecting items in {inv} opens the print screen, titled {print}, with those items ready to print.",
       "labels": {"inv": "nav.inventory", "print": "labels.print_labels"},
-      "image": null,
-      "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
+      "image": "img/print-labels-1.webp",
+      "capture": {"route": "/labels/print-list", "selector": "main div.settings-card", "actions": [], "evidence": ["{print}"]}
     },
     {
       "text": "Pick the {tmpl} to use, then confirm with {btn} to open the print dialog.",
       "labels": {"tmpl": "label.label_template", "btn": "btn._print_labels"},
-      "image": null,
-      "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
+      "image": "img/print-labels-2.webp",
+      "capture": {"route": "/labels/print-list", "selector": "main div.settings-card", "actions": [], "evidence": ["{tmpl}", "{btn}"]}
     },
     {
       "text": "Other screens print labels for their own records the same way, such as asset tags from the fixed asset register, on the first template that fits unless you pick another.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
+      "image": "img/print-labels-3.webp",
+      "capture": {"route": "/labels/print-list", "selector": "main", "actions": [], "evidence": ["main form"]}
     },
     {
       "text": "You can also ask the assistant to print labels for items you name, using one of your templates. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
+      "image": "img/print-labels-4.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Print shelf labels for the mugs"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["labels.settings"]

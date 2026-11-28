@@ -682,7 +682,7 @@ class TestCRUDCreate:
     @pytest.mark.asyncio
     async def test_create_subscription(self, ui):
         ui.cookies.update(_c())
-        with _Patches({"ui.api_client.create_subscription": AsyncMock(return_value={"id": "sub:new", "event_id": 1})}):
+        with _Patches({"ui.api_client.create_doc": AsyncMock(return_value={"id": "sub:new", "event_id": 1})}):
             r = await ui.post("/subscriptions/new",
                              data={"name": "Test Sub", "frequency": "monthly", "doc_type": "invoice",
                                    "start_date": "2026-03-01"})
@@ -808,7 +808,7 @@ class TestWorkflows:
     async def test_subscription_pause(self, ui):
         ui.cookies.update(_c())
         with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value={"ok": True}),
-                       "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
+                       "ui.api_client.get_doc": AsyncMock(return_value=_SUB)}):
             r = await ui.post("/subscriptions/sub:1/pause")
         assert r.status_code in (200, 204, 302, 303)
 
@@ -816,7 +816,7 @@ class TestWorkflows:
     async def test_subscription_resume(self, ui):
         ui.cookies.update(_c())
         with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value={"ok": True}),
-                       "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
+                       "ui.api_client.get_doc": AsyncMock(return_value=_SUB)}):
             r = await ui.post("/subscriptions/sub:1/resume")
         assert r.status_code in (200, 204, 302, 303)
 
@@ -826,7 +826,7 @@ class TestWorkflows:
         billed = {"doc_id": "doc:1", "ref_id": "INV-0001", "period_index": 0, "already_billed": False,
                   "service_start": "2026-01-01", "service_end": "2026-01-31", "bill_date": "2026-01-01"}
         with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value=billed),
-                       "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
+                       "ui.api_client.get_doc": AsyncMock(return_value=_SUB)}):
             r = await ui.post("/subscriptions/sub:1/generate-due")
         assert r.status_code == 204
         assert "INV-0001" in unquote(str(r.headers))

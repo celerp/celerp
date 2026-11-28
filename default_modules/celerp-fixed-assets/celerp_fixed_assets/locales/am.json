@@ -635,6 +635,7 @@
   "fixed_assets.class_account_inactive": "{asset_class} ወደ ሂሳብ {account} ይመዘግባል፣ እሱም ንቁ አይደለም።",
   "fixed_assets.class_account_header": "{asset_class} ወደ ሂሳብ {account} ይመዘግባል፣ እሱም ከሥሩ ሂሳቦች ያሉት ርዕስ ሂሳብ ነው።",
   "fixed_assets.class_account_not_in_chart": "{asset_class} ወደ ሂሳብ {account} ይመዘግባል፣ እሱም በሂሳብ ሰንጠረዡ ውስጥ የለም።",
+  "fixed_assets.class_account_foreign_bank": "{asset_class} ወደ ሂሳብ {account} ይመዘግባል፣ እሱም ከመዝገቦቹ ምንዛሬ በተለየ ምንዛሬ የሚያዝ የባንክ ሂሳብ ነው።",
   "fixed_assets.recon_ledger": "ዋና መዝገብ",
   "fixed_assets.recon_registered": "መዝገብ",
   "fixed_assets.recon_status.reconciled": "ታርቋል",

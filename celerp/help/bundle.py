@@ -92,7 +92,7 @@ def _unique(values) -> bool:
     return len(values) == len(set(values))
 
 
-def _str_list(value) -> bool:
+def is_str_list(value) -> bool:
     return isinstance(value, list) and all(isinstance(v, str) for v in value)
 
 
@@ -115,12 +115,12 @@ def _strings(value, path):
 
 def _languages(b, out):
     site = b["site_languages"]
-    if not _str_list(site) or not all(_LANGUAGE.match(c) for c in site) or not _unique(site) \
+    if not is_str_list(site) or not all(_LANGUAGE.match(c) for c in site) or not _unique(site) \
             or "en" not in site:
         out.append("V3 site_languages: must be unique language codes including \"en\"")
         site = []
     locales = b["locales"]
-    if not _str_list(locales) or not _unique(locales) or "en" not in locales:
+    if not is_str_list(locales) or not _unique(locales) or "en" not in locales:
         out.append("V3 locales: must be unique language codes including \"en\"")
         return None
     for code in locales:
@@ -272,7 +272,7 @@ def _table_v(b) -> list[str]:
             out.append(f"V7 topics[{tid}].text.en.title: same title as {by_title[title]}")
         by_title.setdefault(title, tid)
     for tid, refs in related.items():
-        if not _str_list(refs) or any(r == tid or r not in ids for r in refs):
+        if not is_str_list(refs) or any(r == tid or r not in ids for r in refs):
             out.append(f"V8 topics[{tid}].related: must list other live topic ids")
     _images(b, steps, out)
     _tombstones(b, ids, modules, out)

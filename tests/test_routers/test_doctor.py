@@ -636,7 +636,7 @@ async def test_doctor_fix_duplicate_jes(client, session):
 # --- Doctor fix: zero-amount JEs ---
 
 @pytest.mark.asyncio
-async def test_doctor_fix_zero_amount_je(client, session):
+async def test_doctor_fix_zero_amount_je(client, session, monkeypatch):
     """Create a zero-amount JE; doctor should detect and fix it."""
     import uuid as _uuid
     from celerp.events.engine import emit_event as _emit
@@ -647,7 +647,13 @@ async def test_doctor_fix_zero_amount_je(client, session):
 
     je_id = f"je:auto:doc:zero-{_uuid.uuid4().hex[:8]}:fin"
 
-    # Use the test session directly (same DB as the HTTP client)
+    # An entry an older version stored, before the journal boundary refused a line that moves
+    # nothing: written past the boundary on the test session (same DB as the HTTP client).
+    async def _written_before_the_boundary(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("celerp.services.journal_accounts.prepare_journal_entry", _written_before_the_boundary)
+    monkeypatch.setattr("celerp.services.journal_accounts.normalize_journal_entry", _written_before_the_boundary)
     await _emit(
         session, company_id=company_id,
         entity_id=je_id,
@@ -661,6 +667,7 @@ async def test_doctor_fix_zero_amount_je(client, session):
         metadata_={},
     )
     await session.commit()
+    monkeypatch.undo()
 
     # Detect
     r = await client.post("/admin/doctor?checks=zero_amount_jes", headers=_h(token))

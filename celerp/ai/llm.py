@@ -74,6 +74,9 @@ class ModelResult:
     # A first turn's whole charge for its operation, named by the service on every
     # reply to it (a retry included); None from a service that does not name it.
     operation_credits: int | None = None
+    # Why the model stopped, as the service names it ("length": the reply was cut at
+    # the length limit); None from a service that does not name it.
+    finish_reason: str | None = None
 
 
 # Refusals the caller shows as their own states, raised as an HTTPException
@@ -245,7 +248,6 @@ async def complete(
     operation_id: uuid.UUID | None = None,
     step_id: uuid.UUID | None = None,
     hints: dict | None = None,
-    max_tokens: int = 2048,
     before_send: Callable[[int], Awaitable[None]] | None = None,
 ) -> ModelResult:
     """Run a structured completion through the gateway.
@@ -256,7 +258,8 @@ async def complete(
     The caller holds a slot of the model gate (celerp.ai.jobs.gate) and sends the
     call as a step of celerp.ai.jobs.send_step, the one place a refusal is answered
     (a step still running is asked again after ``retry_after``); the call's
-    budget is computed once the slot is held and declared to the service.
+    budget is computed once the slot is held and declared to the service, and the
+    reply may run to the longest length the service publishes it finishes in time.
     ``before_send(nbytes)`` is awaited after the budget and before the request
     leaves, with the body's size (a job step journals the send there).
 
@@ -273,7 +276,8 @@ async def complete(
     """
     assert jobs.holding_slot(), "a model call runs inside a slot of celerp.ai.jobs.gate"
     assert jobs.sending_step(), "a model call is sent as a step of celerp.ai.jobs.send_step"
-    body: dict = {"messages": messages, "max_tokens": max_tokens}
+    held = await deadlines.limits()
+    body: dict = {"messages": messages, "max_tokens": held.max_tokens}
     if hints is not None:
         body["hints"] = hints
     if tools is not None:
@@ -290,7 +294,7 @@ async def complete(
         body["step_id"] = str(step_id)
 
     nbytes = len(jsonlib.dumps(body))
-    budget = deadlines.call_budget(await deadlines.limits(), nbytes)
+    budget = deadlines.call_budget(held, nbytes)
     if before_send is not None:
         await before_send(nbytes)
     resp = await _relay_request("POST", "/ai/complete", body=body, budget=budget,
@@ -308,6 +312,7 @@ async def complete(
             reservation_id=data.get("reservation_id"),
             remaining=data.get("remaining"),
             operation_credits=_count(data.get("operation_credits")),
+            finish_reason=reason if isinstance(reason := data.get("finish_reason"), str) else None,
         )
 
     detail = _error_detail(resp)

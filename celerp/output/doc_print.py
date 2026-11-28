@@ -176,13 +176,6 @@ def unwrap_address(raw) -> str:
     return str(raw)
 
 
-def compose_address(a: dict) -> str:
-    """One-line address from a contact address dict (for the letterhead)."""
-    parts = [a.get("line1", ""), a.get("line2", ""), a.get("city", ""), a.get("state", ""),
-             a.get("postal_code", ""), a.get("country", "")]
-    return ", ".join(p for p in parts if p)
-
-
 DOC_PRINT_CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background: white; padding: 20mm; }

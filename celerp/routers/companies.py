@@ -19,7 +19,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail
+from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail, refused
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.importers.results import BatchImportResult, record_refused, row_flag, row_n, row_refusal
@@ -217,9 +217,28 @@ class CategorySchemaPatch(BaseModel):
         return self
 
 
+_ColumnKey = Annotated[str, Field(min_length=1, max_length=100)]
+
+
+class ColumnLayout(BaseModel):
+    """One table's column setup: which columns show, their order, and their widths (a CSS
+    width or a percentage of the table)."""
+    model_config = ConfigDict(extra="forbid")
+    vis: dict[_ColumnKey, bool] | None = Field(default=None, max_length=200)
+    order: list[_ColumnKey] | None = Field(default=None, max_length=200)
+    widths: dict[_ColumnKey, Annotated[str, Field(max_length=20)] | FiniteFloat] | None = Field(default=None, max_length=200)
+
+
+# The tables that have a column setup: the item list, the two contact lists, and the lines of
+# each kind of document or list (doc_lines_<kind>). One user keeps at most MAX_COLUMN_TABLES.
+COLUMN_TABLES = frozenset({"inventory", "customers", "vendors"})
+_DOC_LINES_TABLE = re.compile(r"doc_lines_[a-z][a-z_]{0,60}")
+MAX_COLUMN_TABLES = 40
+
+
 class ColumnPrefsPatch(BaseModel):
-    # key = category name or "__all__"; value = list of visible column keys
-    prefs: dict[str, list[str]]
+    # key = table name; a layout's given parts replace the saved ones, null forgets the table
+    prefs: dict[_ColumnKey, ColumnLayout | None] = Field(max_length=50)
 
 
 class TaxRate(BaseModel):
@@ -1670,29 +1689,41 @@ async def set_category_gift(
     return {"ok": True, "category": category_key, "gift": payload.gift}
 
 
-@router.get("/me/column-prefs", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read which columns the item list shows for each category.")
-async def get_column_prefs(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    """Return column visibility prefs keyed by category or '__all__'."""
+@router.get("/me/column-prefs", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read the signed-in user's column setup for each table.")
+async def get_column_prefs(user=Depends(get_current_user), company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+    """Return the signed-in user's column layouts, keyed by table name."""
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return company.settings.get("column_prefs") or {}
+    return (company.settings.get("column_prefs") or {}).get(str(user.id)) or {}
 
 
-@router.patch("/me/column-prefs", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general", "x-celerp-agent-any-role": True}, summary="Change which columns the item list shows for a category.")
+@router.patch("/me/column-prefs", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general", "x-celerp-agent-any-role": True}, summary="Change the signed-in user's column setup for a table.")
 async def patch_column_prefs(
     payload: ColumnPrefsPatch,
+    user=Depends(get_current_user),
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Merge column visibility prefs. Any user (not admin-only) can save their view prefs."""
+    """Merge the signed-in user's column layouts: each user keeps their own, and any user (not
+    admin-only) can save theirs."""
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
-    prefs = dict(settings.get("column_prefs") or {})
-    prefs.update(payload.prefs)
-    settings["column_prefs"] = prefs
+    every_user = dict(settings.get("column_prefs") or {})
+    mine = dict(every_user.get(str(user.id)) or {})
+    for table, layout in payload.prefs.items():
+        if layout is None:
+            mine.pop(table, None)
+        elif table in COLUMN_TABLES or _DOC_LINES_TABLE.fullmatch(table):
+            mine[table] = {**mine.get(table, {}), **layout.model_dump(exclude_none=True)}
+        else:
+            raise refused(422, "settings.err_column_table_unknown", table=table)
+    if len(mine) > MAX_COLUMN_TABLES:
+        raise refused(422, "settings.err_column_tables_full", limit=MAX_COLUMN_TABLES)
+    every_user[str(user.id)] = mine
+    settings["column_prefs"] = every_user
     company.settings = settings
     await session.commit()
     return {"ok": True}

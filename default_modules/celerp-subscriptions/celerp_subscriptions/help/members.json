@@ -22,11 +22,14 @@
       "labels": {
         "nav": "nav.members"
       },
-      "image": null,
+      "image": "img/members-1.webp",
       "capture": {
         "route": "/members",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{nav}"
+        ]
       }
     },
     {
@@ -37,11 +40,16 @@
         "days": "subscriptions.grace_days",
         "lapsed": "enum.member_standing.lapsed"
       },
-      "image": null,
+      "image": "img/members-2.webp",
       "capture": {
         "route": "/members",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{cur}",
+          "{grace}",
+          "{lapsed}"
+        ]
       }
     },
     {
@@ -50,11 +58,15 @@
         "ended": "enum.member_standing.ended",
         "status": "th.status"
       },
-      "image": null,
+      "image": "img/members-3.webp",
       "capture": {
         "route": "/members",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{ended}",
+          "{status}"
+        ]
       }
     },
     {
@@ -62,11 +74,14 @@
       "labels": {
         "life": "enum.member_standing.lifetime"
       },
-      "image": null,
+      "image": "img/members-4.webp",
       "capture": {
         "route": "/members",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{life}"
+        ]
       }
     },
     {
@@ -74,21 +89,32 @@
       "labels": {
         "new": "page.new_membership"
       },
-      "image": null,
+      "image": "img/members-5.webp",
       "capture": {
         "route": "/members",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{new}"
+        ]
       }
     },
     {
       "text": "You can also ask the assistant which members are in good standing or overdue, or to send, skip or reopen a period. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/members-6.webp",
       "capture": {
-        "route": "/members",
-        "selector": "main",
-        "actions": []
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Which members are overdue?"
+          }
+        ],
+        "evidence": [
+          "#ai-query-input"
+        ]
       }
     }
   ],

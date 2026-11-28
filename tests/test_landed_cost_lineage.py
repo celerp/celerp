@@ -166,7 +166,7 @@ _SPREADERS = {
     (_FA_DISPOSAL, "_split"): "an asset's balances over the part disposed of and the rest",
     (_FA_OPS, "register"): "a bill line's cost over the separate assets it registers",
     (_FA_OPS, "plan"): "register's split of that cost, worked out before anything is written",
-    (_MFG, "_close"): "a production run's cost over its outputs",
+    (_MFG, "_output_shares"): "a production run's cost over its outputs by cost share, then over each output's lots by quantity",
     (_MFG, "reconcile"): "a production run's variance over its outputs",
     (_DOCS, "_received_goods_cost"): "a line's cost over its receipts",
     (_DOCS, "_received_landed"): "a line's landed cost over its receipts",

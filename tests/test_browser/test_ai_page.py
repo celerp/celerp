@@ -206,6 +206,27 @@ class TestShowcasePage:
         assert found, "AI Assistant nav link not active"
 
 
+def _long_thread(page: Page) -> None:
+    """Fill the thread with more replies than the window holds."""
+    page.evaluate("""() => { var m = document.getElementById('ai-messages');
+        for (var i = 0; i < 14; i++) {
+            var d = document.createElement('div');
+            d.className = 'ai-msg ' + (i % 2 ? 'ai-msg--ai' : 'ai-msg--user');
+            d.textContent = 'A reply that takes several lines to read. '.repeat(i % 2 ? 10 : 1);
+            m.appendChild(d);
+        } }""")
+
+
+def _count_sends(page: Page):
+    """Count the composer's sends, stopping each before it leaves the page."""
+    page.evaluate("""() => { window.__aiSends = 0;
+        document.addEventListener('submit', function (e) {
+            if (e.target.id !== 'ai-chat-form') return;
+            window.__aiSends += 1; e.preventDefault(); e.stopImmediatePropagation();
+        }, true); }""")
+    return lambda: page.evaluate("window.__aiSends")
+
+
 # ── Chat view (with session token) ────────────────────────────────────────────
 
 class TestChatView:
@@ -280,6 +301,20 @@ class TestChatView:
         assert form.get_attribute("hx-sync") == "this:drop"
         expect(form.locator(".ai-input__receipts")).to_be_disabled()
 
+    def test_the_composer_counts_the_prompt_against_the_limit_and_keeps_a_longer_one(self, page, ui_server):
+        """The counter under the box follows what is typed, counting characters (an emoji is
+        one), and a prompt past the limit is marked, never cut short."""
+        page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
+        count, field = page.locator("#ai-query-count"), page.locator("#ai-query-input")
+        limit = int(count.get_attribute("data-limit"))
+        field.fill("hello \U0001F44D")
+        expect(count).to_have_text(f"7 / {limit}")
+        expect(count).not_to_have_class(css_class("ai-input__count--over"))
+        field.fill("x" * (limit + 1))
+        expect(count).to_have_text(f"{limit + 1} / {limit}")
+        expect(count).to_have_class(css_class("ai-input__count--over"))
+        assert len(field.input_value()) == limit + 1
+
     def test_chat_has_file_input(self, page, ui_server):
         """Hidden file input for attachments exists."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
@@ -306,6 +341,60 @@ class TestChatView:
         field, send, receipts = settled_boxes(page, "#ai-query-input", ".ai-input__send", ".ai-input__receipts")
         assert send["y"] > field["y"]
         assert abs(send["y"] - receipts["y"]) <= 2
+
+    @pytest.mark.parametrize("width,height", [(1366, 900), (390, 844)])
+    def test_only_the_thread_scrolls_and_the_composer_stays_in_view(self, page, ui_server, width, height):
+        page.set_viewport_size({"width": width, "height": height})
+        page.goto(f"{ui_server}/ai", wait_until="load")
+        _long_thread(page)
+        box = page.evaluate("""() => {
+            var m = document.getElementById('ai-messages');
+            return {page: document.scrollingElement.scrollHeight, window: innerHeight,
+                    composer: document.getElementById('ai-chat-form').getBoundingClientRect().bottom,
+                    thread: m.scrollHeight, shown: m.clientHeight};
+        }""")
+        assert box["page"] <= box["window"], f"the page scrolls, not only the thread: {box}"
+        assert box["composer"] <= box["window"], f"the composer runs past the window: {box}"
+        assert box["thread"] > box["shown"], f"the long thread does not scroll in its own box: {box}"
+
+    def test_enter_sends_and_shift_enter_starts_a_new_line(self, page, ui_server):
+        page.goto(f"{ui_server}/ai", wait_until="load")
+        sent = _count_sends(page)
+        field = page.locator("#ai-query-input")
+        field.click()
+        field.type("first line")
+        field.press("Shift+Enter")
+        field.type("second line")
+        assert field.input_value() == "first line\nsecond line"
+        assert sent() == 0
+        field.press("Enter")
+        assert sent() == 1
+        field.press("Control+Enter")
+        field.press("Meta+Enter")
+        assert sent() == 3
+
+    def test_enter_while_typing_in_an_input_method_does_not_send(self, page, ui_server):
+        page.goto(f"{ui_server}/ai", wait_until="load")
+        sent = _count_sends(page)
+        page.locator("#ai-query-input").fill("สวัสดี")
+        page.evaluate("""() => document.getElementById('ai-query-input').dispatchEvent(
+            new KeyboardEvent('keydown', {key: 'Enter', isComposing: true, bubbles: true, cancelable: true}))""")
+        assert sent() == 0
+
+    def test_a_long_prompt_grows_the_field_instead_of_clipping(self, page, ui_server):
+        page.goto(f"{ui_server}/ai", wait_until="load")
+        field = page.locator("#ai-query-input")
+        one_line = field.bounding_box()["height"]
+        field.fill("A long prompt that keeps going " * 12)
+        grown = page.evaluate("""() => { var f = document.getElementById('ai-query-input');
+            return {height: f.getBoundingClientRect().height, wide: f.scrollWidth, shown: f.clientWidth}; }""")
+        assert grown["height"] > one_line * 1.5, f"the field stays one line high: {one_line} -> {grown}"
+        assert grown["wide"] <= grown["shown"], f"the prompt runs off the side of the field: {grown}"
+        field.fill("A line\n" * 60)
+        tall = page.evaluate("""() => { var f = document.getElementById('ai-query-input');
+            return {height: f.getBoundingClientRect().height, window: innerHeight,
+                    scrolls: f.scrollHeight > f.clientHeight}; }""")
+        assert tall["height"] < tall["window"] / 2 and tall["scrolls"], f"a very long prompt is not capped: {tall}"
 
     def test_chat_no_paperclip_button(self, page, ui_server):
         """Old paperclip attach button is removed; drop zone replaces it."""

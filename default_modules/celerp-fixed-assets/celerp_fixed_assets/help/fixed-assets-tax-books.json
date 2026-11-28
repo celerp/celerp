@@ -9,16 +9,16 @@
   "checked": "4a5f1bdec5bd2229a01e5695d960236081750aa3b9c1e9674c10a1dd3e8ad5de",
   "steps": [
     {
-      "text": "{title} shows the tax value of each asset under a tax regime, year by year. A category or election set here changes the open years only, and these figures never post to the ledger.",
+      "text": "{title} shows the tax value of each asset under a tax regime, year by year. A tax regime comes from a country module; until one is installed and chosen, the page says so and links to Modules. A category or election set here changes the open years only, and these figures never post to the ledger.",
       "labels": {"title": "fixed_assets.tax_books_title"},
-      "image": null,
-      "capture": {"route": "/fixed-assets/tax-books", "selector": "main", "actions": []}
+      "image": "img/tax-books-1.webp",
+      "capture": {"route": "/fixed-assets/tax-books", "selector": "main", "actions": [], "evidence": ["{title}"]}
     },
     {
       "text": "You can also ask the assistant for an asset's tax value or the tax depreciation for a year.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/fixed-assets/tax-books", "selector": "main", "actions": []}
+      "image": "img/tax-books-2.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "What is the tax depreciation for last year?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["fixed-assets.register"]

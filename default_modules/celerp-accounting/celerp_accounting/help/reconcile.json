@@ -21,28 +21,47 @@
   ],
   "permission": "manage_accounting",
   "order": 3,
-  "checked": "93d88d722abc096d5e66e56a0d003eb03fc9fd26510c0541109260672e95aaf3",
+  "checked": "83cfb9b19922a8fe316ffabf158a2fc16d13ae1cd48212045653a9596b473ba3",
   "steps": [
     {
       "text": "Open {rec} from the sidebar. Each bank account is listed with its balance. Click a bank to open its page, where the lines of all its statements sit together.",
       "labels": {
         "rec": "nav.reconcile"
       },
-      "image": null,
+      "image": "img/reconcile-1.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": ".bank-list",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          ".bank-list__row"
+        ]
       }
     },
     {
       "text": "On a bank with no statement yet, drop the statement file on its page. Celerp reads PDF, CSV, Excel, OFX and QFX files and photos of a statement, then shows every line before anything is imported. If it doesn't recognise a CSV's columns, it asks which column holds the date, the description and the amount.",
       "labels": {},
-      "image": null,
+      "image": "img/reconcile-2.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": ".bank-list",
-        "actions": []
+        "selector": ".bank-drop",
+        "actions": [
+          {
+            "click": "a.bank-list__name"
+          },
+          {
+            "wait": ".bank-views"
+          },
+          {
+            "click": "details.screen-only > summary"
+          },
+          {
+            "wait": ".bank-drop"
+          }
+        ],
+        "evidence": [
+          ".bank-drop__form"
+        ]
       }
     },
     {
@@ -50,17 +69,55 @@
       "labels": {
         "another": "bank.drop_another"
       },
-      "image": null,
+      "image": "img/reconcile-3.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": "main",
+        "selector": "[data-testid=statement-preview]",
         "actions": [
           {
             "click": "a.bank-list__name"
           },
           {
             "wait": ".bank-views"
+          },
+          {
+            "click": "details.screen-only > summary"
+          },
+          {
+            "wait": ".bank-drop"
+          },
+          {
+            "upload": ".bank-drop input[data-drop]",
+            "value": "Date,Description,Amount,Balance\n2026-06-02,Card sales,850.00,4850.00\n2026-06-09,Office rent,-1200.00,3650.00\n2026-06-16,Customer payment,420.00,4070.00\n"
+          },
+          {
+            "wait": "[data-testid=statement-preview] [data-field=opening_balance] input"
+          },
+          {
+            "fill": "[data-testid=statement-preview] [data-field=opening_balance] input",
+            "value": "4000.00"
+          },
+          {
+            "press": "Enter"
+          },
+          {
+            "wait": "[data-testid=statement-preview] [data-field=opening_balance] input[value^='4000']"
+          },
+          {
+            "fill": "[data-testid=statement-preview] [data-field=closing_balance] input",
+            "value": "4070.00"
+          },
+          {
+            "press": "Enter"
+          },
+          {
+            "wait": "[data-testid=statement-preview] .flash--success"
           }
+        ],
+        "evidence": [
+          ".bank-preview__header",
+          ".bank-row--preview",
+          ".flash--success"
         ]
       }
     },
@@ -73,26 +130,7 @@
         "posted": "bank.view_posted",
         "all": "bank.view_all"
       },
-      "image": null,
-      "capture": {
-        "route": "/accounting/reconcile/start",
-        "selector": ".bank-views",
-        "actions": [
-          {
-            "click": "a.bank-list__name"
-          },
-          {
-            "wait": ".bank-views"
-          }
-        ]
-      }
-    },
-    {
-      "text": "Tick the groups whose suggestion is right and click Post ticked. The button shows how many lines and what total you are posting. Each posted line keeps an Undo until its statement is complete. {suggest} looks again for an answer to every open line.",
-      "labels": {
-        "suggest": "bank.suggest"
-      },
-      "image": null,
+      "image": "img/reconcile-4.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
         "selector": "main",
@@ -103,6 +141,40 @@
           {
             "wait": ".bank-views"
           }
+        ],
+        "evidence": [
+          "{open}",
+          "{suggested}",
+          "{questions}",
+          "{posted}",
+          "{all}",
+          ".bank-row--group .bank-group__name"
+        ]
+      }
+    },
+    {
+      "text": "Tick the groups whose suggestion is right and click Post ticked. The button shows how many lines and what total you are posting. Each posted line keeps an Undo until its statement is complete. {suggest} looks again for an answer to every open line.",
+      "labels": {
+        "suggest": "bank.suggest"
+      },
+      "image": "img/reconcile-5.webp",
+      "capture": {
+        "route": "/accounting/reconcile/start",
+        "selector": "#bank-body",
+        "actions": [
+          {
+            "click": "a.bank-list__name"
+          },
+          {
+            "wait": ".bank-views"
+          },
+          {
+            "click": "input[data-role=group]"
+          }
+        ],
+        "evidence": [
+          "{suggest}",
+          ".bulk-toolbar__post"
         ]
       }
     },
@@ -113,10 +185,10 @@
         "postbtn": "btn.post",
         "split": "bank.split"
       },
-      "image": null,
+      "image": "img/reconcile-6.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": "main",
+        "selector": "main div.bank-groups",
         "actions": [
           {
             "click": "a.bank-list__name"
@@ -129,26 +201,45 @@
           },
           {
             "wait": ".bank-panel"
+          },
+          {
+            "click": ".bank-panel > label.form-label"
           }
+        ],
+        "evidence": [
+          "{postbtn}"
         ]
       }
     },
     {
-      "text": "When you don't know what a line was, click {ask} and write your question. The client answers on their questions page, with a receipt if they have one, and their answer becomes the line's suggestion. Lines asked about show under Questions.",
+      "text": "When you don't know what a line was, click {ask} beside it, write {note} and click {send}. The client answers on their questions page, with a receipt if they have one, and their answer becomes the line's suggestion. Lines asked about show under Questions.",
       "labels": {
-        "ask": "bank.ask_client"
+        "ask": "bank.ask_client",
+        "note": "bank.ask_note_label",
+        "send": "bank.ask_send"
       },
-      "image": null,
+      "image": "img/reconcile-7.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": "main",
+        "selector": "main div.bank-groups",
         "actions": [
           {
             "click": "a.bank-list__name"
           },
           {
             "wait": ".bank-views"
+          },
+          {
+            "click": "[data-open=ask]"
+          },
+          {
+            "wait": "[data-panel=ask]"
           }
+        ],
+        "evidence": [
+          "{note}",
+          "[data-panel=ask] textarea",
+          "[data-panel=ask] .btn--primary"
         ]
       }
     },
@@ -157,10 +248,10 @@
       "labels": {
         "complete": "bank.complete"
       },
-      "image": null,
+      "image": "img/reconcile-8.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": "main",
+        "selector": "main div.bank-actions-bar",
         "actions": [
           {
             "click": "a.bank-list__name"
@@ -168,6 +259,9 @@
           {
             "wait": ".bank-views"
           }
+        ],
+        "evidence": [
+          "{complete}"
         ]
       }
     },
@@ -176,11 +270,14 @@
       "labels": {
         "rules": "page.reconciliation_rules"
       },
-      "image": null,
+      "image": "img/reconcile-9.webp",
       "capture": {
         "route": "/settings/accounting?tab=rules",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{rules}"
+        ]
       }
     },
     {
@@ -188,21 +285,32 @@
       "labels": {
         "history": "recon.history"
       },
-      "image": null,
+      "image": "img/reconcile-10.webp",
       "capture": {
         "route": "/accounting/reconcile/start",
-        "selector": ".bank-list",
-        "actions": []
+        "selector": ".bank-list__row",
+        "actions": [],
+        "evidence": [
+          "{history}"
+        ]
       }
     },
     {
       "text": "The assistant can read a statement, suggest answers and settle lines for you. It shows what it proposes on one card, and nothing is posted until you confirm. The card links to the bank page, where you can change what is ticked.",
       "labels": {},
-      "image": null,
+      "image": "img/reconcile-11.webp",
       "capture": {
-        "route": "/accounting/reconcile/start",
-        "selector": ".bank-list",
-        "actions": []
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Suggest answers for the open lines on my bank statement"
+          }
+        ],
+        "evidence": [
+          "#ai-query-input"
+        ]
       }
     }
   ],

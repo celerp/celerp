@@ -194,7 +194,7 @@ jobs:
           CELERP_TEST_DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         run: >
-          timeout 600 pytest tests/ default_modules/*/tests/ -m "process and not integration and not real_packs" -n auto -q --tb=short --no-cov
+          timeout 900 pytest tests/ default_modules/*/tests/ -m "process and not integration and not real_packs" -n auto -q --tb=short --no-cov
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
 
@@ -332,6 +332,11 @@ jobs:
 
       - name: Install Chromium for Playwright
         run: python -m playwright install --with-deps chromium
+
+      # The fonts the help pictures are taken with (pinned in tests/test_browser/test_help_capture.py),
+      # so the read-only freshness check renders each screen as its committed picture was.
+      - name: Install the help capture fonts
+        run: sudo apt-get install -y --no-install-recommends fonts-liberation fonts-dejavu-core fonts-freefont-ttf fonts-noto-color-emoji
 
       - name: Tune the throwaway Postgres
         run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test

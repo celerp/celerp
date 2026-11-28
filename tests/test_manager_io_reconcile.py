@@ -110,6 +110,12 @@ def test_manager_foreign_currency_records_convert_at_their_own_rates():
         Decimal("12.00"), Decimal("10.00"), "EUR", Decimal("1.2"))
     [transfer] = bundle.bank_transfers
     assert (transfer.amount, transfer.to_amount) == (Decimal("20.00"), Decimal("26.00"))
+    # A cutover's opening line for the euro bank keeps its euro balance at the rate the two balances imply.
+    [opening] = [j for j in manager.build_manifest([art], cutover).bundle.journals
+                 if j.source_type == "OpeningBalances"]
+    [bank_opening] = [ln for ln in opening.lines if ln.account_external_id == ref("EBANK")]
+    assert (bank_opening.debit, bank_opening.fx_debit, bank_opening.fx_currency, bank_opening.fx_rate) == (
+        Decimal("125.00"), Decimal("100"), "EUR", Decimal("1.25"))
 
 
 def test_manager_foreign_record_without_any_rate_is_blocked(tmp_path):

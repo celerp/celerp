@@ -23,6 +23,7 @@ from celerp.importers.results import ImportOutcome, record_refused, row_refusal
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
+from celerp.services.journal_accounts import require_destinations
 from celerp.services.peer_lines import (
     ImportFundChoices, check_import_fund_choices, chosen_journal_lines, journal_inbound_keys, refuse_inbound,
 )
@@ -119,6 +120,11 @@ async def import_journal_records(
         if rec.idempotency_key in existing_keys or rec.entity_id in existing_entities:
             outcome.add(rec.entity_id, "skipped")
             continue
+        if isinstance(found := rec.data.get("entries"), list):
+            # Only these books' own copiers name the posted entry a line copies; an imported line is a
+            # new posting, judged as one whatever the file says.
+            rec = rec.model_copy(update={"data": {**rec.data, "entries": [
+                {k: v for k, v in e.items() if k != "posted_from"} if isinstance(e, dict) else e for e in found]}})
         try:
             # An imported line may name a party. Checked here, at the boundary,
             # because an entry whose contact resolves to nothing would post to a
@@ -126,7 +132,13 @@ async def import_journal_records(
             # nothing on screen to say why.
             entries = rec.data.get("entries") if isinstance(rec.data, dict) else None
             if isinstance(entries, list):
-                await check_line_contacts(session, company_id, [e for e in entries if isinstance(e, dict)])
+                lines = [e for e in entries if isinstance(e, dict)]
+                await check_line_contacts(session, company_id, lines)
+                # An imported journal is a new posting: each line goes to an active account
+                # with nothing under it, as a manual journal does. A line naming no account
+                # is checked as one: it is not in the chart.
+                await require_destinations(session, company_id, {
+                    a if isinstance(a := e.get("account"), str) else "" for e in lines}, foreign_amounts=True)
             data, grant = await _with_fund_choices(session, company_id, rec, fund_choices, origin)
             entry = await emit_event(
                 session,

@@ -410,6 +410,24 @@ from ui.i18n import I18nMiddleware  # noqa: E402
 app.add_middleware(I18nMiddleware)
 
 
+class CommercialMirrorMiddleware:
+    """Pure ASGI middleware: before each request, bring this process's commercial
+    context up to the one the API persisted. The UI never receives the relay push,
+    so without this every partner-managed choice here (the Enterprise mark, the
+    partner's offers in place of direct prices) would read the neutral default."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            from celerp.gateway.state import mirror_stored_commercial_context
+            mirror_stored_commercial_context()
+        await self._app(scope, receive, send)
+
+app.add_middleware(CommercialMirrorMiddleware)
+
+
 class NoStorePagesMiddleware:
     """Pure ASGI middleware: HTML responses carry Cache-Control: no-store unless the
     route set its own, so Back never shows a page cached for another company or user."""

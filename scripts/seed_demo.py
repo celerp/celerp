@@ -211,7 +211,9 @@ async def _advance(client: httpx.AsyncClient, headers: dict, doc_id: str, steps:
                 }, headers=headers), f"recording payment on {key}")
 
 
-async def seed_docs(client: httpx.AsyncClient, token: str, contacts: list[dict], doc_type: str, count: int):
+async def seed_docs(client: httpx.AsyncClient, token: str, contacts: list[dict], doc_type: str, count: int,
+                    today: date | None = None):
+    """``count`` documents dated within 180 days before ``today`` (the day of the run when unset)."""
     headers = {"Authorization": f"Bearer {token}"}
     wanted = "vendor" if doc_type == "purchase_order" else "customer"
     pool = [c for c in contacts if c.get("contact_type") in (wanted, "both")]
@@ -223,7 +225,7 @@ async def seed_docs(client: httpx.AsyncClient, token: str, contacts: list[dict],
         print(f"Seeding failed: no items to use for {doc_type}", file=sys.stderr)
         sys.exit(1)
     lifecycles = _LIFECYCLES[doc_type]
-    today = date.today()
+    today = today or date.today()
     for i in range(count):
         # A re-run seeds the same documents instead of adding more, and the actions
         # below skip whatever step already happened.

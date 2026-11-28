@@ -16,6 +16,7 @@ import re
 from urllib.parse import urlsplit
 
 from fastcore.xml import to_xml
+from markdown_it import MarkdownIt
 from starlette.responses import HTMLResponse
 
 from celerp.services.app_paths import is_app_local_path
@@ -129,6 +130,28 @@ def to_markup(node) -> Admitted:
     if isinstance(node, (str, bytes)):
         raise TypeError("only a FastHTML node renders to markup")
     return Admitted(to_xml(node))
+
+
+class _Markdown(MarkdownIt):
+    """CommonMark with tables and strikethrough, raw HTML shown as text, a link only
+    where ``safe_url`` keeps its target, and no images: image syntax shows as text, so
+    rendered text never makes the browser fetch anything."""
+
+    def __init__(self):
+        super().__init__("commonmark", {"html": False})
+        self.enable(["table", "strikethrough"])
+        self.disable("image")
+
+    def validateLink(self, url: str) -> bool:
+        return super().validateLink(url) and safe_url(url) == url
+
+
+_MARKDOWN = _Markdown()
+
+
+def markdown_markup(text: str) -> Admitted:
+    """*text* rendered from its Markdown (``_Markdown``): HTML written in it shows as text."""
+    return Admitted(_MARKDOWN.render(text))
 
 
 def html_response(node, **kwargs) -> HTMLResponse:

@@ -86,6 +86,13 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
     expect(lines).to_have_count(3)
     lines.nth(2).locator("input[type=checkbox]").uncheck()
     expect(page.locator(".bulk-toolbar")).to_contain_text("2 lines")
+    # With nothing ticked the bulk bar goes away; ticking brings it back.
+    for i in (0, 1):
+        lines.nth(i).locator("input[type=checkbox]").uncheck()
+    expect(page.locator(".bulk-toolbar")).to_be_hidden()
+    for i in (0, 1):
+        lines.nth(i).locator("input[type=checkbox]").check()
+    expect(page.locator(".bulk-toolbar")).to_contain_text("2 lines")
 
     # Answer one line on its own with the searchable Answer dropdown.
     page.goto(f"/accounting/reconcile/bank/{bank_id}?view=all")
@@ -114,6 +121,8 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
     page.get_by_role("button", name="Post ticked").click()
     page.get_by_role("button", name="Confirm").click()
     expect(page.locator(".bulk-toolbar, [data-testid=outcome]")).to_contain_text("Posted 2")
+    # Nothing is ticked after the post, yet the bar stays up while it carries the outcome and its Undo.
+    expect(page.locator(".bulk-toolbar[data-testid=outcome]")).to_be_visible()
     page.goto(f"/accounting/reconcile/bank/{bank_id}?view=posted")
     first = page.locator("[data-line]").first
     first.get_by_role("button", name="Undo").click()

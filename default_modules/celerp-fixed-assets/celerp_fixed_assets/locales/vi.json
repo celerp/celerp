@@ -635,6 +635,7 @@
   "fixed_assets.class_account_inactive": "{asset_class} ghi sổ vào tài khoản {account}, tài khoản này đang ngừng hoạt động.",
   "fixed_assets.class_account_header": "{asset_class} ghi sổ vào tài khoản {account}, đây là tài khoản tổng hợp có các tài khoản con.",
   "fixed_assets.class_account_not_in_chart": "{asset_class} ghi sổ vào tài khoản {account}, tài khoản này không có trong hệ thống tài khoản.",
+  "fixed_assets.class_account_foreign_bank": "{asset_class} ghi sổ vào tài khoản {account}, đây là tài khoản ngân hàng theo đơn vị tiền tệ khác với sổ sách.",
   "fixed_assets.recon_ledger": "Sổ cái",
   "fixed_assets.recon_registered": "Sổ đăng ký",
   "fixed_assets.recon_status.reconciled": "Đã khớp",

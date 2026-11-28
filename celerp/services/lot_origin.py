@@ -260,8 +260,8 @@ def uncertain_evidence(settings: dict, entries: list[tuple[str, dict]], codes, c
     return found
 
 
-# The postings that record a payment, by the trigger kept on the entry when it was
-# posted: their lines moved cash, whatever roles their accounts served.
+# The event type of every payment step on a document, kept as the trigger on the postings
+# that record it: their lines moved cash, whatever roles their accounts served.
 PAYMENT_TRIGGER = "doc.payment."
 
 
@@ -399,7 +399,8 @@ async def stock_off_books(session: AsyncSession, company_id, items: list[Project
 DELETED = "deleted"
 
 
-def _draft(state: dict) -> bool:
+def is_draft(state: dict) -> bool:
+    """A record still in draft: its status says so in any case."""
     return str(state.get("status") or "").lower() == "draft"
 
 
@@ -421,7 +422,7 @@ def refuse_draft(state: dict, ref: str = "") -> None:
     available. Names the lot by its SKU, or by ``ref`` (its id) when it has none. A
     deleted lot is refused as deleted (refuse_deleted)."""
     refuse_deleted(state, ref)
-    if _draft(state):
+    if is_draft(state):
         sku = state.get("sku") or ref or state.get("entity_id") or ""
         raise HTTPException(status_code=409, detail=refusal(
             "item.draft", f"{sku} is a draft, not stock yet: make it available first.", sku=sku))
@@ -474,7 +475,7 @@ def assert_draft_not_circulated(event_type: str, transition: Transition) -> None
         if event_type == "item.status.set" and after == "draft":
             return
         refuse_deleted(before)
-    if not _draft(before):
+    if not is_draft(before):
         return
     if is_authoring_event(event_type) and after in ("draft", "available", DELETED):
         return
@@ -487,7 +488,7 @@ def _legacy(items: list[Projection]) -> list[Projection]:
     must then know its account. A draft has never held stock and records its account
     when it is made available (draft_boundary)."""
     return [r for r in items
-            if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and _owned_stock(r) and not _draft(r.state or {})]
+            if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and _owned_stock(r) and not is_draft(r.state or {})]
 
 
 def _record_key(item_id: str) -> str:
@@ -1298,12 +1299,12 @@ async def draft_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     from celerp.services.auto_je import entry_day
 
     before, after = transition.before, transition.after
-    if before is None or _draft(before) == _draft(after) or is_deleted(before) or is_deleted(after):
+    if before is None or is_draft(before) == is_draft(after) or is_deleted(before) or is_deleted(after):
         return None
     settings = await current_settings(session, entry.company_id)
     if SCHEMA_KEY not in settings:
         return None
-    made_available = _draft(before)
+    made_available = is_draft(before)
     state = after if made_available else before
     value = held_value(SimpleNamespace(state=state, consignment_flag=state.get("consignment_flag")))
     if value is None:

@@ -6,25 +6,25 @@
   "routes": ["/settings/cloud"],
   "permission": "manage_integrations",
   "order": 1,
-  "checked": "d245441f0f26e9e2c55ab4185993d89a364a281db3edcebd8caa13ad93a9f3f8",
+  "checked": "e4623c77e92958e143bb01eea8f17232b2556bd3d282c1985ed75d8bdcd379bf",
   "steps": [
     {
       "text": "Open {access} from Settings. Celerp Connect adds {backup}: your database is encrypted on this machine before it ever leaves it.",
       "labels": {"access": "settings_cloud.web_access", "backup": "cloud.feature_backup_title"},
-      "image": null,
-      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+      "image": "img/cloud-backup-1.webp",
+      "capture": {"route": "/settings/cloud", "selector": "main .cloud-feature-card:has-text('Encrypted backups')", "actions": [], "evidence": ["{backup}"]}
     },
     {
       "text": "Once Celerp Connect is active, the status tab here shows when the last backup ran and when the next one is due.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+      "image": "img/cloud-backup-2.webp",
+      "capture": {"route": "/settings/cloud", "selector": "#cloud-backup-card", "actions": [], "evidence": ["#cloud-backup-card .detail-table"]}
     },
     {
       "text": "You can also ask the assistant when the last backup ran, to list your backups or to start one now. It shows each change as a card and makes it only when you confirm. Restoring a backup stays with you on this page.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+      "image": "img/cloud-backup-3.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "When did the last backup run?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["backup.local-backup"]

@@ -154,6 +154,7 @@ class _Relay:
         self.header = header
         self.limit_reads = 0
         self.declared: list[str | None] = []
+        self.max_tokens: list[int] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/ai/limits":
@@ -165,15 +166,16 @@ class _Relay:
             return httpx.Response(200, json=self.limits)
         assert request.url.path == "/ai/complete"
         self.declared.append(request.headers.get("X-AI-Attempt-Budget-S"))
+        self.max_tokens.append(json.loads(request.content)["max_tokens"])
         headers = {"X-AI-Limits": self.header} if self.header else {}
         return httpx.Response(200, headers=headers, json={
             "message": {"role": "assistant", "content": "ok"}, "model_used": "m",
             "usage": {"credits": 1}, "reservation_id": None, "remaining": 9, "operation_credits": 1})
 
 
-def _published(d=120, s=15, g=5, w=86400) -> dict:
+def _published(d=120, s=15, g=5, w=86400, t=4000) -> dict:
     return {"attempt_deadline_s": d, "settle_margin_s": s, "guard_s": g, "retry_window_s": w,
-            "max_body_bytes": 20 * MIB, "max_tokens": 4000}
+            "max_body_bytes": 20 * MIB, "max_tokens": t}
 
 
 @pytest.fixture
@@ -212,6 +214,23 @@ async def test_stale_limits_declare_the_budget_the_app_holds(relay):
     await _call()
     assert r.limit_reads == 2
     assert r.declared[-1] == "150"
+
+
+async def test_a_reply_may_run_as_long_as_the_service_publishes(relay):
+    """A long answer is not cut at a shorter length the app picked itself: each call
+    asks for the longest reply the service publishes it can finish in time."""
+    r = relay(_published(t=4000))
+    await _call()
+    r.limits = _published(t=6000)
+    deadlines.forget_limits()
+    await _call()
+    assert r.max_tokens == [4000, 6000]
+
+
+async def test_an_older_relay_is_asked_for_the_length_it_shipped_with(relay):
+    r = relay(None)
+    await _call()
+    assert r.max_tokens == [deadlines._OLDER_RELAY_LIMITS.max_tokens]
 
 
 async def test_limits_are_fetched_once_while_the_header_matches(relay):

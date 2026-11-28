@@ -475,7 +475,7 @@ async def test_period_list_first_use_shows_first_bill_date():
     async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
         ui.cookies.update({"celerp_token": make_test_token(role="owner")})
         with (
-            patch("ui.api_client.get_subscription", new=AsyncMock(return_value=doc)),
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.get_subscription_periods",
                   new=AsyncMock(return_value={"next_bill_date": "2026-06-01",
                                               "oldest_open_index": 0, "rows": []})),

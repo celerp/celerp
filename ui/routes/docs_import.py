@@ -20,7 +20,7 @@ import ui.api_client as api
 from celerp.services.money import document_line_amount
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
-from ui.components.table import EMPTY, breadcrumbs, display_enum, fmt_money, format_value, searchable_select
+from ui.components.table import EMPTY, breadcrumbs, display_enum, doc_href, fmt_money, format_value, searchable_select
 from ui.config import get_token as _token
 from ui.routes.csv_import import (
     CsvImportSpec,
@@ -447,12 +447,6 @@ def received_table(items: list[dict]) -> FT:
     return Div(Table(Thead(head), body, cls="data-table sticky-head", id="received-table"), cls="table-scroll-wrap")
 
 
-def _booked_href(kind: str | None, entity_id: str) -> str:
-    """Where a draft booked from a received document is opened: lists and
-    documents have their own pages."""
-    return f"/lists/{entity_id}" if kind == "list" else f"/docs/{entity_id}"
-
-
 def _received_actions(r: dict) -> FT:
     """What can be done with a received document in its current state."""
     state = r.get("revision_state")
@@ -474,7 +468,7 @@ def _received_actions(r: dict) -> FT:
         parts.append(Form(Button(t("received.mark_reconciled"), cls="btn btn--secondary", type="submit"),
                           method="post", action=f"/docs/received/{rid}/mark-reconciled"))
     if r.get("booked_id"):
-        parts.append(P(A(t("received.open_booked"), href=safe_url(_booked_href(r.get("booked_kind"), r["booked_id"])), cls="table-link")))
+        parts.append(P(A(t("received.open_booked"), href=safe_url(doc_href(r["booked_id"], r.get("booked_kind"))), cls="table-link")))
     return Div(*parts, cls="received-actions", style="margin: 16px 0;")
 
 
@@ -636,7 +630,7 @@ def setup_routes(app):
                            cls="btn btn--secondary btn--sm")
                     if isinstance(e.data, dict) and e.data.get("code") == "received_list_total" else None)
             return await _received_page(request, token, rid, error=str(e.detail), error_link=link)
-        return RedirectResponse(_booked_href(result.get("kind"), result["id"]), status_code=303)
+        return RedirectResponse(doc_href(result["id"], result.get("kind")), status_code=303)
 
     @app.post("/docs/received/{rid}/book")
     async def received_book(request: Request, rid: str):

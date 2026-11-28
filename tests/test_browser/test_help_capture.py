@@ -1,38 +1,62 @@
 """Every shipped help page's steps match the running UI.
 
 One case per page: each step's capture recipe opens its route on a company filled
-with demo data, runs its actions, and the step's selector and the English text of
-every label it names must be visible (as text or as a field's placeholder; a hidden
-copy elsewhere on the page, such as in a closed menu, does not count). With HELP_CAPTURE_WRITE=1 each step that
-declares an image is written as a cropped webp carrying the capture marker, the
-only way a help image is made.
+with demo data, runs its actions, and the step's selector must be visible with every entry of its
+evidence matching a visible element wholly inside the pictured part of it (a match elsewhere on the
+page, hidden, or cut by the picture's edge does not count). The pictured part of the
+screen must not show the app's own empty-list, Connect sales or nothing-selected components unless
+the step is listed in _SHOWS_EMPTY_STATE, nor a record's internal id in place of its name.
+With HELP_CAPTURE_WRITE=1 each step
+is written as a webp of the selector's element (its top 800 pixels when taller) carrying the
+capture marker, the only way a help image is made; the images are put in place when the run ends,
+except where the committed picture already shows the same screen (see _RENDER_NOISE). Without it
+each step's picture is taken and compared, read-only, with the committed one (_FRESHNESS_SCALE),
+and a step whose committed picture shows another screen fails, naming the retake.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
 import importlib.util
 import io
+import json
+import math
 import os
 import random
+import re
+import sys
+import tempfile
 import threading
 import uuid
-from datetime import date, timedelta
+import zipfile
+from datetime import date, datetime, timedelta, timezone
+from functools import cache
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 from playwright.sync_api import expect
 
+import celerp.ai.service as ai_service
 from celerp.help.bundle import MAX_IMAGE_BYTES
-from celerp.help.checks import CAPTURE_MARKER, shipped_pages
+from celerp.help.checks import capture_marker, image_marker, shipped_pages
+from celerp.help.schema import PLACEHOLDER
 from celerp.services.business_time import business_today
+from celerp_ai.ui_routes import QUESTION_POLL_S
+from celerp_subscriptions import billing as subscription_billing
 from celerp_labels.presets import PRESET_TEMPLATES
 from test_helpers import grant_permission
 from ui.i18n import t
 
-from .conftest import set_session_cookies
+from .conftest import _test_db, clear_session_registry, htmx_idle, set_session_cookies
 
 pytestmark = pytest.mark.browser
+
+_REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO / "default_modules" / "celerp-subscriptions" / "tests"))
+from agreement_kit import freeze_day  # noqa: E402
 
 _SEED_PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "seed_demo.py"
 _spec = importlib.util.spec_from_file_location("seed_demo_help_capture", _SEED_PATH)
@@ -41,8 +65,296 @@ _spec.loader.exec_module(seed_demo)
 
 _WRITE = os.environ.get("HELP_CAPTURE_WRITE") == "1"
 _MAX_WIDTH = 1000
+_MAX_HEIGHT = 800  # CSS pixels: a taller element is cut to its top, where its screen starts
 _EXIF_DESCRIPTION = 0x010E
+# Who and what every picture shows: generic, the same every run.
+_CAPTURE_COMPANY = "Example Trading Co"
+_CAPTURE_NAME = "Alex Example"
+_CAPTURE_EMAIL = "alex@example.com"
+_CAPTURE_PASSWORD = "ExampleTrading1!"
+# The business day the company is seeded on and every picture is taken on, whatever day the
+# capture runs: the app's "today" (business_time) is frozen to it, as the agreement tests do.
+_CAPTURE_DAY = date(2026, 6, 15)
+_CAPTURE_NOON = datetime(2026, 6, 15, 12, tzinfo=timezone.utc)
+_CAPTURE_ZONE = "Asia/Bangkok"
 _PAGES = [p for p in shipped_pages() if isinstance(p.data, dict)]
+# The app's own components for a screen with nothing to show: an empty list or report, the
+# Remote Access and Connect sales pages and banners, the AI page shown without an account, and
+# a bulk page opened with no rows selected. A step whose picture shows one would show the
+# reader a different screen from the one its text describes.
+_EMPTY_STATE_SELECTOR = ", ".join((
+    ".empty-state", ".empty-state-msg", ".empty-state-cta",
+    ".cloud-hero", ".upgrade-banner", ".module-license-upsell", ".ai-showcase__headline",
+    ".ai-empty-state__welcome", ".flash--error",
+))
+# The same screens drawn without those components: every English message whose key names it
+# an empty or nothing-to-show message (``no_...``, ``...empty...``, ``...nothing...``).
+_EMPTY_KEY = re.compile(r"^no_|(^|_)(empty|nothing)(_|$)")
+_EMPTY_MESSAGES = sorted({
+    text.split("{", 1)[0].strip()
+    for catalog in (_REPO / "ui/locales/en.json", *_REPO.glob("default_modules/*/*/locales/en.json"))
+    for key, text in json.loads(catalog.read_text(encoding="utf-8")).items()
+    if _EMPTY_KEY.search(key.rsplit(".", 1)[-1]) and len(text.split("{", 1)[0].strip()) >= 12
+})
+# A record's internal id ("contact:<uuid>", "item:<uuid>"): a screen showing one in place of a
+# name shows the reader a random string where its text names a record, and a different one
+# every run.
+_RAW_ID = re.compile(r"\b[a-z_]+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+# The capture runs only the bundled modules, each matching the lock, so none reads as sideloaded.
+_SIDELOADED = t("modules.src_sideloaded", "en")
+# Steps whose text is about that empty or sales screen itself: "<page id>#<step>": why.
+_CONNECT_SALES = "the step names what Celerp Connect adds, which its sales page lists"
+_NO_TAX_REGIME = "no first-party module ships a tax regime, so the page shows where to get one"
+_SHOWS_EMPTY_STATE: dict[str, str] = {
+    "ai.ask-questions#2": "the step is about the box a question is typed into, which a new chat shows",
+    "fixed-assets.tax-books#1": _NO_TAX_REGIME,
+    "fixed-assets.year-end#1": _NO_TAX_REGIME,
+    "fixed-assets.year-end#2": _NO_TAX_REGIME,
+    "core.settings-payments#1": _CONNECT_SALES,
+    "backup.cloud-backup#1": _CONNECT_SALES,
+    "connectors.connect-store#1": _CONNECT_SALES,
+    "connectors.connect-store#2": _CONNECT_SALES,
+    "backup.local-backup#1": "the cloud recovery points beside the local section need Celerp Connect",
+    "backup.local-backup#2": "the cloud recovery points beside the local section need Celerp Connect",
+    "backup.local-backup#3": "the cloud recovery points beside the local section need Celerp Connect",
+    "core.accounting-sync-accounts#1": "a new company's accounts have nothing to fix, the state the step describes",
+    "core.accounting-sync-accounts#2": "a new company's accounts have nothing to fix, the state the step describes",
+    "fixed-assets.settings#1": _NO_TAX_REGIME,
+    "fixed-assets.settings#3": _NO_TAX_REGIME,
+}
+# Labels a step names that its picture leaves out, because they are not on the part of the
+# screen the step works in: "<page id>#<step>": {label name: why}. A label listed here that the picture does show
+# fails the capture, so the list holds only what it must.
+_SIDE_MENU = "the side menu entry that opens the pictured screen"
+_SETTINGS_MENU = "the Settings entry that opens the pictured screen"
+_BULK_OPTION = "an option of the bulk actions list, which the picture shows closed"
+_NAMED_ELSEWHERE: dict[str, dict[str, str]] = {
+    "core.imports#3": {"src": "the wizard's step heading, above the form the picture shows whole"},
+    "core.web-access#3": {"access": _SETTINGS_MENU},
+    "backup.cloud-backup#1": {"access": _SETTINGS_MENU},
+    "connectors.connect-store#1": {"access": _SETTINGS_MENU},
+    "accounting.funds#9": {"reports": _SIDE_MENU},
+    "accounting.reconcile#1": {"rec": _SIDE_MENU},
+    "accounting.reconcile#3": {"another": "the bank's own page, which the preview replaces, holds it"},
+    "ai.ask-questions#1": {"ai": _SIDE_MENU},
+    "docs.payments#1": {"pay": _SIDE_MENU},
+    "docs.purchasing-documents#1": {"bill": _SIDE_MENU, "scn": _SIDE_MENU, "ci": _SIDE_MENU},
+    "docs.sales-documents#1": {"cn": _SIDE_MENU, "co": _SIDE_MENU},
+    "labels.print-labels#1": {"inv": _SIDE_MENU},
+    "subscriptions.overview#1": {"purch": _SIDE_MENU},
+    "subscriptions.members#2": {"days": "a field of the agreement, not of the members list"},
+    "manufacturing.production#4": {"tab": "the item's tab that opens the pictured block, a screen above it"},
+    "manufacturing.make-from-recipe#4": {"issue": _BULK_OPTION},
+    "manufacturing.make-from-recipe#5": {"complete": _BULK_OPTION},
+    "manufacturing.demand-planning#4": {"req": "the bulk action that opens the pictured page"},
+}
+# Pages whose steps add records (a sample import, a dropped bank statement, an AI conversation and
+# the item it adds): each is taken on a company of its own.
+_ADDS_RECORDS = {"core.imports", "accounting.reconcile", "ai.ask-questions", "ai.review-proposals"}
+# Pages open to the installation owner only, which show no company or person: taken as the
+# suite's user, who owns the installation; the capture refuses a picture that names it.
+_INSTALLATION_PAGES = {"backup.local-backup"}
+# Steps about what an active Celerp Connect subscription or Celerp AI account shows: the
+# installation is given one through the seams the Connect and AI browser tests use, for that
+# step only, so the steps about the sales pages still show them.
+_ACTIVE_RELAY = {"connected": True, "relay_status": "active", "public_url": "https://example.celerp.com",
+                 "tier": "cloud", "subscription_status": "active", "cloud_disconnected": False,
+                 "gateway_token_set": True, "entitlement_known": True, "entitled": True}
+_AI_ACCOUNT = {"allowed": True, "used": 4, "base_limit": 200, "topup_balance": 0, "remaining": 196,
+               "limit": 200, "topup_credits": 0, "resets_at": None, "tier": "ai"}
+_CONNECT, _AI, _COPIES = "connect", "ai", "copies"
+
+
+async def _backup_status(_token):
+    """The backup schedule an active subscription shows: last backup at the capture day's 02:00
+    UTC, the next one due six hours after the page reads it (the page shows the time until it)."""
+    due = datetime.now(timezone.utc) + timedelta(hours=6, seconds=30)
+    return {"db": {"ok": True, "error": None, "size_bytes": 4_200_000,
+                   "last_run": f"{_CAPTURE_DAY.isoformat()}T02:00:00+00:00"},
+            "next_db_utc": due.isoformat()}
+async def _connectors_catalog(_token):
+    """The connectors the relay lists to an active subscription, the seeded Shopify store connected."""
+    from ui.routes.settings_connectors import _local_connector_entry
+
+    return [{**_local_connector_entry(p), "connected": p == "shopify"}
+            for p in ("shopify", "woocommerce", "quickbooks", "xero")], "", False
+# A company copy sent to an accountant, as the cloud lists it to the account that sent it.
+_SENT_COPY_ID, _SENT_LINK_ID = uuid.UUID(int=0x1C0), uuid.UUID(int=0x11C)
+_SENT_COPY = {"id": str(_SENT_COPY_ID), "link_id": str(_SENT_LINK_ID), "status": "sent", "stored": True,
+              "can_restore": False, "opened": True, "downloaded": False, "company_opened": False,
+              "sent_at": "2026-06-12T09:30:00+00:00", "expires_at": "2026-06-26T09:30:00+00:00",
+              "firm_name": "Example Accounting"}
+# The free email quota the relay advertises to an installation that is not connected, which
+# offers "Send by email" on a document. The app keeps the relay's answer in a process cache it
+# fills on the first document opened, so it is pinned: otherwise a picture would show the offer
+# or not depending on which pages the run opened before it.
+_FREE_EMAIL_QUOTA = 50
+# Charts draw with an animation the screenshot's own "animations disabled" cannot stop (it is
+# script, not CSS), so a picture would catch a chart part-way through. Chart.js is switched to
+# draw at once the moment its script defines it, in the capture's browser only.
+# A page an action opens in a new tab (a printable list) opens in the capture's own tab instead,
+# so the step pictures it.
+# The app's fonts are pinned to the ones every committed picture was taken with: Liberation
+# Sans, then FreeSans for the symbols Liberation lacks (an info mark, a menu's dots), then DejaVu
+# Sans for the symbols neither has, then Noto Color Emoji for the emoji; Liberation Mono, then
+# DejaVu Sans Mono, for figures. CI installs all five, so any glyph one of them has is drawn by
+# the list itself, the same on every machine. A glyph none of them has would fall back to
+# whatever font the machine has, so a step whose screen draws any text in another font is
+# refused (_unpinned_fonts) and a local picture renders as CI's does.
+_FONT_PIN = (":root { --font: 'Liberation Sans', 'FreeSans', 'DejaVu Sans', 'Noto Color Emoji', sans-serif;"
+             " --font-mono: 'Liberation Mono', 'DejaVu Sans Mono', monospace; }")
+_PINNED_FONTS = frozenset(re.findall(r"'([^']+)'", _FONT_PIN))
+_CAPTURE_PAGE_SCRIPT = """Object.defineProperty(window, "Chart", {configurable: true,
+  set(chart) { chart.defaults.animation = false;
+               Object.defineProperty(window, "Chart", {value: chart, writable: true, configurable: true}); }});
+window.open = url => { location.assign(url); return null; };
+document.addEventListener("DOMContentLoaded", () => { const pin = document.createElement("style");
+  pin.textContent = %s;
+  document.head.append(pin); });""" % json.dumps(_FONT_PIN)
+# A step on the assistant's screen is taken with the AI subscription; the two that picture what a
+# company without it sees are listed as None.
+_SUBSCRIBED: dict[str, str | None] = {
+    "core.company-handoff#2": _COPIES,
+    "core.web-access#2": _CONNECT, "backup.cloud-backup#2": _CONNECT,
+    "connectors.connect-store#3": _CONNECT, "connectors.connect-store#4": _CONNECT,
+    "ai.ask-questions#1": None, "ai.ask-questions#3": None,
+}
+
+
+@cache
+def _sage50_set() -> Path:
+    from fixtures.sage50_export import build
+
+    path = Path(tempfile.mkdtemp()) / "sage50.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data in build.files(build.simulate()).items():
+            zf.writestr(name, data)
+    return path
+
+
+@contextlib.contextmanager
+def _store_reads():
+    from celerp import connectors
+    from celerp.connectors.base import ConnectorContext, RemoteOrder, RemoteProduct
+
+    products = [RemoteProduct(key=str(n), product_id=str(n), variation_id=None, sku=sku, name=name,
+                              description=None, price=price, modified=None, stock=stock)
+                for n, (sku, name, price, stock) in enumerate((
+                    ("MUG-001", "Stoneware Mug", 12.0, 40), ("TEE-001", "Cotton T-Shirt", 18.0, 25),
+                    ("CAP-001", "Canvas Cap", 15.0, 12)), 1)]
+    orders = [RemoteOrder(id=str(n), number=f"#10{n:02d}", status="paid",
+                          created=datetime(2026, 6, n + 8, 10, tzinfo=timezone.utc), total=total,
+                          currency="USD", posts=True)
+              for n, total in enumerate((36.0, 18.0, 45.0), 1)]
+
+    async def context(company_id, *_a, **_k):
+        return ConnectorContext(company_id=str(company_id), access_token="t",
+                                store_handle="https://example-store.myshopify.com")
+
+    async def read_products(_self, _ctx):
+        return list(products)
+
+    async def read_orders(_self, _ctx, _orders_from):
+        return list(orders)
+
+    store = type(connectors.get("shopify"))
+    with patch("celerp.connectors.relay_token.fetch_context", context), \
+            patch.object(store, "preview_products", read_products), \
+            patch.object(store, "preview_orders", read_orders):
+        yield
+
+
+@contextlib.contextmanager
+def _subscription(kind: str | None):
+    from celerp.gateway.state import set_session_token
+
+    with contextlib.ExitStack() as stack:
+        if kind:
+            # Both subscriptions sign this installation in to Celerp, as connecting an account does.
+            set_session_token("help-capture-session-token")
+            stack.callback(set_session_token, "")
+        if kind == _CONNECT:
+            stack.enter_context(patch("ui.api_client.get_relay_status", AsyncMock(return_value=_ACTIVE_RELAY)))
+            stack.enter_context(patch("ui.api_client.get_backup_status", _backup_status))
+            stack.enter_context(patch("ui.api_client.get_connectors_catalog", _connectors_catalog))
+        elif kind == _COPIES:
+            async def cloud(method, path, *, params=None, **_kw):
+                assert (method, path) == ("GET", "/handoffs"), (method, path)
+                return httpx.Response(200, json={"items": [{**_SENT_COPY, "company_id": params["company_id"]}]})
+            stack.enter_context(patch("celerp.services.cloud_entitlement.authenticated_request", cloud))
+        elif kind == _AI:
+            stack.enter_context(patch("celerp.ai.quota.get_quota_status", AsyncMock(return_value=_AI_ACCOUNT)))
+            stack.enter_context(patch.object(ai_service, "complete", _scripted_model()))
+            # The answer lands at the question's next poll, after the API schema is built.
+            stack.callback(expect.set_options, timeout=5000)
+            expect.set_options(timeout=5000 + 4 * QUESTION_POLL_S * 1000)
+        yield
+
+
+def _scripted_model(*lamps: tuple[str, str]):
+    """The model of an AI step, as tests/test_browser/test_ai_chat_journey.py scripts it: each
+    request in turn is answered with a proposal to add one of ``lamps`` (SKU, name), so the
+    step pictures its card."""
+    from celerp.ai.llm import ModelResult
+    from celerp.ai.tools import compile_agent_capabilities
+    from celerp.main import app
+
+    create_item = next(name for name, cap in compile_agent_capabilities(app, {}).items()
+                       if (cap["method"], cap["path"]) == ("POST", "/items"))
+    turns = [{"role": "assistant", "content": f"I'll add the {name.lower()} once you confirm.", "tool_calls": [{
+        "id": f"call-help-capture-{sku}", "type": "function", "function": {"name": create_item, "arguments": json.dumps(
+            {"body": {"sku": sku, "name": name, "category": "Electronics", "retail_price": 45,
+                      "sell_by": "piece"}})}}]} for sku, name in lamps or (("LAMP-001", "Desk Lamp"),)]
+
+    async def complete(messages, **_kw) -> ModelResult:
+        message = turns.pop(0) if turns else {"role": "assistant", "content": "Desk Lamp is now in your stock."}
+        return ModelResult(message=message, model_used="help-capture", usage={}, reservation_id=None,
+                           remaining=None)
+    return complete
+
+
+@contextlib.contextmanager
+def _answer_never_came():
+    """A confirmed change whose answer never came, as the executor reports a step past its
+    deadline: the card keeps the change open with the reason and Retry."""
+    from celerp.ai import tools as ai_tools
+
+    seconds = int(ai_tools.deadlines.TOOL_STEP_S)
+    timeout = ai_tools._agent_error("capability_timeout", "ai.err_capability_timeout",
+                                    f"The operation did not finish within {seconds} seconds.", seconds=seconds)
+    with patch.object(ai_tools, "execute_agent_capability", AsyncMock(return_value=timeout)):
+        yield
+
+
+_LAMPS = (("LAMP-001", "Desk Lamp"), ("LAMP-002", "Floor Lamp"), ("LAMP-003", "Reading Lamp"),
+          ("LAMP-004", "Wall Lamp"))
+
+
+@contextlib.contextmanager
+def _older_proposals():
+    """Four questions each left with an open proposal, in a conversation kept to two messages
+    as tests/test_protected_work.py caps it: reopened, it shows the newest message and the two
+    cards before it under Show older actions."""
+    from celerp.ai import conversations
+
+    with patch.object(conversations, "MAX_MESSAGES_PER_CONVERSATION", 2), \
+            patch.object(ai_service, "complete", _scripted_model(*_LAMPS)):
+        yield
+
+
+# A step whose state the capture company does not reach alone is taken inside its own seam:
+# - core.imports#5: the sample books leave nothing to decide, so they go from coverage straight
+#   to review; the question a file can leave open is taken with the sample swapped for a Sage 50
+#   export set, which asks the currency its books are kept in.
+# - connect-store#4: a store's first sync preview reads the store, which is given a few products
+#   and orders through the seams tests/test_first_sync_preview_receipt.py uses.
+# - review-proposals#3 and #4: a change that can be tried again, and proposals past the first page.
+_STEP_STATE = {
+    "core.imports#5": lambda: patch("celerp.importers.sample.SAMPLE_ARTIFACT", _sage50_set()),
+    "connectors.connect-store#4": _store_reads,
+    "ai.review-proposals#3": _answer_never_came,
+    "ai.review-proposals#4": _older_proposals,
+}
 
 
 async def _ok(response: httpx.Response) -> dict:
@@ -53,7 +365,8 @@ async def _ok(response: httpx.Response) -> dict:
 async def seed_funds_and_deferred_revenue(client: httpx.AsyncClient, auth: dict, contacts: list[dict],
                                           today: date) -> None:
     """Funds and revenue recognition show their controls only once they are in use: funds
-    on, a restricted fund, an archived fund and a transfer; an invoice deferring revenue over
+    on, a restricted fund, an archived fund, a transfer and two imported invoices, one waiting
+    for a fund choice and one posted on a fund; an invoice deferring revenue over
     the last three ended months with the oldest month posted, and a voided one."""
     def key() -> str:
         return uuid.uuid4().hex
@@ -86,22 +399,370 @@ async def seed_funds_and_deferred_revenue(client: httpx.AsyncClient, auth: dict,
         docs.append(doc["id"])
     await _ok(await client.post(f"/accounting/recognition/{start:%Y-%m}/post", headers=auth, json={}))
     await _ok(await client.post(f"/docs/{docs[1]}/void", headers=auth, json={"reason": "Sent twice"}))
+    # Two invoices from a file import: one waits for a fund choice, one posted on the reserve.
+    for ref in ("IMP-0001", "IMP-0002"):
+        await _ok(await client.post("/docs/import", headers=auth, json={
+            "entity_id": f"doc:{ref}", "event_type": "doc.created", "source": "csv", "idempotency_key": key(),
+            "data": {"doc_type": "invoice", "status": "draft", "ref_id": ref, "contact_id": contacts[3]["id"],
+                     "issue_date": today.isoformat(), "total": 300.0, "line_items": [
+                         {"item_id": None, "name": "Workshop", "quantity": 1, "unit_price": 300.0, "line_total": 300.0}]}}))
+    version = (await _ok(await client.get("/docs/doc:IMP-0002", headers=auth)))["version"]
+    await _ok(await client.post("/docs/doc:IMP-0002/fund-choices", headers=auth, json={
+        "expected_version": version, "document": reserve["id"]}))
+    await _ok(await client.post("/docs/doc:IMP-0002/finalize", headers=auth, json={}))
 
 
-@pytest.fixture(scope="module")
-def demo_token(api_server, api):
-    """A company of its own, filled with the same demo data every run."""
-    r = api.post("/companies", json={"name": f"Help capture {uuid.uuid4().hex[:6]}"})
-    assert r.status_code in (200, 201), r.text
-    token = r.json()["access_token"]
+async def _fa(client: httpx.AsyncClient, auth: dict, path: str, body: dict) -> dict:
+    """A fixed-assets change as its page makes it: the review, then the change confirmed
+    with the fingerprint the review returned."""
+    url, key = f"/fixed-assets/api{path}", uuid.uuid4().hex
+    seen = await _ok(await client.post(url, headers=auth, json={**body, "preview": True, "op_key": key}))
+    return await _ok(await client.post(url, headers=auth, json={**body, "op_key": key, "fingerprint": seen["fingerprint"]}))
+
+
+async def seed_fixed_assets(client: httpx.AsyncClient, auth: dict, user_id: str, today: date) -> None:
+    """The fixed asset pages in use: the sample bills' van, laptops and forklift registered
+    (the office fit-out still waits on the intake list), the last ended month depreciated, one
+    correction applied and one waiting, reminders and an impairment review falling due, the
+    laptops in the capture user's care, the van seen on an asset check and one finished
+    register import."""
+    async def get(path: str) -> dict:
+        return await _ok(await client.get(f"/fixed-assets/api{path}", headers=auth))
+
+    classes = {c["name"]: c["id"] for c in (await get("/classes"))["items"]}
+    lines = (await get("/intake"))["items"]
+    for name, cls in (("Delivery van", "Vehicles"), ("Laptop", "Computer equipment"), ("Forklift", "Plant and machinery")):
+        line = next(i for i in lines if name in i["description"])
+        await _fa(client, auth, "/register", {"source": line["source"], "class_id": classes[cls]})
+    assets = {a["name"]: a["id"] for a in (await get("/assets"))["items"]}
+    last_month = today.replace(day=1) - timedelta(days=1)
+    await _fa(client, auth, "/runs", {"month": f"{last_month:%Y-%m}"})
+    van, laptops, forklift = assets["Delivery van"], assets["Laptop"], assets["Forklift"]
+    await _fa(client, auth, f"/assets/{forklift}/correct", {
+        "changes": {"life_months": 96}, "effective_date": today.replace(day=1).isoformat(),
+        "reason": "The supplier's service plan keeps it running eight years"})
+    await _ok(await client.post(f"/fixed-assets/api/assets/{van}/corrections", headers=auth, json={
+        "changes": {"life_months": 72}, "reason": "Fleet policy keeps vans six years", "op_key": uuid.uuid4().hex}))
+    for body in ({"kind": "maintenance", "work": "Annual service", "due": (today + timedelta(days=5)).isoformat()},
+                 {"kind": "insurance", "insurer": "Harbour Insurance", "due": (today - timedelta(days=3)).isoformat()}):
+        await _ok(await client.post(f"/fixed-assets/api/assets/{van}/reminders", headers=auth, json=body))
+    numbers = {a["id"]: a["number"] for a in (await get("/assets"))["items"]}
+    await _ok(await client.post("/fixed-assets/api/checks", headers=auth, json={"tag": numbers[van]}))
+    await _fa(client, auth, f"/assets/{laptops}/move", {"custodian": {"user_id": user_id}, "date": today.isoformat()})
+    # An intangible with an indefinite life is reviewed for impairment each year.
+    await _ok(await client.patch(f"/fixed-assets/api/classes/{classes['Other intangibles']}", headers=auth,
+                                 json={"method": "none", "life_months": None}))
+    setup = await get("/setup")
+    await _fa(client, auth, "/imports", {"as_at": setup["settings"]["cutover"], "rows": [
+        {"name": "Warehouse", "class": "Buildings", "available_date": "2020-01-01", "cost": "250000",
+         "accumulated_depreciation": "40000"},
+        {"name": "Trading licence", "class": "Other intangibles", "available_date": "2021-03-01", "cost": "8000",
+         "accumulated_depreciation": "4000"}]})
+
+
+async def seed_subscriptions(client: httpx.AsyncClient, auth: dict, contacts: list[dict], today: date) -> None:
+    """The agreement pages in use: a SaaS plan with a subscriber, a seat subscription, a
+    retainer, memberships in each standing, an agreement that bills itself and has billed
+    today, and one so far behind that its periods wait on Catch-up."""
+    from celerp.db import LifecycleSessionLocal
+    from celerp.events.engine import unattended
+    from celerp_docs import periodic
+
+    customers = [c for c in contacts if c.get("contact_type") in ("customer", "both")]
+
+    async def agreement(contact: dict, start: date, lines: list[dict], **fields) -> str:
+        doc = await _ok(await client.post("/docs", headers=auth, json={
+            "doc_type": "subscription_invoice", "contact_id": contact["id"], "frequency": "monthly",
+            "start_date": start.isoformat(), "line_items": lines, **fields}))
+        await _ok(await client.post(f"/subscriptions/{doc['id']}/activate", headers=auth))
+        return doc["id"]
+
+    def line(name: str, price: float, quantity: int = 1, **extra) -> dict:
+        return {"description": name, "quantity": quantity, "unit_price": price, "line_total": quantity * price, **extra}
+
+    await _ok(await client.post("/accounting/accounts", headers=auth, json={
+        "code": "4190", "name": "Plan income", "account_type": "revenue", "parent_code": "4000"}))
+    plans = (await _ok(await client.post("/companies/me/categories", headers=auth, json={"name": "saas_plan"})))["key"]
+    await _ok(await client.put(f"/companies/me/categories/{plans}/income-account", headers=auth,
+                               json={"income_account": "4190"}))
+    team = (await _ok(await client.post("/items", headers=auth, json={
+        "name": "Team plan", "sku": "PLAN-TEAM", "sell_by": "piece", "inventory_type": "service", "quantity": 0,
+        "status": "available", "category": plans, "retail_price": 20.0})))["id"]
+    await agreement(customers[0], today, [line("Team plan", 20.0, 3, entity_id=team)])
+    await agreement(customers[1], today, [line("Seats", 20.0, 5)])
+    await agreement(customers[2], today, [line("Monthly advisory retainer", 2500.0)], kind="retainer")
+    member = await agreement(customers[3], today.replace(month=1, day=1), [line("Annual membership", 60.0)],
+                             kind="membership", frequency="annually", grace_days=30,
+                             beneficiary_contact_id=customers[4]["id"])
+    await _ok(await client.post(f"/subscriptions/{member}/generate-due", headers=auth,
+                                json={"request_key": uuid.uuid4().hex}))
+    # A member in each other standing the members guide explains: a first bill past due inside
+    # its grace days, one past them (each billed on the day its year began, a bill being issued
+    # the day it is made), a cancelled membership and a settled lifetime sale.
+    for contact, days_ago, grace in ((customers[5 % len(customers)], 35, 60), (customers[6 % len(customers)], 120, 10)):
+        with pytest.MonkeyPatch.context() as mp:
+            freeze_day(mp, (start := today - timedelta(days=days_ago)).isoformat())
+            owing = await agreement(customers[3], start, [line("Annual membership", 60.0)], kind="membership",
+                                    frequency="annually", grace_days=grace, beneficiary_contact_id=contact["id"])
+            await _ok(await client.post(f"/subscriptions/{owing}/generate-due", headers=auth,
+                                        json={"request_key": uuid.uuid4().hex}))
+    ended = await agreement(customers[3], today.replace(month=1, day=1), [line("Annual membership", 60.0)],
+                            kind="membership", frequency="annually", beneficiary_contact_id=customers[7 % len(customers)]["id"])
+    await _ok(await client.post(f"/subscriptions/{ended}/cancel", headers=auth))
+    category = (await _ok(await client.post("/companies/me/categories", headers=auth, json={"name": "membership"})))["key"]
+    lifetime = (await _ok(await client.post("/items", headers=auth, json={
+        "name": "Lifetime membership", "sku": "MEMBER-LIFE", "sell_by": "piece", "inventory_type": "service",
+        "quantity": 0, "status": "available", "category": category, "retail_price": 500.0,
+        "attributes": {"membership_term": "Lifetime"}})))["id"]
+    sale = (await _ok(await client.post("/docs", headers=auth, json={
+        "doc_type": "invoice", "contact_id": customers[8 % len(customers)]["id"], "price_list": "Retail", "total": 500.0,
+        "line_items": [line("Lifetime membership", 500.0, item_id=lifetime)]})))["id"]
+    await _ok(await client.post(f"/docs/{sale}/finalize", headers=auth, json={}))
+    await _ok(await client.post(f"/docs/{sale}/payment", headers=auth, json={
+        "amount": 500.0, "payment_date": today.isoformat(), "bank_account": "1111", "idempotency_key": uuid.uuid4().hex}))
+    unattended_ones = (await agreement(customers[0], today, [line("Support plan", 150.0)]),
+                       await agreement(customers[1], (today.replace(day=1) - timedelta(days=100)).replace(day=1),
+                                       [line("Hosting", 80.0)]))
+    for eid, behind in zip(unattended_ones, (None, 1)):
+        await _ok(await client.patch(f"/subscriptions/{eid}/schedule", headers=auth, json={
+            "generation_mode": "auto_invoice", **({"catchup_periods": behind} if behind else {})}))
+    # One pass of the app's own billing loop, as it runs unattended in the background.
+    company = await _ok(await client.get("/companies/me", headers=auth))
+    await unattended(lambda: periodic.run_company(LifecycleSessionLocal, uuid.UUID(company["id"]), today=today))
+
+
+async def seed_documents(client: httpx.AsyncClient, auth: dict, contacts: list[dict], today: date) -> None:
+    """The document pages in use: a quotation, a stock count, a draft memo with lines and one
+    issued, and an invoice another company sent, waiting in Received."""
+    customer = next(c for c in contacts if c.get("contact_type") in ("customer", "both"))
+    stock = {i["sku"]: i for i in (await _ok(await client.get(
+        "/items", headers=auth, params={"limit": 500})))["items"]}
+    lines = [{"sku": sku, "name": name, "entity_id": stock[sku]["id"], "quantity": 1, "unit_price": retail}
+             for sku, name, _category, _qty, _cost, retail, _wholesale in seed_demo._ITEMS[:2]]
+    # The lists page shows issued lists; drafts sit under their own view.
+    quotation = await _ok(await client.post("/lists", headers=auth, json={
+        "list_type": "quotation", "contact_id": customer["id"], "line_items": lines}))
+    await _ok(await client.post(f"/lists/{quotation['id']}/finalize", headers=auth))
+    locations = await _ok(await client.get("/companies/me/locations", headers=auth))
+    location = (locations.get("items") or locations.get("locations") or locations)[0]
+    audit = await _ok(await client.post("/lists/audit", headers=auth, json={"location_id": location["id"]}))
+    await _ok(await client.post(f"/lists/{audit['id']}/finalize", headers=auth))
+    for issue in (False, True):
+        memo = await _ok(await client.post("/docs", headers=auth, json={
+            "doc_type": "memo", "contact_id": customer["id"], "line_items": lines}))
+        if issue:  # issued, with its first item gone out to the customer
+            await _ok(await client.post(f"/docs/{memo['id']}/finalize", headers=auth))
+            await _ok(await client.post(f"/docs/{memo['id']}/fulfill-lines", headers=auth,
+                                        json={"line_entity_ids": [lines[0]["entity_id"]]}))
+    r = await client.post("/docs/import-bundle", headers=auth, follow_redirects=False, json={
+        "version": 1,
+        "source": {"installation": "example-supplier", "document": "doc:INV-0042", "revision": 1},
+        "doc": {"doc_type": "invoice", "ref_id": "INV-0042", "company_name": "Example Supplier Ltd",
+                "company_email": "billing@supplier.example.com", "contact_name": "Example Trading Co",
+                "currency": "USD", "issue_date": (today - timedelta(days=13)).isoformat(),
+                "due_date": (today + timedelta(days=17)).isoformat(),
+                "line_items": [{"description": "Packing boxes", "sku": "BOX-L", "quantity": 40,
+                                "unit_price": 2.5}]}})
+    assert r.status_code == 302, r.text
+    # Moved in from another system: an unpaid invoice, and a bill for goods not yet received,
+    # that the opening balances hold.
+    vendor = next(c for c in contacts if c.get("contact_type") in ("vendor", "both"))
+    goods = {"item_id": lines[0]["entity_id"], "sku": lines[0]["sku"], "name": lines[0]["name"]}
+    for doc_type, contact, number, line in (("invoice", customer, "OLD-INV-118", {"name": "Office supplies"}),
+                                            ("bill", vendor, "OLD-BILL-207", goods)):
+        await _ok(await client.post("/docs/import", headers=auth, json={
+            "entity_id": f"doc:{number}", "event_type": "doc.created", "source": "csv",
+            "idempotency_key": f"help-capture-{number}", "data": {
+                "doc_type": doc_type, "ref_id": number, "contact_id": contact["id"], "currency": "USD",
+                "issue_date": f"{today.year - 1}-12-15", "status": "awaiting_payment",
+                "import_treatment": "opening_balances",
+                "line_items": [{**line, "quantity": 1, "unit_price": 400}],
+                "subtotal": 400, "total": 400, "amount_outstanding": 400}}))
+
+
+async def seed_manufacturing(client: httpx.AsyncClient, auth: dict) -> None:
+    """A product with a recipe, a production order for more of it than its runs cover, and
+    its work orders at every stage of the queue: planned, in progress with its components
+    issued, on hold, and completed; and a product whose recipe yields an extra, with a run of
+    it in progress."""
+    stock = {i["sku"]: i["id"] for i in (await _ok(await client.get(
+        "/items", headers=auth, params={"limit": 500})))["items"]}
+    product = (await _ok(await client.post("/items", headers=auth, json={
+        "sku": "BNDL-001", "name": "Home Office Bundle", "category": "Furniture", "quantity": 0,
+        "retail_price": 950, "status": "available", "sell_by": "piece"})))["id"]
+    await _ok(await client.put(f"/manufacturing/items/{product}/recipe", headers=auth, json={
+        "output_qty": 1, "labor": [], "overhead": [], "components": [
+            {"item_id": stock[sku], "quantity": 1} for sku in ("FURN-002", "ELEC-002", "ELEC-007")]}))
+    order = await _ok(await client.post("/docs", headers=auth, json={"doc_type": "production_order", "line_items": [
+        {"sku": "BNDL-001", "name": "Home Office Bundle", "entity_id": product, "quantity": 10, "unit_price": 950}]}))
+    await _ok(await client.post(f"/docs/{order['id']}/finalize", headers=auth))
+    # A run's reference (WO- and the start of its id) follows the build's key: fixed keys give
+    # the same references in every capture.
+    runs = [(await _ok(await client.post(f"/manufacturing/items/{product}/build", headers=auth, json={
+        "quantity": qty, "idempotency_key": f"capture-run-{n}"})))["id"] for n, qty in enumerate((2, 3, 1, 2), 1)]
+    _planned, issued, held, done = runs
+    for run, steps in ((issued, ("start", "issue")), (held, ("start", "hold")), (done, ("complete",))):
+        for step in steps:
+            await _ok(await client.post(f"/manufacturing/{run}/{step}", headers=auth, json={}))
+    # Pressed oil, whose recipe yields oil cake beside it, and a run of it in progress.
+    made = {}
+    for sku, name, qty in (("SEED-001", "Rapeseed", 500), ("OIL-001", "Pressed Rapeseed Oil", 0), ("CAKE-001", "Oil Cake", 0)):
+        made[sku] = (await _ok(await client.post("/items", headers=auth, json={
+            "sku": sku, "name": name, "category": "Food & Bev", "quantity": qty, "cost_price": 1.2,
+            "status": "available", "sell_by": "kg"})))["id"]
+    await _ok(await client.put(f"/manufacturing/items/{made['OIL-001']}/recipe", headers=auth, json={
+        "output_qty": 1, "labor": [], "overhead": [], "components": [{"item_id": made["SEED-001"], "quantity": 3}],
+        "also_produces": [{"item_id": made["CAKE-001"], "quantity": 2, "cost_share": 20}]}))
+    oil_run = (await _ok(await client.post(f"/manufacturing/items/{made['OIL-001']}/build", headers=auth, json={
+        "quantity": 10, "idempotency_key": "capture-run-oil"})))["id"]
+    for step in ("start", "issue"):
+        await _ok(await client.post(f"/manufacturing/{oil_run}/{step}", headers=auth, json={}))
+
+
+async def seed_company_details(client: httpx.AsyncClient, auth: dict, today: date) -> None:
+    """The company's own record with its billing and shipping addresses and a document on
+    file, its books currency as company setup sets it (the assistant proposes no change
+    without one), and the opening balance date the tie-out report checks against."""
+    company = await _ok(await client.get("/companies/me", headers=auth))
+    own = company["settings"]["self_contact_id"]
+    for kind in ("billing", "shipping"):
+        await _ok(await client.post(f"/crm/contacts/{own}/addresses", headers=auth, json={
+            "address_type": kind, "line1": "1 Example Street", "city": "Springfield",
+            "postal_code": "10110", "country": "US"}))
+    r = await client.post(f"/crm/contacts/{own}/files", headers=auth, files={
+        "file": ("business-registration.txt", b"Example Trading Co business registration\n", "text/plain")})
+    assert r.status_code == 200, r.text
+    await _ok(await client.patch("/companies/me/books", headers=auth,
+                                 json={"currency": "USD", "opening_balance_date": f"{today.year}-01-01"}))
+
+
+async def seed_ai_usage(company_id: str, user_id: str) -> None:
+    """Questions to Celerp AI the service has charged for this month, recorded as the app
+    records every reply, so the usage table lists who asked."""
+    from celerp.ai.usage import record_usage
+    from celerp.db import LifecycleSessionLocal
+
+    async with LifecycleSessionLocal() as session:
+        for credits in (1, 2, 1):
+            await record_usage(session, company_id=uuid.UUID(company_id), user_id=uuid.UUID(user_id),
+                               operation_id=uuid.uuid4(), credits=credits, known=True)
+        await session.commit()
+
+
+@contextlib.contextmanager
+def _store_connected(company_id: str):
+    """A Shopify store connected to the company, as connecting it records, so a connection's
+    own page shows its status, sync and disconnect. It is disconnected again when the page's
+    pictures are taken: the live database is the one the recovery tests restore, and they
+    refuse a restore while a store stays connected."""
+    from celerp.connectors.ownership import claim_connector_ownership, release_connector_ownership
+    from celerp.db import LifecycleSessionLocal
+
+    async def connect():
+        async with LifecycleSessionLocal() as session:
+            await claim_connector_ownership(session, company_id, "shopify", default_sync_frequency="realtime")
+            await session.commit()
+
+    async def disconnect():
+        async with LifecycleSessionLocal() as session:
+            await release_connector_ownership(session, company_id, "shopify")
+            await session.commit()
+
+    _run_off_loop(connect())
+    try:
+        yield
+    finally:
+        _run_off_loop(disconnect())
+
+
+async def seed_company_copies(company_id: str) -> None:
+    """What this installation keeps of the copy in _SENT_COPY (who it went to, its link's key),
+    as sending records it, and a copy of the company saved when a copy replaced it."""
+    from celerp.services import company_backup, company_backup_files
+
+    company_backup_files.remember_sent_copy(company_id, _SENT_COPY_ID, {
+        "recipient": "client@example.com", "key": base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")})
+
+    class _Noon(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _CAPTURE_NOON
+
+    with patch.object(company_backup, "datetime", _Noon):
+        await company_backup._keep_backup(uuid.UUID(company_id), _CAPTURE_COMPANY)
+
+
+@contextlib.contextmanager
+def _capture_clock():
+    """The business day is _CAPTURE_DAY and the wall clock subscriptions read (what their
+    summary looks back from) is that day's evening, after every record _date_records dates."""
+    with pytest.MonkeyPatch.context() as mp:
+        freeze_day(mp, _CAPTURE_DAY.isoformat())
+        mp.setattr(subscription_billing, "now", lambda: _CAPTURE_NOON + timedelta(hours=6))
+        yield
+
+
+def _sign_in(api_server: str, email: str) -> str:
+    """An access token for ``email``; the installation's one-session slot is left free, as
+    test_partner_claim_gate leaves it, so the suite's own sign-ins still go through."""
+    clear_session_registry()
+    try:
+        r = httpx.post(f"{api_server}/auth/login", json={"email": email, "password": _CAPTURE_PASSWORD},
+                       timeout=10)
+        assert r.status_code == 200, r.text
+        return r.json()["access_token"]
+    finally:
+        clear_session_registry()
+
+
+def _run_off_loop(coro) -> None:
+    """Runs ``coro`` to completion on a fresh thread. Playwright's sync API keeps its own event
+    loop running on this thread for the whole session (greenlet-trampolined), so asyncio.run()
+    here would always raise "cannot be called from a running event loop"; api_server/ui_server
+    run their own event loop off the main thread the same way."""
+    error: list[BaseException] = []
+
+    def _run():
+        try:
+            asyncio.run(coro)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the calling thread below
+            error.append(exc)
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+
+
+def capture_company(api_server: str, api, email: str) -> dict:
+    """The capture company, filled with the same demo data every run, and an access token of
+    its owner: a member named _CAPTURE_NAME who belongs to no other company, so a picture shows
+    the same company, person and company list wherever it is taken."""
+    r = api.post("/companies/me/users", json={"email": email, "name": _CAPTURE_NAME, "role": "viewer",
+                                              "password": _CAPTURE_PASSWORD})
+    assert r.status_code == 200, r.text
+    user_id = r.json()["id"]
+    r = httpx.post(f"{api_server}/companies", json={"name": _CAPTURE_COMPANY}, timeout=30,
+                   headers={"Authorization": f"Bearer {_sign_in(api_server, email)}"})
+    assert r.status_code == 200, r.text
+    # Added to the suite's company only to reach the companies route, then taken out of it.
+    r = api.patch(f"/companies/me/users/{user_id}", json={"is_active": False})
+    assert r.status_code == 200, r.text
+    token = _sign_in(api_server, email)
+    started = datetime.now(timezone.utc)
 
     async def seed():
         auth = {"Authorization": f"Bearer {token}"}
         async with httpx.AsyncClient(base_url=api_server, timeout=30.0) as client:
+            # The app's own sample records (the fixed asset bills) are added only while the
+            # company keeps no books of its own, so before anything below posts.
+            reseeded = await _ok(await client.post("/companies/me/demo/reseed", headers=auth))
+            assert reseeded["ok"], reseeded
             await seed_demo.seed_items(client, token)
             contacts = await seed_demo.seed_contacts(client, token)
-            await seed_demo.seed_docs(client, token, contacts, "invoice", 12)
-            await seed_demo.seed_docs(client, token, contacts, "purchase_order", 6)
+            await seed_demo.seed_docs(client, token, contacts, "invoice", 12, _CAPTURE_DAY)
+            await seed_demo.seed_docs(client, token, contacts, "purchase_order", 6, _CAPTURE_DAY)
             # The fixed assets register shows nothing until its one-time start is
             # confirmed; help pages for it capture the register in its normal,
             # already-started state.
@@ -114,6 +775,7 @@ def demo_token(api_server, api):
             r = await client.patch("/fixed-assets/api/settings", headers=auth,
                                    json={"first_managed_period": r.json()["first_period"]["suggested"]})
             assert r.status_code == 200, r.text
+            await seed_fixed_assets(client, auth, user_id, business_today(None))
             # Donors and Subscribers show a donor's statement and a subscriber's quantities only
             # once there is one: a gift by bank transfer from a contact to a gift category's income
             # account, and an active agreement.
@@ -135,15 +797,15 @@ def demo_token(api_server, api):
                 "entries": [{"account": "1111", "debit": 250.0, "credit": 0.0},
                             {"account": "4250", "debit": 0.0, "credit": 250.0, "contact": contacts[0]["id"]}]})
             assert r.status_code == 200, r.text
-            r = await client.post("/docs", headers=auth, json={
-                "doc_type": "subscription_invoice", "contact_id": contacts[1]["id"], "frequency": "monthly",
-                "start_date": today,
-                "line_items": [{"description": "Seats", "quantity": 5, "unit_price": 20.0, "line_total": 100.0}]})
-            assert r.status_code in (200, 201), r.text
-            r = await client.post(f"/subscriptions/{r.json()['id']}/activate", headers=auth)
-            assert r.status_code == 200, r.text
+            await seed_subscriptions(client, auth, contacts, date.fromisoformat(today))
             await seed_funds_and_deferred_revenue(client, auth, contacts, date.fromisoformat(today))
             await seed_bank_statement(client, auth, date.fromisoformat(today))
+            await seed_documents(client, auth, contacts, date.fromisoformat(today))
+            await seed_manufacturing(client, auth)
+            await seed_company_details(client, auth, date.fromisoformat(today))
+            company_id = (await _ok(await client.get("/companies/me", headers=auth)))["id"]
+            await seed_ai_usage(company_id, user_id)
+            await seed_company_copies(company_id)
             # The default label templates are created through their write route, so no
             # page's first read seeds them: which labels page reads first depends on test order.
             for preset in PRESET_TEMPLATES:
@@ -152,24 +814,102 @@ def demo_token(api_server, api):
                 assert r.status_code == 201, r.text
 
     random.seed(20261022)
-    # Playwright's sync API keeps its own event loop running on this thread for the whole
-    # session (greenlet-trampolined), so asyncio.run() here would always raise "cannot be
-    # called from a running event loop". Run the seed coroutine on a fresh thread, same as
-    # api_server/ui_server above run their own event loop off the main thread.
-    error: list[BaseException] = []
+    with _capture_clock():
+        _run_off_loop(seed())
+    r = httpx.get(f"{api_server}/companies/me", headers={"Authorization": f"Bearer {token}"}, timeout=10)
+    assert r.status_code == 200, r.text
+    _date_records(r.json()["id"], started)
+    return {"token": token, "id": r.json()["id"]}
 
-    def _run():
-        try:
-            asyncio.run(seed())
-        except BaseException as exc:  # noqa: BLE001 - re-raised on the calling thread below
-            error.append(exc)
 
-    thread = threading.Thread(target=_run)
-    thread.start()
-    thread.join()
-    if error:
-        raise error[0]
-    return token
+_ISO = re.compile(r"\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?(Z|[+-]\d{2}:?\d{2})?")
+
+
+def _run_days(started: datetime) -> set[date]:
+    """The days the run's real time falls on, in UTC and in local time."""
+    return {started.date(), datetime.now(timezone.utc).date(), started.astimezone().date(), date.today()}
+
+
+def _dated(value, started: datetime, until: datetime):
+    """``value`` with every date or time the run wrote at its real time (from ``started`` to
+    ``until``) moved to _CAPTURE_DAY."""
+    if isinstance(value, dict):
+        return {k: _dated(v, started, until) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_dated(v, started, until) for v in value]
+    if not isinstance(value, str) or not _ISO.fullmatch(value):
+        return value
+    try:
+        when = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    if len(value) == 10:
+        return _CAPTURE_DAY.isoformat() if when.date() in _run_days(started) else value
+    when = when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    return _CAPTURE_NOON.isoformat() if started <= when <= until else value
+
+
+def _date_records(company_id: str, started: datetime) -> None:
+    """Dates what the seed wrote at the run's real time (record times, upload, receipt and
+    approval times in the records' data) on _CAPTURE_DAY, so no picture depends on the day the
+    capture ran. Record times keep their order: the n-th becomes noon plus n seconds."""
+    until = datetime.now(timezone.utc)
+    conn = _test_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT c.table_name, c.column_name, c.data_type FROM information_schema.columns c"
+                        " JOIN information_schema.columns k ON k.table_schema = c.table_schema"
+                        "  AND k.table_name = c.table_name AND k.column_name = 'company_id'"
+                        " JOIN information_schema.tables t ON t.table_schema = c.table_schema"
+                        "  AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'"
+                        " WHERE c.table_schema = 'public' AND c.data_type IN"
+                        " ('timestamp with time zone', 'timestamp without time zone', 'date', 'json', 'jsonb')")
+            for table, column, kind in cur.fetchall():
+                where = f"company_id::text = %s AND {column} IS NOT NULL"
+                if kind.startswith("timestamp"):
+                    aware = kind.endswith("with time zone")
+                    noon, start, end = ((t if aware else t.replace(tzinfo=None)) for t in (_CAPTURE_NOON, started, until))
+                    cur.execute(f"UPDATE {table} SET {column} = %s + n * interval '1 second' FROM"
+                                f" (SELECT ctid AS row, row_number() OVER (ORDER BY {column}, ctid) AS n"
+                                f"  FROM {table} WHERE {where} AND {column} BETWEEN %s AND %s) d"
+                                f" WHERE {table}.ctid = d.row", (noon, company_id, start, end))
+                elif kind == "date":
+                    cur.execute(f"UPDATE {table} SET {column} = %s WHERE {where} AND {column} = ANY(%s)",
+                                (_CAPTURE_DAY, company_id, list(_run_days(started))))
+                else:
+                    cur.execute(f"SELECT ctid, {column} FROM {table} WHERE {where}", (company_id,))
+                    for row, value in cur.fetchall():
+                        if (moved := _dated(value, started, until)) != value:
+                            cur.execute(f"UPDATE {table} SET {column} = %s::{kind} WHERE ctid = %s",
+                                        (json.dumps(moved), row))
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def core_sample_records_only():
+    """The capture companies keep the sample records modules add (the asset bills the fixed
+    asset pages register), whichever test creates them."""
+
+
+@pytest.fixture
+def _mock_get_modules_default():
+    """The modules page lists the modules the app finds, not the suite's default of none."""
+
+
+@pytest.fixture(scope="session")
+def demo_company(api_server, api):
+    return capture_company(api_server, api, _CAPTURE_EMAIL)
+
+
+@pytest.fixture(scope="session")
+def suite_owner(api) -> dict:
+    """The suite's own company, as a capture company, and the names no picture may show: its
+    name and its owners' names and emails."""
+    me = api.get("/companies/me").json()
+    owners = [u for u in api.get("/companies/me/users").json()["items"] if u["role"] == "owner"]
+    return {"token": api.headers["Authorization"].removeprefix("Bearer "), "id": me["id"],
+            "names": {me["name"], *(u[k] for u in owners for k in ("name", "email"))}}
 
 
 async def seed_bank_statement(client: httpx.AsyncClient, auth: dict, today: date) -> None:
@@ -213,12 +953,51 @@ async def seed_bank_statement(client: httpx.AsyncClient, auth: dict, today: date
     r = await client.post(f"/accounting/reconciliation/bank/{bank_id}/ask", headers=auth, json={
         "line_ids": [atm["id"]], "note": "What was this cash for?", "idempotency_key": uuid.uuid4().hex})
     assert r.status_code == 200, r.text
+    # A rule that posts the monthly rent to the rent account.
+    chart = (await _ok(await client.get("/accounting/chart", headers=auth)))["items"]
+    rent = next(a["code"] for a in chart if a["name"] == "Rent")
+    await _ok(await client.post("/accounting/rules", headers=auth, json={
+        "match_pattern": "OFFICE RENT", "target_account_code": rent}))
 
 
-@pytest.fixture
-def demo_page(page, browser_context, demo_token):
-    set_session_cookies(browser_context, demo_token)
-    return page
+def _records(company_id: str) -> int:
+    """How many records the company holds: its ledger and its AI conversations."""
+    conn = _test_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT (SELECT count(*) FROM ledger WHERE company_id = %s)"
+                        " + (SELECT count(*) FROM ai_conversations WHERE company_id = %s)", (company_id,) * 2)
+            return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _today_written(day: date) -> set[str]:
+    """``day`` as the app writes a date, and its month unless that is also _CAPTURE_DAY's."""
+    if day == _CAPTURE_DAY:
+        return set()
+    days = {day.isoformat(), f"{day.month:02d}/{day.day:02d}/{day.year}", f"{day.month}/{day.day}/{day.year}",
+            f"{day.day:02d}/{day.month:02d}/{day.year}", f"{day.day}/{day.month}/{day.year}",
+            f"{day:%b} {day.day}, {day.year}", f"{day:%B} {day.day}, {day.year}",
+            f"{day.day} {day:%b} {day.year}", f"{day.day} {day:%B} {day.year}"}
+    if (day.year, day.month) != (_CAPTURE_DAY.year, _CAPTURE_DAY.month):
+        days |= {f"{day:%B} {day.year}", f"{day:%b} {day.year}", f"{day.year}-{day.month:02d}"}
+    return days
+
+
+def _pictured_text(target) -> str:
+    """The text of the part of ``target`` a picture keeps."""
+    return target.evaluate("""(el, maxHeight) => {
+        const top = el.getBoundingClientRect().top, walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        const kept = [];
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            const range = document.createRange();
+            range.selectNodeContents(n);
+            const box = range.getBoundingClientRect();
+            if (box.height && box.top - top < maxHeight) kept.push(n.textContent);
+        }
+        return kept.join(" ");
+    }""", _MAX_HEIGHT)
 
 
 def _run(page, action: dict) -> None:
@@ -226,6 +1005,11 @@ def _run(page, action: dict) -> None:
         page.locator(action["click"]).first.click()
     elif "fill" in action:
         page.locator(action["fill"]).first.fill(action["value"])
+    elif "select" in action:
+        page.locator(action["select"]).first.select_option(action["value"])
+    elif "upload" in action:
+        page.locator(action["upload"]).first.set_input_files(
+            {"name": "import.csv", "mimeType": "text/csv", "buffer": action["value"].encode()})
     elif "press" in action:
         page.keyboard.press(action["press"])
     else:
@@ -237,38 +1021,464 @@ def _visible_label(key: str) -> str:
     return t(key, "en").split("{", 1)[0].strip()
 
 
-def _write_image(target, path: Path) -> None:
+def _whole_label(key: str) -> re.Pattern:
+    """An element's whole text reading the English label, any text standing for each {param}."""
+    return re.compile(r"^\s*" + ".+".join(map(re.escape, re.split(r"\{[^}]*\}", t(key, "en").strip()))) + r"\s*$")
+
+
+def _evidence_locator(page, entry: str, labels: dict):
+    """What one evidence entry matches: a {name} alone is an element whose whole text is that
+    label in English (or a field showing it as placeholder), so a sentence naming the label is
+    not a match; anything else a selector, with each {name} in it standing for that text
+    (``.step-label--active:text-is('{map}')``)."""
+    if name := PLACEHOLDER.fullmatch(entry):
+        label = _whole_label(labels[name.group(1)])
+        return page.get_by_text(label).or_(page.get_by_placeholder(label))
+    return page.locator(PLACEHOLDER.sub(
+        lambda m: _visible_label(labels[m.group(1)]).replace("\\", "\\\\").replace("'", "\\'"), entry))
+
+
+def _evidence_entries(step: dict, elsewhere=()) -> list[str]:
+    """The step's evidence, then every label its text names that the evidence leaves out: the
+    control a step tells the reader to use is in its picture, unless it is ``elsewhere``."""
+    evidence = step["capture"]["evidence"]
+    listed = {m.group(1) for entry in evidence for m in PLACEHOLDER.finditer(entry)} | set(elsewhere)
+    named = dict.fromkeys(m.group(1) for m in PLACEHOLDER.finditer(step.get("text", "")))
+    return [*evidence, *(f"{{{name}}}" for name in named if name not in listed)]
+
+
+def _evidence_missing(page, target, step: dict, elsewhere=()) -> list[str]:
+    """The step's evidence entries with no visible match lying wholly inside the part of
+    ``target`` a picture keeps (its top _MAX_HEIGHT pixels) and on top from end to end: a match
+    elsewhere on the page, hidden, cut by the picture's edge or by a scrolling box, or covered
+    by another element (an open dropdown) does not count. The page is laid out as the picture is taken, the whole kept
+    part inside the viewport, so a dropdown opens where the picture shows it; the viewport grows
+    only by what the kept part overflows, so a screen sized to the viewport keeps its layout."""
+    viewport = page.viewport_size
+    kept_part = """(el, maxHeight) => new Promise(done => {
+        el.scrollIntoView({block: "start", inline: "nearest"});
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            const r = el.getBoundingClientRect();
+            done([r.left, r.top, r.right, r.top + Math.min(r.height, maxHeight)]);
+        }));
+    })"""
+    try:
+        for _ in range(3):
+            clip = target.evaluate(kept_part, _MAX_HEIGHT)
+            if clip[3] <= page.viewport_size["height"]:
+                break
+            page.set_viewport_size({"width": viewport["width"], "height": math.ceil(clip[3])})
+        return [entry for entry in _evidence_entries(step, elsewhere)
+                if not _evidence_locator(page, entry, step["labels"]).evaluate_all("""(els, [l, t, r, b]) =>
+                    els.some(e => {
+                        const box = e.getBoundingClientRect();
+                        if (!(e.checkVisibility() && box.width > 0 && box.height > 0 && box.left >= l - 1
+                              && box.top >= t - 1 && box.right <= r + 1 && box.bottom <= b + 1)) return false;
+                        // The element hit at both ends and the centre of its widest line box
+                        // (a wrapped label's whole box has gaps), the ends 3 px in: a box laid
+                        // out on a fraction of a pixel is hit as its neighbour on its last one.
+                        const line = [...e.getClientRects()].reduce((a, c) => c.width > a.width ? c : a);
+                        return [line.left + 3, (line.left + line.right) / 2, line.right - 3].every(x => {
+                            const hit = document.elementFromPoint(x, (line.top + line.bottom) / 2);
+                            return hit !== null && e.contains(hit);
+                        });
+                    })""", clip)]
+    finally:
+        page.set_viewport_size(viewport)
+
+
+def _empty_state_shown(target) -> list[str]:
+    """The empty-state components visible in the part of ``target`` a picture keeps."""
+    return target.evaluate("""(el, [sel, maxHeight, emptyMessages]) => {
+        const top = el.getBoundingClientRect().top;
+        const components = [el, ...el.querySelectorAll(sel)]
+            .filter(e => e.matches(sel) && e.checkVisibility()
+                         && e.getBoundingClientRect().top - top < maxHeight)
+            .map(e => `${e.className}: ${e.innerText.trim().slice(0, 80)}`);
+        const messages = [el, ...el.querySelectorAll("*")]
+            .filter(e => e.checkVisibility() && e.getBoundingClientRect().top - top < maxHeight)
+            .map(e => [...e.childNodes].filter(n => n.nodeType === Node.TEXT_NODE)
+                                      .map(n => n.textContent).join("").trim())
+            .filter(text => text && emptyMessages.some(m => text.startsWith(m)));
+        return [...components, ...messages.map(text => `message: ${text.slice(0, 80)}`)];
+    }""", [_EMPTY_STATE_SELECTOR, _MAX_HEIGHT, _EMPTY_MESSAGES])
+
+
+# Pictures a write run has taken, put in place when the run ends: an image under a module
+# changes that module's digest, which the app checks against the lock it loaded at start, so
+# an image written mid-run would make every later picture show its module as sideloaded.
+_TAKEN: dict[Path, bytes] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _put_pictures_in_place():
+    yield
+    for path, data in _TAKEN.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+
+# Chromium anti-aliases some thin lines (a dotted underline at a fractional pixel offset) a
+# little differently from one page load to the next, the same page and data giving one of a few
+# pictures that differ by a few shades. A pixel counts as changed past this many shades of 255
+# (the noise measured stays under 30; any changed text, line or colour is far past it).
+_RENDER_NOISE = 40
+
+
+# The read-only check compares 2x2 pixel averages: a font hinted a shade differently on another
+# machine stays inside _RENDER_NOISE there, while a changed word, number or control does not.
+_FRESHNESS_SCALE = 2
+
+
+def _same_picture(committed: bytes, taken: bytes, scale: int = 1) -> bool:
+    """True when ``taken`` shows what ``committed`` shows, apart from anti-aliasing noise, compared
+    as ``scale`` x ``scale`` pixel averages."""
     from PIL import Image
 
-    with Image.open(io.BytesIO(target.screenshot())) as shot:
+    with Image.open(io.BytesIO(committed)) as old, Image.open(io.BytesIO(taken)) as new:
+        old, new = old.convert("RGB"), new.convert("RGB")
+        if scale > 1 and old.size == new.size:
+            size = (max(1, old.width // scale), max(1, old.height // scale))
+            old, new = old.resize(size, Image.BOX), new.resize(size, Image.BOX)
+        return _same_pixels(old, new)
+
+
+def _same_pixels(old, new) -> bool:
+    from PIL import ImageChops
+
+    if old.size != new.size:
+        return False
+    return max(high for _, high in ImageChops.difference(old, new).getextrema()) <= _RENDER_NOISE
+
+
+def _unpinned_fonts(page, target) -> list[str]:
+    """The fonts outside _PINNED_FONTS that draw any text inside ``target``, as Chromium reports
+    the platform fonts it rendered each element's text with."""
+    target.evaluate("el => el.setAttribute('data-capture-target', '')")
+    cdp = page.context.new_cdp_session(page)
+    try:
+        cdp.send("DOM.enable")
+        cdp.send("CSS.enable")
+        root = cdp.send("DOM.getDocument", {"depth": 0})["root"]["nodeId"]
+        node = cdp.send("DOM.querySelector", {"nodeId": root, "selector": "[data-capture-target]"})["nodeId"]
+        nodes = [node, *cdp.send("DOM.querySelectorAll", {"nodeId": node, "selector": "*"})["nodeIds"]]
+        used = {font["familyName"] for n in nodes
+                for font in cdp.send("CSS.getPlatformFontsForNode", {"nodeId": n})["fonts"]}
+    finally:
+        cdp.detach()
+        target.evaluate("el => el.removeAttribute('data-capture-target')")
+    return sorted(used - _PINNED_FONTS)
+
+
+def _picture(target, marker: str) -> bytes:
+    """The help image of ``target``: its top _MAX_HEIGHT pixels as a webp carrying ``marker``."""
+    from PIL import Image
+
+    with Image.open(io.BytesIO(target.screenshot(animations="disabled"))) as shot:
         image = shot.convert("RGB")
+    image = image.crop((0, 0, image.width, min(image.height, _MAX_HEIGHT)))
     if image.width > _MAX_WIDTH:
         image = image.resize((_MAX_WIDTH, round(image.height * _MAX_WIDTH / image.width)))
     exif = Image.Exif()
-    exif[_EXIF_DESCRIPTION] = CAPTURE_MARKER
+    exif[_EXIF_DESCRIPTION] = marker
     for quality in (80, 65, 50, 35, 20):
         buf = io.BytesIO()
         image.save(buf, "WEBP", quality=quality, method=6, exif=exif)
         if buf.tell() <= MAX_IMAGE_BYTES:
             break
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(buf.getvalue())
+    return buf.getvalue()
+
+
+def _capture_step(demo_page, help_page, step: dict, step_id: str, foreign: set[str]) -> list[str]:
+    """Opens one step's screen and checks it; the empty states, the run's own day or the
+    ``foreign`` company and people it pictures, if any, else takes its picture when writing."""
+    capture = step["capture"]
+    response = demo_page.goto(capture["route"])
+    assert response is not None and response.ok, f"{step_id}: {capture['route']} did not load"
+    for action in capture["actions"]:
+        _run(demo_page, action)
+    demo_page.mouse.move(0, 0)  # no hover state where the last click left the pointer
+    htmx_idle(demo_page)
+    target = demo_page.locator(capture["selector"]).first
+    expect(target).to_be_visible()
+    if step_id not in _SHOWS_EMPTY_STATE and (shown := _empty_state_shown(target)):
+        return shown
+    text = _pictured_text(target)
+    if dated := sorted(d for day in _run_days(datetime.now(timezone.utc)) for d in _today_written(day) if d in text):
+        return [f"the day the capture ran: {dated}"]
+    if named := sorted(n for n in foreign if n in text):
+        return [f"not the capture company or user: {named}"]
+    if ids := sorted(set(_RAW_ID.findall(text))):
+        return [f"a record id in place of its name: {ids}"]
+    if _SIDELOADED in text:
+        return ["a bundled module shown as sideloaded: its files differ from the module lock"]
+    elsewhere = _NAMED_ELSEWHERE.get(step_id, {})
+    if missing := _evidence_missing(demo_page, target, step, elsewhere):
+        return [f"no visible match wholly inside the picture for evidence {missing}"]
+    only = {"labels": step["labels"], "capture": {"evidence": [f"{{{name}}}" for name in elsewhere]}}
+    if shown := sorted(set(only["capture"]["evidence"]) - set(_evidence_missing(demo_page, target, only))):
+        return [f"listed in _NAMED_ELSEWHERE, yet in the picture: {shown}"]
+    if machine := _unpinned_fonts(demo_page, target):
+        return [f"text drawn in a font the capture does not pin, so in whatever the machine has: {machine}"]
+    page_id, n = step_id.rsplit("#", 1)
+    path, marker = help_page.help_dir / step["image"], capture_marker(page_id, int(n), step["capture"])
+    taken = _picture(target, marker)
+    if _WRITE:
+        # A retake that looks the same keeps the committed file only while it carries this marker.
+        if not (path.is_file() and _same_picture(path.read_bytes(), taken) and image_marker(path) == marker):
+            _TAKEN[path] = taken
+    elif not (path.is_file() and _same_picture(path.read_bytes(), taken, _FRESHNESS_SCALE)):
+        return ["the committed picture no longer shows this screen: retake it with HELP_CAPTURE_WRITE=1"]
+    return []
 
 
 @pytest.mark.parametrize("help_page", _PAGES, ids=[p.data.get("id", p.path.name) for p in _PAGES])
-def test_help_capture_every_page(demo_page, help_page):
+def test_help_capture_every_page(page, browser_context, api_server, api, demo_company, suite_owner, help_page,
+                                 tools_open_when_called):
+    page_id = help_page.data["id"]
+    # A page that adds records is taken on a company of its own, so no other page's picture
+    # depends on which pages ran before it.
+    company = (capture_company(api_server, api, _CAPTURE_EMAIL.replace("@", f"+{page_id}@"))
+               if page_id in _ADDS_RECORDS
+               else suite_owner if page_id in _INSTALLATION_PAGES else demo_company)
+    set_session_cookies(browser_context, company["token"])
+    page.add_init_script(_CAPTURE_PAGE_SCRIPT)
+    # The browser's time zone is pinned too: the company setup suggests a country from it.
+    page.context.new_cdp_session(page).send("Emulation.setTimezoneOverride", {"timezoneId": _CAPTURE_ZONE})
+    records = _records(company["id"])
+    with _store_connected(company["id"]) if company is demo_company else contextlib.nullcontext():
+        wrong = _capture_steps(page, help_page, page_id, suite_owner)
+    assert not wrong, "steps picturing a screen other than the one their text describes:\n" + "\n".join(wrong)
+    assert page_id in _ADDS_RECORDS or _records(company["id"]) == records, (
+        f"{page_id} added records to the capture company: list it in _ADDS_RECORDS")
+
+
+def _capture_steps(page, help_page, page_id: str, suite_owner: dict) -> list[str]:
+    wrong = []
     for n, step in enumerate(help_page.data["steps"], 1):
-        capture = step["capture"]
-        response = demo_page.goto(capture["route"])
-        assert response is not None and response.ok, f"step {n}: {capture['route']} did not load"
-        for action in capture["actions"]:
-            _run(demo_page, action)
-        target = demo_page.locator(capture["selector"]).first
-        expect(target).to_be_visible()
-        for key in step["labels"].values():
-            label = _visible_label(key)
-            if label:
-                shown = demo_page.get_by_text(label).or_(demo_page.get_by_placeholder(label))
-                expect(shown.filter(visible=True).first).to_be_visible()
-        if _WRITE and step["image"]:
-            _write_image(target, help_page.help_dir / step["image"])
+        step_id = f"{page_id}#{n}"
+        # The installed modules as the app finds them, from the bundled tree (the suite's
+        # process runs with none, which the modules page would picture as none installed).
+        with _capture_clock(), _subscription(_SUBSCRIBED.get(step_id, _AI if step["capture"]["route"].startswith("/ai") else None)), \
+                patch.dict(os.environ, {"MODULE_DIR": "default_modules"}), \
+                patch("ui.routes.documents._free_send_quota", return_value=_FREE_EMAIL_QUOTA), \
+                _STEP_STATE.get(step_id, contextlib.nullcontext)():
+            try:
+                if shown := _capture_step(page, help_page, step, step_id, suite_owner["names"]):
+                    wrong.append(f"{step_id} {shown}")
+            finally:
+                # Leave the page while the step's subscription still holds, so a request it
+                # has in flight never lands on the next step's state.
+                page.goto("about:blank")
+    return wrong
+
+
+def test_a_retaken_picture_differing_only_by_anti_aliasing_keeps_the_committed_one():
+    from PIL import Image, ImageDraw
+
+    def webp(draw, height: int = 60) -> bytes:
+        image = Image.new("RGB", (200, height), "white")
+        draw(ImageDraw.Draw(image))
+        buf = io.BytesIO()
+        image.save(buf, "WEBP", quality=80)
+        return buf.getvalue()
+
+    committed = webp(lambda d: (d.text((10, 10), "INV-2606-0011", fill="black"), d.line((10, 30, 120, 30), fill=(40, 40, 40))))
+    # The same line anti-aliased across two pixel rows, as Chromium draws it on some loads.
+    noise = webp(lambda d: (d.text((10, 10), "INV-2606-0011", fill="black"), d.line((10, 30, 120, 30), fill=(40, 40, 40)),
+                            d.line((10, 29, 120, 29), fill=(232, 232, 232)), d.line((10, 31, 120, 31), fill=(232, 232, 232))))
+    changed = webp(lambda d: (d.text((10, 10), "INV-2606-0012", fill="black"), d.line((10, 30, 120, 30), fill=(40, 40, 40))))
+    assert _same_picture(committed, noise)
+    assert not _same_picture(committed, changed)
+    assert not _same_picture(committed, webp(lambda d: None, height=61))
+    # The read-only freshness check, at its coarser scale, still tells the changed number apart.
+    assert _same_picture(committed, noise, _FRESHNESS_SCALE)
+    assert not _same_picture(committed, changed, _FRESHNESS_SCALE)
+
+
+# Steps whose pictures are one visual (``_same_pixels``), each
+# with why that one screen explains every step in the group: it holds each step's evidence.
+_LIST_INTRO = "the list page holds both the sidebar entry and its New button"
+_SAME_VISUAL = {
+    frozenset({"core.companies#1", "core.companies#2"}): "the company card holds the list, New and the client list link",
+    frozenset({"core.help#2", "core.help#3"}): "the help index holds the search box and the guide list",
+    frozenset({"core.modules#1", "core.modules#2"}): "the modules page holds the installed list and its toggles",
+    frozenset({"ai.usage-settings#3", "core.users#2"}): "the role matrix holds the assistant permission row",
+    frozenset({"manufacturing.demand-planning#1", "manufacturing.make-from-recipe#2"}):
+        "the demand planning board lists the open lines waiting to be made",
+    frozenset({"manufacturing.demand-planning#2", "manufacturing.make-from-recipe#3"}):
+        "the demand planning board with a line ticked, ready for the make action",
+    frozenset({"accounting.bank-questions#1", "accounting.bank-questions#3", "accounting.bank-questions#4"}):
+        "the questions page holds the cards, the Open, Answered and All tabs and its title",
+    frozenset({"accounting.donors#1", "accounting.donors#4"}): "the donors page holds the list and the send panel",
+    frozenset({"accounting.financial-reports#1", "reports.operational-reports#1"}): "the one reports index lists both kinds",
+    frozenset({"accounting.funds#2", "accounting.funds#3"}): "the funds tab holds the list and its New fund form",
+    frozenset({"accounting.journal-entries#1", "accounting.journal-entries#2"}): _LIST_INTRO,
+    frozenset({"accounting.revenue-recognition#2", "accounting.revenue-recognition#6"}):
+        "an amendment has no screen of its own (it comes through the API); its runs show in the runs table",
+    frozenset({"ai.ask-questions#4", "ai.review-proposals#1"}): "the assistant page holds the question box and the proposals",
+    frozenset({"connectors.accountant-access#1", "connectors.accountant-access#2"}): "the access card holds the invite and its roles",
+    frozenset({"contacts.add-customer#1", "contacts.add-customer#2"}): _LIST_INTRO,
+    frozenset({"contacts.add-vendor#1", "contacts.add-vendor#2"}): _LIST_INTRO,
+    frozenset({"contacts.finance-company-details#1", "contacts.finance-company-details#2"}):
+        "the company details card holds every field both steps name",
+    frozenset({"docs.memos#3", "docs.memos#4", "docs.memos#5"}): "one line actions bar holds Set as shipped, Invoice selected and Set as available",
+    frozenset({"docs.received#1", "docs.received#2"}): _LIST_INTRO,
+    frozenset({"fixed-assets.year-end#1", "fixed-assets.year-end#2"}): "the year-end page holds the checklist and its run button",
+    frozenset({"fixed-assets.register#1", "fixed-assets.register#2"}): _LIST_INTRO,
+    frozenset({"inventory.add-item#1", "inventory.add-item#2", "inventory.import-export#1"}):
+        "the inventory list holds Add item, Export and Import",
+    frozenset({"labels.print-labels#1", "labels.print-labels#2"}): "the print page holds the item picker and the template choice",
+    frozenset({f"subscriptions.members#{n}" for n in range(1, 6)}): "the members list shows every standing and New in one table",
+    frozenset({"subscriptions.overview#1", "subscriptions.overview#2"}): "the agreements list holds the tabs, New and Import",
+    frozenset({"subscriptions.plans#1", "subscriptions.plans#2"}): _LIST_INTRO,
+    frozenset({"subscriptions.retainers#1", "subscriptions.retainers#2"}): _LIST_INTRO,
+    frozenset({f"subscriptions.revenue#{n}" for n in range(1, 4)}):
+        "the revenue page's first screen holds the period, currency and cohorts",
+    frozenset({"verticals.business-type#1", "verticals.business-type#2", "verticals.business-type#3"}):
+        "the business type page holds the choices, their presets and Apply",
+}
+
+
+def _picture_groups() -> list[frozenset[str]]:
+    """Steps grouped by one visual (``_same_pixels``). A box-averaged thumbnail never differs by
+    more than the largest pixel difference, so pictures whose thumbnails differ past the noise
+    are told apart without the full comparison."""
+    from PIL import Image
+
+    pixels = {}
+    for p in _PAGES:
+        for n, s in enumerate(p.data["steps"], 1):
+            with Image.open(p.help_dir / s["image"]) as image:
+                pixels[f"{p.data['id']}#{n}"] = image.convert("RGB")
+    thumbs = {k: v.reduce(16) for k, v in pixels.items()}
+    root = {k: k for k in pixels}
+
+    def find(k):
+        while root[k] != k:
+            k = root[k]
+        return k
+
+    keys = list(pixels)
+    for i, a in enumerate(keys):
+        for b in keys[i + 1:]:
+            if pixels[a].size == pixels[b].size and _same_pixels(thumbs[a], thumbs[b]) and _same_pixels(pixels[a], pixels[b]):
+                root[find(a)] = find(b)
+    groups: dict[str, set[str]] = {}
+    for k in keys:
+        groups.setdefault(find(k), set()).add(k)
+    return [frozenset(g) for g in groups.values() if len(g) > 1]
+
+
+def test_steps_share_a_picture_only_where_one_visual_explains_each():
+    groups = set(_picture_groups())
+    assert not groups - _SAME_VISUAL.keys(), (
+        "steps share one picture: picture each step's own state or part, or list the group in "
+        f"_SAME_VISUAL with why one visual explains each: {sorted(map(sorted, groups - _SAME_VISUAL.keys()))}")
+    assert not _SAME_VISUAL.keys() - groups, (
+        f"_SAME_VISUAL lists groups that no longer share a picture: {sorted(map(sorted, _SAME_VISUAL.keys() - groups))}")
+
+
+def _bare_label_evidence() -> tuple[dict, list[str]]:
+    """Every evidence entry in the shipped guides that is a {name} alone, as one step's labels
+    and evidence."""
+    keys = sorted({step["labels"][m.group(1)] for p in _PAGES for step in p.data["steps"]
+                   for entry in step["capture"]["evidence"] if (m := PLACEHOLDER.fullmatch(entry))})
+    return {f"e{i}": key for i, key in enumerate(keys)}, [f"{{e{i}}}" for i in range(len(keys))]
+
+
+def _shown(key: str) -> str:
+    return re.sub(r"\{[^}]*\}", "7", t(key, "en"))
+
+
+def test_text_drawn_in_a_font_outside_the_pin_is_refused(page):
+    page.set_content(f"""<style>{_FONT_PIN}</style><main id='t' style='font-family: var(--font)'>
+      <p>Pinned text \U0001F4E6 <code style='font-family: var(--font-mono)'>1,234.50</code></p>
+      <p style="font-family: 'Liberation Serif'">Serif text</p></main>""")
+    assert _unpinned_fonts(page, page.locator("#t")) == ["Liberation Serif"]
+    assert _unpinned_fonts(page, page.locator("#t p").first) == []
+
+
+def test_a_label_named_in_a_sentence_is_not_evidence_of_the_screen(page):
+    labels, evidence = _bare_label_evidence()
+    step = {"labels": labels, "capture": {"evidence": evidence}}
+    prose = " ".join(f"A record reads {_shown(k)} here." for k in labels.values())
+    page.set_content(f"<main id='t' style='font-size:6px'><p>{prose}</p></main>")
+    assert _evidence_missing(page, page.locator("#t"), step) == evidence
+    # The same labels as the text of an element of their own are found, each of them.
+    cells = "".join(f"<span style='margin-right:4px'>{_shown(k)}</span>" for k in labels.values())
+    page.set_content(f"<main id='t' style='font-size:6px'>{cells}</main>")
+    assert [labels[e[1:-1]] for e in _evidence_missing(page, page.locator("#t"), step)] == []
+
+
+def test_a_control_another_element_covers_is_not_evidence_of_the_screen(page):
+    step = {"labels": {"post": "btn.post"}, "capture": {"evidence": ["{post}", "#t button"]}}
+    page.set_content(f"""<main id='t' style='position:relative;height:200px'>
+        <button style='position:absolute;top:50px;left:10px'>{_shown('btn.post')}</button>
+        <ul style='position:absolute;top:0;left:0;width:300px;height:150px;margin:0;background:#fff'>
+          <li>Bank account</li></ul></main>""")
+    assert _evidence_missing(page, page.locator("#t"), step) == ["{post}", "#t button"]
+    page.locator("ul").evaluate("e => e.remove()")
+    assert _evidence_missing(page, page.locator("#t"), step) == []
+
+
+def test_a_control_a_scrolling_table_cuts_is_not_evidence_of_the_screen(page):
+    """A table wider than its scroll box: the button at its far end shows only its first letters
+    in the picture, so it is no evidence until the table fits."""
+    step = {"labels": {"post": "btn.post"}, "capture": {"evidence": ["{post}"]}}
+    page.set_content(f"""<main id='t' style='width:600px'><div style='width:400px;overflow-x:auto'>
+        <table style='border-spacing:0'><tr><td style='padding:0'><div id='wide' style='width:370px'>Line</div></td>
+        <td style='padding:0'><button style='width:40px;padding:0;border:0;font-size:10px'>{_shown("btn.post")}</button></td>
+        </tr></table></div></main>""")
+    assert _evidence_missing(page, page.locator("#t"), step) == ["{post}"]
+    page.locator("#wide").evaluate("e => e.style.width = '100px'")
+    assert _evidence_missing(page, page.locator("#t"), step) == []
+
+
+def test_every_label_a_step_names_is_checked_as_evidence_of_the_screen(page):
+    """The step tells the reader to click {post}; its evidence lists only the heading."""
+    step = {"text": "Under {title}, click {post}.", "labels": {"title": "modules.title", "post": "btn.post"},
+            "capture": {"evidence": ["{title}"]}}
+    page.set_content(f"<main id='t'><h1>{_shown('modules.title')}</h1></main>")
+    assert _evidence_missing(page, page.locator("#t"), step) == ["{post}"]
+    page.locator("#t").evaluate("(e, label) => e.insertAdjacentHTML('beforeend', `<button>${label}</button>`)",
+                                _shown("btn.post"))
+    assert _evidence_missing(page, page.locator("#t"), step) == []
+
+
+def test_a_label_excused_from_its_picture_is_one_its_step_names_and_does_not_list():
+    """An entry for a step or label that no longer exists, or that the evidence lists, is stale."""
+    steps = {f"{p.data['id']}#{n}": step for p in _PAGES for n, step in enumerate(p.data["steps"], 1)}
+    stale = [f"{step_id} {name}" for step_id, names in _NAMED_ELSEWHERE.items() for name in names
+             if step_id not in steps
+             or f"{{{name}}}" not in _evidence_entries(steps[step_id])[len(steps[step_id]["capture"]["evidence"]):]]
+    assert not stale, stale
+
+
+def test_a_control_covered_where_the_picture_is_taken_is_not_evidence_of_the_screen(page):
+    """A dropdown opens below its field when the viewport has room for it, else above. Scrolled
+    where it opens above, the Post button under the field is free; the picture, the whole kept
+    part laid out at once, shows the dropdown open below and over it."""
+    step = {"labels": {"post": "btn.post"}, "capture": {"evidence": ["{post}"]}}
+    page.set_content(f"""<div style='height:1000px'></div>
+        <main id='t' style='position:relative;height:900px'>
+          <input id='f' style='position:absolute;top:300px;left:10px'>
+          <button style='position:absolute;top:400px;left:10px'>{_shown('btn.post')}</button></main>
+        <div style='height:1000px'></div>
+        <ul id='dd' style='position:fixed;left:0;width:300px;height:250px;margin:0;background:#fff'><li>Bank</li></ul>
+        <script>
+          const place = () => {{ const r = f.getBoundingClientRect();
+            dd.style.top = (innerHeight - r.bottom >= 250 ? r.bottom : r.top - 250) + "px"; }};
+          addEventListener("scroll", place); addEventListener("resize", place);
+        </script>""")
+    page.evaluate("() => { scrollTo(0, f.getBoundingClientRect().top + scrollY - (innerHeight - 120)); place(); }")
+    assert _evidence_missing(page, page.locator("#t"), step) == ["{post}"]
+
+
+def test_a_screen_sized_to_the_viewport_is_checked_in_the_layout_its_picture_shows(page):
+    """A screen as tall as the viewport, its form at the bottom: the picture shows the form, so
+    checking it must not lay the screen out taller and move the form out of the kept part."""
+    step = {"labels": {"post": "btn.post"}, "capture": {"evidence": ["{post}"]}}
+    page.set_content(f"""<body style='margin:0'><main id='t' style='position:relative;height:100vh'>
+        <button style='position:absolute;bottom:10px;left:10px'>{_shown('btn.post')}</button></main></body>""")
+    assert _evidence_missing(page, page.locator("#t"), step) == []

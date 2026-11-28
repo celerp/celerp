@@ -6,31 +6,37 @@
   "routes": ["/manufacturing/production", "/manufacturing/runs/{run_id}/reconcile"],
   "permission": "manage_manufacturing",
   "order": 2,
-  "checked": "06a6773d67ff9aa55d1dc99ed305842689bfe07b3f6e63f6acdfc7e4c832ecfd",
+  "checked": "5d1a8b1b9fc9420b7577ab23f263efbd8758929d0165c505aa4ba8594e35a167",
   "steps": [
     {
       "text": "Open {wip} from the sidebar to see production runs on the floor.",
       "labels": {"wip": "manufacturing.work_in_progress"},
-      "image": null,
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
+      "image": "img/production-1.webp",
+      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": [], "evidence": ["{wip}"]}
     },
     {
       "text": "Status cards split the queue by stage, from {planned} to {hold} to {done}; tick runs and choose an action from the bulk actions above the table to move them along.",
       "labels": {"planned": "enum.mfg_run_status.planned", "hold": "enum.mfg_run_status.on_hold", "done": "enum.mfg_run_status.completed"},
-      "image": null,
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
+      "image": "img/production-2.webp",
+      "capture": {"route": "/manufacturing/production", "selector": "main div.status-cards", "actions": [], "evidence": ["{planned}", "{hold}", "{done}"]}
     },
     {
-      "text": "A run that ended with materials still held asks to be reconciled: its page lists what it holds so you can record what was used, returned or lost.",
+      "text": "Each row shows the run's priority and due date, which you change by double-clicking them, and links to its run sheet: a page to print listing the materials and quantities the run needs. A run from an older release whose materials' value its history cannot prove asks to be reconciled before it moves on.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
+      "image": "img/production-3.webp",
+      "capture": {"route": "/manufacturing/production", "selector": "#mfg-table", "actions": [], "evidence": ["#mfg-table tbody tr"]}
+    },
+    {
+      "text": "A run that yields extras, such as oil cake beside oil, has a quantity box for each one in its row on the product's {tab} tab, filled with what is still to come. Change it to what was really made before you choose Complete, and enter 0 for an extra that was not made or was thrown away. Completing runs from this page receives each extra's planned quantity.",
+      "labels": {"tab": "nav.manufacturing"},
+      "image": "img/production-4.webp",
+      "capture": {"route": "/inventory?q=OIL-001", "selector": "#production-block .doc-section:has(#wo-orders-table)", "actions": [{"click": "main a.table-link[href^=\"/inventory/item:\"] >> nth=-1"}, {"wait": ".category-tabs"}, {"click": ".category-tabs a[href$=\"tab=manufacturing\"]"}, {"wait": ".category-tab--active[href$=\"tab=manufacturing\"]"}, {"wait": "#recipe-section tr.data-row"}, {"wait": "#production-block input[name^=\"also:\"]"}], "evidence": ["#production-block input[name^=\"also:\"]"]}
     },
     {
       "text": "You can also ask the assistant how a work order stands, or to start, hold, issue materials to, receive or complete it. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
+      "image": "img/production-5.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "How do the open work orders stand?"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["manufacturing.demand-planning", "manufacturing.settings"]

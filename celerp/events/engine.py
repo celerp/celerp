@@ -599,6 +599,7 @@ async def _item_applied(session, entry: LedgerEntry, transition, held_lot_carve:
     # output, for one); a handler that cannot be resolved fails the event, never skips it.
     for handler in sorted({c["handler"] for c in get_slot("item_lineage_guard")}):
         await resolve_handler(handler)(session=session, entry=entry, transition=transition)
+    await _refuse_out_of_category_attributes(session, entry, transition)
     await _refuse_held_lot_change(session, entry, transition, held_lot_carve)
     if units_leaving(transition.before, transition.after) > 1e-9:
         from celerp.services.auto_je import recognized_cogs, refuse_stranding_set_aside
@@ -629,6 +630,25 @@ async def _item_applied(session, entry: LedgerEntry, transition, held_lot_carve:
     # the caller the event will reach a connected store.
     entry.outbound_queued = await enqueue_item_change(session, entry, previous_state=transition.before)
     await session.flush()
+
+
+async def _refuse_out_of_category_attributes(session, entry: LedgerEntry, transition) -> None:
+    """The item's category attributes after the write, judged against the attributes it
+    held before, or for a new lot those of the lots it was made from (``parent_id`` of a
+    split, transform or carve, ``merged_from`` of a merge), so a copy of a lot never
+    fails on a value the lot already had (field_schema.refuse_out_of_category_attributes)."""
+    from celerp.models.company import Company
+    from celerp.services.field_schema import refuse_out_of_category_attributes
+
+    company = await session.get(Company, entry.company_id)
+    meta = entry.metadata_ or {}
+    sources = [meta.get("parent_id"), *(meta.get("merged_from") or [])]
+    held = [((transition.before or {}).get("attributes") or {})]
+    for source in filter(None, sources):
+        row = await session.get(Projection, (entry.company_id, source))
+        if row is not None:
+            held.append((row.state or {}).get("attributes") or {})
+    refuse_out_of_category_attributes(dict(company.settings or {}) if company else {}, transition.after, held)
 
 
 async def _check_asset_lines(session, kwargs: dict) -> None:
@@ -722,12 +742,15 @@ async def _stamp_items_at_sale(session, kwargs: dict) -> None:
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False,
     memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None,
-    origin: str | None = None, fund_grant: FundChoiceGrant | None = None, keep_gifts: bool = False, **kwargs
+    origin: str | None = None, fund_grant: FundChoiceGrant | None = None, keep_gifts: bool = False,
+    books_currency: str | None = None, **kwargs
 ) -> LedgerEntry:
     # ``origin``: only an arrival writer passes it (peer_lines.ORIGINS), marking the record and
     # the lines it brings; ``fund_grant``: the fund keys this write may set (peer_lines);
     # ``keep_gifts``: the journal's lines carry the gift answers these books gave them (a
-    # document's posting, or a copy of posted lines), so the boundary keeps them.
+    # document's posting, or a copy of posted lines), so the boundary keeps them;
+    # ``books_currency``: the books an automatic posting is written on when it reverses a payment
+    # on the books that payment kept (None: the company's), the precision the boundary keeps.
     fund_choices_cleared: dict = {}
     # A backup represents a clean point in time: while one is building, pause writes
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.
@@ -824,8 +847,20 @@ async def emit_event(
         await held_fund_ledger(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
         await hold_movement_actor(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
 
-    # Every journal entry change, whoever produced it, is judged against the bank
-    # reconciliations: one that would change what a reconciliation counts is refused.
+    # A new entry's lines are judged and kept as they will be stored before anything else reads
+    # their amounts. An arrival journal carries its origin on the entry and every line first.
+    if kwargs["event_type"] == "acc.journal_entry.created":
+        from celerp.services.journal_accounts import normalize_journal_entry
+
+        if origin is not None:
+            await _judge_inbound(session, kwargs.get("company_id"), journal_inbound_keys(kwargs["data"], fund_grant), origin)
+            mark_journal(kwargs["data"], origin)
+        await normalize_journal_entry(session, kwargs.get("company_id"), kwargs["data"],
+                                      restored=restoring, books_currency=books_currency)
+
+    # Every journal entry change, whoever produced it, is judged against the bank accounts:
+    # one that would change what a reconciliation counts, or add a row to a bank whose label
+    # and entries disagree, is refused.
     if kwargs["event_type"] in _JOURNAL_CHANGES:
         from celerp.services import journal_accounts
 
@@ -834,16 +869,10 @@ async def emit_event(
             await access.guard_journal_change(
                 session, kwargs.get("company_id"), kwargs["entity_id"], kwargs["event_type"], kwargs["data"])
 
-    # Every journal line, whoever produced it, passes the one account boundary. An arrival
-    # journal carries its origin on the entry and every line before the boundary reads them;
-    # a line copying one these books posted (``posted_from``, rule V) keeps its own fund keys,
+    # Every journal line, whoever produced it, passes the one account boundary: a line copying one these books posted (``posted_from``, rule V) keeps its own fund keys,
     # and a local user's choice (``fund_grant``, by line number) sets the ones it names.
     if kwargs["event_type"] == "acc.journal_entry.created":
         from celerp.services.journal_accounts import prepare_journal_entry
-
-        if origin is not None:
-            await _judge_inbound(session, kwargs.get("company_id"), journal_inbound_keys(kwargs["data"], fund_grant), origin)
-            mark_journal(kwargs["data"], origin)
 
         await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring,
                                     keep_gifts=keep_gifts, actor_id=kwargs.get("actor_id"),
@@ -867,13 +896,21 @@ async def emit_event(
     if kwargs.get("entity_type") in ("doc", "list"):
         data = kwargs.get("data") or {}
         changed = data.get("fields_changed") if isinstance(data.get("fields_changed"), dict) else {}
-        # The fields the write sets, whether it carries them whole or as changes.
-        sets = {field: data[field] for field in ("line_items", "contact_id", "currency") if field in data}
+        # The fields the write sets, whether it carries them whole or as changes. A payment
+        # step (PAYMENT_TRIGGER) sets none of them: its currency is the payment's, kept on it.
+        from celerp.services.lot_origin import PAYMENT_TRIGGER
+
+        whole = {} if kwargs.get("event_type", "").startswith(PAYMENT_TRIGGER) else data
+        sets = {field: whole[field] for field in ("line_items", "contact_id", "currency") if field in whole}
         sets.update({field: change["new"] for field, change in changed.items()
                      if field in ("line_items", "contact_id", "currency") and isinstance(change, dict)
                      and "new" in change})
         line_set = sets.get("line_items") if isinstance(sets.get("line_items"), list) else None
         sets["line_items"] = line_set
+        # A document or List is kept only in a recognised currency, whichever writer sets it.
+        from celerp.services.currencies import require_currency_code
+
+        require_currency_code(sets.get("currency"))
         # The header fund keys the write sets (peer_lines).
         header = {key: data[key] for key in HEADER_KEYS if key in data}
         header.update({key: change["new"] for key, change in changed.items()

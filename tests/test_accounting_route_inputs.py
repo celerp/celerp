@@ -170,7 +170,7 @@ async def test_close_year_accepts_the_fiscal_year_end_for_every_start(client, se
     ("/accounting/reconciliation/start", {"bank_account_id": "not-a-uuid", "statement_date": "2026-10-01",
                                           "statement_balance": 1}),
     ("/accounting/rules", {"bank_account_id": "not-a-uuid", "match_pattern": "x",
-                           "target_account_code": "6000"}),
+                           "target_account_code": "6100"}),
 ])
 async def test_a_malformed_bank_id_is_refused_not_a_server_error(client, auth, path, body):
     r = await client.post(path, headers=auth["headers"], json=body)
@@ -185,7 +185,7 @@ async def test_a_malformed_bank_id_filter_on_rules_is_refused(client, auth):
 async def test_a_rule_for_a_bank_account_of_another_company_is_refused(client, auth):
     """A well-formed id that is not one of this company's bank accounts is not found."""
     r = await client.post("/accounting/rules", headers=auth["headers"], json={
-        "bank_account_id": str(uuid.uuid4()), "match_pattern": "x", "target_account_code": "6000"})
+        "bank_account_id": str(uuid.uuid4()), "match_pattern": "x", "target_account_code": "6100"})
     assert r.status_code == 404, r.text
     # The refusal keeps its message key, so the UI can say what to do next.
     assert r.json()["detail"]["message_key"] == "accounting.bank_not_found"
@@ -207,7 +207,7 @@ async def test_well_formed_bank_ids_still_work(client, auth):
         "bank_account_id": banks[0], "statement_date": "2026-10-01", "statement_balance": 1})
     assert r.status_code == 200, r.text
     r = await client.post("/accounting/rules", headers=h, json={
-        "bank_account_id": banks[0], "match_pattern": "x", "target_account_code": "6000"})
+        "bank_account_id": banks[0], "match_pattern": "x", "target_account_code": "6100"})
     assert r.status_code == 200, r.text
     r = await client.get("/accounting/rules", headers=h, params={"bank_account_id": banks[0]})
     assert r.status_code == 200 and r.json()["total"] == 1, r.text

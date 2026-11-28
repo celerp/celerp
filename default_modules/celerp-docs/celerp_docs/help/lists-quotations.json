@@ -6,31 +6,31 @@
   "routes": ["/lists", "/lists/{entity_id}", "/lists/import"],
   "permission": "view_documents",
   "order": 3,
-  "checked": "cd99038a666f7fad28af36837546b984fb008aa1a9e4955d0394a30ada39de38",
+  "checked": "1efbd6f5b127ecb90baef62fffb0763f4a994c842a90981f7fd3db11468ebd2e",
   "steps": [
     {
       "text": "Open {lists} from the sidebar, then click {new} to start a draft.",
       "labels": {"lists": "nav.lists_quotations", "new": "page.new_list"},
-      "image": null,
-      "capture": {"route": "/lists", "selector": "main", "actions": []}
+      "image": "img/lists-quotations-1.webp",
+      "capture": {"route": "/lists", "selector": "main", "actions": [], "evidence": ["{lists}", "{new}"]}
     },
     {
-      "text": "Click a list or quotation to open it, add or change its lines and see its total.",
+      "text": "Click a list or quotation to open it. Its lines show each item with its quantity, price and line total; on a draft you add or change the lines here.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/lists", "selector": "main", "actions": []}
+      "image": "img/lists-quotations-2.webp",
+      "capture": {"route": "/lists", "selector": "[id^=list-line-section-]", "actions": [{"click": "table tbody tr a"}, {"wait": "table.doc-lines"}], "evidence": ["table.doc-lines tbody tr"]}
     },
     {
       "text": "On {title}, use {dl} for a blank spreadsheet in the expected format, fill it in and upload it to bring in many quotations at once.",
       "labels": {"title": "lists_import.import_lists", "dl": "btn.download_template"},
-      "image": null,
-      "capture": {"route": "/lists/import", "selector": "main", "actions": []}
+      "image": "img/lists-quotations-3.webp",
+      "capture": {"route": "/lists/import", "selector": "main", "actions": [], "evidence": ["{dl}"]}
     },
     {
       "text": "You can also ask the assistant to create a list or quotation, reprice it, finalize it or convert it into a document. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
-      "capture": {"route": "/lists", "selector": "main", "actions": []}
+      "image": "img/lists-quotations-4.webp",
+      "capture": {"route": "/ai", "selector": "#ai-chat-form", "actions": [{"fill": "#ai-query-input", "value": "Convert my latest quotation into an invoice"}], "evidence": ["#ai-query-input"]}
     }
   ],
   "related": ["docs.sales-documents"]

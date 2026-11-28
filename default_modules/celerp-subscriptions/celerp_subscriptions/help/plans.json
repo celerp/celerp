@@ -20,11 +20,14 @@
       "labels": {
         "nav": "nav.plans"
       },
-      "image": null,
+      "image": "img/plans-1.webp",
       "capture": {
         "route": "/plans",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{nav}"
+        ]
       }
     },
     {
@@ -32,21 +35,32 @@
       "labels": {
         "new": "page.new_plan"
       },
-      "image": null,
+      "image": "img/plans-2.webp",
       "capture": {
         "route": "/plans",
         "selector": "main",
-        "actions": []
+        "actions": [],
+        "evidence": [
+          "{new}"
+        ]
       }
     },
     {
       "text": "You can also ask the assistant which plans you offer, who is on each, or to change a subscription's price or quantity. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
-      "image": null,
+      "image": "img/plans-3.webp",
       "capture": {
-        "route": "/plans",
-        "selector": "main",
-        "actions": []
+        "route": "/ai",
+        "selector": "#ai-chat-form",
+        "actions": [
+          {
+            "fill": "#ai-query-input",
+            "value": "Which plans do we offer?"
+          }
+        ],
+        "evidence": [
+          "#ai-query-input"
+        ]
       }
     }
   ],

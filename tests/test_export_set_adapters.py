@@ -431,6 +431,80 @@ async def test_quickbooks_and_xero_adapters(real_engine, monkeypatch, tmp_path, 
                     or (f"{m.source_type} (journal fallback)", "mapped_with_loss") in coverage), m.source_type
 
 
+@pytest.mark.parametrize("source", ["quickbooks_online", "xero"])
+def test_a_cutover_opening_carries_each_balance_in_its_own_currency_too(tmp_path, source):
+    """The cutover opening plus the records carried after it hold, per account and contact, what
+    full history holds, in the books' currency and in the record's own (a foreign bank's opening
+    is its balance in the bank's currency)."""
+    from celerp.importers.adapters.exports.ledger import build_ledger
+
+    adapter, files = (_qbo_adapter(), _qbo()) if source == "quickbooks_online" else (_adapter(), _xero())
+    cutover = MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUTOVER)
+    book = adapter._book(_set(tmp_path, files), cutover)
+
+    def position(postings) -> dict:
+        out: dict = {}
+        for p in postings:
+            amount, native = out.get((p.account, p.contact), (Decimal(0), Decimal(0)))
+            out[(p.account, p.contact)] = (amount + p.amount, native + p.native)
+        return {key: sums for key, sums in out.items() if any(sums)}
+
+    ledger = build_ledger(book, cutover)
+    assert any(p.date > CUTOVER for p in ledger.imported_postings())
+    assert position(ledger.opening + ledger.imported_postings()) == position(
+        build_ledger(book, MigrationDecisions(mode=CIFMode.FULL_HISTORY)).postings)
+
+
+def _eur_receipt_book(bank_eur: Decimal | None):
+    """USD books, a EUR invoice of 100 at 1.10 and a receipt of it on a EUR bank less a 1.00 fee;
+    `bank_eur` is the EUR amount the source states on the bank line. Then a EUR journal whose fee
+    line states no EUR amount."""
+    from celerp.importers.adapters.exports.book import Account, Book, Document, DocLine, GLJournal, GLLine
+
+    book = Book("xero", base="USD")
+    for a in (Account("610", "Receivable", "asset", "receivable"), Account("090", "EUR bank", "bank", "bank", "EUR"),
+              Account("200", "Sales", "revenue"), Account("404", "Bank fees", "expense"),
+              Account("498", "Exchange", "expense", "exchange_difference")):
+        book.accounts[a.code] = a
+    book.documents["S:INV-1"] = Document(
+        "S:INV-1", "INV-1", "invoice", "Invoice", "Ann", "", date(2025, 1, 5), None, "EUR", "posted",
+        [DocLine(None, "Goods", Decimal(1), Decimal(100), None, Decimal(100), [], "200")],
+        Decimal(100), Decimal(0), Decimal(100), Decimal(0))
+    book.journals = [
+        GLJournal("J:1", "1", date(2025, 1, 5), "Invoice", "receivable invoice", "", "INV-1", "Ann", "EUR",
+                  [GLLine("610", Decimal("110.00"), Decimal(100), ""), GLLine("200", Decimal("-110.00"), Decimal(-100), "")]),
+        GLJournal("J:2", "2", date(2025, 1, 9), "Receipt", "receivable payment", "", "INV-1", "Ann", "EUR",
+                  [GLLine("090", Decimal("108.90"), bank_eur, ""), GLLine("404", Decimal("1.10"), Decimal(1), ""),
+                   GLLine("610", Decimal("-110.00"), Decimal(-100), "")],
+                  settles={"S:INV-1": Decimal(100)}, settled_base=Decimal("110.00")),
+        GLJournal("J:3", "3", date(2025, 1, 10), "Manual Journal", "manual journal", "", "", "", "EUR",
+                  [GLLine("404", Decimal("2.20"), None, ""), GLLine("200", Decimal("-2.20"), Decimal(-2), "")]),
+    ]
+    return book
+
+
+@pytest.mark.parametrize("bank_eur, fx", [(Decimal(99), {"fx_currency": "EUR", "fx_debit": None,
+                                                         "fx_credit": Decimal(1), "fx_rate": Decimal("1.1")}),
+                                          (None, {"fx_currency": None, "fx_debit": None, "fx_credit": None,
+                                                  "fx_rate": None})])
+def test_a_foreign_line_carries_the_amount_the_source_states_in_its_currency_and_never_a_made_up_one(bank_eur, fx):
+    """A receipt's remainder on a EUR bank (a fee the source took from it) carries its EUR amount, so the
+    journal boundary posts it. Where the source states no EUR amount on that bank line, none is made up:
+    the remainder carries none, and the boundary refuses that record by name. A EUR journal's line that
+    states no EUR amount is carried in the books' currency alone, never at a rate of 1."""
+    from celerp.importers.adapters.exports.bundle import Source, _journals
+    from celerp.importers.adapters.exports.ledger import build_ledger
+
+    ledger = build_ledger(_eur_receipt_book(bank_eur), MigrationDecisions(mode=CIFMode.FULL_HISTORY))
+    entries = _journals(ledger, Source("xero"))
+    [bank] = [ln for e in entries if e.fallback for ln in e.lines if ln.account_external_id == "090"]
+    assert (bank.debit, bank.credit) == (Decimal(0), Decimal("1.10"))
+    assert {k: getattr(bank, k) for k in fx} == fx
+    [manual] = [e for e in entries if not e.fallback]
+    assert [(ln.account_external_id, ln.fx_currency, ln.fx_rate) for ln in manual.lines] == [
+        ("404", None, None), ("200", "EUR", Decimal("1.1"))]
+
+
 def test_a_document_number_is_found_only_on_its_own_contacts_document():
     from celerp.importers.adapters.exports.book import Book, Document
     from celerp.importers.adapters.exports.ledger import find_document

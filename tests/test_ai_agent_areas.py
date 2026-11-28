@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from pathlib import Path
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -122,7 +123,7 @@ def _script(monkeypatch, turns, caps=CAPS, executed=None) -> _Model:
 async def _run(**over):
     kwargs = dict(
         app=object(), bearer=lambda: "Bearer tok", query="a question",
-        company_id=uuid.uuid4(), company_settings={}, user_id=uuid.uuid4(),
+        company_id=uuid.uuid4(), company_settings={"currency": "THB"}, user_id=uuid.uuid4(),
         role="owner", memory={"notes": [], "kv": {}}, file_ids=None, history=[],
         operation_id=uuid.uuid4(),
     )
@@ -520,3 +521,114 @@ async def test_a_bulk_card_shows_every_record_it_changes_and_each_value(monkeypa
     assert html.count("<tr>") == service.MAX_FOR_EACH + 1
     for n in range(service.MAX_FOR_EACH):
         assert f"Forklift {n:03}" in html and f"SN-{n:04}" in html
+
+
+# -- The books' currency ------------------------------------------------------
+
+def _books_caps(real_app) -> tuple[dict, str, str]:
+    caps = ai_tools.compile_agent_capabilities(real_app, {}, "owner", caller_gates=frozenset())
+    by_route = {(c["method"], c["path"]): n for n, c in caps.items()}
+    return caps, by_route[("POST", "/accounting/reconciliation/import-statement")], by_route[("PATCH", "/companies/me/books")]
+
+
+async def _propose(monkeypatch, real_app, settings: dict, tool_key: int):
+    caps, imp, books = _books_caps(real_app)
+    tool, args = [(imp, {"body": {"job_id": "j", "statements": [{"header": {}, "lines": []}], "idempotency_key": "k"}}),
+                  (books, {"body": {"currency": "THB"}})][tool_key]
+    model = _script(monkeypatch, [
+        _turn(calls=[(LIST_TOOLS, {"area": service.agent_area(caps[tool])}, "c1")]),
+        _turn(calls=[(OPEN_TOOLS, {"names": [tool]}, "c2")]),
+        _turn(calls=[(tool, args, "c3")]),
+        _turn("done"),
+    ], caps=caps)
+    result = await _run(company_settings=settings)
+    return model, result
+
+
+@pytest.mark.asyncio
+async def test_no_import_or_posting_is_proposed_while_the_books_currency_is_not_set(monkeypatch, real_app):
+    """With no currency set, an import or posting would be read in a guessed currency:
+    the assistant refuses it, saying why and what to do next, and proposes nothing."""
+    model, result = await _propose(monkeypatch, real_app, {}, 0)
+    assert result.pending_actions == []
+    refusal = model.tool_result(3, "c3")
+    assert _error_code(refusal) == "books_currency_unset"
+    assert refusal["error"]["message_key"] == "ai.err_books_currency_unset"
+
+
+@pytest.mark.parametrize("lang", sorted(p.stem for p in (Path(__file__).parents[1] / "ui/locales").glob("*.json")))
+def test_the_books_currency_refusal_sends_the_user_where_the_currency_is_set(lang):
+    """The way out the refusal names is real: the company currency is edited on Company
+    Details (its settings card carries the currency field), and the refusal names that page."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _company_settings_card
+    assert 'hx-get="/settings/company/currency' in to_xml(_company_settings_card({"currency": ""}, lang))
+    assert t("nav.company_details", lang) in t("ai.err_books_currency_unset", lang)
+
+
+@pytest.mark.parametrize("settings", [{}, {"currency": "THB"}])
+def test_the_assistant_prompt_names_the_screen_that_sets_the_books_currency(settings):
+    """The assistant is told to send the user to the screen the refusal names, in the
+    refusal's own words: one screen name for the prompt, the tool error and the refusal."""
+    from celerp.ai.service import BOOKS_CURRENCY_SCREEN, _books_currency_unset, agent_system_prompt
+    prompt = " ".join(agent_system_prompt("en", {}, settings).split())
+    assert BOOKS_CURRENCY_SCREEN == t("nav.company_details", "en")
+    assert BOOKS_CURRENCY_SCREEN in prompt and "Settings >" not in prompt
+    if not settings:
+        way_out = f"set the currency in {BOOKS_CURRENCY_SCREEN}, then ask again"
+        assert way_out in prompt
+        assert way_out.lower() in t("ai.err_books_currency_unset", "en").lower()
+        capability = {"requires_confirmation": True, "required_permissions": ["import_export_data"],
+                      "method": "POST", "path": "/x"}
+        error = _books_currency_unset([("c1", "n", capability, {}, None)], {})["c1"]
+        assert BOOKS_CURRENCY_SCREEN in str(error)
+
+
+@pytest.mark.asyncio
+async def test_setting_the_books_currency_stays_open_and_a_set_currency_lets_imports_through(monkeypatch, real_app):
+    """The neighbouring invariant: the fix (setting the currency) is still proposed, and
+    once a currency is set the same import goes on a card."""
+    _model, result = await _propose(monkeypatch, real_app, {}, 1)
+    assert len(result.pending_actions) == 1
+    _model, result = await _propose(monkeypatch, real_app, {"currency": "THB"}, 0)
+    assert len(result.pending_actions) == 1
+
+
+# Changes that bring amounts into the books though their permission is not an
+# accounting one: a build posts stock and WIP, an item cost edit revalues stock.
+_BOOKS_CHANGES = [("POST", "/manufacturing/items/{item_id}/build"), ("POST", "/manufacturing/{order_id}/complete"),
+                  ("PATCH", "/items/{entity_id}"), ("POST", "/fixed-assets/api/assets/{asset_id}/revalue"),
+                  ("POST", "/accounting/reconciliation/import-statement"), ("POST", "/docs/{entity_id}/payment"),
+                  ("POST", "/docs/bulk-payment"), ("POST", "/items/bulk/transfer")]
+
+
+def test_every_change_waits_for_the_books_currency_whatever_its_permission(real_app):
+    """Manufacturing, inventory valuation, imports, payments and bulk actions are all
+    refused while no books currency is set, and all allowed once one is; only setting
+    the currency stays open."""
+    from celerp.ai.service import books_currency_refusal
+    caps = ai_tools.compile_agent_capabilities(real_app, {}, "owner", caller_gates=frozenset())
+    by_route = {(c["method"], c["path"]): c for c in caps.values() if c["requires_confirmation"]}
+    for route in _BOOKS_CHANGES:
+        refusal = books_currency_refusal(by_route[route], {})
+        assert refusal and refusal["error"]["code"] == "books_currency_unset", route
+        assert books_currency_refusal(by_route[route], {"currency": "THB"}) is None, route
+    assert books_currency_refusal(by_route[("PATCH", "/companies/me/books")], {}) is None
+
+
+def test_a_new_change_nobody_classified_is_refused_without_a_books_currency():
+    """Fail closed: a change registered with no declaration of any kind is held to the
+    rule, so a new action cannot slip past it by not being listed."""
+    from celerp.ai.service import books_currency_refusal
+    new = {"name": "brand_new", "method": "POST", "path": "/brand/new", "requires_confirmation": True,
+           "required_permissions": []}
+    assert books_currency_refusal(new, {})["error"]["code"] == "books_currency_unset"
+    assert books_currency_refusal({**new, "method": "GET", "requires_confirmation": False}, {}) is None
+
+
+def test_the_prompt_names_the_books_currency_from_the_company_settings_only():
+    """The assistant reads the books' currency from the company's settings, never from a
+    bank account or a file, and is told when none is set."""
+    assert "THB" in agent_system_prompt("en", {}, {"currency": "THB"})
+    unset = agent_system_prompt("en", {}, {})
+    assert "not set" in unset and "USD" not in unset

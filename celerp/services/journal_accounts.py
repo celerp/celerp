@@ -3,7 +3,7 @@
 
 """The one boundary every journal line passes before it enters the ledger.
 
-emit_event calls ``prepare_journal_entry`` for every acc.journal_entry.created,
+emit_event calls ``normalize_journal_entry`` then ``prepare_journal_entry`` for every acc.journal_entry.created,
 whoever produced it: automatic postings, manual journals, imports, bank
 reconciliation, repairs. Replay applies stored events directly and never comes
 back through here, so history is never revalidated or rewritten.
@@ -65,7 +65,7 @@ class ChartAccess:
     """The accounting module's chart, as core reads and extends it.
 
     lock_accounts(session, company_id, codes) -> {code: {"code", "account_type",
-    "is_active", "has_children"}}, held as read by the company lock; list_accounts(session, company_id) ->
+    "is_active", "has_children", "foreign_bank"}}, held as read by the company lock; list_accounts(session, company_id) ->
     the chart's rows, each with its id, code, name, account_type, parent_code,
     cash_flow_category, is_active, has_children and currency (a bank account's, else
     None); add_account(session, company_id, *, code, name, account_type, parent_code=None,
@@ -153,8 +153,8 @@ def chart_access() -> ChartAccess | None:
 async def lock_accounts(session: AsyncSession, company_id, codes) -> dict[str, dict] | None:
     """The company's accounts among ``codes``, held as read until the transaction ends.
 
-    Each value is {"code", "account_type", "is_active", "has_children"}; a code the
-    chart does not hold is absent. None when the accounting module is not running.
+    Each value is {"code", "account_type", "is_active", "has_children", "foreign_bank"};
+    a code the chart does not hold is absent. None when the accounting module is not running.
     """
     chart = chart_access()
     if chart is None:
@@ -187,11 +187,114 @@ async def add_account(session: AsyncSession, company_id, code: str, name: str, a
     await chart.add_account(session, company_id, code=code, name=name, account_type=account_type)
 
 
+# A journal line's amount keys: the books' own (``debit``) and its own currency's (``fx_debit``).
+_AMOUNT_PREFIXES = ("", "fx_")
+
+
+async def _posted_amounts(session: AsyncSession, company_id, entries: list[dict]) -> dict[str, dict[tuple[str, str], set[Decimal]]]:
+    """The amounts stored on each posted entry of these books that ``entries`` name in
+    ``posted_from``, by entry id, then by (prefix, currency): ``("", "")`` for the books'
+    debits and credits, ``("fx_", <currency>)`` for the foreign ones (none for an id that is
+    no journal entry here)."""
+    from celerp.models.projections import Projection
+    from celerp.services.money import to_decimal
+
+    out: dict[str, dict[tuple[str, str], set[Decimal]]] = {}
+    for source_id in {line.get("posted_from") for line in entries} - {None}:
+        row = await session.get(Projection, (company_id, source_id))
+        lines = (row.state or {}).get("entries") or [] if row is not None and row.entity_type == "journal_entry" else []
+        out[source_id] = found = {}
+        for line in (line for line in lines if isinstance(line, dict)):
+            for prefix in _AMOUNT_PREFIXES:
+                key = (prefix, (line.get("fx_currency") or "").upper() if prefix else "")
+                found.setdefault(key, set()).update(
+                    to_decimal(line[prefix + side]) for side in ("debit", "credit") if line.get(prefix + side))
+    return out
+
+
+async def normalize_journal_entry(session: AsyncSession, company_id, data: dict, *, restored: bool = False,
+                                  books_currency: str | None = None) -> None:
+    """Judge a new entry's lines and keep their amounts as they will be stored, in place.
+
+    emit_event runs this before any other judge of the entry, which then reads what is
+    persisted. Every line names an account and any foreign currency is one Celerp recognises;
+    a person's entry has two lines at least, each a positive amount on one side (the same side
+    in the books' currency and in its own), and balances in the books' currency (*books_currency*
+    when an automatic posting names its books, else the company's). Takes no locks.
+    """
+    from celerp.services.currencies import require_currency_code
+    from celerp.services import money
+    from celerp.services.money import line_moves, round_money, to_decimal, to_stored_float
+
+    entries = data.get("entries") or []
+    # A person's entry (typed, imported, an agent's or a peer's) has two lines at least. Code
+    # writes the others: an automatic posting (it names its *books_currency*) may be one line of
+    # a foreign amount too small for the books, or none when it records a move at no cost; a
+    # restored entry or a copy of posted lines is what was posted.
+    copied = bool(entries) and all(e.get("posted_from") for e in entries)
+    if len(entries) < 2 and not (books_currency or restored or copied):
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_two_lines"))
+    if not entries:
+        return
+    for entry in entries:
+        if not entry.get("account"):
+            raise HTTPException(status_code=422, detail=refusal(
+                "posting.destination.not_in_chart", _DESTINATION_PROBLEMS["not_in_chart"].format(code=""), code=""))
+        require_currency_code(entry.get("fx_currency"))
+    company = await session.get(Company, company_id)
+    settings = dict(company.settings or {}) if company is not None else {}
+    # One line means one thing: a positive amount on one side, the same side in the books'
+    # currency and in any currency it was typed in (_judge_line_rate, _judge_line_amounts).
+    # The amounts as given are judged, then each is kept at its currency's precision, so
+    # what is stored is what was checked; the entry
+    # balances in the books' currency both as given and as kept: a gap smaller than the books'
+    # smallest unit is still a gap, and many of them add up. A judged line that keeps no amount
+    # at all is refused, as it would post nothing.
+    base = (books_currency or money.books_currency(settings)).upper()
+    # A line copying a posted entry of these books (``posted_from``) keeps every amount that
+    # entry stored, in the books' currency and its own: it was kept at the books it was posted
+    # on, which may have had a finer unit. A copied line that moves nothing is kept as posted.
+    posted = await _posted_amounts(session, company_id, entries)
+    given = {"debit": Decimal(0), "credit": Decimal(0)}
+    kept = {"debit": Decimal(0), "credit": Decimal(0)}
+    for index, entry in enumerate(entries):
+        # A restored line or a copy of a posted one is what was posted; a person's line is judged.
+        judged = not (restored or entry.get("posted_from"))
+        where = catalog_refusal("acct.field_line", n=index + 1)
+        if judged:
+            _judge_line_rate(entry, base, where)
+        amounts = {(prefix, side): to_decimal(entry[prefix + side])
+                   for prefix in _AMOUNT_PREFIXES for side in kept if entry.get(prefix + side) is not None}
+        if any(amount < 0 for amount in amounts.values()):
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_negative"))
+        moving = {side for (_, side), amount in amounts.items() if amount > 0}
+        if len(moving) > 1:
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_both_sides"))
+        if judged and moving:
+            _judge_line_amounts(entry, amounts, moving.pop(), base, where)
+        source = posted.get(entry.get("posted_from"), {})
+        for (prefix, side), amount in amounts.items():
+            currency = (entry.get("fx_currency") or "").upper() if prefix else ""
+            kept_as_posted = amount in source.get((prefix, currency), ())
+            rounded = amount if kept_as_posted else round_money(amount, currency or base)
+            entry[prefix + side] = to_stored_float(rounded)
+            if not prefix:
+                given[side] += amount
+                kept[side] += rounded
+        if judged and not line_moves(entry):
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_no_amount"))
+    for debits, credits in ((kept["debit"], kept["credit"]), (given["debit"], given["credit"])):
+        if debits != credits:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_je_unbalanced_credit" if debits > credits else "acct.err_je_unbalanced_debit",
+                base=base, debits=debits, credits=credits, gap=abs(debits - credits)))
+
+
 async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *, restored: bool = False,
                                 keep_gifts: bool = False, actor_id=None, entity_id=None) -> None:
     """Check every line's account and write its immutable role snapshot in place.
 
-    A line that names roles was chosen for them: its account must be the role's
+    It reads the lines normalize_journal_entry kept; every line's account is in the chart. A line that names roles was chosen for them: its account must be the role's
     current target (then active and of a compatible type) or an account that has
     served the role before (then it only has to exist, as when a payment settles a
     receivable recognized before a remap). A line naming no roles is classified by
@@ -206,7 +309,7 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     lines, whose answers these books gave). Then the fund rules (check_fund_rules), judged on the entry's content and on ``actor_id``, the user
     the event is emitted by, for the entry ``entity_id``.
     """
-    entries = [e for e in (data.get("entries") or []) if isinstance(e, dict) and e.get("account")]
+    entries = data.get("entries") or []
     if not entries:
         return
     company = await session.get(Company, company_id)
@@ -217,8 +320,7 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
         code = entry["account"]
         if accounts is not None and code not in accounts:
             raise HTTPException(status_code=422, detail=refusal(
-                "posting.destination.not_in_chart",
-                f"Account {code} is not in the chart of accounts.", code=code))
+                "posting.destination.not_in_chart", _DESTINATION_PROBLEMS["not_in_chart"].format(code=code), code=code))
         roles = entry.get("account_roles")
         if roles is None:
             if SCHEMA_KEY in settings and not restored:
@@ -244,6 +346,88 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
         await _stamp_named_gifts(session, company_id, settings, entries)
     await check_fund_rules(session, company_id, data, entries, accounts,
                            restored=restored, actor_id=actor_id, entity_id=entity_id)
+
+
+def _judge_line_rate(entry: dict, base: str, where: dict) -> None:
+    """A person's line names the currency its rate converts from; the books' own currency
+    *base* converts at 1, and any other rate is one ``checked_exchange_rate`` accepts, kept
+    as it stores it. *where* names the line in each refusal."""
+    from celerp.services.money import checked_exchange_rate, to_stored_float
+
+    currency, rate = (entry.get("fx_currency") or "").upper(), entry.get("fx_rate")
+    if rate is None:
+        return
+    if not currency:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_fx_rate_no_currency", line=where))
+    try:
+        rate = checked_exchange_rate(rate)
+    except ValueError as exc:
+        if currency == base:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_fx_base_rate", line=where, currency=currency)) from exc
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_fx_rate_invalid", line=where)) from exc
+    if currency == base and rate != 1:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_fx_base_rate", line=where, currency=currency))
+    entry["fx_rate"] = to_stored_float(rate)
+
+
+def _judge_line_amounts(entry: dict, amounts: dict, side: str, base: str, where: dict) -> None:
+    """The meaning of a person's line moving *side*, its *amounts* keyed (prefix, side).
+
+    A line in the books' currency *base* (no currency named, or that one) may repeat its
+    amounts as foreign ones: equal, they say nothing more and are dropped, so it is stored as
+    every books-currency line is; any other figure would restate the line and is refused. A
+    line in another currency carries a positive amount in it on the line's side, judged as it
+    is kept (each amount at its currency's precision, the rate as ``_judge_line_rate`` kept it).
+    Its books' side may be empty only when that amount at its rate shows as zero in the books'
+    currency. A books' amount B beside a foreign amount F means one figure: with no rate, the
+    rate stored is the one they imply; with a rate R, B must be F x R up to what rounding each
+    figure allows (one unit of the books' currency, R units of the foreign one, and half the
+    last place of the rate on F), else the line is refused."""
+    from celerp.services.money import (EXCHANGE_RATE_DP, currency_dp, implied_rate, money_text,
+                                       round_money, to_decimal, to_stored_float)
+
+    currency = (entry.get("fx_currency") or "").upper()
+    if currency in ("", base):
+        foreign = [key for key in amounts if key[0]]
+        if any(amounts[key] != amounts.get(("", key[1]), 0) for key in foreign):
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_fx_base_rate", line=where, currency=base))
+        for key in foreign:
+            del amounts[key]
+        for field in ("fx_currency", "fx_rate", "fx_debit", "fx_credit"):
+            entry.pop(field, None)
+        return
+    amount = round_money(amounts.get(("fx_", side), 0), currency)
+    if not amount:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_fx_no_amount", line=where, currency=currency))
+    books = round_money(amounts.get(("", side), 0), base)
+    if entry.get("fx_rate") is None:
+        if not books:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_fx_no_rate", line=where, currency=currency))
+        try:
+            entry["fx_rate"] = to_stored_float(implied_rate(books, amount))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_fx_rate_invalid", line=where)) from exc
+        return
+    rate = to_decimal(entry["fx_rate"])
+    converted = amount * rate
+    if not books:
+        if round_money(converted, base):
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_fx_no_books_amount", line=where, currency=currency, base=base))
+        return
+    gap = abs(books - converted)
+    if gap > (Decimal(10) ** -currency_dp(base) + rate * Decimal(10) ** -currency_dp(currency)
+              + amount * Decimal(10) ** -EXCHANGE_RATE_DP / 2):
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_fx_books_disagree", line=where, books=money_text(books, base), base=base,
+            amount=money_text(amount, currency), currency=currency, rate=rate,
+            converted=money_text(converted, base), gap=money_text(gap, base)))
 
 
 async def _stamp_named_gifts(session: AsyncSession, company_id, settings: dict, entries: list[dict]) -> None:
@@ -1230,9 +1414,13 @@ def unrestricted_label() -> str:
     return t("posting.fund.unrestricted")
 
 
-async def require_destinations(session: AsyncSession, company_id, codes) -> dict[str, dict] | None:
+async def require_destinations(session: AsyncSession, company_id, codes, *,
+                               foreign_amounts: bool = False) -> dict[str, dict] | None:
     """Refuse a new posting a user directed to any of ``codes`` unless each is an account
-    in the chart, active, with nothing under it (a header only sums the accounts below it).
+    in the chart, active, with nothing under it (a header only sums the accounts below it),
+    and not a bank kept in another currency than the books' unless the form it was chosen on
+    carries each line's amount in that currency and its rate (``foreign_amounts``): any
+    other form posts books-currency amounts the bank could never read.
 
     The accounts stay as read until the transaction ends (the company lock), so switching one off or
     putting an account under it waits for the posting, and a posting that waited for such
@@ -1246,17 +1434,27 @@ async def require_destinations(session: AsyncSession, company_id, codes) -> dict
     if accounts is None:
         return None
     for code in sorted(set(codes)):
-        problem = _destination_problem(accounts.get(code))
+        problem = _destination_problem(accounts.get(code), foreign_amounts=foreign_amounts)
         if problem is not None:
-            raise HTTPException(status_code=422, detail=refusal(
-                f"posting.destination.{problem}", _DESTINATION_PROBLEMS[problem].format(code=code), code=code))
+            raise HTTPException(status_code=422, detail=destination_refusal(problem, code, accounts.get(code)))
     return accounts
+
+
+def destination_refusal(problem: str, code: str, account: dict | None, /, **params) -> dict:
+    """The refusal for ``problem`` (a key of _DESTINATION_PROBLEMS) on account ``code``;
+    ``params`` add what the caller's page names (such as the role)."""
+    if problem == "foreign_bank":
+        params["currency"] = account["foreign_bank"]
+    return refusal(f"posting.destination.{problem}",
+                   _DESTINATION_PROBLEMS[problem].format(code=code, **params), code=code, **params)
 
 
 _DESTINATION_PROBLEMS = {
     "not_in_chart": "Account {code} is not in the chart of accounts.",
     "inactive": "Account {code} is inactive. Choose an active account.",
     "header": "Account {code} is a header account. Choose one of the accounts under it.",
+    "foreign_bank": "Account {code} is a bank account kept in {currency}, another currency than the books'. "
+                    "Choose an account that is not a bank account kept in another currency.",
 }
 
 _INCOME_ACCOUNT_PROBLEMS = {
@@ -1267,7 +1465,7 @@ _INCOME_ACCOUNT_PROBLEMS = {
 }
 
 
-def _destination_problem(account: dict | None) -> str | None:
+def _destination_problem(account: dict | None, *, foreign_amounts: bool = False) -> str | None:
     """Why ``require_destinations`` refuses an account (a key of _DESTINATION_PROBLEMS),
     or None when a new posting may go to it."""
     if account is None:
@@ -1276,6 +1474,8 @@ def _destination_problem(account: dict | None) -> str | None:
         return "inactive"
     if account["has_children"]:
         return "header"
+    if account.get("foreign_bank") and not foreign_amounts:
+        return "foreign_bank"
     return None
 
 
@@ -1302,11 +1502,11 @@ async def require_income_account(session: AsyncSession, company_id, code: str, *
         return
     account = accounts.get(code)
     problem = _destination_problem(account)
-    if problem is None and account["account_type"] not in ROLE_TYPES[AccountRole.SALES_REVENUE]:
+    if problem in (None, "foreign_bank") and account["account_type"] not in ROLE_TYPES[AccountRole.SALES_REVENUE]:
         problem = "not_revenue"
     if problem is None:
         return
-    if item is not None:
+    if item is not None and problem in _INCOME_ACCOUNT_PROBLEMS:
         detail = refusal(f"posting.income_account.{problem}",
                          _INCOME_ACCOUNT_PROBLEMS[problem].format(item=item, code=code), item=item, code=code)
     elif problem == "not_revenue":
@@ -1314,7 +1514,7 @@ async def require_income_account(session: AsyncSession, company_id, code: str, *
                          f"Account {code} is of type {account['account_type']}. Sales are credited to a revenue account.",
                          code=code, type=account["account_type"])
     else:
-        detail = refusal(f"posting.destination.{problem}", _DESTINATION_PROBLEMS[problem].format(code=code), code=code)
+        detail = destination_refusal(problem, code, account)
     raise HTTPException(status_code=422, detail=detail)
 
 
@@ -1333,7 +1533,7 @@ async def require_settlement_account(session: AsyncSession, company_id, code: st
     Only a new settlement is checked. Giving back money already recorded posts
     through the account it came in through, even if that account is now inactive.
     """
-    accounts = await require_destinations(session, company_id, {code})
+    accounts = await require_destinations(session, company_id, {code}, foreign_amounts=True)
     account_type = (accounts or {}).get(code, {}).get("account_type")
     if accounts is not None and account_type != "asset":
         raise HTTPException(status_code=422, detail=refusal(
