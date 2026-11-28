@@ -27,7 +27,7 @@ async def test_an_unknown_destination_account_is_refused_in_the_users_language(s
 
     with pytest.raises(HTTPException) as exc:
         await prepare_journal_entry(session, auth["company_id"],
-                                     {"entries": [{"account": "NOPE999"}]})
+                                     {"entries": [{"account": "NOPE999", "debit": 1.0}, {"account": "NOPE999", "credit": 1.0}]})
     detail = exc.value.detail
     assert detail["message_key"] == "posting.destination.not_in_chart"
     assert detail["params"]["code"] == "NOPE999"

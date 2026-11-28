@@ -21,8 +21,11 @@ from celerp.models.company import Company
 
 async def _seed_company(session, name: str) -> uuid.UUID:
     cid = uuid.uuid4()
+    from celerp_accounting.routes import seed_chart_of_accounts_hook
+
     session.add(Company(id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}", settings={}))
     await session.flush()
+    await seed_chart_of_accounts_hook(session=session, company_id=cid)
     return cid
 
 
@@ -39,7 +42,7 @@ async def _emit_finalize_like(session, company_id: uuid.UUID, ref: str):
     je = await emit_event(
         session, company_id=company_id, entity_id=f"je:auto:{doc_id}:fin",
         entity_type="journal_entry", event_type="acc.journal_entry.created",
-        data={"memo": "auto", "entries": []},
+        data={"memo": "auto", "entries": [{"account": "1120", "debit": 1.0}, {"account": "4100", "credit": 1.0}]},
         actor_id=None, location_id=None, source="auto_je",
         idempotency_key=f"je:{doc_id}:invoice.finalized:c",  # NOT company-scoped
         metadata_={},
@@ -97,7 +100,7 @@ async def test_duplicate_key_same_company_dedups_without_nuking_txn(session):
     dup_je = await emit_event(
         session, company_id=cid, entity_id=f"je:auto:doc:{ref}:fin",
         entity_type="journal_entry", event_type="acc.journal_entry.created",
-        data={"memo": "auto", "entries": []},
+        data={"memo": "auto", "entries": [{"account": "1120", "debit": 1.0}, {"account": "4100", "credit": 1.0}]},
         actor_id=None, location_id=None, source="auto_je",
         idempotency_key=f"je:doc:{ref}:invoice.finalized:c",  # duplicate
         metadata_={},

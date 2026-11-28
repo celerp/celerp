@@ -25,8 +25,19 @@ from race_support import _app_client, _direct, _http, _ok, _race, _refused, _rev
 pytestmark = pytest.mark.asyncio
 
 _JE = "je:RACE-1"
-_FIRST = {"memo": "First import", "entries": []}
-_SECOND = {"memo": "Second import", "entries": []}
+_FIRST = {"memo": "First import", "entries": [{"account": "1120", "debit": 1.0}, {"account": "4100", "credit": 1.0}]}
+_SECOND = {"memo": "Second import", "entries": [{"account": "1120", "debit": 1.0}, {"account": "4100", "credit": 1.0}]}
+
+
+async def _seed_with_chart(factory) -> dict:
+    """A company (race_support._seed) with the chart its imported lines post to."""
+    from celerp_accounting.routes import seed_chart_of_accounts_hook
+
+    c = await _seed(factory)
+    async with factory() as s:
+        await seed_chart_of_accounts_hook(session=s, company_id=c["company_id"])
+        await s.commit()
+    return c
 
 
 def _import(client, c, role, key, data):
@@ -58,7 +69,7 @@ def _factory(engine):
 @pytest.mark.parametrize("first_wins", [True, False], ids=["first-payload-wins", "second-payload-wins"])
 async def test_one_entry_imported_twice_at_once_under_different_keys_is_created_once(committed_engine, first_wins):
     factory = _factory(committed_engine)
-    c = await _seed(factory)
+    c = await _seed_with_chart(factory)
     (win_key, win_data), (lose_key, lose_data) = (("key-a", _FIRST), ("key-b", _SECOND))[::1 if first_wins else -1]
     async with _app_client(factory) as (client, pending):
         won, lost = await _race(
@@ -75,7 +86,7 @@ async def test_one_entry_imported_twice_at_once_under_different_keys_is_created_
 
 async def test_the_same_entry_import_sent_twice_at_once_is_created_once(committed_engine):
     factory = _factory(committed_engine)
-    c = await _seed(factory)
+    c = await _seed_with_chart(factory)
     async with _app_client(factory) as (client, pending):
         one, two = await _race(
             committed_engine,
@@ -90,7 +101,7 @@ async def test_the_same_entry_import_sent_twice_at_once_is_created_once(committe
 
 async def test_an_entry_import_whose_access_is_removed_while_it_waits_writes_nothing(committed_engine):
     factory = _factory(committed_engine)
-    c = await _seed(factory)
+    c = await _seed_with_chart(factory)
     async with _app_client(factory) as (client, pending):
         revoked, imported = await _race(
             committed_engine,

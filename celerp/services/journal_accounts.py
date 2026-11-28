@@ -209,7 +209,7 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
 
     Every line names an account in the chart (a line with none is refused, as an amount on
     no account would unbalance the books) and any foreign currency it is typed in is one
-    Celerp recognises; an entry has lines, each a positive amount on one side (the same side in
+    Celerp recognises; a person's entry has two lines at least, each a positive amount on one side (the same side in
     the books' currency and in its own), and the entry balances in
     the books' currency (*books_currency* when an automatic posting names the books it is
     written on, else the company's).
@@ -233,8 +233,15 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     from celerp.services.money import line_moves, round_money, to_decimal, to_stored_float
 
     entries = data.get("entries") or []
-    if not entries:
+    # A person's entry (typed, imported, an agent's or a peer's) has two lines at least. Code
+    # writes the others: an automatic posting (it names its *books_currency*) may be one line of
+    # a foreign amount too small for the books, or none when it records a move at no cost; a
+    # restored entry or a copy of posted lines is what was posted.
+    copied = bool(entries) and all(e.get("posted_from") for e in entries)
+    if len(entries) < 2 and not (books_currency or restored or copied):
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_two_lines"))
+    if not entries:
+        return
     for entry in entries:
         if not entry.get("account"):
             raise HTTPException(status_code=422, detail=refusal(

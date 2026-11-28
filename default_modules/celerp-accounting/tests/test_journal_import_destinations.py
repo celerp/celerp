@@ -75,8 +75,14 @@ async def test_an_imported_journal_that_does_not_balance_is_refused(client, auth
     assert await _trial_balance_balanced(client, auth)
 
 
-# Each line is a positive amount on one side, in the books' currency and in any it was typed in.
+# An entry has two lines at least, each a positive amount on one side: the same side in the books'
+# currency and in any it was typed in, and an amount still there once kept at its currency's unit.
 _ONE_SIDED_POSITIVE = {
+    "at least two lines": [[], [{"account": "6100", "debit": 10.0}]],
+    "has no amount": [
+        [{"account": "6100", "debit": 10.0}, {"account": "1111", "credit": 10.0}, {"account": "6200", "debit": 0.0}],
+        [{"account": "6100", "debit": 10.004}, {"account": "1111", "credit": 10.0}, {"account": "6200", "credit": 0.004}],
+    ],
     "can't be negative": [
         [{"account": "6100", "debit": -10.0}, {"account": "1111", "credit": -10.0}],
         [{"account": "6100", "debit": 10.0, "credit": -10.0}, {"account": "1111", "credit": 0.0}],
@@ -87,6 +93,8 @@ _ONE_SIDED_POSITIVE = {
         [{"account": "6100", "debit": 10.0, "credit": 5.0}, {"account": "1111", "credit": 5.0}],
         [{"account": "6100", "debit": 10.0, "fx_debit": 1500.0, "fx_credit": 1.0, "fx_currency": "JPY",
           "fx_rate": 0.0067}, {"account": "1111", "credit": 10.0}],
+        [{"account": "6100", "debit": 10.0, "fx_credit": 1500.0, "fx_currency": "JPY", "fx_rate": 0.0067},
+         {"account": "1111", "credit": 10.0}],
     ],
 }
 
@@ -158,3 +166,37 @@ async def test_an_imported_journal_is_stored_at_the_books_precision(client, sess
     assert result["created"] == 1 and not result["errors"], result
     stored = (await session.get(Projection, (auth["company_id"], je))).state["entries"]
     assert [(e.get("debit"), e.get("credit")) for e in stored] == [(10.0, None), (None, 10.0)], stored
+
+
+async def test_a_foreign_amount_too_small_for_the_books_is_kept_with_its_books_side_empty(client, session, auth):
+    je = f"je:{uuid.uuid4()}"
+    lines = [{"account": "6100", "debit": 0.0001, "fx_debit": 1.0, "fx_currency": "JPY", "fx_rate": 0.0001},
+             {"account": "6200", "credit": 0.0001, "fx_credit": 1.0, "fx_currency": "JPY", "fx_rate": 0.0001}]
+    result = await _import_lines(client, auth, lines, entity_id=je)
+    assert result["created"] == 1 and not result["errors"], result
+    stored = (await session.get(Projection, (auth["company_id"], je))).state["entries"]
+    assert [(e.get("debit"), e.get("fx_debit"), e.get("credit"), e.get("fx_credit")) for e in stored] == [
+        (0.0, 1.0, None, None), (None, None, 0.0, 1.0)], stored
+
+
+async def test_a_reversal_copies_both_currencies_onto_the_other_side(client, session, auth):
+    """A copy of posted lines (copy_posted_lines, reverse) swaps the books' and the foreign amount
+    together, so the reversal keeps one meaning per line and passes the boundary."""
+    from celerp.events.engine import emit_event
+    from celerp.services.peer_lines import copy_posted_lines
+
+    je = f"je:{uuid.uuid4()}"
+    lines = [{"account": "6100", "debit": 10.05, "fx_debit": 1500.0, "fx_currency": "JPY", "fx_rate": 0.0067},
+             {"account": "6200", "credit": 10.05}]
+    assert (await _import_lines(client, auth, lines, entity_id=je))["created"] == 1
+    posted = (await session.get(Projection, (auth["company_id"], je))).state["entries"]
+    reversal = f"{je}:reversal"
+    await emit_event(
+        session, company_id=uuid.UUID(str(auth["company_id"])), entity_id=reversal, entity_type="journal_entry",
+        event_type="acc.journal_entry.created", keep_gifts=True,
+        data={"status": "posted", "ts": "2026-03-02", "entries": copy_posted_lines(je, posted, reverse=True)},
+        actor_id=None, location_id=None, source="test", idempotency_key=uuid.uuid4().hex, metadata_={})
+    await session.commit()
+    stored = (await session.get(Projection, (auth["company_id"], reversal))).state["entries"]
+    assert [(e["account"], e.get("credit"), e.get("fx_credit"), e.get("debit"), e.get("fx_debit")) for e in stored] == [
+        ("6100", 10.05, 1500.0, None, None), ("6200", None, None, 10.05, None)], stored

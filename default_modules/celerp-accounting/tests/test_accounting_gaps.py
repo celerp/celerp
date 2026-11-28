@@ -114,7 +114,7 @@ async def test_accounting_batch_import_skip_and_error(client):
     r1 = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
         "entity_id": entity_id,
         "event_type": "acc.journal_entry.created",
-        "data": {"status": "posted", "ts": "2026-01-01", "entries": []},
+        "data": {"status": "posted", "ts": "2026-01-01", "entries": [{"account": "1120", "debit": 1.0}, {"account": "4100", "credit": 1.0}]},
         "source": "test",
         "idempotency_key": ik1,
     }]})
@@ -125,7 +125,7 @@ async def test_accounting_batch_import_skip_and_error(client):
     r2 = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
         "entity_id": entity_id,
         "event_type": "acc.journal_entry.created",
-        "data": {"status": "posted", "ts": "2026-01-01", "entries": []},
+        "data": {"status": "posted", "ts": "2026-01-01", "entries": [{"account": "1120", "debit": 1.0}, {"account": "4100", "credit": 1.0}]},
         "source": "test",
         "idempotency_key": ik1,
     }]})
@@ -136,7 +136,7 @@ async def test_accounting_batch_import_skip_and_error(client):
     r3 = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
         "entity_id": entity_id,
         "event_type": "acc.journal_entry.created",
-        "data": {"status": "posted", "ts": "2026-01-02", "entries": []},
+        "data": {"status": "posted", "ts": "2026-01-02", "entries": [{"account": "1120", "debit": 1.0}, {"account": "4100", "credit": 1.0}]},
         "source": "test",
         "idempotency_key": str(uuid.uuid4()),
     }]})
