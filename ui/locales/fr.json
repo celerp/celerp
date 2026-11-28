@@ -196,6 +196,8 @@
   "acct.err_fx_base_rate": "{line} : {currency} est la devise de votre entreprise, son taux est donc toujours 1. Mettez le taux à 1 ou effacez-le.",
   "acct.err_fx_no_rate": "{line} est en {currency} mais n'a pas de taux de change. Saisissez le taux pour la convertir dans la devise de votre entreprise.",
   "acct.err_fx_rate_invalid": "{line} : le taux de change n'est pas valide. Saisissez un nombre supérieur à zéro, par exemple 35.5.",
+  "acct.err_fx_no_amount": "{line} est en {currency} mais n'a pas de montant en {currency}. Saisissez le montant en {currency} du côté de la ligne, ou effacez la devise.",
+  "acct.err_fx_no_books_amount": "{line} n'a pas de montant en {base}, mais son montant en {currency} à ce taux est supérieur à zéro en {base}. Saisissez le montant en {base}.",
   "acct.err_je_two_lines": "Une écriture doit avoir au moins deux lignes : un débit et un crédit. Ajoutez une ligne et passez de nouveau l'écriture.",
   "acct.err_je_negative": "Les montants au débit et au crédit ne peuvent pas être négatifs. Saisissez plutôt le montant en positif de l'autre côté.",
   "acct.err_je_bank_currency": "Le compte {account} est un compte bancaire tenu en {currency}. Saisissez cette ligne en {currency} avec son taux de change, puis comptabilisez l'écriture.",

@@ -196,6 +196,8 @@
   "acct.err_fx_base_rate": "{line}: {currency} es la moneda propia de su empresa, así que su tipo de cambio siempre es 1. Cambie el tipo a 1 o bórrelo.",
   "acct.err_fx_no_rate": "{line} está en {currency} pero no tiene tipo de cambio. Escriba el tipo para convertirla a la moneda de su empresa.",
   "acct.err_fx_rate_invalid": "{line}: el tipo de cambio no es válido. Escriba un número mayor que cero, por ejemplo 35.5.",
+  "acct.err_fx_no_amount": "{line} está en {currency} pero no tiene importe en {currency}. Escriba el importe en {currency} en el lado de la línea, o borre la moneda.",
+  "acct.err_fx_no_books_amount": "{line} no tiene importe en {base}, pero su importe en {currency} a este tipo es mayor que cero en {base}. Escriba el importe en {base}.",
   "acct.err_je_two_lines": "Un asiento necesita al menos dos líneas: un débito y un crédito. Añada otra línea y registre de nuevo.",
   "acct.err_je_negative": "Los importes de débito y crédito no pueden ser negativos. Escriba el importe en positivo en el otro lado.",
   "acct.err_je_bank_currency": "La cuenta {account} es una cuenta bancaria cuya moneda es {currency}. Introduzca esa línea en {currency} con su tipo de cambio y después contabilice el asiento.",

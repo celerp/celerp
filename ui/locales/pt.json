@@ -196,6 +196,8 @@
   "acct.err_fx_base_rate": "{line}: {currency} é a moeda da sua empresa, então a taxa é sempre 1. Mude a taxa para 1 ou apague-a.",
   "acct.err_fx_no_rate": "{line} está em {currency}, mas não tem taxa de câmbio. Informe a taxa para converter para a moeda da empresa.",
   "acct.err_fx_rate_invalid": "{line}: a taxa de câmbio não é válida. Digite um número maior que zero, por exemplo 35.5.",
+  "acct.err_fx_no_amount": "{line} está em {currency}, mas não tem valor em {currency}. Digite o valor em {currency} no lado da linha ou limpe a moeda.",
+  "acct.err_fx_no_books_amount": "{line} não tem valor em {base}, mas o seu valor em {currency} a esta taxa é maior que zero em {base}. Digite o valor em {base}.",
   "acct.err_je_two_lines": "Um lançamento precisa de pelo menos duas linhas: um débito e um crédito. Adicione outra linha e lance novamente.",
   "acct.err_je_negative": "Valores de débito e crédito não podem ser negativos. Lance o valor positivo do outro lado.",
   "acct.err_je_bank_currency": "A conta {account} é uma conta bancária mantida em {currency}. Introduza essa linha em {currency} com a respetiva taxa de câmbio e, em seguida, contabilize o lançamento.",

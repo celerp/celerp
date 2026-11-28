@@ -250,9 +250,9 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     company = await session.get(Company, company_id)
     settings = dict(company.settings or {}) if company is not None else {}
     # One line means one thing: a positive amount on one side, the same side in the books'
-    # currency and in any currency it was typed in (a foreign amount too small to show in the
-    # books' currency leaves the books' side empty). The amounts as given are judged, then each
-    # is kept at its currency's precision, so what is stored is what was checked; the entry
+    # currency and in any currency it was typed in (_judge_line_rate, _judge_line_amounts).
+    # The amounts as given are judged, then each is kept at its currency's precision, so
+    # what is stored is what was checked; the entry
     # balances in the books' currency both as given and as kept: a gap smaller than the books'
     # smallest unit is still a gap, and many of them add up. A line that keeps no amount at all
     # is refused, as it would post nothing.
@@ -262,7 +262,12 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     posted = await _posted_amounts(session, company_id, entries)
     given = {"debit": Decimal(0), "credit": Decimal(0)}
     kept = {"debit": Decimal(0), "credit": Decimal(0)}
-    for entry in entries:
+    for index, entry in enumerate(entries):
+        # A restored line or a copy of a posted one is what was posted; a person's line is judged.
+        judged = not (restored or entry.get("posted_from"))
+        where = catalog_refusal("acct.field_line", n=index + 1)
+        if judged:
+            _judge_line_rate(entry, base, where)
         amounts = {(prefix, side): to_decimal(entry[prefix + side])
                    for prefix in ("", "fx_") for side in kept if entry.get(prefix + side) is not None}
         if any(amount < 0 for amount in amounts.values()):
@@ -270,6 +275,8 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
         moving = {side for (_, side), amount in amounts.items() if amount > 0}
         if len(moving) > 1:
             raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_both_sides"))
+        if judged and moving:
+            _judge_line_amounts(entry, amounts, moving.pop(), base, where)
         for (prefix, side), amount in amounts.items():
             copied = not prefix and amount in posted.get(entry.get("posted_from"), ())
             rounded = amount if copied else round_money(amount, (entry.get("fx_currency") or base) if prefix else base)
@@ -316,6 +323,67 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
         await _stamp_named_gifts(session, company_id, settings, entries)
     await check_fund_rules(session, company_id, data, entries, accounts,
                            restored=restored, actor_id=actor_id, entity_id=entity_id)
+
+
+def _judge_line_rate(entry: dict, base: str, where: dict) -> None:
+    """A person's line names the currency its rate converts from; the books' own currency
+    *base* converts at 1, and any other rate is one ``checked_exchange_rate`` accepts, kept
+    as it stores it. *where* names the line in each refusal."""
+    from celerp.services.money import checked_exchange_rate, to_stored_float
+
+    currency, rate = (entry.get("fx_currency") or "").upper(), entry.get("fx_rate")
+    if rate is None:
+        return
+    if not currency:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_fx_rate_no_currency", line=where))
+    try:
+        rate = checked_exchange_rate(rate)
+    except ValueError as exc:
+        if currency == base:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_fx_base_rate", line=where, currency=currency)) from exc
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_fx_rate_invalid", line=where)) from exc
+    if currency == base and rate != 1:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_fx_base_rate", line=where, currency=currency))
+    entry["fx_rate"] = to_stored_float(rate)
+
+
+def _judge_line_amounts(entry: dict, amounts: dict, side: str, base: str, where: dict) -> None:
+    """The meaning of a person's line moving *side*, its *amounts* keyed (prefix, side).
+
+    A line in the books' currency *base* (no currency named, or that one) may repeat its
+    amounts as foreign ones: equal, they say nothing more and are dropped, so it is stored as
+    every books-currency line is; any other figure would restate the line and is refused. A
+    line in another currency carries a positive amount in it on the line's side; its books'
+    side may be empty only when that amount at its rate shows as zero in the books' currency.
+    A books' amount given beside it stays as given: an imported entry keeps the figure its
+    own books posted."""
+    from celerp.services.money import round_money, to_decimal
+
+    currency = (entry.get("fx_currency") or "").upper()
+    if currency in ("", base):
+        foreign = [key for key in amounts if key[0]]
+        if any(amounts[key] != amounts.get(("", key[1]), 0) for key in foreign):
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "acct.err_fx_base_rate", line=where, currency=base))
+        for key in foreign:
+            del amounts[key]
+        for field in ("fx_currency", "fx_rate", "fx_debit", "fx_credit"):
+            entry.pop(field, None)
+        return
+    amount = amounts.get(("fx_", side), 0)
+    if not amount:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_fx_no_amount", line=where, currency=currency))
+    if amounts.get(("", side)):
+        return
+    if entry.get("fx_rate") is None:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_fx_no_rate", line=where, currency=currency))
+    if round_money(amount * to_decimal(entry["fx_rate"]), base):
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_fx_no_books_amount", line=where, currency=currency, base=base))
 
 
 async def _stamp_named_gifts(session: AsyncSession, company_id, settings: dict, entries: list[dict]) -> None:

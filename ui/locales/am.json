@@ -196,6 +196,8 @@
   "acct.err_fx_base_rate": "{line}፦ {currency} የኩባንያዎ የራሱ ገንዘብ ነው፣ ስለዚህ ተመኑ ሁልጊዜ 1 ነው። ተመኑን ወደ 1 ይቀይሩ ወይም ያጽዱት።",
   "acct.err_fx_no_rate": "{line} በ{currency} ነው ግን የምንዛሪ ተመን የለውም። ወደ ኩባንያዎ ገንዘብ ለመቀየር ተመኑን ያስገቡ።",
   "acct.err_fx_rate_invalid": "{line}፦ የምንዛሪ ተመኑ ትክክል አይደለም። ከዜሮ የሚበልጥ ቁጥር ያስገቡ፣ ለምሳሌ 35.5።",
+  "acct.err_fx_no_amount": "{line} በ{currency} ነው ግን በ{currency} መጠን የለውም። በመስመሩ ጎን የ{currency} መጠኑን ያስገቡ፣ ወይም ምንዛሪውን ያጽዱ።",
+  "acct.err_fx_no_books_amount": "{line} በ{base} መጠን የለውም፣ ግን የ{currency} መጠኑ በዚህ ተመን በ{base} ከዜሮ ይበልጣል። የ{base} መጠኑን ያስገቡ።",
   "acct.err_je_two_lines": "የመዝገብ ግቤት ቢያንስ ሁለት መስመሮች ያስፈልገዋል፦ አንድ ዴቢት እና አንድ ክሬዲት። ሌላ መስመር ያክሉና እንደገና ይመዝግቡ።",
   "acct.err_je_negative": "የዴቢት እና የክሬዲት መጠኖች አሉታዊ ሊሆኑ አይችሉም። በምትኩ መጠኑን በሌላኛው ጎን እንደ አዎንታዊ ቁጥር ያስገቡ።",
   "acct.err_je_bank_currency": "{account} በ{currency} የሚተዳደር የባንክ ሂሳብ ነው። ያንን የሂሳብ ግቤት መስመር በ{currency} ከምንዛሬ ተመኑ ጋር ያስገቡ፣ ከዚያም ግቤቱን ይመዝግቡ።",

@@ -196,6 +196,8 @@
   "acct.err_fx_base_rate": "{line}: {currency} は自社の通貨なので、為替レートは常に 1 です。レートを 1 にするか、消してください。",
   "acct.err_fx_no_rate": "{line}は {currency} ですが為替レートがありません。自社通貨に換算するレートを入力してください。",
   "acct.err_fx_rate_invalid": "{line}: 為替レートが正しくありません。0 より大きい数(例: 35.5)を入力してください。",
+  "acct.err_fx_no_amount": "{line} は {currency} ですが、{currency} の金額がありません。行と同じ側に {currency} の金額を入力するか、通貨を消してください。",
+  "acct.err_fx_no_books_amount": "{line} には {base} の金額がありませんが、このレートでの {currency} の金額は {base} で 0 より大きくなります。{base} の金額を入力してください。",
   "acct.err_je_two_lines": "仕訳には少なくとも借方 1 行と貸方 1 行の 2 行が必要です。行を追加して、もう一度計上してください。",
   "acct.err_je_negative": "借方・貸方の金額はマイナスにできません。反対側にプラスの金額で入力してください。",
   "acct.err_je_bank_currency": "{account}は{currency}建ての銀行口座です。この仕訳行の金額を{currency}で入力し、為替レートを指定してから仕訳を記帳してください。",
