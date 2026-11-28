@@ -32905,5 +32905,6 @@
     "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_line_whose_currency_fields_say_something_else_is_refused[line2-acct.err_fx_no_amount]": 0.10097793594468385,
     "default_modules/celerp-accounting/tests/test_journal_import_destinations.py::test_an_imported_line_whose_currency_fields_say_something_else_is_refused[line3-acct.err_fx_no_books_amount]": 0.0614146061707288,
     "tests/test_company_backup.py::test_a_journal_posted_before_the_line_rule_restores_as_posted": 1.3870623260736465,
-    "tests/test_copied_lines_precision.py::test_a_movement_posted_before_the_line_rule_reverses_as_it_was_posted": 0.3322852151468396
+    "tests/test_copied_lines_precision.py::test_a_movement_posted_before_the_line_rule_reverses_as_it_was_posted": 0.3322852151468396,
+    "tests/test_browser/test_help_capture.py::test_text_drawn_in_a_font_outside_the_pin_is_refused[chromium]": 5.310434045037255
 }
