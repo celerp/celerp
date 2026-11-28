@@ -38,7 +38,7 @@ from celerp.importers.adapters.exports.book import (
     MONEY_CONTROLS, PARTY_SIGN, ZERO, Book, Document, GLJournal, GLLine,
 )
 from celerp.importers.schema import CIFMode
-from celerp.services.money import checked_exchange_rate, round_money, split_to_base
+from celerp.services.money import implied_rate, round_money, split_to_base
 from ui.i18n import t
 
 # Journal kinds, as each source reader names them on `GLJournal.kind`.
@@ -250,7 +250,7 @@ def _settlement_postings(book: Book, s: Settlement) -> list[Posting]:
 def _rate(base: Decimal, foreign: Decimal | None) -> Decimal | None:
     if not foreign or not base:
         return None
-    return checked_exchange_rate(abs(base) / abs(foreign))
+    return implied_rate(base, foreign)
 
 
 def _document_journal(book: Book, j: GLJournal) -> Document | None:

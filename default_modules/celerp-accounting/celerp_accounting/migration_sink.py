@@ -46,7 +46,7 @@ from celerp.services.migration_core_sink import (
     run_targets,
     sink_result,
 )
-from celerp.services.money import checked_exchange_rate, require_doc_rate, round_money, to_stored_float
+from celerp.services.money import implied_rate, require_doc_rate, round_money, to_stored_float
 from celerp.services.ledger_rows import journal_rows
 from celerp_accounting import import_service
 from celerp_accounting.import_service import JOURNAL_CREATED, AccImportRecord
@@ -409,7 +409,7 @@ def _journal_record(
                    "credit": amount if side == "credit" else 0.0}
             if currency != base:
                 leg |= {f"fx_{side}": to_stored_float(round_money(native, currency)), "fx_currency": currency,
-                        "fx_rate": to_stored_float(checked_exchange_rate(moved / native))}
+                        "fx_rate": to_stored_float(implied_rate(moved, native))}
             legs.append(leg)
         data = {
             "memo": f"Transfer {record.source_ref or record.source_external_id}",

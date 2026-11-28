@@ -36,7 +36,7 @@ from celerp.importers.schema import (
     DEBIT_NOTE_NOTE,
     CoverageClass,
 )
-from celerp.services.money import checked_exchange_rate
+from celerp.services.money import implied_rate
 from ui.i18n import t
 
 # Journal parts of the ledger, and the source id suffix each part's journal carries.
@@ -160,7 +160,7 @@ def _lines(postings: list[Posting], currency=lambda p: None) -> list[CIFJournalL
         native = {}
         if foreign and p.native:
             native = {"fx_debit": max(p.native, ZERO) or None, "fx_credit": max(-p.native, ZERO) or None,
-                      "fx_currency": foreign, "fx_rate": checked_exchange_rate(abs(p.amount / p.native))}
+                      "fx_currency": foreign, "fx_rate": implied_rate(p.amount, p.native)}
         out.append(CIFJournalLine(account_external_id=p.account, debit=max(p.amount, ZERO),
                                   credit=max(-p.amount, ZERO), description=p.description,
                                   contact_external_id=p.contact, **native))

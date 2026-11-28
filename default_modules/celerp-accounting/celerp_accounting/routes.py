@@ -70,8 +70,8 @@ from celerp.services.journal_accounts import (
 )
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
-    books_currency, checked_exchange_rate, currency_dp, line_moves, require_line_amount, round_money, split_to_base,
-    to_base, to_decimal, to_stored_float,
+    books_currency, checked_exchange_rate, currency_dp, implied_rate, line_moves, require_line_amount, round_money,
+    split_to_base, to_base, to_decimal, to_stored_float,
 )
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
@@ -3086,7 +3086,7 @@ async def transfer_entries(session: AsyncSession, company_id: uuid.UUID, from_ba
             received = round_money(to_amount or 0, to_bank.currency)
             if received <= 0 or moved <= 0:
                 raise HTTPException(status_code=422, detail=t("acct.err_transfer_to_amount", currency=to_bank.currency))
-            entries[1] = _money_line(to_fields, to_bank.currency, checked_exchange_rate(moved / received),
+            entries[1] = _money_line(to_fields, to_bank.currency, implied_rate(moved, received),
                                      received, moved, debit=True)
     moved = to_decimal(entries[0]["credit"])
     return split_lines_by_fund(entries, await pooled_split(
