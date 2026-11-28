@@ -355,3 +355,34 @@ async def test_a_foreign_line_with_books_and_no_rate_stores_the_rate_its_amounts
 async def test_the_bound_is_exact_at_its_edge(session, auth, books, rate, accepted):
     got = await _post_at_boundary(session, auth, [_line(books, 2.0, rate, "JPY"), {"account": "1111", "credit": books}])
     assert isinstance(got, list) is accepted, got
+
+
+async def _typed_and_imported(client, session, auth, fx, rate, books):
+    """The same EUR line typed and imported: each door's stored line, or its refusal message."""
+    await _keep_books_in(session, auth["company_id"], "USD")
+    typed = await client.post("/accounting/journal-entries", headers=auth["headers"], json={
+        "ts": "2026-03-01", "memo": "typed", "idempotency_token": uuid.uuid4().hex, "entries": [
+            {"account": "6100", "debit": fx, "currency": "EUR", "rate": rate},
+            {"account": "1111", "credit": books}]})
+    je = f"je:{uuid.uuid4()}"
+    result = await _import_lines(client, auth, [
+        {"account": "6100", "debit": books, "fx_debit": fx, "fx_currency": "EUR", "fx_rate": rate},
+        {"account": "1111", "credit": books}], entity_id=je)
+    if typed.status_code != 200:
+        return typed.json()["detail"]["message"], str(result["errors"])
+    typed_je = typed.json()["je_id"]
+    money = ("account", "debit", "credit", "fx_debit", "fx_credit", "fx_currency", "fx_rate")
+    return [{k: line.get(k) or None for k in money} for line in  # an empty side: 0 typed, absent imported
+            [(await session.get(Projection, (auth["company_id"], e))).state["entries"][0] for e in (typed_je, je)]]
+
+
+async def test_a_typed_line_is_kept_at_its_currency_places_before_it_converts_as_an_imported_one_is(client, session, auth):
+    """EUR 10.0049 is kept as EUR 10.00, so typed it books 11.00 at 1.1, the line an importer sending
+    those figures stores."""
+    typed, imported = await _typed_and_imported(client, session, auth, 10.0049, 1.1, 11.0)
+    assert typed == imported and typed["debit"] == 11.0 and typed["fx_debit"] == 10.0, (typed, imported)
+
+
+async def test_a_typed_and_an_imported_line_meet_the_same_refusal(client, session, auth):
+    typed, imported = await _typed_and_imported(client, session, auth, 0.004, 1.1, 0.0)
+    assert "EUR" in typed and typed in imported, (typed, imported)

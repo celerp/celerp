@@ -1821,11 +1821,12 @@ async def create_manual_journal_entry(
 
     await require_destinations(session, company_id, {line.account for line in payload.entries}, foreign_amounts=True)
 
-    # A line typed in a currency carries its amounts as typed and what they convert to in the
-    # books' currency at the rate typed (to_base, as an importer's books amount is; the books'
-    # own currency is as typed, another one with no rate converts to nothing yet). The journal boundary
-    # judges what each line means and the balance, and stores each amount at its currency's
-    # precision, exactly as it does for an imported entry.
+    # A line typed in a currency carries its amounts at that currency's precision (round_money,
+    # as the journal boundary keeps them) and what those convert to in the books' currency at
+    # the rate typed (to_base, as an importer's books amount is; the books' own currency is as
+    # typed, another one with no rate converts to nothing yet). The journal boundary judges what
+    # each line means and the balance exactly as it does for an imported entry, so the same
+    # figures typed or imported store the same line or meet the same refusal.
     base = await _base_currency(session, company_id)
     entries: list[dict] = []
     for line in payload.entries:
@@ -1834,8 +1835,9 @@ async def create_manual_journal_entry(
         if currency or line.rate is not None:
             if currency != base:
                 converted = line.rate is not None
-                stored.update(debit=to_base(line.debit, line.rate, base) if converted else None,
-                              credit=to_base(line.credit, line.rate, base) if converted else None)
+                stored.update(
+                    debit=to_base(round_money(line.debit, currency), line.rate, base) if converted else None,
+                    credit=to_base(round_money(line.credit, currency), line.rate, base) if converted else None)
             stored.update(fx_debit=line.debit or None, fx_credit=line.credit or None,
                           fx_currency=currency, fx_rate=line.rate)
         # Only lines that name a party carry the key, so an entry with no party
