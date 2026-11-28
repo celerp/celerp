@@ -187,18 +187,28 @@ async def add_account(session: AsyncSession, company_id, code: str, name: str, a
     await chart.add_account(session, company_id, code=code, name=name, account_type=account_type)
 
 
-async def _posted_amounts(session: AsyncSession, company_id, entries: list[dict]) -> dict[str, set[Decimal]]:
-    """The debits and credits stored on each posted entry of these books that ``entries``
-    name in ``posted_from``, by entry id (none for an id that is no journal entry here)."""
+# A journal line's amount keys: the books' own (``debit``) and its own currency's (``fx_debit``).
+_AMOUNT_PREFIXES = ("", "fx_")
+
+
+async def _posted_amounts(session: AsyncSession, company_id, entries: list[dict]) -> dict[str, dict[tuple[str, str], set[Decimal]]]:
+    """The amounts stored on each posted entry of these books that ``entries`` name in
+    ``posted_from``, by entry id, then by (prefix, currency): ``("", "")`` for the books'
+    debits and credits, ``("fx_", <currency>)`` for the foreign ones (none for an id that is
+    no journal entry here)."""
     from celerp.models.projections import Projection
     from celerp.services.money import to_decimal
 
-    out: dict[str, set[Decimal]] = {}
+    out: dict[str, dict[tuple[str, str], set[Decimal]]] = {}
     for source_id in {line.get("posted_from") for line in entries} - {None}:
         row = await session.get(Projection, (company_id, source_id))
         lines = (row.state or {}).get("entries") or [] if row is not None and row.entity_type == "journal_entry" else []
-        out[source_id] = {to_decimal(amount) for line in lines if isinstance(line, dict)
-                          for amount in (line.get("debit"), line.get("credit")) if amount}
+        out[source_id] = found = {}
+        for line in (line for line in lines if isinstance(line, dict)):
+            for prefix in _AMOUNT_PREFIXES:
+                key = (prefix, (line.get("fx_currency") or "").upper() if prefix else "")
+                found.setdefault(key, set()).update(
+                    to_decimal(line[prefix + side]) for side in ("debit", "credit") if line.get(prefix + side))
     return out
 
 
@@ -238,11 +248,12 @@ async def normalize_journal_entry(session: AsyncSession, company_id, data: dict,
     # The amounts as given are judged, then each is kept at its currency's precision, so
     # what is stored is what was checked; the entry
     # balances in the books' currency both as given and as kept: a gap smaller than the books'
-    # smallest unit is still a gap, and many of them add up. A line that keeps no amount at all
-    # is refused, as it would post nothing.
+    # smallest unit is still a gap, and many of them add up. A judged line that keeps no amount
+    # at all is refused, as it would post nothing.
     base = (books_currency or money.books_currency(settings)).upper()
-    # A line copying a posted entry of these books (``posted_from``) keeps an amount that entry
-    # stored: it was kept at the books it was posted on, which may have had a finer unit.
+    # A line copying a posted entry of these books (``posted_from``) keeps every amount that
+    # entry stored, in the books' currency and its own: it was kept at the books it was posted
+    # on, which may have had a finer unit. A copied line that moves nothing is kept as posted.
     posted = await _posted_amounts(session, company_id, entries)
     given = {"debit": Decimal(0), "credit": Decimal(0)}
     kept = {"debit": Decimal(0), "credit": Decimal(0)}
@@ -253,7 +264,7 @@ async def normalize_journal_entry(session: AsyncSession, company_id, data: dict,
         if judged:
             _judge_line_rate(entry, base, where)
         amounts = {(prefix, side): to_decimal(entry[prefix + side])
-                   for prefix in ("", "fx_") for side in kept if entry.get(prefix + side) is not None}
+                   for prefix in _AMOUNT_PREFIXES for side in kept if entry.get(prefix + side) is not None}
         if any(amount < 0 for amount in amounts.values()):
             raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_negative"))
         moving = {side for (_, side), amount in amounts.items() if amount > 0}
@@ -261,14 +272,16 @@ async def normalize_journal_entry(session: AsyncSession, company_id, data: dict,
             raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_both_sides"))
         if judged and moving:
             _judge_line_amounts(entry, amounts, moving.pop(), base, where)
+        source = posted.get(entry.get("posted_from"), {})
         for (prefix, side), amount in amounts.items():
-            copied = not prefix and amount in posted.get(entry.get("posted_from"), ())
-            rounded = amount if copied else round_money(amount, (entry.get("fx_currency") or base) if prefix else base)
+            currency = (entry.get("fx_currency") or "").upper() if prefix else ""
+            kept_as_posted = amount in source.get((prefix, currency), ())
+            rounded = amount if kept_as_posted else round_money(amount, currency or base)
             entry[prefix + side] = to_stored_float(rounded)
             if not prefix:
                 given[side] += amount
                 kept[side] += rounded
-        if not line_moves(entry):
+        if judged and not line_moves(entry):
             raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_no_amount"))
     for debits, credits in ((kept["debit"], kept["credit"]), (given["debit"], given["credit"])):
         if debits != credits:

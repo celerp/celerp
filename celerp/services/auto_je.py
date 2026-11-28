@@ -272,7 +272,8 @@ async def _emit_auto_posted_je(
     judges the entry by where that record came from; the gift answers on its lines (_stamp_gifts)
     are the ones the boundary keeps. *extra* adds fields the created event records
     with the entry (a module journal's source and request hash). A line that moves nothing
-    once rounded (``line_moves``) is not written, so no producer can post one."""
+    once rounded (``line_moves``) is not written, so no producer can post one; a copy of a
+    posted line is written as posted, so its line numbers and amounts are its source's."""
     currency = currency or await company_currency(session, company_id)
     # A copy of a posted line (``posted_from``) is left as posted: the boundary keeps an amount
     # its source stored and rounds any other (journal_accounts.prepare_journal_entry).
@@ -281,7 +282,7 @@ async def _emit_auto_posted_je(
         return to_stored_float(to_decimal(amount) if e.get("posted_from") else round_money(amount, currency))
 
     rounded = ({**e, "debit": kept(e, "debit"), "credit": kept(e, "credit")} for e in entries)
-    entries = [e for e in rounded if line_moves(e)]
+    entries = [e for e in rounded if e.get("posted_from") or line_moves(e)]
     debits = sum((to_decimal(e["debit"]) for e in entries), _Dec(0))
     credits = sum((to_decimal(e["credit"]) for e in entries), _Dec(0))
     if debits != credits:

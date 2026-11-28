@@ -2795,6 +2795,7 @@ ALLOWED_DUPLICATES = {
            "value ('set', ('str', 'asset'), ('str', 'bank'))"): _QUEUED,
     _group('celerp/importers/adapters/exports/qbo.py::<module>',
            'celerp/importers/adapters/odoo/book.py::_Reader._allocations x3',
+           'celerp/services/journal_accounts.py::_posted_amounts',
            'celerp/services/peer_lines.py::_merged_legs',
            'ui/routes/accounting.py::setup_routes._render_journal_form',
            "value ('set', ('str', 'credit'), ('str', 'debit'))"): _QUEUED,
