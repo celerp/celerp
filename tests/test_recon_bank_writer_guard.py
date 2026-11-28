@@ -296,7 +296,7 @@ async def test_a_line_in_one_of_two_foreign_banks_sharing_an_account_is_stored(c
 # Lines on a foreign bank with no amount in its currency that net to zero in the books'
 # currency between them change nothing the bank holds (money moved between funds on the one
 # account), so the boundary stores them and every bank reader leaves them out; an unread line
-# that does move the bank is still refused.
+# that does move the bank, or carries an amount in a further currency, is still refused.
 async def _emit_lines(session, co, lines):
     from celerp.events.engine import emit_event
 
@@ -317,6 +317,12 @@ async def test_the_boundary_stores_unread_bank_lines_that_net_to_zero_and_refuse
         await _emit_lines(session, co, [{"account": code, "debit": 40.0, "credit": 0.0},
                                         {"account": code, "debit": 0.0, "credit": 30.0},
                                         {"account": "4100", "debit": 0.0, "credit": 10.0}])
+    await session.rollback()
+    assert e.value.status_code == 422 and refusal_text(e.value.detail) == want
+    gbp = {"fx_currency": "GBP", "fx_rate": 1.25}
+    with pytest.raises(HTTPException) as e:
+        await _emit_lines(session, co, [{"account": code, "debit": 40.0, "credit": 0.0, "fx_debit": 32.0, **gbp},
+                                        {"account": code, "debit": 0.0, "credit": 40.0}])
     await session.rollback()
     assert e.value.status_code == 422 and refusal_text(e.value.detail) == want
 
